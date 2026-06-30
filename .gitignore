@@ -20,3 +20,4 @@ dagster_home/
 *.swp
 *~
 *.db
+tasks/
