@@ -9,34 +9,38 @@ from dagster import Definitions
 from dagster_duckdb import DuckDBResource
 from dotenv import load_dotenv
 
-from . import resources as _resources
+from .defs.common import ApifyResource, GeminiResource, PolarsIOManager, weekly_medallion
+from .defs.instagram import ig_posts_gld, ig_posts_raw, ig_posts_slv
+from .defs.serving import assets as serving_assets
 
 load_dotenv()
 
 # ── Resources ─────────────────────────────────────────────────────────────────
-# DuckDBResource from dagster-duckdb owns the full connection lifecycle.
 
 all_resources = {
+    "io_manager": PolarsIOManager(lake_root="data/lake"),
     "duckdb": DuckDBResource(
         database=os.environ.get("IG_DB_PATH", "data/state.duckdb"),
     ),
-    "apify": _resources.ApifyResource(),
-    "gemini": _resources.GeminiResource(),
+    "apify": ApifyResource(),
+    "gemini": GeminiResource(),
 }
 
 # ── Assets ────────────────────────────────────────────────────────────────────
-# (uncomment as assets land)
-# from .defs.bronze import bronze_posts_raw, bronze_posts_parquet
-# from .defs.silver import silver_posts
-# from .defs.gold import gold_analyses
-# from .defs.serving import dim_time, dim_profile, analytics_views
+
+all_assets = [
+    ig_posts_raw,
+    ig_posts_slv,
+    ig_posts_gld,
+    *serving_assets,
+]
 
 # ── Schedules ─────────────────────────────────────────────────────────────────
-# from .schedules import weekly_pipeline
 
 # ── Definitions ───────────────────────────────────────────────────────────────
 
 defs = Definitions(
-    assets=[],
+    assets=all_assets,
     resources=all_resources,
+    schedules=[weekly_medallion],
 )
