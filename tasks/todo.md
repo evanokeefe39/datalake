@@ -12,6 +12,10 @@ See `tasks/plans/dagster-migration.md` — the detailed technical plan.
 - [x] Skeleton package: src/datalake/{definitions,resources,lake,config}.py
 - [x] defs/{bronze,silver,gold,serving}/__init__.py stubs
 - [x] uv sync
+- [x] Git init, .env with tokens, .gitignore, tooling configs
+- [x] GitHub repo (public), branch protection, squash merges, CI workflow
+- [x] Docs: README, AGENTS.md, ISSUES.md, CHANGELOG.md, CONTRIBUTING.md
+- [x] PR template with checklist
 - [ ] dg dev boots — verify UI + no telemetry + concurrency pool visible
 - [ ] No-op @asset with DuckDBResource — verify lifecycle + read_parquet
 
