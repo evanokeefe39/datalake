@@ -1,9 +1,9 @@
 name: datalake
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
-    branches: [master]
+    branches: [main]
   schedule:
     - cron: '0 6 * * 1'  # Monday 6 AM UTC
   workflow_dispatch:
