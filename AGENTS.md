@@ -150,24 +150,173 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 - **processed_on:** set only for net-new post_ids; existing posts keep their value
 - **State:** `silver_ig_posts` (DuckDB table), `silver_ig_progress` (per-dataset log), `watermarks.silver_ig`
 
-## Gold asset (ig_posts_gld)
+## Gold assets
 
-- **Trigger:** downstream of silver (`deps=["ig_posts_slv"]`), plus weekly schedule
-- **Discovery:** `WHERE processed_on > (SELECT timestamp FROM watermarks WHERE name = 'gold_ig')`
-- **Model:** gemini-2.0-flash-lite, temperature=0.2, JSON response
-- **Rate limit:** processes 10 posts per run (LIMIT 10)
-- **Retries:** 3 attempts per post, exponential backoff (2^attempt seconds)
+Two assets, selected by tier:
+
+### ig_posts_gld (interactive, for Free/Tier 1)
+
+- **Trigger:** downstream of silver (``deps=["ig_posts_slv"]``), plus weekly schedule
+- **Discovery:** ``WHERE processed_on > (SELECT timestamp FROM watermarks WHERE name = 'gold_ig')``
+- **Model:** gemini-3.1-flash-lite, temperature=0.2, JSON response
+- **Free tier:** processes 10 posts per run (LIMIT 10)
+- **Tier 1+:** no LIMIT, processes all pending. RPM pacing + jitter.
+- **Retries:** 3 attempts per post, exponential backoff with jitter
+  (``(2^attempt) + random(0,1)`` seconds).
+- **429 classification:** ``_is_quota_exhausted()`` stops retries on daily
+  RPD exhaustion; RPM/TPM burst retries with jitter.
+- **Per-post watermark:** advances after each successful post (not batch-scoped),
+  so partial failures don't restart from zero.
 - **Failures → dead_letter** (not gold_ig_analyses)
 - **Empty captions → dead_letter** (no API call)
 - **Idempotent:** INSERT OR REPLACE by post_id
-- **Reset:** `DELETE FROM watermarks WHERE name = 'gold_ig'` — next run reprocesses all silver
-- **Gemini rate limits:** if 429/403 encountered during smoke tests, stop and request a new API key
+
+### ig_posts_gld_backfill (batch, for Tier 1+)
+
+- **Trigger:** manual (launchpad) or on-demand schedule
+- **Discovery:** reads ALL unenriched posts regardless of watermark
+- **Flow:** build JSONL → upload → submit batch job → sensor polls → download → join results
+- **Idempotent with interactive:** both write via INSERT OR REPLACE;
+  whichever finishes first wins, the other is a no-op.
+- **Batch token budget:** 10M Tier 1, 500M Tier 2 (gemini-3.1-flash-lite)
+- **When to use:** initial backfill, prompt changes, domain expansion
+
 
 ## Serving layer
 
 - `dim_profile`: SCD2 profile dimension. Reads DISTINCT profiles from `silver_ig_posts`. Closes old rows on username change, inserts new rows. `channel = 'instagram'`.
 - `analytics_views`: CREATE OR REPLACE VIEW joining `silver_ig_posts` + `gold_ig_analyses` + `dim_profile` (current rows only). Query surface for dashboards.
 - Both are in `defs/serving/assets.py`, group_name="serving"
+
+
+## Gemini API rate limits
+
+Google does not publish exact per-model RPM/TPM/RPD numbers — check your
+live limits at `https://aistudio.google.com/rate-limit`. Approximate free-tier
+limits for Flash/Flash-Lite models (mid-2026):
+
+| Model | RPM | RPD | TPM |
+|---|---|---|---|
+| Gemini 2.5 Flash | ~10–15 | ~500–1,500 | up to 1,000,000 |
+| Gemini 2.5 Flash-Lite | ~15–30 | ~500–1,500 | 250,000–1,000,000 |
+| Gemini 3 Flash | ~10 | ~500–1,500 | ~250,000 |
+
+Limits are **per Google Cloud project**, not per API key. RPD resets at
+**midnight Pacific time** (08:00 UTC), not a rolling 24h window. Free tier
+has no spend-based rate limit (that's Tier 1+ only). Pro models lost their
+free tier in April 2026.
+
+**RPD varies by account.** Google does not guarantee these numbers and
+revises them without notice (50-80% cut in December 2025; further reductions
+through mid-2026). Developers report anywhere from 500 to 1,500 RPD on
+free tier. Check your live limits at ``https://aistudio.google.com/rate-limit``.
+
+### Two kinds of 429
+
+Both return HTTP 429 ``RESOURCE_EXHAUSTED``. The Gemini API response body
+carries structured info (retry hints in ``error.details``) that can
+distinguish subtypes:
+
+| Subtype | Meaning | Fix |
+|---|---|---|
+| ``rate_limit_exceeded`` | RPM/TPM burst — too fast. Response carries ~10–20s retry hint. | **Jitter + exponential backoff.** Retry loop uses ``(2^N) + random(0,1)`` seconds. |
+| ``insufficient_quota`` | Daily RPD spent — out of requests for the day. | **Stop retrying.** Wait until 08:00 UTC. Switch projects or upgrade tier. |
+
+The ``_is_quota_exhausted()`` helper in ``ig_posts_gld`` inspects
+``google.genai.errors.APIError`` attributes (``code``, ``message``,
+``details``) to distinguish subtypes. If the SDK error isn't parseable it
+falls back to substring matching on quota-related keywords.
+
+### Video: TPM is the bottleneck
+
+Video is token-intensive. At default ``media_resolution``:
+
+| Per second of video | Tokens |
+|---|---|
+| Frames (1 FPS, 258/frame) | 258 |
+| Audio (32/sec) | 32 |
+| **Total** | **~290/sec** |
+
+At low resolution (``media_resolution='low'``): ~98 tokens/sec (66/frame).
+
+| Video length | Default tokens | Low-res tokens |
+|---|---|---|
+| 1 minute | ~17,400 | ~5,880 |
+| 10 minutes | ~174,000 | ~58,800 |
+| 1 hour | ~1,044,000 | ~352,800 |
+
+A single 10-minute video at default resolution eats ~70% of the low-end free
+tier TPM (~250k). A 20-minute video exceeds it outright. To avoid this:
+
+- **Estimate tokens before the call** — use file metadata (duration from
+  ffprobe or container headers) rather than ``count_tokens()`` which
+  requires an API round-trip. Formula: ``tokens ≈ duration_seconds * 290``
+  (default) or ``duration_seconds * 98`` (low res).
+- **Use ``media_resolution='low'``** when fine visual detail isn't needed —
+  cuts token cost ~3×.
+- **Send shorter clips** — trim to the relevant segment.
+- **Use the File API** for videos >100MB or >1 minute. Free tier upload limit
+  is 2GB; paid is 20GB.
+
+### Billing trap
+
+Enabling billing on a project **deletes the free tier entirely** — every call
+becomes billable from the first token. This differs from most Google Cloud
+services (BigQuery, Cloud Storage) where free tier persists alongside billing.
+Workaround: use separate projects for free-tier evaluation and paid production.
+
+## Gemini tier strategy
+
+### Tier decision matrix
+
+| | Free | Tier 1 | Tier 2 |
+|---|---|---|---|
+| **Cost** | $0 | $0 base, pay per token | $0 base, pay per token |
+| **Entry** | Create project | Link billing account | $100 cumulative spend + 3 days |
+| **RPD** | ~500 | Higher (check dashboard) | Higher still |
+| **Batch tokens** | Limited | **10M** (flash-lite) | **500M** (flash-lite) |
+| **File API upload** | 2 GB | 20 GB | 20 GB |
+| **Spend cap** | None | $250/mo | $2,000/mo |
+| **Spend rate limit** | None | $10/10 min | $200/10 min |
+| **Data training** | Yes | **No** | **No** |
+| **Pro models** | No | Yes | Yes |
+
+### Approach per tier
+
+**Free — Evaluation only.** ``ig_posts_gld`` with LIMIT 10, sequential,
+jittered retry. Weekly schedule. 429s → dead_letter. Not for production.
+
+**Tier 1 — Interactive for incremental, batch for backfill.** Interactive
+handles routine weekly volume (up to ~1,000 text posts/run). Batch asset
+(``ig_posts_gld_backfill``) clears backlogs and prompt-change reprocessing.
+Single batch job covers ~9,500 text posts or ~570 minutes of video (low res).
+
+**Tier 2 — Batch-first.** All enrichment via batch API. Interactive asset
+for ad-hoc single-post enrichment only. 500M token batch capacity covers
+~475,000 text posts or ~28,000 one-minute videos per job.
+
+### Trigger points
+
+| When you see... | Upgrade to... |
+|---|---|
+| Dead letter filling with 429s daily | **Tier 1** |
+| Need to clear the backlog this week | **Tier 1** |
+| Don't want Google training on your data | **Tier 1** |
+| Batch job exceeds 10M token limit | **Tier 2** |
+| Weekly volume >1,000 posts steady-state | **Tier 2** |
+| Adding video enrichment | **Tier 2** (immediately) |
+| $250/mo spend cap exhausted | **Tier 2** |
+| $2,000/mo spend cap exhausted | **Tier 3** |
+
+### Video scaling
+
+Video adds two bottlenecks beyond text: upload time (File API, 5–15s per
+video) and token volume (~17,400 tokens per minute of video at default
+resolution). Sequential processing is impractical above ~100 videos/week.
+Batch API with concurrent upload workers is required at any video scale.
+Tier 2's 500M batch capacity and 20GB File API limit remove the practical
+ceilings for video enrichment.
+
 
 ## Smoke testing
 

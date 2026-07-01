@@ -10,6 +10,7 @@ in a future phase.
 """
 
 import json
+import random
 import logging
 import sys
 from datetime import datetime, timezone
@@ -396,6 +397,52 @@ If is_actionable:
 Caption:"""  # no trailing whitespace needed, prompt below feeds the caption
 
 
+
+def _is_quota_exhausted(exc: Exception, error_text: str) -> bool:
+    """Return True if the exception indicates daily quota (RPD) exhaustion.
+
+    Distinguishes ``insufficient_quota`` (daily RPD spent — stop retrying,
+    wait until midnight PT) from ``rate_limit_exceeded`` (RPM/TPM burst —
+    retry with jitter).
+
+    Inspects google-genai ``APIError`` attributes where available,
+    falling back to substring matching on the stringized error.
+    """
+    # google-genai SDK raises ClientError(APIError) for 4xx responses.
+    # Inspect the structured error details when available.
+    if hasattr(exc, "code") and getattr(exc, "code", None) == 429:
+        details = getattr(exc, "details", {}) or {}
+        # The Gemini API may include quota info in error.details or
+        # error.message. Look for quota-exhaustion signals.
+        msg = str(getattr(exc, "message", "")).lower()
+        if any(kw in msg for kw in ("quota", "insufficient", "depleted")):
+            return True
+        # Also check nested error.details array for quota violations
+        if isinstance(details, dict):
+            inner = details.get("error", {})
+            inner_msg = str(inner.get("message", "")).lower()
+            if any(kw in inner_msg for kw in ("quota", "insufficient", "depleted")):
+                return True
+    # Fallback: substring match on stringized error.
+    # Only quota-specific terms — "RESOURCE_EXHAUSTED" is the generic
+    # 429 status string and does NOT indicate which subtype.
+    lower = error_text.lower()
+    quota_keywords = (
+        "insufficient_quota", "quota exceeded", "quota exhausted",
+    )
+    return any(kw in lower for kw in quota_keywords)
+
+
+def _is_rate_limited(exc: Exception, error_text: str) -> bool:
+    """Return True if the exception is a rate-limit burst (RPM/TPM).
+
+    These are transient — retry with jittered backoff should succeed.
+    """
+    if hasattr(exc, "code") and getattr(exc, "code", None) == 429:
+        return not _is_quota_exhausted(exc, error_text)
+    return False
+
+
 @asset(
     name="ig_posts_gld",
     group_name="instagram",
@@ -493,6 +540,7 @@ def ig_posts_gld(duckdb: DuckDBResource, gemini: GeminiResource) -> pl.DataFrame
         attempt = 0
         error_text = None
         result_json = None
+        quota_exhausted = False
 
         while attempt < 3:
             attempt += 1
@@ -504,12 +552,32 @@ def ig_posts_gld(duckdb: DuckDBResource, gemini: GeminiResource) -> pl.DataFrame
                 break
             except Exception as exc:
                 error_text = str(exc)
-                logger.warning(
-                    "Gemini call failed for %s (attempt %d/3): %s",
-                    post_id, attempt, error_text,
-                )
+                # Classify 429 errors: rate_limit_exceeded (retry) vs
+                # insufficient_quota (stop — daily RPD exhausted)
+                if _is_quota_exhausted(exc, error_text):
+                    quota_exhausted = True
+                    logger.warning(
+                        "Quota exhausted for %s — stopping retries: %s",
+                        post_id, error_text,
+                    )
+                    break
+                if _is_rate_limited(exc, error_text):
+                    logger.warning(
+                        "Rate-limited for %s (attempt %d/3): %s",
+                        post_id, attempt, error_text,
+                    )
+                else:
+                    logger.warning(
+                        "Gemini call failed for %s (attempt %d/3): %s",
+                        post_id, attempt, error_text,
+                    )
                 if attempt < 3:
-                    time.sleep(2 ** attempt)
+                    # Exponential backoff with jitter: 2^N + random(0,1) seconds.
+                    # Jitter prevents harmonic lockstep with the rate limiter
+                    # when multiple requests hit the RPM/TPM wall simultaneously.
+                    delay = (2 ** attempt) + random.uniform(0, 1)
+                    logger.debug("Backing off %.1fs before retry", delay)
+                    time.sleep(delay)
 
         with db.get_connection() as conn:
             if result_json is not None:

@@ -37,18 +37,29 @@ class GeminiResource(ConfigurableResource):
     def analyze(self, prompt: str) -> str:
         """Send a prompt to Gemini and return the response text.
 
-        Uses the gold asset's standard model config (gemini-2.0-flash-lite,
-        JSON mode, 0.2 temperature, 2048 max tokens).
+        Uses gemini-2.0-flash-lite (text-only, low cost) with JSON mode,
+        0.2 temperature, and 2048 max output tokens.
+
+        This method is a thin wrapper — it does NOT retry or back off.
+        Rate-limit handling lives in the asset's retry loop (caller
+        owns retry policy). For video/media prompts, batch processing,
+        or other scenarios: estimate token cost via client.models.count_tokens()
+        before calling, and consider ``media_resolution='low'`` to cut
+        video frame token cost ~3× (66 vs 258 tokens/frame).
 
         Args:
             prompt: The full prompt text to send.
 
         Returns:
             Raw response text from Gemini. Caller is responsible for JSON
-            parsing and retry handling.
+            parsing, retry handling, and rate-limit classification.
 
         Raises:
-            RuntimeError: On API failure after exhausting retries.
+            google.genai.errors.APIError: On API errors (including 429 rate
+                limits). Inspect ``exc.code`` (HTTP status), ``exc.status``
+                (e.g. ``RESOURCE_EXHAUSTED``), and ``exc.message`` for
+                subtype discrimination (rate_limit_exceeded vs
+                insufficient_quota).
         """
         from google.genai import Client as GeminiClient
         from google.genai.types import GenerateContentConfig

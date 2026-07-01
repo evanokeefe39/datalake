@@ -59,13 +59,30 @@ datasets. If it was a profile-list scrape vs individual posts, the silver asset
 may need to handle both shapes. Alternatively, filter rows where `likes_count IS
 NULL` AND `owner_id IS NULL` at the silver layer and route to dead_letter.
 
-### 6. Dead letter backlog from Gemini quota exhaustion
+### 6. Dead letter backlog from Gemini rate limiting
 
-**Observed:** 10 rows in `dead_letter`:
-- 4 `status=skipped` — "Empty caption" (legitimate — profile pages without posts)
-- 6 `status=pending` — "429 RESOURCE_EXHAUSTED" (Gemini API free tier quota)
+**Observed:** 10 rows in ``dead_letter``:
+- 4 ``status=skipped`` — "Empty caption" (legitimate — profile pages without posts)
+- 6 ``status=pending`` — "429 RESOURCE_EXHAUSTED" (Gemini API rate limiting)
 
-**Impact:** `gold_ig_analyses` has 0 rows — no enrichment happened. The pending
-dead_letter entries will need re-processing once a Gemini API key with quota is
-available. The skipped entries should be reviewed: are empty-caption profile URLs
-expected data, or should they be filtered earlier in the pipeline?
+**Diagnosis (2026-07-01):** The 429 error type is ambiguous — could be
+``rate_limit_exceeded`` (RPM/TPM burst, fix with jitter) or
+``insufficient_quota`` (daily RPD exhausted, must wait until 08:00 UTC).
+Without the error subtype in the dead_letter message, we can't tell which.
+
+**Code fix applied:** ``ig_posts_gld`` retry loop now uses jittered backoff
+(``(2^N) + random(0,1)`` seconds instead of deterministic ``2^N``) and
+classifies 429 errors via ``_is_quota_exhausted()`` / ``_is_rate_limited()``
+helpers. Quota exhaustion stops retries immediately; rate limits retry with
+jitter. See ``AGENTS.md#gemini-api-rate-limits`` for full context.
+
+**Impact:** ``gold_ig_analyses`` has 0 rows — no enrichment happened. The
+pending dead_letter entries will need re-processing once rate limits reset or
+a paid tier project is available. The skipped entries should be reviewed: are
+empty-caption profile URLs expected data, or should they be filtered earlier
+in the pipeline?
+
+**Next step:** Re-run the gold asset when rate limits allow and observe
+whether the improved retry loop resolves the 429s. If errors persist, check
+the error subtype in the updated dead_letter messages to distinguish burst
+from quota exhaustion.
