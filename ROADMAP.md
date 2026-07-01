@@ -120,6 +120,30 @@ or schema evolution causing friction.
 **Migration path:** ATTACH DuckLake catalog → register existing Parquet files →
 replace INSERT OR REPLACE with MERGE INTO → add ducklake extension.
 
+
+## Future: Project Cost Tracking
+
+**What:** Track the actual costs of building and running this project across three
+dimensions:
+
+- **API service costs** — Apify actor runs (Instagram scraping), Gemini/LLM API
+  calls for enrichment. Log per-run costs in a `cost_log` table or spreadsheet.
+- **Vibe coding token costs** — LLM tokens consumed by DeepSeek and GLM 5.2 models
+  during development. Track sessions, model, prompt/response tokens, and estimated
+  dollar cost. Useful for estimating whether agent-assisted development is cheaper
+  than manual implementation.
+- **Time investment** — Developer hours spent on architecture, implementation, and
+  debugging. Track per phase to inform future project estimates.
+
+**Why:** Understanding the real cost of a medallion pipeline built with agent-assisted
+development provides concrete data for future project planning. Without this, it's
+impossible to know whether Duck Lake is worth the cost, whether Apify is the right
+scraper for production scale, or whether vibe coding saves time vs traditional dev.
+
+**Suggested approach:** Log costs to a simple DuckDB table (`cost_log` with columns:
+`phase`, `category` (api/tokens/time), `provider` (apify/gemini/deepseek/glm),
+`units` (runs/tokens/hours), `amount`, `estimated_cost_usd`, `notes`, `recorded_at`).
+Queryable alongside the pipeline data for a unified cost-per-insight metric.
 ## Negative space
 
 **Out of scope for current phases:**
