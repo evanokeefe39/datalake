@@ -10,8 +10,9 @@ from dagster_duckdb import DuckDBResource
 from dotenv import load_dotenv
 
 from .defs.common import ApifyResource, GeminiResource, PolarsIOManager, weekly_medallion
-from .defs.instagram import ig_posts_gld, ig_posts_raw, ig_posts_slv
+from .defs.instagram import ig_checks, ig_posts_gld, ig_posts_raw, ig_posts_slv
 from .defs.serving import assets as serving_assets
+from .defs.serving import serving_checks
 
 load_dotenv()
 
@@ -38,9 +39,9 @@ all_assets = [
 # ── Schedules ─────────────────────────────────────────────────────────────────
 
 # ── Definitions ───────────────────────────────────────────────────────────────
-
 defs = Definitions(
     assets=all_assets,
+    asset_checks=[*ig_checks, *serving_checks],
     resources=all_resources,
     schedules=[weekly_medallion],
 )

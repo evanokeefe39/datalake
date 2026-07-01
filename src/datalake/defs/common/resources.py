@@ -34,6 +34,37 @@ class GeminiResource(ConfigurableResource):
         description="Gemini API key.",
     )
 
+    def analyze(self, prompt: str) -> str:
+        """Send a prompt to Gemini and return the response text.
+
+        Uses the gold asset's standard model config (gemini-2.0-flash-lite,
+        JSON mode, 0.2 temperature, 2048 max tokens).
+
+        Args:
+            prompt: The full prompt text to send.
+
+        Returns:
+            Raw response text from Gemini. Caller is responsible for JSON
+            parsing and retry handling.
+
+        Raises:
+            RuntimeError: On API failure after exhausting retries.
+        """
+        from google.genai import Client as GeminiClient
+        from google.genai.types import GenerateContentConfig
+
+        client = GeminiClient(api_key=self.api_key)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash-lite",
+            contents=prompt,
+            config=GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.2,
+                max_output_tokens=2048,
+            ),
+        )
+        return response.text
+
 
 class PolarsIOManager(ConfigurableIOManager):
     """Polars-based I/O manager for Parquet persistence.

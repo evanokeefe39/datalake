@@ -128,7 +128,7 @@ _SILVER_COLUMNS = [
     "post_id", "shortcode", "url", "caption", "owner_id", "owner_username",
     "likes_count", "comments_count", "video_play_count", "video_view_count",
     "timestamp", "hashtags", "meta_data", "has_engagement_bait",
-    "media_files", "media_count", "source_dataset", "silvered_at",
+    "media_files", "media_count", "source_dataset", "processed_on",
 ]
 
 
@@ -149,7 +149,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     db = duckdb
     with db.get_connection() as conn:
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS silver_posts (
+            CREATE TABLE IF NOT EXISTS silver_ig_posts (
                 post_id        TEXT PRIMARY KEY,
                 shortcode      TEXT,
                 url            TEXT,
@@ -167,54 +167,52 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
                 media_files    TEXT NOT NULL DEFAULT '[]',
                 media_count    INTEGER NOT NULL DEFAULT 0,
                 source_dataset TEXT NOT NULL,
-                silvered_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                processed_on   TIMESTAMP
             )
         """)
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS silver_progress (
+            CREATE TABLE IF NOT EXISTS silver_ig_progress (
                 source_dataset TEXT PRIMARY KEY,
                 post_count     INTEGER NOT NULL DEFAULT 0,
                 completed_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS watermarks (
+                name        TEXT PRIMARY KEY,
+                timestamp   TIMESTAMP NOT NULL,
+                config_hash TEXT
+            )
+        """)
+    # ── 2. Find new bronze files (mtime > last watermark) ──────────────────
+    import os as _os
 
-    # ── 2. Find unprocessed bronze files ──────────────────────────────────
     bronze_files = sorted(BRONZE_LAKE.glob("*.parquet"))
     if not bronze_files:
-        # No bronze data at all — return empty
         return pl.DataFrame(schema={c: pl.Utf8 for c in _SILVER_COLUMNS})
 
     with db.get_connection() as conn:
-        tracked = {
-            row[0]
-            for row in conn.execute(
-                "SELECT source_dataset FROM silver_progress"
-            ).fetchall()
-        }
+        row = conn.execute(
+            "SELECT timestamp FROM watermarks WHERE name = 'silver_ig'"
+        ).fetchone()
+    watermark_ts = row[0].timestamp() if row and row[0] is not None else 0.0
 
-    new_files = [
-        f for f in bronze_files
-        if f.stem not in tracked
-    ]
+    new_files = [f for f in bronze_files if _os.path.getmtime(f) > watermark_ts]
 
     if not new_files:
-        # No new files — return existing silver so the I/O manager
-        # doesn't overwrite with an empty DataFrame.
         with db.get_connection() as conn:
             count = conn.execute(
-                "SELECT COUNT(*) FROM silver_posts"
+                "SELECT COUNT(*) FROM silver_ig_posts"
             ).fetchone()[0]
             if count == 0:
                 return pl.DataFrame(
                     schema={c: pl.Utf8 for c in _SILVER_COLUMNS}
                 )
             reader = conn.execute(
-                "SELECT * FROM silver_posts ORDER BY timestamp DESC"
+                "SELECT * FROM silver_ig_posts ORDER BY timestamp DESC"
             ).arrow()
         return pl.from_arrow(reader.read_all())
-
-    # ── 3. Read new bronze → map to silver schema ─────────────────────────
-    frames: list[pl.DataFrame] = []
+    frames = []
     for f in new_files:
         try:
             df = pl.read_parquet(f)
@@ -247,6 +245,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             ("has_engagement_bait", False),
             ("media_files", "[]"),
             ("media_count", 0),
+            ("processed_on", None),
             ("source_dataset", dataset_id),
         ]:
             if col not in df.columns:
@@ -298,19 +297,16 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     existing_count = 0
     with db.get_connection() as conn:
         existing_count = conn.execute(
-            "SELECT COUNT(*) FROM silver_posts"
+            "SELECT COUNT(*) FROM silver_ig_posts"
         ).fetchone()[0]
 
     if existing_count > 0:
         with db.get_connection() as conn:
             existing_reader = conn.execute(
-                "SELECT * FROM silver_posts"
+                "SELECT * FROM silver_ig_posts"
             ).arrow()
         existing_df = pl.from_arrow(existing_reader.read_all())
-        # Drop silvered_at from existing so the unified DF gets a fresh
-        # timestamp from the dedup result.
-        if "silvered_at" in existing_df.columns:
-            existing_df = existing_df.drop("silvered_at")
+        # Keep existing processed_on — new posts get NULL, stamped below
         frames.insert(0, existing_df)
 
     # ── 5. Union + dedup via DuckDB ───────────────────────────────────────
@@ -318,6 +314,8 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
         # All bronze files were empty or had only null-id rows
         return pl.DataFrame(schema={c: pl.Utf8 for c in _SILVER_COLUMNS})
     unified = pl.concat(frames, how="diagonal_relaxed")
+    if unified.is_empty():
+        return pl.DataFrame(schema={c: pl.Utf8 for c in _SILVER_COLUMNS})
     unified_arrow = unified.to_arrow()
 
     with db.get_connection() as conn:
@@ -331,15 +329,20 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
 
     deduped = pl.from_arrow(deduped_arrow)
 
-    # Add fresh silvered_at timestamp
+    # Only stamp processed_on on genuinely new posts (existing keep their value)
     now_iso = datetime.now(timezone.utc).isoformat()
-    deduped = deduped.with_columns(pl.lit(now_iso).alias("silvered_at"))
+    deduped = deduped.with_columns(
+        pl.when(pl.col("processed_on").is_null())
+        .then(pl.lit(now_iso))
+        .otherwise(pl.col("processed_on"))
+        .alias("processed_on")
+    )
 
     # ── 6. Upsert into state tables ───────────────────────────────────────
     with db.get_connection() as conn:
         conn.register("to_upsert", deduped.to_arrow())
         conn.execute(
-            "INSERT OR REPLACE INTO silver_posts SELECT * FROM to_upsert"
+            "INSERT OR REPLACE INTO silver_ig_posts SELECT * FROM to_upsert"
         )
 
         # Record progress for each processed dataset
@@ -349,7 +352,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
                 pl.col("source_dataset") == dataset_id
             ))
             conn.execute(
-                "INSERT OR REPLACE INTO silver_progress "
+                "INSERT OR REPLACE INTO silver_ig_progress "
                 "(source_dataset, post_count, completed_at) "
                 "VALUES (?, ?, ?)",
                 [dataset_id, src_count, now_iso],
@@ -402,96 +405,100 @@ Caption:"""  # no trailing whitespace needed, prompt below feeds the caption
 def ig_posts_gld(duckdb: DuckDBResource, gemini: GeminiResource) -> pl.DataFrame:
     """Read unenriched silver posts, classify each caption via Gemini.
 
-    Records results in ``gold_analyses`` state table. Failed API calls
-    are recorded as errors (status='failed') and processing continues.
+    Finds pending posts via watermark-based discovery on silver_ig_posts.
+    Successful results land in gold_ig_analyses; failures (empty captions,
+    API errors) go to dead_letter. Advances the gold_ig watermark after
+    each batch.
     """
     import json as _json
     import time
 
-    from google.genai import Client as GeminiClient
-    from google.genai.types import GenerateContentConfig
 
-    # ── 1. Ensure state table exists ──────────────────────────────────────
+    # ── 1. Ensure state tables exist ──────────────────────────────────────
     db = duckdb
     with db.get_connection() as conn:
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id         TEXT PRIMARY KEY REFERENCES silver_posts(post_id),
+            CREATE TABLE IF NOT EXISTS gold_ig_analyses (
+                post_id         TEXT PRIMARY KEY REFERENCES silver_ig_posts(post_id),
                 schema_version  INTEGER NOT NULL DEFAULT 3,
-                status          TEXT NOT NULL DEFAULT 'pending',
                 result_json     TEXT,
-                error           TEXT,
-                attempts        INTEGER NOT NULL DEFAULT 0,
                 analysed_at     TIMESTAMP
             )
         """)
+        # Ensure watermarks and dead_letter exist (shared tables)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS watermarks (
+                name        TEXT PRIMARY KEY,
+                timestamp   TIMESTAMP NOT NULL,
+                config_hash TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS dead_letter (
+                post_id     TEXT NOT NULL,
+                domain      TEXT NOT NULL DEFAULT 'instagram',
+                error       TEXT,
+                attempts    INTEGER NOT NULL DEFAULT 0,
+                failed_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                status      TEXT NOT NULL DEFAULT 'pending',
+                PRIMARY KEY (post_id, domain)
+            )
+        """)
 
-    # ── 2. Find unenriched posts ──────────────────────────────────────────
+    # ── 2. Find pending posts via watermark ────────────────────────────────
     with db.get_connection() as conn:
         pending = conn.execute("""
             SELECT sp.post_id, sp.caption
-            FROM silver_posts sp
-            LEFT JOIN gold_analyses ga ON sp.post_id = ga.post_id
-            WHERE ga.post_id IS NULL OR ga.status != 'completed'
+            FROM silver_ig_posts sp
+            WHERE sp.processed_on > COALESCE(
+                (SELECT timestamp FROM watermarks WHERE name = 'gold_ig'),
+                '1970-01-01'::TIMESTAMP
+            )
             LIMIT 10
         """).fetchall()
 
     if not pending:
-        # All posts enriched — return existing gold
+        # All posts enriched — return existing completed rows
         with db.get_connection() as conn:
             reader = conn.execute(
-                "SELECT * FROM gold_analyses WHERE status = 'completed'"
+                "SELECT post_id, schema_version, result_json, analysed_at "
+                "FROM gold_ig_analyses"
             ).arrow()
             table = reader.read_all()
             if table.num_rows == 0:
                 return pl.DataFrame({
-                    "post_id": [],
+                    "post_id": pl.Series([], dtype=pl.Utf8),
                     "schema_version": pl.Series([], dtype=pl.Int32),
-                    "status": pl.Series([], dtype=pl.Utf8),
                     "result_json": pl.Series([], dtype=pl.Utf8),
-                    "error": pl.Series([], dtype=pl.Utf8),
-                    "attempts": pl.Series([], dtype=pl.Int32),
                     "analysed_at": pl.Series([], dtype=pl.Utf8),
                 })
             return pl.from_arrow(table)
 
     # ── 3. Enrich via Gemini ──────────────────────────────────────────────
-    client = GeminiClient(api_key=gemini.api_key)
-    model = "gemini-2.0-flash-lite"
-    results = []
+    successes = []
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     for post_id, caption in pending:
         caption_text = caption or ""
         if not caption_text.strip():
             logger.info("Skipping %s — empty caption", post_id)
-            results.append({
-                "post_id": post_id,
-                "status": "skipped",
-                "result_json": None,
-                "error": "Empty caption",
-                "attempts": 0,
-            })
+            with db.get_connection() as conn:
+                conn.execute(
+                    "INSERT INTO dead_letter (post_id, domain, error, attempts, status) "
+                    "VALUES (?, 'instagram', 'Empty caption', 0, 'skipped')",
+                    [post_id],
+                )
             continue
 
         attempt = 0
         error_text = None
         result_json = None
-        status = "completed"
 
         while attempt < 3:
             attempt += 1
             try:
                 prompt = _GOLD_PROMPT + "\n" + caption_text
-                response = client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.2,
-                        max_output_tokens=2048,
-                    ),
-                )
-                result_json = response.text
+                result_json = gemini.analyze(prompt)
                 # Validate it's parseable JSON
                 _json.loads(result_json)
                 break
@@ -502,50 +509,48 @@ def ig_posts_gld(duckdb: DuckDBResource, gemini: GeminiResource) -> pl.DataFrame
                     post_id, attempt, error_text,
                 )
                 if attempt < 3:
-                    time.sleep(2 ** attempt)  # exponential backoff
+                    time.sleep(2 ** attempt)
 
-        if error_text and result_json is None:
-            status = "failed"
+        with db.get_connection() as conn:
+            if result_json is not None:
+                # Success — write to gold_ig_analyses
+                successes.append(post_id)
+                conn.execute(
+                    "INSERT OR REPLACE INTO gold_ig_analyses "
+                    "(post_id, schema_version, result_json, analysed_at) "
+                    "VALUES (?, 3, ?, ?)",
+                    [post_id, result_json, now_iso],
+                )
+            else:
+                # Failure — write to dead_letter
+                conn.execute(
+                    "INSERT INTO dead_letter (post_id, domain, error, attempts, status) "
+                    "VALUES (?, 'instagram', ?, ?, 'pending')",
+                    [post_id, error_text, attempt],
+                )
 
-        results.append({
-            "post_id": post_id,
-            "status": status,
-            "result_json": result_json,
-            "error": error_text,
-            "attempts": attempt,
-        })
-
-    # ── 4. Upsert into state table ────────────────────────────────────────
-    now_iso = datetime.now(timezone.utc).isoformat()
+    # ── 4. Advance watermark ──────────────────────────────────────────────
+    # Compute prompt hash for deferred auto-reset (Phase B1)
+    prompt_hash = str(hash(_GOLD_PROMPT + "gemini-2.0-flash-lite"))
     with db.get_connection() as conn:
-        for r in results:
-            conn.execute("""
-                INSERT OR REPLACE INTO gold_analyses
-                    (post_id, schema_version, status, result_json, error, attempts, analysed_at)
-                VALUES (?, 3, ?, ?, ?, ?, ?)
-            """, [
-                r["post_id"],
-                r["status"],
-                r["result_json"],
-                r["error"],
-                r["attempts"],
-                now_iso if r["status"] != "skipped" else None,
-            ])
+        conn.execute(
+            "INSERT OR REPLACE INTO watermarks (name, timestamp, config_hash) "
+            "VALUES ('gold_ig', ?, ?)",
+            [now_iso, prompt_hash],
+        )
 
-    # ── 5. Return gold DataFrame for I/O manager ──────────────────────────
+    # ── 5. Return completed gold DataFrame ────────────────────────────────
     with db.get_connection() as conn:
         reader = conn.execute(
-            "SELECT * FROM gold_analyses WHERE status = 'completed'"
+            "SELECT post_id, schema_version, result_json, analysed_at "
+            "FROM gold_ig_analyses"
         ).arrow()
         table = reader.read_all()
         if table.num_rows == 0:
             return pl.DataFrame({
                 "post_id": pl.Series([], dtype=pl.Utf8),
                 "schema_version": pl.Series([], dtype=pl.Int32),
-                "status": pl.Series([], dtype=pl.Utf8),
                 "result_json": pl.Series([], dtype=pl.Utf8),
-                "error": pl.Series([], dtype=pl.Utf8),
-                "attempts": pl.Series([], dtype=pl.Int32),
                 "analysed_at": pl.Series([], dtype=pl.Utf8),
             })
         return pl.from_arrow(table)

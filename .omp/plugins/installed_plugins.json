@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "plugins": {
+    "dagster-expert@dagster": [
+      {
+        "scope": "project",
+        "installPath": "C:\\Users\\evano\\.omp\\plugins\\cache\\plugins\\dagster___dagster-expert___1.13.1",
+        "version": "1.13.1",
+        "installedAt": "2026-07-01T11:07:24.784Z",
+        "lastUpdated": "2026-07-01T11:07:24.784Z"
+      }
+    ],
+    "dignified-python@dagster": [
+      {
+        "scope": "project",
+        "installPath": "C:\\Users\\evano\\.omp\\plugins\\cache\\plugins\\dagster___dignified-python___1.13.1",
+        "version": "1.13.1",
+        "installedAt": "2026-07-01T11:07:31.394Z",
+        "lastUpdated": "2026-07-01T11:07:31.394Z"
+      }
+    ]
+  }
+}

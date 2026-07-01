@@ -7,15 +7,11 @@ Each test sandboxes its output via a tmp_path lake_dir.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import polars as pl
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -78,7 +74,7 @@ def empty_data_dir(tmp_path) -> Path:
 
 def _run_phase1(data_dir: Path, lake_dir: Path):
     """Execute migration Phase 1, writing output to lake_dir."""
-    import migrate_from_ig_pipeline as migrate
+    from scripts import migrate_from_ig_pipeline as migrate
 
     with patch.object(migrate, "_OLD_DATA_DIR", data_dir):
         with patch.object(
@@ -93,58 +89,59 @@ def _run_phase1(data_dir: Path, lake_dir: Path):
 
 # ── Tests ─────────────────────────────────────────────────────────────────
 
-class TestMigration:
+def test_phase1_ndjson_to_parquet(old_data_dir, tmp_path):
+    """GIVEN old NDJSON files
+    WHEN migration Phase 1 runs
+    THEN Parquet files written with correct row counts
+    AND .meta sidecar copied alongside
+    """
+    _run_phase1(old_data_dir, tmp_path)
 
-    def test_phase1_ndjson_to_parquet(self, old_data_dir, tmp_path):
-        """GIVEN old NDJSON files
-        WHEN migration Phase 1 runs
-        THEN Parquet files written with correct row counts
-        AND .meta sidecar copied alongside
-        """
-        _run_phase1(old_data_dir, tmp_path)
+    dest = tmp_path / "ds_001.parquet"
+    assert dest.exists(), "Parquet file not created"
+    df = pl.read_parquet(dest)
+    assert len(df) == 3
+    assert list(df["shortCode"].to_list()) == ["abc", "def", "ghi"]
 
-        dest = tmp_path / "ds_001.parquet"
-        assert dest.exists(), "Parquet file not created"
-        df = pl.read_parquet(dest)
-        assert len(df) == 3
-        assert list(df["shortCode"].to_list()) == ["abc", "def", "ghi"]
+    meta_path = dest.with_suffix(".parquet.meta")
+    assert meta_path.exists()
+    meta = json.loads(meta_path.read_text())
+    assert meta["dataset_id"] == "ds_001"
+    assert meta["run_id"] == "run_001"
+    assert meta["item_count"] == 3
 
-        meta_path = dest.with_suffix(".parquet.meta")
-        assert meta_path.exists()
-        meta = json.loads(meta_path.read_text())
-        assert meta["dataset_id"] == "ds_001"
-        assert meta["run_id"] == "run_001"
-        assert meta["item_count"] == 3
 
-    def test_idempotent_rerun(self, old_data_dir, tmp_path):
-        """GIVEN migration already ran
-        WHEN re-run
-        THEN existing Parquet is not overwritten
-        """
-        _run_phase1(old_data_dir, tmp_path)
-        dest = tmp_path / "ds_001.parquet"
-        mtime_before = dest.stat().st_mtime
+def test_idempotent_rerun(old_data_dir, tmp_path):
+    """GIVEN migration already ran
+    WHEN re-run
+    THEN existing Parquet is not overwritten
+    """
+    _run_phase1(old_data_dir, tmp_path)
+    dest = tmp_path / "ds_001.parquet"
+    mtime_before = dest.stat().st_mtime
 
-        _run_phase1(old_data_dir, tmp_path)
+    _run_phase1(old_data_dir, tmp_path)
 
-        mtime_after = dest.stat().st_mtime
-        assert mtime_before == mtime_after, "File was re-written"
+    mtime_after = dest.stat().st_mtime
+    assert mtime_before == mtime_after, "File was re-written"
 
-    def test_empty_source_dir(self, empty_data_dir, tmp_path):
-        """GIVEN no NDJSON files
-        WHEN migration runs
-        THEN exits cleanly with no files created
-        """
-        _run_phase1(empty_data_dir, tmp_path)
-        lake = list(tmp_path.iterdir())
-        parquet = [f for f in lake if f.suffix == ".parquet"]
-        assert not parquet
 
-    def test_malformed_json(self, old_data_malformed, tmp_path):
-        """GIVEN NDJSON with unparseable lines
-        WHEN migration runs Phase 1
-        THEN the corrupt file is skipped (no partial data)
-        """
-        _run_phase1(old_data_malformed, tmp_path)
-        dest = tmp_path / "ds_malformed.parquet"
-        assert not dest.exists(), "corrupt NDJSON should be skipped entirely"
+def test_empty_source_dir(empty_data_dir, tmp_path):
+    """GIVEN no NDJSON files
+    WHEN migration runs
+    THEN exits cleanly with no files created
+    """
+    _run_phase1(empty_data_dir, tmp_path)
+    lake = list(tmp_path.iterdir())
+    parquet = [f for f in lake if f.suffix == ".parquet"]
+    assert not parquet
+
+
+def test_malformed_json(old_data_malformed, tmp_path):
+    """GIVEN NDJSON with unparseable lines
+    WHEN migration runs Phase 1
+    THEN the corrupt file is skipped (no partial data)
+    """
+    _run_phase1(old_data_malformed, tmp_path)
+    dest = tmp_path / "ds_malformed.parquet"
+    assert not dest.exists(), "corrupt NDJSON should be skipped entirely"

@@ -1,0 +1,15 @@
+{
+  "plugins": {
+    "dagster-expert": {
+      "version": "1.13.1",
+      "enabledFeatures": null,
+      "enabled": true
+    },
+    "dignified-python": {
+      "version": "1.13.1",
+      "enabledFeatures": null,
+      "enabled": true
+    }
+  },
+  "settings": {}
+}

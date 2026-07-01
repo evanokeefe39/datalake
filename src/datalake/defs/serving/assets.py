@@ -23,7 +23,7 @@ from dagster_duckdb import DuckDBResource
 def profile_dimension(duckdb: DuckDBResource) -> None:
     """Upsert profile dimension with SCD2 tracking.
 
-    Reads distinct owner profiles from ``silver_posts`` and maintains
+    Reads distinct owner profiles from ``silver_ig_posts`` and maintains
     ``effective_from``/``effective_to``/``is_current`` in DuckDB.
     """
     db = duckdb
@@ -40,10 +40,10 @@ def profile_dimension(duckdb: DuckDBResource) -> None:
             )
         """)
 
-        # Get distinct profiles from silver_posts
+        # Get distinct profiles from silver_ig_posts
         profiles = conn.execute("""
             SELECT DISTINCT owner_id, owner_username
-            FROM silver_posts
+            FROM silver_ig_posts
             WHERE owner_id IS NOT NULL
         """).fetchall()
 
@@ -94,20 +94,21 @@ def profile_dimension(duckdb: DuckDBResource) -> None:
     deps=["profile_dimension"],
 )
 def analytics_views(duckdb: DuckDBResource) -> None:
-    """Create or replace the unified analytics view."""
+    """Create or replace the unified analytics view.
+
+    Consumers looking for enrichment failures should query ``dead_letter``
+    directly (``WHERE domain = 'instagram'``).
+    """
     with duckdb.get_connection() as conn:
+        # Ensure gold_ig_analyses exists for LEFT JOIN (even if gold hasn't run)
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
+            CREATE TABLE IF NOT EXISTS gold_ig_analyses (
                 post_id         TEXT PRIMARY KEY,
                 schema_version  INTEGER NOT NULL DEFAULT 3,
-                status          TEXT NOT NULL DEFAULT 'pending',
                 result_json     TEXT,
-                error           TEXT,
-                attempts        INTEGER NOT NULL DEFAULT 0,
                 analysed_at     TIMESTAMP
             )
         """)
-
         conn.execute("""
             CREATE OR REPLACE VIEW analytics_views AS
             SELECT
@@ -123,22 +124,19 @@ def analytics_views(duckdb: DuckDBResource) -> None:
                 sp.timestamp,
                 sp.hashtags,
                 sp.source_dataset,
-                sp.silvered_at,
-                ga.status AS gold_status,
+                sp.processed_on,
                 ga.result_json,
-                ga.error AS gold_error,
                 ga.analysed_at AS gold_analysed_at,
                 dp.profile_key,
                 dp.channel,
                 dp.effective_from,
                 dp.effective_to,
                 dp.is_current
-            FROM "silver_posts" sp
-            LEFT JOIN "gold_analyses" ga ON sp.post_id = ga.post_id
+            FROM "silver_ig_posts" sp
+            LEFT JOIN "gold_ig_analyses" ga ON sp.post_id = ga.post_id
             LEFT JOIN "dim_profile" dp
                 ON sp.owner_id = dp.owner_id AND dp.is_current = TRUE
         """)
-
 
 # ── Exported for definitions.py ───────────────────────────────────────────
 
