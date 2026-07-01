@@ -16,9 +16,11 @@ dependencies = [
     "duckdb>=1.0",
     "httpx",
     "google-genai",
+    "polars>=1.0",
     "pydantic>=2.0",
     "python-dotenv",
     "tenacity",
+    "pyarrow>=24.0.0",
 ]
 
 [project.optional-dependencies]
@@ -40,3 +42,6 @@ select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.dagster]
+module_name = "datalake.definitions"

@@ -2,83 +2,70 @@
 
 Issue tracking is local — this file, not GitHub Issues.
 
+## Resolved
+
+### 1. Comprehensive medallion testing strategy ✅ (2026-07-01)
+
+Resolved by test hardening plan (`tasks/plans/test-hardening.md`). 87 tests across
+unit, integration, E2E layers. Full pipeline coverage: bronze→silver→gold→serving.
+
+### 2. End-to-end operational test coverage gaps ✅ (2026-07-01)
+
+All E2E definition-of-done items complete:
+- `tests/e2e/test_full_pipeline.py` — full pipeline on tmp_path + :memory: DuckDB
+- Watermark chain verified (silver_ig → gold_ig cascade)
+- Cross-layer post_id audit (every bronze post_id traceable through all layers)
+- Dead_letter routing (empty caption + API failure paths)
+- Schedule validation (`weekly_medallion` loads, targets match asset keys)
+- Ad-hoc run sequence verified
+- Golden-dataset snapshot (`tests/e2e/test_snapshot.py` + `tests/data/bronze_sample.parquet`)
+
+### 3. State readiness validation layer ✅ (2026-07-01)
+
+Resolved by `tasks/plans/state-readiness-impl.md`. Schema contract catalog
+(`tests/operational/expected_schema.py`) with 6 tables + 1 view, 8 state
+readiness tests, absent-DB handling. Drift detection proven against missing
+column, type mismatch, and missing table scenarios.
+
 ## Active
 
+### 4. S3 / R2 storage backend for GitHub Actions
 
-### 1. Comprehensive medallion testing strategy
 
-**Context:** Current test suite is minimal (1 parity test). Industry standard
-(DataKitchen, 2025) calls for systematic coverage across all medallion layers.
+### 5. Investigate null engagement data in silver_ig_posts
 
-**Scope of work:**
+**Observed:** 365 out of 2,628 rows (13.9%) in `silver_ig_posts` have NULL values
+for `likes_count`, `comments_count`, `owner_username`, `timestamp`, and several
+other columns simultaneously. These rows all have `hashtags=[]`, `media_files=[]`,
+`media_count=0`, and `has_engagement_bait=False` — they appear to be failed or
+incomplete Apify scraper results that were not filtered out.
 
-| Layer | Tests needed |
-|-------|-------------|
-| Bronze | Schema validation (columns, types, nulls), row count > 0, `.meta` sidecar integrity, run_id non-null |
-| Silver | Dedup correctness (no duplicate post_ids), latest-dataset-wins ordering, column coercion (types match schema), row count ≤ bronze, `silver_progress` watermark integrity |
-| Gold | Enrichment idempotency (re-run = same rows, no double-insert), SCHEMA_VERSION check, admiralty code validity (A1–F6), JSON parseability of educational_json/actionable_json, resumability (analysed posts skipped, failed retried) |
-| Serving | SCD2 integrity (`effective_from` ≤ `effective_to`, no overlapping intervals per entity, no gaps), dim_time date spine continuity, view query correctness vs raw tables |
+**Dataset breakdown (null rows per source):**
+```
+source_dataset         null_rows    total    null_pct
+o44ZGN3WOEuMzCgcf      365         365      100.0%
+(all other datasets)     0       2,263        0.0%
+```
 
-**Test categories to implement:**
-- **Unit tests:** per transformation function, in-memory DuckDB, mocked APIs
-- **Data quality tests:** null checks, uniqueness constraints, referential integrity
-- **SCD2 tests:** version chaining, effective date ranges, dual-upstream reconciliation (details wins over post-derived)
-- **Dedup tests:** INSERT OR REPLACE behavior, multi-dataset ordering, no silent data loss
-- **Contract tests:** asset I/O shapes match upstream expectations
-- **Integration tests:** bronze→silver→gold→views end-to-end with real (small) data
+The entire `o44ZGN3WOEuMzCgcf` dataset (365 rows) is all nulls — every single
+row. This strongly suggests a systemic problem with that specific Apify actor run,
+not one-off scraper failures. Likely causes:
+- Apify actor returned a different response shape (profile-only, no post data)
+- Rate limiting produced empty pages for every profile in that batch
+- Actor config changed between runs (missing `resultsType=posts` or similar)
 
-**Reference:** [DataKitchen — Data Quality Test Coverage in Medallion Architecture](https://datakitchen.io/blog/data-quality-test-coverage-in-a-medallion-data-architecture/)
-- Rule of thumb: ≥2 tests per table, ≥2 tests per column, ≥1 test per business metric
-- Shift-left: catch issues at bronze/silver, not gold/serving
-- Shift-down: end-to-end integration tests across layer boundaries
+**Suggested fix:** Investigate what `o44ZGN3WOEuMzCgcf` was scraping vs other
+datasets. If it was a profile-list scrape vs individual posts, the silver asset
+may need to handle both shapes. Alternatively, filter rows where `likes_count IS
+NULL` AND `owner_id IS NULL` at the silver layer and route to dead_letter.
 
-### 2. S3 / R2 storage backend for GitHub Actions
+### 6. Dead letter backlog from Gemini quota exhaustion
 
-**Context:** Pipeline currently writes Parquet to local filesystem (`data/lake/`).
-GitHub Actions runners have ephemeral disks — data is lost between runs.
-Need cloud object storage so CI can run the full medallion pipeline.
+**Observed:** 10 rows in `dead_letter`:
+- 4 `status=skipped` — "Empty caption" (legitimate — profile pages without posts)
+- 6 `status=pending` — "429 RESOURCE_EXHAUSTED" (Gemini API free tier quota)
 
-**Approach:** DuckDB's `httpfs` extension natively supports S3-compatible object
-storage (AWS S3, Cloudflare R2, MinIO). Parquet files are read/written directly
-from S3 URLs — no intermediate download step.
-
-**Design (Dagster + DuckDB + S3 pattern, per dagster.io blog):**
-- `DuckPondIOManager`: stores assets as Parquet on S3, DuckDB queries via `s3://` URLs
-- DuckDB `httpfs` extension loaded with S3 credentials at connection time
-- LocalStack for local S3 emulation during `dg dev`
-- Env vars: `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`
-- R2 recommended: zero egress fees, S3-compatible API
-
-**Caveat — DuckDB state database:** The state DB (`data/state.duckdb`) is a
-DuckDB database file that requires block-level filesystem access. S3 is an
-object store, not a filesystem — can't open a `.duckdb` file over `s3://`.
-Options:
-1. Keep state DB local, sync to S3 on pipeline completion as backup
-2. Use DuckDB's S3-attached mode (attach Parquet files, keep catalog in-memory)
-3. Rebuild state DB from Parquet lake on each run (idempotent by design)
-Recommended: option 3 for CI — state DB is derived from Parquet lake + SCD2
-reconstruction. Option 1 for production deployments where state persistence
-matters across runs.
-
-**Tasks:**
-- [ ] Choose S3-compatible provider (R2 likely — free tier, zero egress)
-- [ ] Implement S3 I/O manager wrapping DuckDB + Parquet
-- [ ] Decide state DB strategy (rebuild from lake for CI, local file for prod)
-- [ ] Add S3 env vars to `.env.example`
-- [ ] Add S3 secrets to GitHub Actions
-- [ ] LocalStack config for local dev parity
-- [ ] Update `lake.py` paths to support `s3://` prefix
-
-**Reference:** [Dagster — Build a Data Lake with DuckDB](https://dagster.io/blog/duckdb-data-lake)
-
-## Deferred
-
-### Phase 1: Wire IG library imports
-See `tasks/todo.md` for full plan. The old `ig_pipeline` functions need thin wrappers so assets can call them.
-
-### Phase 2–7: Asset implementation
-Full 8-asset pipeline (bronze → silver → gold → serving) plus sensor, schedule, tests, cutover.
-
-## Won't fix
-
-- GitHub Issues — local tracking only
+**Impact:** `gold_ig_analyses` has 0 rows — no enrichment happened. The pending
+dead_letter entries will need re-processing once a Gemini API key with quota is
+available. The skipped entries should be reviewed: are empty-caption profile URLs
+expected data, or should they be filtered earlier in the pipeline?
