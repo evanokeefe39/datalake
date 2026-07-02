@@ -39,19 +39,12 @@ EXPECTED_SCHEMA: dict[str, dict[str, str]] = {
         "post_count": "INTEGER",
         "completed_at": "TIMESTAMP",
     },
-    "gold_ig_analyses": {
-        "post_id": "VARCHAR",
-        "schema_version": "INTEGER",
-        "result_json": "VARCHAR",
-        "analysed_at": "TIMESTAMP",
-    },
-    "dead_letter": {
+    "gold_analyses": {
         "post_id": "VARCHAR",
         "domain": "VARCHAR",
-        "error": "VARCHAR",
-        "attempts": "INTEGER",
-        "failed_at": "TIMESTAMP",
-        "status": "VARCHAR",
+        "prompt_hash": "VARCHAR",
+        "result_json": "VARCHAR",
+        "analysed_at": "VARCHAR",
     },
     "watermarks": {
         "name": "VARCHAR",

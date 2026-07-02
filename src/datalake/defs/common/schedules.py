@@ -2,12 +2,12 @@
 
 from dagster import DefaultScheduleStatus, ScheduleDefinition
 
-# Weekly medallion processing — materialize silver→gold→serving downstreams.
+# Daily medallion processing — materialize silver→gold→serving downstreams.
 # Bronze is on-demand (user launches from UI with ScrapeConfig).
-weekly_medallion = ScheduleDefinition(
-    name="weekly_medallion",
-    target=["ig_posts_slv", "ig_posts_gld", "dim_profile", "analytics_views"],
-    cron_schedule="0 2 * * 1",  # 2am Monday
+daily_medallion = ScheduleDefinition(
+    name="daily_medallion",
+    target=["ig_posts_slv", "ig_posts_gld_enqueue", "dim_profile", "analytics_views"],
+    cron_schedule="0 3 * * *",  # 3am daily
     default_status=DefaultScheduleStatus.STOPPED,
     description="Silver dedup + gold enrich + dims + views. Bronze is on-demand.",
 )

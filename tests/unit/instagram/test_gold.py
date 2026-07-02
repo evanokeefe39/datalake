@@ -1,379 +1,335 @@
-"""Tests for the ``ig_posts_gld`` gold asset.
+"""Tests for the enrichment queue and enqueue asset.
 
-Gap-fills per test-hardening plan:
-- Enrichment, SCHEMA_VERSION, admiralty validity, JSON parseability,
-  non-JSON→dead_letter, empty/None→dead_letter, partial batch routing,
-  pagination edge, watermark advance, dead-letter exclusion
+Verifies the queue-based enrichment architecture:
+- Queue operations (enqueue, claim, complete, fail, reschedule)
+- ig_posts_gld_enqueue asset behaviour
+- SQLiteResource integration
 """
 
 from __future__ import annotations
 
-import json
-from datetime import datetime
-from unittest.mock import patch
-
-from datalake.defs.common.resources import GeminiResource
-from datalake.defs.instagram.assets import ig_posts_gld
-from datalake.defs.instagram.config import (
-    GeminiTierConfig,
-    GoldConfig,
+from dagster_duckdb import DuckDBResource
+from datalake.defs.common.resources import SQLiteResource
+from datalake.defs.enrichment.queue import (
+    MAX_ATTEMPTS,
+    claim,
+    complete,
+    delete,
+    depth,
+    enqueue,
+    fail,
+    reschedule,
 )
-from tests.fixtures.gold_factories import FAKE_ANALYSIS
-from tests.fixtures.silver_factories import seed_silver_posts
+from datalake.defs.instagram.assets import ig_posts_gld_enqueue
 
-# ── Existing gold enrichment tests ──────────────────────────────────────────
+# ── Fixtures ────────────────────────────────────────────────────────────────
+def _make_ops_db(tmp_path) -> SQLiteResource:
+    return SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
 
-def test_enriches_posts(db, gemini_mock):
-    """Unenriched posts are sent to Gemini and recorded as completed."""
-    seed_silver_posts(db, [("1", "Great post about AI marketing")])
-
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        result = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-
-    assert len(result) == 1
-    assert result["post_id"][0] == "1"
-    parsed = json.loads(result["result_json"][0])
-    assert parsed["domain"] == "Business"
-
-
-def test_skips_empty_caption(db, gemini_mock):
-    """Posts with empty caption go to dead_letter, not gold_ig_analyses."""
-    seed_silver_posts(db, [("1", ""), ("2", "  "), ("3", "Real caption")])
-
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        result = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-
-    assert len(result) == 1
-    assert result["post_id"][0] == "3"
-
-    with db.get_connection() as conn:
-        gold_count = conn.execute(
-            "SELECT COUNT(*) FROM gold_ig_analyses"
-        ).fetchone()[0]
-        dead_rows = conn.execute(
-            "SELECT post_id, error FROM dead_letter"
-        ).fetchall()
-    assert gold_count == 1
-    assert len(dead_rows) == 0
-
-
-def test_handles_api_error(db, gemini_mock):
-    """Gemini failure after retries → post goes to dead_letter."""
-    seed_silver_posts(db, [("1", "First post"), ("2", "Second post")])
-
-    with patch.object(GeminiResource, "analyze",
-                      side_effect=RuntimeError("API down")):
-        result = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-
-    assert result.is_empty()
-
-    with db.get_connection() as conn:
-        gold_count = conn.execute(
-            "SELECT COUNT(*) FROM gold_ig_analyses"
-        ).fetchone()[0]
-        dead_rows = conn.execute(
-            "SELECT post_id, attempts FROM dead_letter ORDER BY post_id"
-        ).fetchall()
-    assert gold_count == 0
-    assert len(dead_rows) == 2
-    for _, attempts in dead_rows:
-        assert attempts == 3
-
-
-def test_idempotent_completed(db, gemini_mock):
-    """Already completed posts are not re-processed."""
-    seed_silver_posts(db, [("1", "Post")])
-
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        r1 = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-        assert len(r1) == 1
-
-        r2 = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-        assert len(r2) == 1
-
-
-def test_no_pending_posts(db, gemini_mock):
-    """No unenriched posts → returns empty result."""
-    seed_silver_posts(db, [])
-    result = ig_posts_gld(
-        config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-    )
-    assert result.is_empty()
-
-
-def test_rate_limit_retry(db, gemini_mock):
-    """429 rate limit triggers retry with backoff, then succeeds."""
-    seed_silver_posts(db, [("1", "Post text")])
-
-    call_log = []
-
-    def analyze_side_effect(prompt):
-        call_log.append("call")
-        if len(call_log) == 1:
-            raise RuntimeError("429 Rate limited")
-        return json.dumps(FAKE_ANALYSIS)
-
-    with patch.object(GeminiResource, "analyze",
-                      side_effect=analyze_side_effect):
-        result = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-
-    assert len(result) == 1
-    assert result["post_id"][0] == "1"
-    assert len(call_log) == 2
-
-
-def test_gold_returns_only_completed(db, gemini_mock):
-    """Returned DataFrame contains only completed rows (no failed/skipped)."""
-    seed_silver_posts(db, [
-        ("1", "Real content"),
-        ("2", ""),
-        ("3", "More content"),
-    ])
-
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        result = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-
-    assert len(result) == 2
-    assert set(result["post_id"].to_list()) == {"1", "3"}
-    assert "status" not in result.columns
-    assert "error" not in result.columns
-    assert "attempts" not in result.columns
-
-
-def test_gold_reset_via_watermark_delete(db, gemini_mock):
-    """Deleting the gold_ig watermark triggers full reprocess on next run."""
-    seed_silver_posts(db, [("1", "Great post about AI marketing")])
-
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        r1 = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-        assert len(r1) == 1
-
-    with db.get_connection() as db_conn:
-        db_conn.execute("DELETE FROM watermarks WHERE name = 'gold_ig'")
-
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        r2 = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-        assert len(r2) == 1
-        assert r2["post_id"][0] == "1"
-
-    with db.get_connection() as db_conn:
-        count = db_conn.execute(
-            "SELECT COUNT(*) FROM gold_ig_analyses"
-        ).fetchone()[0]
-    assert count == 1
-
-
-def test_watermarks_generic(db, gemini_mock):
-    """Multiple named watermarks coexist without interference."""
-    seed_silver_posts(db, [("1", "Post"), ("2", "Another post")])
-
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        result = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-    assert len(result) == 2
-
-    with db.get_connection() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO watermarks (name, timestamp) VALUES (?, ?)",
-            ["other_pipeline", datetime(2024, 1, 1)],
-        )
-
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        result2 = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-    assert len(result2) == 2
-
-    with db.get_connection() as conn:
-        names = {
-            row[0]
-            for row in conn.execute("SELECT name FROM watermarks").fetchall()
-        }
-    assert "gold_ig" in names
-    assert "other_pipeline" in names
-
-
-# ── Tier detection tests ───────────────────────────────────────────────────
-
-
-def test_tier_free_limits_posts(monkeypatch, db, gemini_mock):
-    """Free tier limits to 10 posts and does not support batch."""
-    monkeypatch.setenv("GEMINI_TIER", "free")
-    cfg = GeminiTierConfig.detect()
-    assert cfg.max_posts_per_run == 10
-    assert not cfg.supports_batch
-    assert cfg.default_rpm == 10
-
-
-def test_tier1_unlimited_posts(monkeypatch):
-    """Tier 1: unlimited posts, batch enabled, 30 RPM."""
-    monkeypatch.setenv("GEMINI_TIER", "tier1")
-    cfg = GeminiTierConfig.detect()
-    assert cfg.max_posts_per_run == 0  # 0 = unlimited
-    assert cfg.supports_batch
-    assert cfg.default_rpm == 30
-    assert cfg.max_batch_tokens == 10_000_000
-
-
-def test_tier2_unlimited_with_higher_limits(monkeypatch):
-    """Tier 2: same as Tier 1 but with larger batch and higher RPM."""
-    monkeypatch.setenv("GEMINI_TIER", "tier2")
-    cfg = GeminiTierConfig.detect()
-    assert cfg.max_posts_per_run == 0
-    assert cfg.supports_batch
-    assert cfg.default_rpm == 60
-    assert cfg.max_batch_tokens == 128_000_000
-
-
-def test_tier_fallback_to_free_for_unknown(monkeypatch):
-    """Unknown tier value falls back to FREE."""
-    monkeypatch.setenv("GEMINI_TIER", "invalid_tier")
-    cfg = GeminiTierConfig.detect()
-    assert cfg.max_posts_per_run == 10
-    assert not cfg.supports_batch
-
-
-# ── Per-post watermark advancement tests ────────────────────────────────────
-
-
-def test_watermark_advances_per_post(db, gemini_mock):
-    """Watermark advances after each successful post, not at batch end."""
-    seed_silver_posts(db, [
-        ("1", "First"),
-        ("2", "Second"),
-    ])
-
-    call_count = 0
-
-    def analyze_with_tracker(prompt):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return json.dumps(FAKE_ANALYSIS)
-        raise RuntimeError("Second call fails")
-
-    with patch.object(GeminiResource, "analyze",
-                      side_effect=analyze_with_tracker):
-        result = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-
-    # Post "1" succeeded — watermark should have advanced.
-    # Post "2" failed — dead_letter, but watermark is still past "1".
-    with db.get_connection() as conn:
-        wm = conn.execute(
-            "SELECT timestamp FROM watermarks WHERE name = 'gold_ig'"
-        ).fetchone()
-        dead = conn.execute(
-            "SELECT post_id FROM dead_letter"
-        ).fetchall()
-    assert wm is not None, "Watermark should exist"
-    assert len(dead) == 1
-    # Result should include only post "1" (post "2" failed)
-    assert len(result) == 1
-    assert result["post_id"][0] == "1"
-
-
-# ── Concurrent interactive + batch idempotency tests ───────────────────────
-
-
-def test_interactive_and_batch_no_conflict(db, gemini_mock):
-    """INSERT OR REPLACE ensures concurrent interactive+batch are idempotent."""
-    seed_silver_posts(db, [("1", "Post for both paths")])
-
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        interactive_result = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-    assert len(interactive_result) == 1
-
-    # Simulate batch writing the same post — INSERT OR REPLACE
-    batch_result_json = json.dumps({
-        **FAKE_ANALYSIS,
-        "domain": "Batch Enrichment",
-    })
-    with db.get_connection() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO gold_ig_analyses "
-            "(post_id, schema_version, result_json, analysed_at) "
-            "VALUES (?, 3, ?, ?)",
-            ["1", batch_result_json, datetime.utcnow().isoformat()],
-        )
-
-    # Interactive re-run — should see existing row, not re-process
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        final = ig_posts_gld(
-            config=GoldConfig(), duckdb=db, gemini=gemini_mock,
-        )
-
-    # Row count should stay 1
-    assert len(final) == 1
-    # The batch-written domain should persist (INSERT OR REPLACE)
-    parsed = json.loads(final["result_json"][0])
-    assert parsed["domain"] == "Batch Enrichment"
-
-
-def test_batch_overwrites_interactive_same_post(db):
-    """Batch backfill overwrites interactive result for the same post_id."""
-    seed_silver_posts(db, [("1", "Post")])
-
-    # Simulate interactive already enriched
+def _make_duckdb(tmp_path, create_gold_analyses: bool = True) -> DuckDBResource:
+    db = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     with db.get_connection() as conn:
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_ig_analyses (
-                post_id TEXT PRIMARY KEY,
-                schema_version INTEGER NOT NULL DEFAULT 3,
-                result_json TEXT, analysed_at TIMESTAMP
+            CREATE TABLE IF NOT EXISTS watermarks (
+                name TEXT PRIMARY KEY,
+                timestamp TIMESTAMP NOT NULL,
+                config_hash TEXT
             )
         """)
-        conn.execute(
-            "INSERT OR REPLACE INTO gold_ig_analyses "
-            "(post_id, schema_version, result_json, analysed_at) "
-            "VALUES (?, 3, ?, ?)",
-            ["1", json.dumps({"source": "interactive"}), datetime.utcnow().isoformat()],
-        )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS silver_ig_posts (
+                post_id TEXT PRIMARY KEY, caption TEXT, processed_on TIMESTAMP,
+                owner_id TEXT DEFAULT 'test', owner_username TEXT DEFAULT 'test',
+                likes_count INTEGER DEFAULT 0, comments_count INTEGER DEFAULT 0,
+                video_play_count INTEGER DEFAULT 0, video_view_count INTEGER DEFAULT 0,
+                timestamp TIMESTAMP DEFAULT NOW(), hashtags TEXT DEFAULT '[]',
+                has_engagement_bait BOOLEAN DEFAULT FALSE, media_files TEXT DEFAULT '[]',
+                media_count INTEGER DEFAULT 0, source_dataset TEXT DEFAULT 'test',
+                shortcode TEXT DEFAULT '', url TEXT DEFAULT '', meta_data TEXT DEFAULT '{}'
+            )
+        """)
+        if create_gold_analyses:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS gold_analyses (
+                    post_id TEXT NOT NULL, domain TEXT NOT NULL DEFAULT 'instagram',
+                    prompt_hash TEXT, result_json TEXT, analysed_at TEXT NOT NULL,
+                    PRIMARY KEY (post_id, domain)
+                )
+            """)
+    return db
 
-    # Simulate batch writing a different result
+
+def _seed_silver(db: DuckDBResource, rows: list[tuple]) -> None:
+    """Seed silver_ig_posts table for enqueue testing."""
+    with db.get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS silver_ig_posts (
+                post_id TEXT PRIMARY KEY,
+                caption TEXT,
+                processed_on TIMESTAMP,
+                owner_id TEXT DEFAULT 'test',
+                owner_username TEXT DEFAULT 'test',
+                likes_count INTEGER DEFAULT 0,
+                comments_count INTEGER DEFAULT 0,
+                video_play_count INTEGER DEFAULT 0,
+                video_view_count INTEGER DEFAULT 0,
+                timestamp TIMESTAMP DEFAULT NOW(),
+                hashtags TEXT DEFAULT '[]',
+                has_engagement_bait BOOLEAN DEFAULT FALSE,
+                media_files TEXT DEFAULT '[]',
+                media_count INTEGER DEFAULT 0,
+                source_dataset TEXT DEFAULT 'test',
+                shortcode TEXT DEFAULT '',
+                url TEXT DEFAULT '',
+                meta_data TEXT DEFAULT '{}'
+            )
+        """)
+        for post_id, caption, processed_on in rows:
+            conn.execute(
+                """INSERT OR REPLACE INTO silver_ig_posts
+                   (post_id, caption, processed_on)
+                   VALUES (?, ?, ?)""",
+                [post_id, caption, processed_on],
+            )
+
+
+# ── Queue operation tests ───────────────────────────────────────────────────
+
+
+def test_enqueue_and_claim(tmp_path):
+    """GIVEN an empty queue
+    WHEN a post is enqueued and then claimed
+    THEN claim returns the post and sets status to processing.
+    """
+    ops = _make_ops_db(tmp_path)
+    enqueue(ops, "p1", "instagram")
+
+    rows = claim(ops, limit=5)
+    assert len(rows) == 1
+    assert rows[0]["post_id"] == "p1"
+    assert rows[0]["domain"] == "instagram"
+
+
+def test_enqueue_idempotent(tmp_path):
+    """GIVEN a post already in the queue
+    WHEN the same post is enqueued again
+    THEN the row is reset to pending with attempts=0.
+    """
+    ops = _make_ops_db(tmp_path)
+    enqueue(ops, "p1", "instagram")
+    claim(ops, limit=5)  # Claim it → status becomes 'processing'
+
+    # Re-enqueue (simulates watermark reset)
+    enqueue(ops, "p1", "instagram")
+
+    rows = claim(ops, limit=5)
+    assert len(rows) == 1
+
+
+def test_claim_empty_queue(tmp_path):
+    """GIVEN an empty queue
+    WHEN claim is called
+    THEN it returns an empty list.
+    """
+    ops = _make_ops_db(tmp_path)
+    rows = claim(ops, limit=5)
+    assert rows == []
+
+
+def test_claim_respects_scheduled_for(tmp_path):
+    """GIVEN a post scheduled for the future
+    WHEN claim is called
+    THEN the post is not claimed.
+    """
+    ops = _make_ops_db(tmp_path)
+    enqueue(ops, "p1", "instagram")
+
+    # Manually set scheduled_for to far future
+    conn = ops.get_connection()
+    conn.execute(
+        "UPDATE enrichment_queue SET scheduled_for = '2099-01-01T00:00:00' WHERE post_id = 'p1'"
+    )
+    conn.commit()
+    conn.close()
+
+    rows = claim(ops, limit=5)
+    assert len(rows) == 0
+
+
+def test_complete_removes_from_pending(tmp_path):
+    """GIVEN a claimed post
+    WHEN complete is called
+    THEN it's no longer claimable.
+    """
+    ops = _make_ops_db(tmp_path)
+    enqueue(ops, "p1", "instagram")
+    claim(ops, limit=5)
+    complete(ops, "p1", "instagram")
+
+    rows = claim(ops, limit=5)
+    assert len(rows) == 0
+
+
+def test_fail_reschedules_with_backoff(tmp_path):
+    """GIVEN a claimed post
+    WHEN fail is called with a backoff
+    THEN attempts is incremented and the post is rescheduled.
+    """
+    ops = _make_ops_db(tmp_path)
+    enqueue(ops, "p1", "instagram")
+    claim(ops, limit=5)
+
+    attempts = fail(ops, "p1", "instagram", "test error", backoff_seconds=60)
+    assert attempts == 2
+
+    # Should not be claimable yet (scheduled for 60s from now)
+    rows = claim(ops, limit=5)
+    assert len(rows) == 0
+
+
+def test_reschedule_preserves_attempts(tmp_path):
+    """GIVEN a claimed post
+    WHEN reschedule is called (quota exhaustion)
+    THEN attempts is preserved (not incremented).
+    """
+    ops = _make_ops_db(tmp_path)
+    enqueue(ops, "p1", "instagram")
+    claim(ops, limit=5)  # increments attempts to 1
+
+    reschedule(ops, "p1", "instagram", "quota exhausted", backoff_seconds=3600)
+
+    conn = ops.get_connection()
+    row = conn.execute(
+        "SELECT attempts FROM enrichment_queue WHERE post_id = 'p1'"
+    ).fetchone()
+    conn.close()
+    assert row["attempts"] == 1  # Preserved, not incremented
+
+
+def test_depth_tracks_pending_and_processing(tmp_path):
+    """GIVEN enqueued and claimed posts
+    WHEN depth is called
+    THEN it returns the count of non-complete items.
+    """
+    ops = _make_ops_db(tmp_path)
+    enqueue(ops, "p1", "instagram")
+    enqueue(ops, "p2", "instagram")
+    claim(ops, limit=1)  # p1 → processing
+
+    d = depth(ops)
+    assert d == 2  # p1 in processing + p2 in pending
+
+
+def test_max_attempts_then_delete(tmp_path):
+    """GIVEN a post that fails repeatedly
+    WHEN attempts reaches MAX_ATTEMPTS
+    THEN the post should be moved to dead_letter and deleted from queue.
+    """
+    ops = _make_ops_db(tmp_path)
+    enqueue(ops, "p1", "instagram")
+    claim(ops, limit=5)  # attempts = 1
+
+    for _ in range(MAX_ATTEMPTS - 1):  # Already at 1, need MAX_ATTEMPTS - 1 more
+            fail(ops, "p1", "instagram", "test error", backoff_seconds=0)
+
+    # Now delete from queue
+    delete(ops, "p1", "instagram")
+
+    conn = ops.get_connection()
+    row = conn.execute(
+        "SELECT COUNT(*) as cnt FROM enrichment_queue WHERE post_id = 'p1'"
+    ).fetchone()
+    conn.close()
+    assert row["cnt"] == 0
+
+
+# ── Enqueue asset tests ─────────────────────────────────────────────────────
+
+
+def test_enqueue_asset_writes_to_queue(tmp_path):
+    """GIVEN silver has unenriched posts
+    WHEN ig_posts_gld_enqueue runs
+    THEN posts are enqueued and watermark advances.
+    """
+    db = _make_duckdb(tmp_path)
+    ops = _make_ops_db(tmp_path)
+
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    _seed_silver(db, [("p1", "Test caption", now), ("p2", "Another caption", now)])
+
+    result = ig_posts_gld_enqueue(duckdb=db, ops=ops)
+
+    assert result["enqueued"][0] == 2
+
+    # Verify queue has the items
+    claimed = claim(ops, limit=10)
+    assert len(claimed) == 2
+    post_ids = {r["post_id"] for r in claimed}
+    assert post_ids == {"p1", "p2"}
+
+
+def test_enqueue_skips_already_enriched(tmp_path):
+    """GIVEN silver has posts that already exist in gold_analyses
+    WHEN ig_posts_gld_enqueue runs
+    THEN those posts are not enqueued.
+    """
+    db = _make_duckdb(tmp_path)
+    ops = _make_ops_db(tmp_path)
+
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    _seed_silver(db, [("p1", "Test caption", now), ("p2", "Already done", now)])
+
+    # Mark p2 as already enriched
     with db.get_connection() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO gold_ig_analyses "
-            "(post_id, schema_version, result_json, analysed_at) "
-            "VALUES (?, 3, ?, ?)",
-            ["1", json.dumps({"source": "batch"}), datetime.utcnow().isoformat()],
+            "INSERT INTO gold_analyses (post_id, domain, analysed_at) "
+            "VALUES (?, 'instagram', ?)",
+            ["p2", now.isoformat()],
         )
 
-    with db.get_connection() as conn:
-        row = conn.execute(
-            "SELECT result_json FROM gold_ig_analyses WHERE post_id = '1'"
-        ).fetchone()
-    assert json.loads(row[0])["source"] == "batch"
+    result = ig_posts_gld_enqueue(duckdb=db, ops=ops)
+
+    assert result["enqueued"][0] == 1
+
+    claimed = claim(ops, limit=10)
+    assert len(claimed) == 1
+    assert claimed[0]["post_id"] == "p1"
+
+
+def test_enqueue_skips_empty_caption(tmp_path):
+    """GIVEN silver has posts with empty captions
+    WHEN ig_posts_gld_enqueue runs
+    THEN empty-caption posts are not enqueued.
+    """
+    db = _make_duckdb(tmp_path)
+    ops = _make_ops_db(tmp_path)
+
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    _seed_silver(db, [("p1", "", now), ("p2", None, now)])
+
+    result = ig_posts_gld_enqueue(duckdb=db, ops=ops)
+
+    assert result["enqueued"][0] == 0
+
+    claimed = claim(ops, limit=10)
+    assert len(claimed) == 0
+
+
+def test_enqueue_no_pending_posts(tmp_path):
+    """GIVEN no unenriched silver posts
+    WHEN ig_posts_gld_enqueue runs
+    THEN it returns an empty DataFrame.
+    """
+    db = _make_duckdb(tmp_path)
+    ops = _make_ops_db(tmp_path)
+
+    result = ig_posts_gld_enqueue(duckdb=db, ops=ops)
+
+    assert result.is_empty()

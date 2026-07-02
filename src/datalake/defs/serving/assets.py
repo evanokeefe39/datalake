@@ -100,13 +100,15 @@ def analytics_views(duckdb: DuckDBResource) -> None:
     directly (``WHERE domain = 'instagram'``).
     """
     with duckdb.get_connection() as conn:
-        # Ensure gold_ig_analyses exists for LEFT JOIN (even if gold hasn't run)
+        # Ensure gold_analyses exists for LEFT JOIN
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_ig_analyses (
-                post_id         TEXT PRIMARY KEY,
-                schema_version  INTEGER NOT NULL DEFAULT 3,
+            CREATE TABLE IF NOT EXISTS gold_analyses (
+                post_id         TEXT NOT NULL,
+                domain          TEXT NOT NULL DEFAULT 'instagram',
+                prompt_hash     TEXT,
                 result_json     TEXT,
-                analysed_at     TIMESTAMP
+                analysed_at     TEXT NOT NULL,
+                PRIMARY KEY (post_id, domain)
             )
         """)
         conn.execute("""
@@ -133,7 +135,8 @@ def analytics_views(duckdb: DuckDBResource) -> None:
                 dp.effective_to,
                 dp.is_current
             FROM "silver_ig_posts" sp
-            LEFT JOIN "gold_ig_analyses" ga ON sp.post_id = ga.post_id
+            LEFT JOIN "gold_analyses" ga
+                ON sp.post_id = ga.post_id AND ga.domain = 'instagram'
             LEFT JOIN "dim_profile" dp
                 ON sp.owner_id = dp.owner_id AND dp.is_current = TRUE
         """)

@@ -215,19 +215,23 @@ def _ig_posts_slv_row_count_bounded(context) -> AssetCheckResult:
 
 
 # ── Gold checks ────────────────────────────────────────────────────────────
+#
+# These checks target ``gold_analyses`` (the enrichment worker's output),
+# not the old ``gold_ig_analyses`` table. The schema_version check is removed
+# since prompt_hash replaces it for staleness detection.
 
 
 @asset_check(
-    asset="ig_posts_gld",
+    asset="gold_analyses",
     name="ig_posts_gld_valid_admiralty",
     required_resource_keys={"duckdb"},
-    description="Admiralty code in known set.",
+    description="Admiralty codes in known set (instagram domain only).",
 )
 def _ig_posts_gld_valid_admiralty(context) -> AssetCheckResult:
     duckdb = context.resources.duckdb
     with duckdb.get_connection() as conn:
         rows = conn.execute(
-            "SELECT post_id, result_json FROM gold_ig_analyses"
+            "SELECT post_id, result_json FROM gold_analyses WHERE domain = 'instagram'"
         ).fetchall()
     invalid: list[str] = []
     for post_id, result_json in rows:
@@ -255,7 +259,7 @@ def _ig_posts_gld_valid_admiralty(context) -> AssetCheckResult:
 
 
 @asset_check(
-    asset="ig_posts_gld",
+    asset="gold_analyses",
     name="ig_posts_gld_valid_json",
     required_resource_keys={"duckdb"},
     description="educational_json and actionable_json parseable from result_json.",
@@ -264,7 +268,7 @@ def _ig_posts_gld_valid_json(context) -> AssetCheckResult:
     duckdb = context.resources.duckdb
     with duckdb.get_connection() as conn:
         rows = conn.execute(
-            "SELECT post_id, result_json FROM gold_ig_analyses"
+            "SELECT post_id, result_json FROM gold_analyses WHERE domain = 'instagram'"
         ).fetchall()
     failed: list[str] = []
     for post_id, result_json in rows:
@@ -297,37 +301,6 @@ def _ig_posts_gld_valid_json(context) -> AssetCheckResult:
         passed=True,
         metadata={"total_checked": len(rows)},
     )
-
-
-@asset_check(
-    asset="ig_posts_gld",
-    name="ig_posts_gld_schema_version_current",
-    required_resource_keys={"duckdb"},
-    description="All rows have schema_version = {_EXPECTED_SCHEMA_VERSION}.",
-)
-def _ig_posts_gld_schema_version_current(context) -> AssetCheckResult:
-    duckdb = context.resources.duckdb
-    with duckdb.get_connection() as conn:
-        rows = conn.execute(
-            "SELECT post_id, schema_version FROM gold_ig_analyses "
-            "WHERE schema_version != ?",
-            [_EXPECTED_SCHEMA_VERSION],
-        ).fetchall()
-    if rows:
-        offenders = ", ".join(f"{r[0]}: v{r[1]}" for r in rows[:5])
-        return AssetCheckResult(
-            passed=False,
-            severity=AssetCheckSeverity.WARN,
-            description=(
-                f"{len(rows)} row(s) with non-current schema_version "
-                f"(expected {_EXPECTED_SCHEMA_VERSION}): {offenders}"
-            ),
-            metadata={"expected": _EXPECTED_SCHEMA_VERSION, "offending_rows": len(rows)},
-        )
-    return AssetCheckResult(
-        passed=True,
-        metadata={"expected": _EXPECTED_SCHEMA_VERSION},
-    )
 ig_checks = [
     _ig_posts_raw_has_rows,
     _ig_posts_raw_has_meta,
@@ -336,5 +309,4 @@ ig_checks = [
     _ig_posts_slv_row_count_bounded,
     _ig_posts_gld_valid_admiralty,
     _ig_posts_gld_valid_json,
-    _ig_posts_gld_schema_version_current,
 ]

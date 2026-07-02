@@ -187,8 +187,13 @@ class TestAnalyticsViewsCheck:
             """)
             conn.execute("INSERT INTO silver_ig_posts VALUES ('p1', 'Post 1')")
             conn.execute("""
-                CREATE TABLE gold_ig_analyses (
-                    post_id TEXT PRIMARY KEY, result_json TEXT
+                CREATE TABLE gold_analyses (
+                    post_id TEXT NOT NULL,
+                    domain TEXT NOT NULL DEFAULT 'instagram',
+                    prompt_hash TEXT,
+                    result_json TEXT,
+                    analysed_at TEXT NOT NULL,
+                    PRIMARY KEY (post_id, domain)
                 )
             """)
             conn.execute("""
@@ -206,7 +211,8 @@ class TestAnalyticsViewsCheck:
                 CREATE OR REPLACE VIEW analytics_views AS
                 SELECT sp.post_id
                 FROM silver_ig_posts sp
-                LEFT JOIN gold_ig_analyses ga ON sp.post_id = ga.post_id
+                LEFT JOIN gold_analyses ga
+                    ON sp.post_id = ga.post_id AND ga.domain = 'instagram'
                 LEFT JOIN dim_profile dp ON 1=0
             """)
 
@@ -227,8 +233,13 @@ class TestAnalyticsViewsCheck:
                 )
             """)
             conn.execute("""
-                CREATE TABLE gold_ig_analyses (
-                    post_id TEXT PRIMARY KEY, result_json TEXT
+                CREATE TABLE gold_analyses (
+                    post_id TEXT NOT NULL,
+                    domain TEXT NOT NULL DEFAULT 'instagram',
+                    prompt_hash TEXT,
+                    result_json TEXT,
+                    analysed_at TEXT NOT NULL,
+                    PRIMARY KEY (post_id, domain)
                 )
             """)
             conn.execute("""

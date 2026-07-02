@@ -6,6 +6,7 @@ All env-token reads live here and nowhere else.
 from __future__ import annotations
 
 import os
+import sqlite3
 from pathlib import Path
 
 import polars as pl
@@ -15,6 +16,32 @@ from dotenv import load_dotenv
 from pydantic import Field
 
 load_dotenv()
+_DEFAULT_OPS_DB = "data/ops.sqlite"
+
+
+class SQLiteResource(ConfigurableResource):
+    """SQLite database resource for operational state (queue, media cache, dead_letter).
+
+    Thin wrapper around sqlite3 with WAL mode enabled on connection.
+    Mirrors DuckDBResource pattern — ``database`` path + ``get_connection()``.
+    """
+
+    database: str = Field(
+        default_factory=lambda: os.environ.get("OPS_DB_PATH", _DEFAULT_OPS_DB),
+        description="Path to the operational SQLite database.",
+    )
+
+    def get_connection(self) -> sqlite3.Connection:
+        """Return a sqlite3 connection with WAL mode, foreign keys, and optimized pragmas.
+
+        The caller owns the connection lifecycle — close when done.
+        """
+        conn = sqlite3.connect(self.database)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.row_factory = sqlite3.Row
+        return conn
 
 
 class ApifyResource(ConfigurableResource):

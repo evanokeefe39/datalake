@@ -85,6 +85,36 @@ Plan: `tasks/plans/watermark-deadletter-refactor.md`
   without name collisions. Deferred sources: TikTok, YouTube, LinkedIn.
 ---
 
+
+## Phase 7: Queue-Based Enrichment Architecture ✅ Complete (2026-07-02)
+
+Plan: `tasks/plans/enrichment-architecture-v2.md`
+
+### What shipped
+
+- **SQLite work queue** — `enrichment_queue` table in `ops.sqlite` with `claim()` (atomic:
+  stale reaper + SELECT pending → UPDATE processing in one transaction)
+- **Worker op + sensor** — `enrichment_sensor` polls queue every 30s, claims up to 5 items,
+  `enrichment_worker` reads silver → calls Gemini → writes gold_analyses
+- **Per-item backpressure** — `scheduled_for` column; 429 items reschedule with exponential backoff
+- **Quota vs rate-limit distinction** — `reschedule()` preserves attempts (global quota exhaustion)
+  vs `fail()` increments attempts (per-item burst 429)
+- **Media cache** — URL hash → File API URI cache in `media_metadata` table
+- **Asset changes** — `ig_posts_gld` → `ig_posts_gld_enqueue` (enqueues, no Gemini call);
+  `ig_posts_gld_backfill` deleted; `gold_analyses` as AssetSpec with partial materializations
+- **Prompt hash** — `hashlib.sha256` for deterministic staleness detection across processes
+- **Serving update** — `analytics_views` LEFT JOINs `gold_analyses` with domain filter
+- **Daily schedule** — materialization every 3am (bronze→silver→enqueue is sub-second)
+
+### Architecture
+
+```
+silver_ig_posts → ig_posts_gld_enqueue → ops.sqlite queue → sensor claims → worker → gold_analyses
+```
+
+Silver-to-gold materialization drops from 1+ hour to sub-second (just enqueuing work).
+Materialization no longer blocks on API latency; one failure doesn't cascade.
+
 ## Phase 6: Hardening ✅ Complete (2026-07-01)
 
 Plan: `tasks/plans/test-hardening.md`
