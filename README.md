@@ -20,19 +20,21 @@ Open http://localhost:3000.
 
 ## Architecture
 
-Medallion lakehouse: bronze (raw ingest) → silver (dedup) → gold (enrichment) → serving (views).
+Medallion lakehouse with async enrichment queue:
+bronze (raw ingest) → silver (dedup) → enqueue → gold (async Gemini) → serving (views).
 
 ```
 src/datalake/defs/
-├── bronze/     # Apify → raw .jsonl → typed .parquet
-├── silver/     # Dedup + clean → lake/silver/*.parquet
-├── gold/       # Gemini enrichment → lake/gold/*.parquet
-└── serving/    # dim_time, dim_profile, analytics_views
+├── common/       # Resources, schedules, path helpers
+├── enrichment/   # Queue, worker, sensor, media cache
+├── instagram/    # ig_posts_raw, ig_posts_slv, ig_posts_gld_enqueue
+└── serving/      # dim_profile, analytics_views
 ```
 
 **Storage split:**
-- Parquet lake (`data/lake/{bronze,silver,gold}/*.parquet`) — bulk data, lock-free parallel writes
-- DuckDB state (`data/state.duckdb`) — progress tracking, SCD2 dimensions, immutable raw dumps
+- Parquet lake (`data/lake/{bronze,silver}/*.parquet`) — bulk data, lock-free parallel writes
+- DuckDB state (`data/state.duckdb`) — silver tables, gold_analyses, watermarks, serving views
+- SQLite ops (`data/ops.sqlite`) — enrichment queue, media cache, dead letter
 
 ## Git workflow
 
