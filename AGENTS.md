@@ -51,6 +51,7 @@ Domain-scoped, not generic. Supports multi-source expansion (TikTok, YouTube, Li
 | `dead_letter` | Failed enrichments — separate table, separate retry pipeline |
 | `dim_profile` | SCD2 profile dimension (cross-domain, `channel` column) |
 | `watermarks` | Generic progress tracking for any pipeline (`name`, `timestamp`) |
+| `ig_batch_jobs` | Gemini batch job tracking (name, state, input_file, poll_count) |
 
 Parquet file names match asset keys, not table names — the PolarsIOManager uses `asset_key.path[-1]`.
 
@@ -126,7 +127,7 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 - Definitions module: `src/datalake/definitions.py`
 - Assets: `defs/instagram/assets.py` (domain-scoped), `defs/serving/assets.py` (cross-domain)
 - Resources: `defs/common/resources.py` (PolarsIOManager, ApifyResource, GeminiResource)
-- Config schemas: `defs/instagram/config.py` (ScrapeConfig, GoldConfig)
+- Config schemas: ``defs/instagram/config.py`` (ScrapeConfig, GoldConfig, GeminiTierConfig)
 - Path helpers: `defs/common/lake.py` (env-overridable, auto-creating directories)
 - Schedules: `defs/common/schedules.py` (weekly_medallion)
 - Telemetry disabled (`dagster.yaml`)
@@ -177,8 +178,7 @@ Two assets, selected by tier:
 - **Discovery:** reads ALL unenriched posts regardless of watermark
 - **Flow:** build JSONL → upload → submit batch job → sensor polls → download → join results
 - **Idempotent with interactive:** both write via INSERT OR REPLACE;
-  whichever finishes first wins, the other is a no-op.
-- **Batch token budget:** 10M Tier 1, 500M Tier 2 (gemini-3.1-flash-lite)
+- **Batch token budget:** 10M Tier 1, 128M Tier 2 (gemini-3.1-flash-lite)
 - **When to use:** initial backfill, prompt changes, domain expansion
 
 

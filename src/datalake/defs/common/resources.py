@@ -26,6 +26,13 @@ class ApifyResource(ConfigurableResource):
     )
 
 
+_DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
+"""Default model — gemini-2.0-flash-lite is deprecated."""
+
+_TOKEN_SAFETY_LIMIT = 1_000_000
+"""Max input tokens before count_tokens pre-check raises (safety net)."""
+
+
 class GeminiResource(ConfigurableResource):
     """Gemini API key + lazy client. Assets that enrich use this resource."""
 
@@ -34,27 +41,61 @@ class GeminiResource(ConfigurableResource):
         description="Gemini API key.",
     )
 
-    def analyze(self, prompt: str) -> str:
+    def count_tokens(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+    ) -> int:
+        """Count tokens in a prompt without generating.
+
+        Args:
+            prompt: The prompt text to count.
+            model: Model to count against (default ``_DEFAULT_MODEL``).
+
+        Returns:
+            Total token count for the prompt.
+        """
+        from google.genai import Client as GeminiClient
+
+        client = GeminiClient(api_key=self.api_key)
+        response = client.models.count_tokens(
+            model=model or _DEFAULT_GEMINI_MODEL,
+            contents=prompt,
+        )
+        return response.total_tokens
+
+    def analyze(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        media_resolution: str | None = None,
+        count_tokens: bool = False,
+    ) -> str:
         """Send a prompt to Gemini and return the response text.
 
-        Uses gemini-2.0-flash-lite (text-only, low cost) with JSON mode,
-        0.2 temperature, and 2048 max output tokens.
+        Uses JSON mode, 0.2 temperature, and 2048 max output tokens.
 
         This method is a thin wrapper — it does NOT retry or back off.
         Rate-limit handling lives in the asset's retry loop (caller
-        owns retry policy). For video/media prompts, batch processing,
-        or other scenarios: estimate token cost via client.models.count_tokens()
-        before calling, and consider ``media_resolution='low'`` to cut
-        video frame token cost ~3× (66 vs 258 tokens/frame).
+        owns retry policy).
 
         Args:
             prompt: The full prompt text to send.
+            model: Model name (default ``gemini-3.1-flash-lite``).
+            media_resolution: ``"low"`` to reduce video frame token cost
+                (66 vs 258 tokens/frame). Only relevant for video media.
+            count_tokens: If True, do a pre-flight token count and raise
+                if the prompt exceeds the safety limit before sending.
 
         Returns:
             Raw response text from Gemini. Caller is responsible for JSON
             parsing, retry handling, and rate-limit classification.
 
         Raises:
+            ValueError: If ``count_tokens=True`` and the prompt exceeds
+                the safety limit (1M tokens).
             google.genai.errors.APIError: On API errors (including 429 rate
                 limits). Inspect ``exc.code`` (HTTP status), ``exc.status``
                 (e.g. ``RESOURCE_EXHAUSTED``), and ``exc.message`` for
@@ -64,15 +105,30 @@ class GeminiResource(ConfigurableResource):
         from google.genai import Client as GeminiClient
         from google.genai.types import GenerateContentConfig
 
+        model_name = model or _DEFAULT_GEMINI_MODEL
+
+        if count_tokens:
+            token_count = self.count_tokens(prompt, model=model_name)
+            if token_count > _TOKEN_SAFETY_LIMIT:
+                raise ValueError(
+                    f"Prompt exceeds safety limit "
+                    f"({token_count} > {_TOKEN_SAFETY_LIMIT} tokens) "
+                    f"for model {model_name}"
+                )
+
         client = GeminiClient(api_key=self.api_key)
+        config_kwargs: dict = dict(
+            response_mime_type="application/json",
+            temperature=0.2,
+            max_output_tokens=2048,
+        )
+        if media_resolution is not None:
+            config_kwargs["media_resolution"] = media_resolution
+
         response = client.models.generate_content(
-            model="gemini-2.0-flash-lite",
+            model=model_name,
             contents=prompt,
-            config=GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.2,
-                max_output_tokens=2048,
-            ),
+            config=GenerateContentConfig(**config_kwargs),
         )
         return response.text
 

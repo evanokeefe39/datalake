@@ -10,7 +10,13 @@ from dagster_duckdb import DuckDBResource
 from dotenv import load_dotenv
 
 from .defs.common import ApifyResource, GeminiResource, PolarsIOManager, weekly_medallion
-from .defs.instagram import ig_checks, ig_posts_gld, ig_posts_raw, ig_posts_slv
+from .defs.instagram import (
+    ig_checks,
+    ig_posts_gld,
+    ig_posts_gld_backfill,
+    ig_posts_raw,
+    ig_posts_slv,
+)
 from .defs.serving import assets as serving_assets
 from .defs.serving import serving_checks
 
@@ -33,6 +39,7 @@ all_assets = [
     ig_posts_raw,
     ig_posts_slv,
     ig_posts_gld,
+    ig_posts_gld_backfill,
     *serving_assets,
 ]
 
