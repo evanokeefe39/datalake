@@ -11,6 +11,7 @@ from datalake.defs.enrichment.queue import claim
 @sensor(
     job_name="enrichment_job",
     minimum_interval_seconds=30,
+    required_resource_keys={"ops"},
     description="Polls enrichment_queue for pending items, claims up to 5 per tick.",
 )
 def enrichment_sensor(context) -> RunRequest | SkipReason:
@@ -25,11 +26,16 @@ def enrichment_sensor(context) -> RunRequest | SkipReason:
     domains = [r["domain"] for r in rows]
 
     batch_key = "|".join(post_ids)
-
     return RunRequest(
         run_key=batch_key,
         run_config={
-            "post_ids": post_ids,
-            "domains": domains,
+            "ops": {
+                "enrichment_worker": {
+                    "config": {
+                        "post_ids": post_ids,
+                        "domains": domains,
+                    }
+                }
+            }
         },
     )

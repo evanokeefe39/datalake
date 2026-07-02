@@ -51,7 +51,6 @@ Domain-scoped, not generic. Supports multi-source expansion (TikTok, YouTube, Li
 | Database | Table | Purpose |
 |---|---|---|
 | DuckDB | `silver_ig_posts` | Deduped, normalized Instagram posts |
-| DuckDB | `silver_ig_progress` | Per-dataset processing audit log |
 | DuckDB | `gold_analyses` | Completed enrichments with domain PK (`post_id`, `domain`) and `prompt_hash` |
 | DuckDB | `dim_profile` | SCD2 profile dimension (cross-domain, `channel` column) |
 | DuckDB | `watermarks` | Generic progress tracking for any pipeline (`name`, `timestamp`) |
@@ -124,16 +123,50 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 | Layer-based directory structure (`defs/{bronze,silver,gold}/`) | Doesn't scale to multiple data sources. Forces unrelated code together. | Domain-based (`defs/instagram/`, `defs/serving/`) |
 | Modeling against test data without verifying real data | Phase 2 silver was built against a 3-row test fixture when real data had 28 columns with nested types. | Gate: read ONE real input file and display schema before writing any asset that reads from disk |
 
-## Dagster
 
-- `dagster dev` → localhost:3000 (or `dg dev` if installed)
-- Assets: `defs/instagram/assets.py` (domain-scoped), `defs/serving/assets.py` (cross-domain), `defs/enrichment/` (queue + worker + sensor)
-- Resources: `defs/common/resources.py` (PolarsIOManager, ApifyResource, GeminiResource, SQLiteResource)
-- Schedules: `defs/common/schedules.py` (daily_medallion, cron `0 3 * * *`)
-- Config schemas: ``defs/instagram/config.py`` (ScrapeConfig, GoldConfig, GeminiTierConfig)
-- Path helpers: `defs/common/lake.py` (env-overridable, auto-creating directories)
-- Telemetry disabled (`dagster.yaml`)
-- `[tool.dagster]` in `pyproject.toml` enables auto-discovery
+## Schema catalog and drift detection
+
+`tests/operational/expected_schema.py` is the canonical schema definition for both databases.
+Any table the pipeline reads or writes must be listed here. The readiness test
+(`test_state_compatibility.py`) asserts the catalog matches the running databases.
+
+**DuckDB tables:** `silver_ig_posts`, `gold_analyses`, `watermarks`, `dim_profile`
+**SQLite tables:** `enrichment_queue`, `media_metadata`, `dead_letter`
+**Views:** `analytics_views`
+
+The test catches three classes of drift:
+- **Missing tables/columns** — fails with "run the pipeline or migration"
+- **Stale table names** — tables in the DB that were renamed/dropped (e.g. `gold_ig_analyses`). Fails with migration hint.
+- **Extra tables** — tables in the DB not in the catalog. Warns, doesn't fail (may be legitimate).
+
+## Operational scripts
+
+| Script | Purpose |
+|---|---|
+| `scripts/run_pipeline.py` | Run silver → enqueue → serving. `--reset` clears watermarks (datetime-aware), `--update-stale-analyses` re-enqueues stale records, `--dry-run` shows state. |
+| `scripts/migrate_schema_drift.py` | Apply schema migrations: rename tables, move data between DBs, drop vestigial tables. Idempotent. |
+| `scripts/migrate_to_v2.py` | One-shot migration from Phase 1-4 schema to v2 domain-scoped tables. |
+| `scripts/migrate_from_ig_pipeline.py` | Import bronze Parquet from legacy ig-pipeline repo. |
+
+## Stale analysis update
+
+When the enrichment prompt or model changes, existing `gold_analyses` rows have stale `prompt_hash`.
+`check_prompt_currency` detects these. To re-process:
+
+```
+uv run python scripts/run_pipeline.py --update-stale-analyses
+```
+
+This queries `gold_analyses WHERE prompt_hash IS NULL OR prompt_hash != CURRENT_PROMPT_HASH`,
+enqueues them directly (bypassing the watermark + NOT EXISTS guard), and the enrichment
+worker picks them up and UPSERTs fresh analyses with the current prompt.
+
+## DAGSTER_HOME
+
+Set in `.env` to `C:/Users/evano/repos/datalake/data/dagster_home`. Both `dagster dev`
+and CLI commands (`dagster asset materialize`, `dagster job execute`) share this instance.
+Without it, CLI runs go to a different temp directory and aren't visible in the UI.
+
 
 ## Bronze asset (ig_posts_raw)
 
@@ -149,17 +182,12 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 - **Watermark:** advances to `MAX(processed_on)` after batch enqueue
 - **Empty captions:** skipped (worker handles them — completes without Gemini call)
 - **Re-enrichment:** bypasses watermark; posts with stale `prompt_hash` re-enqueued directly
+### enrichment_worker (async, via sensor or direct CLI)
 
-### enrichment_worker (async, via sensor)
+- **Trigger:** `enrichment_sensor` polls queue every 30s, claims up to 5 items, emits RunRequest.
+  Also runnable directly: `dagster job execute -m datalake -j enrichment_job`
+  (self-claims from queue when no config provided).
 
-- **Trigger:** `enrichment_sensor` polls queue every 30s, claims up to 5 items, emits RunRequest
-- **Per-item processing:** reads silver → calls Gemini → writes `gold_analyses`
-- **Rate limiting:** per-item backoff via `scheduled_for`; quota exhaustion reschedules all without burning attempts
-- **Dead letter:** worker checks `attempts >= MAX_ATTEMPTS` after `fail()` and moves to dead_letter
-- **Partial materialization:** emits `AssetMaterialization` events against `gold_analyses` AssetSpec
-- **Model:** gemini-3.1-flash-lite, temperature=0.2, JSON response
-- **429 classification:** `reschedule()` (global quota, preserves attempts) vs `fail()` (per-item burst, increments attempts)
-- **Stale reaper:** inline in `claim()` transaction — no separate schedule; resets orphaned `processing` items after 10 minutes
 
 ### Why queue-based (not synchronous)
 

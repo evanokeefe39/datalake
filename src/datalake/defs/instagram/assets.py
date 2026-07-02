@@ -175,13 +175,6 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             )
         """)
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS silver_ig_progress (
-                source_dataset TEXT PRIMARY KEY,
-                post_count     INTEGER NOT NULL DEFAULT 0,
-                completed_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.execute("""
             CREATE TABLE IF NOT EXISTS watermarks (
                 name        TEXT PRIMARY KEY,
                 timestamp   TIMESTAMP NOT NULL,
@@ -349,18 +342,6 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             "INSERT OR REPLACE INTO silver_ig_posts SELECT * FROM to_upsert"
         )
 
-        # Record progress for each processed dataset
-        for f in new_files:
-            dataset_id = f.stem
-            src_count = len(deduped.filter(
-                pl.col("source_dataset") == dataset_id
-            ))
-            conn.execute(
-                "INSERT OR REPLACE INTO silver_ig_progress "
-                "(source_dataset, post_count, completed_at) "
-                "VALUES (?, ?, ?)",
-                [dataset_id, src_count, now_iso],
-            )
 
     return deduped
 

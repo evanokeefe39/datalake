@@ -1,19 +1,20 @@
-"""Central schema catalog — the contract between code and state DB.
+"""Canonical schema catalog — single source of truth for all DB tables.
 
-Each entry maps table name → {column_name: duckdb_type}. Types match the
-actual DuckDB type strings reported by ``information_schema.columns.data_type``.
+This file DEFINES what tables, columns, and types the pipeline expects
+across both DuckDB and SQLite. Every other reference — DDL statements,
+AGENTS.md docs, migration scripts — derives from here.
 
-Every table the pipeline reads or writes must be listed here. The readiness
-test (``test_state_compatibility.py``) asserts this catalog matches the
-running state DB at ``data/state.duckdb``.
+**DuckDB types** match ``information_schema.columns.data_type``
+(VARCHAR, INTEGER, TIMESTAMP, BOOLEAN, BIGINT, DOUBLE).
 
-Adding a new column: add it here first, then deploy the pipeline change.
-Migration is a separate concern — this test detects drift, it does not repair it.
+**SQLite types** match ``PRAGMA table_info`` (TEXT, INTEGER, REAL).
 """
 
 from __future__ import annotations
 
-EXPECTED_SCHEMA: dict[str, dict[str, str]] = {
+# ── DuckDB (data/state.duckdb) ────────────────────────────────────────────
+
+EXPECTED_DUCKDB: dict[str, dict[str, str]] = {
     "silver_ig_posts": {
         "post_id": "VARCHAR",
         "shortcode": "VARCHAR",
@@ -33,11 +34,6 @@ EXPECTED_SCHEMA: dict[str, dict[str, str]] = {
         "media_count": "INTEGER",
         "source_dataset": "VARCHAR",
         "processed_on": "TIMESTAMP",
-    },
-    "silver_ig_progress": {
-        "source_dataset": "VARCHAR",
-        "post_count": "INTEGER",
-        "completed_at": "TIMESTAMP",
     },
     "gold_analyses": {
         "post_id": "VARCHAR",
@@ -62,6 +58,44 @@ EXPECTED_SCHEMA: dict[str, dict[str, str]] = {
     },
 }
 
-EXPECTED_VIEWS: list[str] = [
+EXPECTED_DUCKDB_VIEWS: list[str] = [
     "analytics_views",
 ]
+
+# ── SQLite (data/ops.sqlite) ─────────────────────────────────────────────
+
+EXPECTED_SQLITE: dict[str, dict[str, str]] = {
+    "enrichment_queue": {
+        "post_id": "TEXT",
+        "domain": "TEXT",
+        "status": "TEXT",
+        "attempts": "INTEGER",
+        "last_error": "TEXT",
+        "scheduled_for": "TEXT",
+        "created_at": "TEXT",
+        "updated_at": "TEXT",
+    },
+    "media_metadata": {
+        "media_url_hash": "TEXT",
+        "media_url": "TEXT",
+        "file_api_uri": "TEXT",
+        "mime_type": "TEXT",
+        "file_size": "INTEGER",
+        "upload_state": "TEXT",
+        "created_at": "TEXT",
+        "uploaded_at": "TEXT",
+    },
+    "dead_letter": {
+        "post_id": "TEXT",
+        "domain": "TEXT",
+        "error": "TEXT",
+        "attempts": "INTEGER",
+        "failed_at": "TEXT",
+    },
+}
+
+# ── Backward-compat alias ─────────────────────────────────────────────────
+# Old code imports EXPECTED_SCHEMA — keep it working during transition.
+
+EXPECTED_SCHEMA = EXPECTED_DUCKDB
+EXPECTED_VIEWS = EXPECTED_DUCKDB_VIEWS

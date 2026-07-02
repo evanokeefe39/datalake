@@ -10,6 +10,7 @@ import random
 from dagster import (
     AssetKey,
     AssetMaterialization,
+    Field,
     job,
     op,
 )
@@ -18,7 +19,7 @@ from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLit
 from datalake.defs.enrichment.assets import ensure_gold_analyses
 from datalake.defs.enrichment.media_cache import lookup_or_upload
 from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH, IG_GOLD_PROMPT
-from datalake.defs.enrichment.queue import MAX_ATTEMPTS, complete, delete, fail, reschedule
+from datalake.defs.enrichment.queue import MAX_ATTEMPTS, claim, complete, delete, fail, reschedule
 
 # ── Domain dispatch tables ──────────────────────────────────────────────────
 
@@ -94,21 +95,38 @@ def _dead_letter_insert(
     finally:
         conn.close()
 
-
-@op
+@op(
+    required_resource_keys={"ops", "duckdb", "gemini"},
+    config_schema={
+        "post_ids": Field([str], is_required=False, default_value=[]),
+        "domains": Field([str], is_required=False, default_value=[]),
+    },
+    out={},
+)
 def enrichment_worker(context) -> None:
     """Process claimed queue items: read silver → Gemini → write gold.
 
     Receives ``post_ids`` and ``domains`` via run_config from the sensor.
+    When run directly (no config), self-claims from the enrichment queue.
     Handles rate limiting per-item, quota exhaustion globally,
     and routes exhausted items to dead_letter.
     """
-    post_ids: list[str] = context.run_config["post_ids"]  # type: ignore[index]
-    domains: list[str] = context.run_config["domains"]  # type: ignore[index]
+    cfg: dict = context.op_config
+    post_ids: list[str] = cfg.get("post_ids", [])
+    domains: list[str] = cfg.get("domains", [])
 
-    ops: SQLiteResource = context.resources.ops
-    duck: DuckDBResource = context.resources.duckdb
-    gemini: GeminiResource = context.resources.gemini
+    # Self-claim from queue when run directly (no sensor-provided run_config)
+    if not post_ids:
+        rows = claim(context.resources.ops, limit=5)
+        if not rows:
+            context.log.info("No pending items in enrichment queue")
+            return
+        post_ids = [r["post_id"] for r in rows]
+        domains = [r["domain"] for r in rows]
+
+    ops = context.resources.ops
+    duck = context.resources.duckdb
+    gemini = context.resources.gemini
 
     ensure_gold_analyses(duck)
 
