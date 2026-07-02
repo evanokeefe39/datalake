@@ -11,22 +11,27 @@ This repo is operated by Claude. Keep this file current — Claude reads it on e
 - Never use PowerShell.
 
 ## Architecture
-
-**Medallion lakehouse:** bronze → silver → gold → serving.
+**Medallion lakehouse with async enrichment queue:**
 
 | Layer | Storage | Writer | State tracking |
 |-------|---------|--------|----------------|
 | Bronze | Parquet (`data/lake/bronze/`) | Polars (direct write) | None — file-based |
 | Silver | Parquet (`data/lake/silver/`) | PolarsIOManager | DuckDB `silver_ig_posts` + watermarks |
-| Gold | Parquet (`data/lake/gold/`) | PolarsIOManager | DuckDB `gold_ig_analyses` + watermarks |
+| Enqueue | SQLite (`data/ops.sqlite`) | `ig_posts_gld_enqueue` | `enrichment_queue` (pending/processing/complete) |
+| Gold | DuckDB table | `enrichment_worker` op | `gold_analyses` (AssetSpec, partial materializations) |
 | Serving | DuckDB views + tables | DuckDB | `dim_profile` (SCD2), `analytics_views` (VIEW) |
+
+**SQLite for operational state, DuckDB for analytical state:**
+- `ops.sqlite` — enrichment queue, media cache, dead_letter (OLTP: point lookups, frequent updates)
+- `state.duckdb` — silver tables, gold_analyses, watermarks, serving dims/views (OLAP: scans, aggregations)
 
 **Domain-based structure, not layer-based:**
 
 ```
 src/datalake/defs/
-├── common/          # PolarsIOManager, ApifyResource, GeminiResource, lake.py, schedules.py
-├── instagram/       # ig_posts_raw, ig_posts_slv, ig_posts_gld, ScrapeConfig
+├── common/          # PolarsIOManager, ApifyResource, GeminiResource, SQLiteResource, lake.py, schedules.py
+├── enrichment/      # queue.py, worker.py, sensor.py, media_cache.py, assets.py, prompts.py
+├── instagram/       # ig_posts_raw, ig_posts_slv, ig_posts_gld_enqueue, ScrapeConfig
 └── serving/         # dim_profile, analytics_views (cross-domain)
 ```
 
@@ -43,15 +48,16 @@ src/datalake/defs/
 
 Domain-scoped, not generic. Supports multi-source expansion (TikTok, YouTube, LinkedIn in future).
 
-| DuckDB table | Purpose |
-|---|---|
-| `silver_ig_posts` | Deduped, normalized Instagram posts |
-| `silver_ig_progress` | Per-dataset processing audit log |
-| `gold_ig_analyses` | Completed Gemini enrichments only (no status column) |
-| `dead_letter` | Failed enrichments — separate table, separate retry pipeline |
-| `dim_profile` | SCD2 profile dimension (cross-domain, `channel` column) |
-| `watermarks` | Generic progress tracking for any pipeline (`name`, `timestamp`) |
-| `ig_batch_jobs` | Gemini batch job tracking (name, state, input_file, poll_count) |
+| Database | Table | Purpose |
+|---|---|---|
+| DuckDB | `silver_ig_posts` | Deduped, normalized Instagram posts |
+| DuckDB | `silver_ig_progress` | Per-dataset processing audit log |
+| DuckDB | `gold_analyses` | Completed enrichments with domain PK (`post_id`, `domain`) and `prompt_hash` |
+| DuckDB | `dim_profile` | SCD2 profile dimension (cross-domain, `channel` column) |
+| DuckDB | `watermarks` | Generic progress tracking for any pipeline (`name`, `timestamp`) |
+| SQLite | `enrichment_queue` | Work queue: post_id, domain, status, attempts, scheduled_for |
+| SQLite | `media_metadata` | URL hash → Gemini File API URI cache |
+| SQLite | `dead_letter` | Failed enrichments — moved from DuckDB, manual triage only |
 
 Parquet file names match asset keys, not table names — the PolarsIOManager uses `asset_key.path[-1]`.
 
@@ -64,15 +70,10 @@ CREATE TABLE watermarks (name TEXT PRIMARY KEY, timestamp TIMESTAMP NOT NULL);
 ```
 
 - Silver reads/writes `watermarks WHERE name = 'silver_ig'`
-- Gold reads/writes `watermarks WHERE name = 'gold_ig'`
-- **Reset a pipeline:** `DELETE FROM watermarks WHERE name = '<pipeline>'` — next run reprocesses everything
-- **Prompt hash** column deferred — will enable auto-reset when Gemini prompt changes
-
-This pattern was adopted after panel review (2026-07-01) confirmed it's standard in Airflow (XCom), Prefect (blocks), and dbt (run_results).
-
 ## Dead letter pattern
 
-Failures from Gemini enrichment go to a separate `dead_letter` table, not the main results table. This keeps `gold_ig_analyses` pure (only completed enrichments) and provides a clean retry surface:
+Failures from Gemini enrichment go to `ops.sqlite` (not DuckDB — moved with the queue architecture).
+This keeps `gold_analyses` pure (only completed enrichments) and provides a clean triage surface:
 
 ```sql
 CREATE TABLE dead_letter (
@@ -80,11 +81,14 @@ CREATE TABLE dead_letter (
     domain    TEXT NOT NULL DEFAULT 'instagram',
     error     TEXT,
     attempts  INTEGER NOT NULL DEFAULT 0,
-    failed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    status    TEXT NOT NULL DEFAULT 'pending',
+    failed_at TEXT NOT NULL,
     PRIMARY KEY (post_id, domain)
 );
 ```
+
+Items arrive here when the worker exhausts retries (`attempts >= MAX_ATTEMPTS`). Manual triage only —
+no automatic retry worker. The enrichment queue handles retries via `scheduled_for` and
+exponential backoff; dead_letter is the terminal state.
 
 A separate scheduled asset (`retry_dead_letter`, deferred) reads `WHERE status = 'pending'`, retries, and upserts successes. This mirrors ML feature store patterns (Feast, Tecton) where error queues are separate from serving data.
 
@@ -113,8 +117,7 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 ## What didn't work (anti-patterns confirmed)
 
 | Anti-pattern | Why it failed | What replaced it |
-|---|---|---|
-| Status columns on data tables (`gold_analyses.status`) | Mixed concerns: results and error tracking in one table. Required `WHERE status = 'completed'` on every query. | `dead_letter` table — results go to `gold_ig_analyses`, failures to `dead_letter` |
+| Status columns on data tables (`gold_analyses.status`) | Mixed concerns: results and error tracking in one table. Required `WHERE status = 'completed'` on every query. | `dead_letter` table — results go to `gold_analyses`, failures to `dead_letter` |
 | Single-purpose watermark tables (`silver_watermark`) | Doesn't scale to N pipelines. Each new pipeline adds a new table. | Generic `watermarks(name, timestamp)` table — any pipeline uses it by name |
 | LEFT JOIN gap detection for pending posts | Complex query, no clean reset mechanism. Resetting required mass UPDATE. | Watermark-based: `WHERE processed_on > watermark_timestamp`. Reset = DELETE row. |
 | Re-stamping timestamps on every run (`silvered_at`) | Destroyed "first seen" semantics. Gold couldn't do incremental processing. | `processed_on` set on INSERT only, never updated |
@@ -124,12 +127,11 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 ## Dagster
 
 - `dagster dev` → localhost:3000 (or `dg dev` if installed)
-- Definitions module: `src/datalake/definitions.py`
-- Assets: `defs/instagram/assets.py` (domain-scoped), `defs/serving/assets.py` (cross-domain)
-- Resources: `defs/common/resources.py` (PolarsIOManager, ApifyResource, GeminiResource)
+- Assets: `defs/instagram/assets.py` (domain-scoped), `defs/serving/assets.py` (cross-domain), `defs/enrichment/` (queue + worker + sensor)
+- Resources: `defs/common/resources.py` (PolarsIOManager, ApifyResource, GeminiResource, SQLiteResource)
+- Schedules: `defs/common/schedules.py` (daily_medallion, cron `0 3 * * *`)
 - Config schemas: ``defs/instagram/config.py`` (ScrapeConfig, GoldConfig, GeminiTierConfig)
 - Path helpers: `defs/common/lake.py` (env-overridable, auto-creating directories)
-- Schedules: `defs/common/schedules.py` (weekly_medallion)
 - Telemetry disabled (`dagster.yaml`)
 - `[tool.dagster]` in `pyproject.toml` enables auto-discovery
 
@@ -137,55 +139,41 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 
 - **Manual trigger only** — not scheduled. User provides `ScrapeConfig` via Dagster launchpad.
 - **Apify flow:** trigger_run → poll_run → stream_dataset (NDJSON) → Polars read_ndjson → write_parquet
-- **Idempotent:** if Parquet already exists for dataset_id, re-reads and returns it
-- **No DuckDB state** — bronze is pure Parquet
-- **Bypasses PolarsIOManager** — dynamic dataset_id paths, writes directly via `df.write_parquet()`
+## Gold assets (queue-based, async)
 
-## Silver asset (ig_posts_slv)
+### ig_posts_gld_enqueue (enqueue only, no Gemini)
 
-- **Trigger:** downstream of bronze (`deps=["ig_posts_raw"]`), plus weekly schedule
-- **Incremental:** mtime-based bronze file discovery (files newer than `watermarks.silver_ig`)
-- **Dedup:** DuckDB `DISTINCT ON(post_id)` — newest timestamp wins
-- **Column mapping:** camelCase (Apify) → snake_case (silver) via `_BRONZE_TO_SILVER` dict
-- **List serialization:** `hashtags` (Polars List → JSON string) for DuckDB TEXT compatibility
-- **processed_on:** set only for net-new post_ids; existing posts keep their value
-- **State:** `silver_ig_posts` (DuckDB table), `silver_ig_progress` (per-dataset log), `watermarks.silver_ig`
+- **Trigger:** downstream of silver (`deps=["ig_posts_slv"]`), plus daily schedule
+- **Discovery:** `WHERE processed_on > watermark('gold_ig')` with `NOT EXISTS in gold_analyses` guard
+- **Action:** writes to `enrichment_queue` in ops.sqlite (sub-millisecond per row, no API calls)
+- **Watermark:** advances to `MAX(processed_on)` after batch enqueue
+- **Empty captions:** skipped (worker handles them — completes without Gemini call)
+- **Re-enrichment:** bypasses watermark; posts with stale `prompt_hash` re-enqueued directly
 
-## Gold assets
+### enrichment_worker (async, via sensor)
 
-Two assets, selected by tier:
-
-### ig_posts_gld (interactive, for Free/Tier 1)
-
-- **Trigger:** downstream of silver (``deps=["ig_posts_slv"]``), plus weekly schedule
-- **Discovery:** ``WHERE processed_on > (SELECT timestamp FROM watermarks WHERE name = 'gold_ig')``
+- **Trigger:** `enrichment_sensor` polls queue every 30s, claims up to 5 items, emits RunRequest
+- **Per-item processing:** reads silver → calls Gemini → writes `gold_analyses`
+- **Rate limiting:** per-item backoff via `scheduled_for`; quota exhaustion reschedules all without burning attempts
+- **Dead letter:** worker checks `attempts >= MAX_ATTEMPTS` after `fail()` and moves to dead_letter
+- **Partial materialization:** emits `AssetMaterialization` events against `gold_analyses` AssetSpec
 - **Model:** gemini-3.1-flash-lite, temperature=0.2, JSON response
-- **Free tier:** processes 10 posts per run (LIMIT 10)
-- **Tier 1+:** no LIMIT, processes all pending. RPM pacing + jitter.
-- **Retries:** 3 attempts per post, exponential backoff with jitter
-  (``(2^attempt) + random(0,1)`` seconds).
-- **429 classification:** ``_is_quota_exhausted()`` stops retries on daily
-  RPD exhaustion; RPM/TPM burst retries with jitter.
-- **Per-post watermark:** advances after each successful post (not batch-scoped),
-  so partial failures don't restart from zero.
-- **Failures → dead_letter** (not gold_ig_analyses)
-- **Empty captions → dead_letter** (no API call)
-- **Idempotent:** INSERT OR REPLACE by post_id
+- **429 classification:** `reschedule()` (global quota, preserves attempts) vs `fail()` (per-item burst, increments attempts)
+- **Stale reaper:** inline in `claim()` transaction — no separate schedule; resets orphaned `processing` items after 10 minutes
 
-### ig_posts_gld_backfill (batch, for Tier 1+)
+### Why queue-based (not synchronous)
 
-- **Trigger:** manual (launchpad) or on-demand schedule
-- **Discovery:** reads ALL unenriched posts regardless of watermark
-- **Flow:** build JSONL → upload → submit batch job → sensor polls → download → join results
-- **Idempotent with interactive:** both write via INSERT OR REPLACE;
-- **Batch token budget:** 10M Tier 1, 128M Tier 2 (gemini-3.1-flash-lite)
-- **When to use:** initial backfill, prompt changes, domain expansion
-
-
+| Issue (old) | Fix (new) |
+|---|---|
+| Asset blocks on API latency (1+ hour materialization) | Queue decouples — materialization is sub-second |
+| One 429 kills the batch | Per-item backpressure; worker continues past failures |
+| No per-item rate limiting | `scheduled_for` column with exponential backoff |
+| Crash → partial writes | Queue is durable; stale reaper recovers orphaned items |
+| Domain coupling (TikTok = copy-paste) | Worker dispatches by `domain` column; same queue, same worker |
 ## Serving layer
 
 - `dim_profile`: SCD2 profile dimension. Reads DISTINCT profiles from `silver_ig_posts`. Closes old rows on username change, inserts new rows. `channel = 'instagram'`.
-- `analytics_views`: CREATE OR REPLACE VIEW joining `silver_ig_posts` + `gold_ig_analyses` + `dim_profile` (current rows only). Query surface for dashboards.
+- `analytics_views`: CREATE OR REPLACE VIEW joining `silver_ig_posts` + `gold_analyses` + `dim_profile` (current rows only). LEFT JOIN includes domain filter (`ga.domain = 'instagram'`). Query surface for dashboards.
 - Both are in `defs/serving/assets.py`, group_name="serving"
 
 
@@ -222,10 +210,10 @@ distinguish subtypes:
 | ``rate_limit_exceeded`` | RPM/TPM burst — too fast. Response carries ~10–20s retry hint. | **Jitter + exponential backoff.** Retry loop uses ``(2^N) + random(0,1)`` seconds. |
 | ``insufficient_quota`` | Daily RPD spent — out of requests for the day. | **Stop retrying.** Wait until 08:00 UTC. Switch projects or upgrade tier. |
 
-The ``_is_quota_exhausted()`` helper in ``ig_posts_gld`` inspects
-``google.genai.errors.APIError`` attributes (``code``, ``message``,
-``details``) to distinguish subtypes. If the SDK error isn't parseable it
-falls back to substring matching on quota-related keywords.
+The ``_is_quota_exhausted()`` and ``_is_rate_limited()`` helpers in the
+``enrichment_worker`` op inspect ``google.genai.errors.APIError`` attributes
+(``code``, ``message``, ``details``) to distinguish subtypes. If the SDK
+error isn't parseable it falls back to substring matching on quota-related keywords.
 
 ### Video: TPM is the bottleneck
 
@@ -283,17 +271,15 @@ Workaround: use separate projects for free-tier evaluation and paid production.
 
 ### Approach per tier
 
-**Free — Evaluation only.** ``ig_posts_gld`` with LIMIT 10, sequential,
-jittered retry. Weekly schedule. 429s → dead_letter. Not for production.
+**Free — Evaluation only.** ``enrichment_worker`` processes via queue with
+per-item backpressure. Not for production volume.
 
-**Tier 1 — Interactive for incremental, batch for backfill.** Interactive
-handles routine weekly volume (up to ~1,000 text posts/run). Batch asset
-(``ig_posts_gld_backfill``) clears backlogs and prompt-change reprocessing.
-Single batch job covers ~9,500 text posts or ~570 minutes of video (low res).
+**Tier 1 — Interactive via queue.** Queue-based enrichment handles routine
+volume with per-item rate limiting. Batch API deferred; re-introduce as a
+worker variant when cost savings justify the complexity.
 
-**Tier 2 — Batch-first.** All enrichment via batch API. Interactive asset
-for ad-hoc single-post enrichment only. 500M token batch capacity covers
-~475,000 text posts or ~28,000 one-minute videos per job.
+**Tier 2 — Batch-first (future).** When batch API is re-introduced, all
+enrichment via batch. Interactive asset for ad-hoc single-post only.
 
 ### Trigger points
 
