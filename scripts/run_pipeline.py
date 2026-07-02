@@ -102,11 +102,11 @@ def _reset_watermarks(since: datetime) -> None:
 
 
 def run_update_stale(ops: SQLiteResource) -> int:
-    """Enqueue posts whose prompt_hash is stale or missing."""
+    """Create a batch for posts whose prompt_hash is stale or missing."""
     import duckdb as _duckdb
 
+    from datalake.defs.enrichment.batch import create_batch
     from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
-    from datalake.defs.enrichment.queue import enqueue
 
     print("\n--- Update stale analyses ---")
     db = _duckdb.connect(DB_PATH, read_only=True)
@@ -121,10 +121,11 @@ def run_update_stale(ops: SQLiteResource) -> int:
         print("  No stale analyses found.")
         return 0
 
-    for post_id, domain in stale_rows:
-        enqueue(ops, post_id, domain)
+    post_ids = [r[0] for r in stale_rows]
+    domains = [r[1] for r in stale_rows]
+    create_batch(ops, post_ids, domains)
 
-    print(f"  Enqueued {len(stale_rows)} stale analyses for re-processing")
+    print(f"  Created batch with {len(stale_rows)} stale analyses for re-processing")
     return len(stale_rows)
 
 
@@ -206,7 +207,7 @@ def main() -> None:
     if args.update_stale_analyses:
         run_update_stale(ops)
         _print_state("After stale update")
-        print("\nDone. Run enrichment worker to re-process stale analyses.")
+        print("\nDone. Run `python scripts/enrichment_worker.py` to re-process stale analyses.")
         return
 
     duckdb = DuckDBResource(database=DB_PATH)
@@ -223,7 +224,7 @@ def main() -> None:
 
     _print_state("After")
 
-    print(f"\nDone. {enqueued} posts enqueued. Run enrichment worker to process.")
+    print(f"\nDone. {enqueued} posts enqueued. Run `python scripts/enrichment_worker.py` to process.")
 
 
 if __name__ == "__main__":

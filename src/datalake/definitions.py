@@ -18,8 +18,6 @@ from .defs.common import (
 )
 from .defs.enrichment import (
     ENRICHMENT_CHECKS,
-    enrichment_job,
-    enrichment_sensor,
     gold_analyses,
 )
 from .defs.instagram import (
@@ -62,6 +60,4 @@ defs = Definitions(
     asset_checks=[*ig_checks, *ENRICHMENT_CHECKS, *serving_checks],
     resources=all_resources,
     schedules=[daily_medallion],
-    sensors=[enrichment_sensor],
-    jobs=[enrichment_job],
 )

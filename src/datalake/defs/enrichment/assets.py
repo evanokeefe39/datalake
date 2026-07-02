@@ -43,30 +43,33 @@ gold_analyses = AssetSpec(
     key=AssetKey("gold_analyses"),
     group_name="enrichment",
     description="Enriched social media posts — multi-domain gold layer.",
+    deps=[AssetKey("ig_posts_slv")],
 )
 
 
 # ── Asset checks ────────────────────────────────────────────────────────────
-
 
 @asset_check(asset=gold_analyses.key)
 def check_enrichment_health(
     duckdb: DuckDBResource,
     ops: SQLiteResource,
 ) -> AssetCheckResult:
-    """Warn if queue backlog is growing, items are stuck, or dead_letter grows.
+    """Warn if batch items are stuck, batches are stalled, or dead_letter grows.
 
-    Does NOT mutate state — the reaper is folded into queue.claim(), not here.
+    Does NOT mutate state. Read-only check against batch_jobs/batch_items.
     """
     ensure_gold_analyses(duckdb)
 
     conn = ops.get_connection()
     try:
         pending = conn.execute(
-            "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'pending'"
+            "SELECT COUNT(*) FROM batch_items WHERE status = 'pending'"
         ).fetchone()[0]
         processing = conn.execute(
-            "SELECT COUNT(*) FROM enrichment_queue WHERE status = 'processing'"
+            "SELECT COUNT(*) FROM batch_items WHERE status = 'processing'"
+        ).fetchone()[0]
+        failed = conn.execute(
+            "SELECT COUNT(*) FROM batch_items WHERE status = 'failed'"
         ).fetchone()[0]
         dead = conn.execute(
             "SELECT COUNT(*) FROM dead_letter"
@@ -80,8 +83,9 @@ def check_enrichment_health(
         ).fetchone()[0]
 
     metadata = {
-        "queue_pending": pending,
-        "queue_processing": processing,
+        "batch_pending": pending,
+        "batch_processing": processing,
+        "batch_failed": failed,
         "dead_letter_count": dead,
         "gold_analyses_count": enriched,
     }

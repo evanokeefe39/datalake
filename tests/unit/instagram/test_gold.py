@@ -1,7 +1,7 @@
-"""Tests for the enrichment queue and enqueue asset.
+"""Tests for the batch-based enrichment architecture.
 
-Verifies the queue-based enrichment architecture:
-- Queue operations (enqueue, claim, complete, fail, reschedule)
+Verifies:
+- Batch operations (create_batch, claim_batch, complete_item, fail_item, reschedule)
 - ig_posts_gld_enqueue asset behaviour
 - SQLiteResource integration
 """
@@ -9,20 +9,22 @@ Verifies the queue-based enrichment architecture:
 from __future__ import annotations
 
 from dagster_duckdb import DuckDBResource
+
 from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.enrichment.queue import (
+from datalake.defs.enrichment.batch import (
     MAX_ATTEMPTS,
-    claim,
-    complete,
-    delete,
-    depth,
-    enqueue,
-    fail,
-    reschedule,
+    claim_batch,
+    claim_pending_items,
+    complete_item,
+    create_batch,
+    fail_item,
+    mark_complete,
 )
 from datalake.defs.instagram.assets import ig_posts_gld_enqueue
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
+
+
 def _make_ops_db(tmp_path) -> SQLiteResource:
     return SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
@@ -94,163 +96,158 @@ def _seed_silver(db: DuckDBResource, rows: list[tuple]) -> None:
             )
 
 
-# ── Queue operation tests ───────────────────────────────────────────────────
+# ── Batch operation tests ───────────────────────────────────────────────────
 
 
-def test_enqueue_and_claim(tmp_path):
-    """GIVEN an empty queue
-    WHEN a post is enqueued and then claimed
-    THEN claim returns the post and sets status to processing.
+def test_create_batch_and_claim(tmp_path):
+    """GIVEN an empty ops.sqlite
+    WHEN a batch is created and then claimed
+    THEN claim_batch returns the batch with all items.
     """
     ops = _make_ops_db(tmp_path)
-    enqueue(ops, "p1", "instagram")
+    create_batch(ops, ["p1", "p2"], ["instagram", "instagram"])
 
-    rows = claim(ops, limit=5)
-    assert len(rows) == 1
-    assert rows[0]["post_id"] == "p1"
-    assert rows[0]["domain"] == "instagram"
+    batch = claim_batch(ops)
+    assert batch is not None
+    assert len(batch["post_ids"]) == 2
+    assert "p1" in batch["post_ids"]
+    assert "p2" in batch["post_ids"]
 
 
-def test_enqueue_idempotent(tmp_path):
-    """GIVEN a post already in the queue
-    WHEN the same post is enqueued again
-    THEN the row is reset to pending with attempts=0.
+def test_create_batch_empty_raises(tmp_path):
+    """GIVEN an empty post_ids list
+    WHEN create_batch is called
+    THEN ValueError is raised.
     """
     ops = _make_ops_db(tmp_path)
-    enqueue(ops, "p1", "instagram")
-    claim(ops, limit=5)  # Claim it → status becomes 'processing'
-
-    # Re-enqueue (simulates watermark reset)
-    enqueue(ops, "p1", "instagram")
-
-    rows = claim(ops, limit=5)
-    assert len(rows) == 1
+    try:
+        create_batch(ops, [])
+        assert False, "Expected ValueError"
+    except ValueError:
+        pass
 
 
-def test_claim_empty_queue(tmp_path):
-    """GIVEN an empty queue
-    WHEN claim is called
-    THEN it returns an empty list.
+def test_claim_batch_empty(tmp_path):
+    """GIVEN an empty ops.sqlite
+    WHEN claim_batch is called
+    THEN it returns None.
     """
     ops = _make_ops_db(tmp_path)
-    rows = claim(ops, limit=5)
-    assert rows == []
+    batch = claim_batch(ops)
+    assert batch is None
 
 
-def test_claim_respects_scheduled_for(tmp_path):
-    """GIVEN a post scheduled for the future
-    WHEN claim is called
-    THEN the post is not claimed.
+def test_claim_pending_items(tmp_path):
+    """GIVEN a batch with items
+    WHEN claim_pending_items is called with a limit
+    THEN only that many items are claimed.
     """
     ops = _make_ops_db(tmp_path)
-    enqueue(ops, "p1", "instagram")
+    create_batch(ops, ["p1", "p2", "p3"], ["instagram"] * 3)
+    batch = claim_batch(ops)
 
-    # Manually set scheduled_for to far future
-    conn = ops.get_connection()
-    conn.execute(
-        "UPDATE enrichment_queue SET scheduled_for = '2099-01-01T00:00:00' WHERE post_id = 'p1'"
-    )
-    conn.commit()
-    conn.close()
+    items = claim_pending_items(ops, batch["id"], limit=2)
+    assert len(items) == 2
 
-    rows = claim(ops, limit=5)
-    assert len(rows) == 0
+    # Remaining item should still be claimable
+    items2 = claim_pending_items(ops, batch["id"], limit=5)
+    assert len(items2) == 1
 
 
-def test_complete_removes_from_pending(tmp_path):
-    """GIVEN a claimed post
-    WHEN complete is called
-    THEN it's no longer claimable.
+def test_complete_item_marks_done(tmp_path):
+    """GIVEN a claimed item
+    WHEN complete_item is called
+    THEN the item is no longer claimable.
     """
     ops = _make_ops_db(tmp_path)
-    enqueue(ops, "p1", "instagram")
-    claim(ops, limit=5)
-    complete(ops, "p1", "instagram")
+    create_batch(ops, ["p1"], ["instagram"])
+    batch = claim_batch(ops)
+    items = claim_pending_items(ops, batch["id"], limit=5)
+    assert len(items) == 1
 
-    rows = claim(ops, limit=5)
-    assert len(rows) == 0
+    complete_item(ops, items[0]["id"])
+
+    # No more pending items
+    items2 = claim_pending_items(ops, batch["id"], limit=5)
+    assert len(items2) == 0
 
 
-def test_fail_reschedules_with_backoff(tmp_path):
-    """GIVEN a claimed post
-    WHEN fail is called with a backoff
-    THEN attempts is incremented and the post is rescheduled.
+def test_fail_item_increments_attempts(tmp_path):
+    """GIVEN a claimed item
+    WHEN fail_item is called
+    THEN attempts is incremented and item is rescheduled as pending.
     """
     ops = _make_ops_db(tmp_path)
-    enqueue(ops, "p1", "instagram")
-    claim(ops, limit=5)
+    create_batch(ops, ["p1"], ["instagram"])
+    batch = claim_batch(ops)
+    items = claim_pending_items(ops, batch["id"], limit=5)
+    assert len(items) == 1
 
-    attempts = fail(ops, "p1", "instagram", "test error", backoff_seconds=60)
-    assert attempts == 2
+    attempts = fail_item(ops, items[0]["id"], "test error", backoff=0)
+    assert attempts == 1
 
-    # Should not be claimable yet (scheduled for 60s from now)
-    rows = claim(ops, limit=5)
-    assert len(rows) == 0
-
-
-def test_reschedule_preserves_attempts(tmp_path):
-    """GIVEN a claimed post
-    WHEN reschedule is called (quota exhaustion)
-    THEN attempts is preserved (not incremented).
-    """
-    ops = _make_ops_db(tmp_path)
-    enqueue(ops, "p1", "instagram")
-    claim(ops, limit=5)  # increments attempts to 1
-
-    reschedule(ops, "p1", "instagram", "quota exhausted", backoff_seconds=3600)
-
-    conn = ops.get_connection()
-    row = conn.execute(
-        "SELECT attempts FROM enrichment_queue WHERE post_id = 'p1'"
-    ).fetchone()
-    conn.close()
-    assert row["attempts"] == 1  # Preserved, not incremented
+    # Item should be claimable again (status reset to pending)
+    items2 = claim_pending_items(ops, batch["id"], limit=5)
+    assert len(items2) == 1
 
 
-def test_depth_tracks_pending_and_processing(tmp_path):
-    """GIVEN enqueued and claimed posts
-    WHEN depth is called
-    THEN it returns the count of non-complete items.
-    """
-    ops = _make_ops_db(tmp_path)
-    enqueue(ops, "p1", "instagram")
-    enqueue(ops, "p2", "instagram")
-    claim(ops, limit=1)  # p1 → processing
-
-    d = depth(ops)
-    assert d == 2  # p1 in processing + p2 in pending
-
-
-def test_max_attempts_then_delete(tmp_path):
-    """GIVEN a post that fails repeatedly
+def test_fail_item_max_attempts(tmp_path):
+    """GIVEN an item that fails repeatedly
     WHEN attempts reaches MAX_ATTEMPTS
-    THEN the post should be moved to dead_letter and deleted from queue.
+    THEN the item stays failed and is counted in batch failed_items.
     """
     ops = _make_ops_db(tmp_path)
-    enqueue(ops, "p1", "instagram")
-    claim(ops, limit=5)  # attempts = 1
+    create_batch(ops, ["p1"], ["instagram"])
+    batch = claim_batch(ops)
+    items = claim_pending_items(ops, batch["id"], limit=5)
+    item_id = items[0]["id"]
 
-    for _ in range(MAX_ATTEMPTS - 1):  # Already at 1, need MAX_ATTEMPTS - 1 more
-            fail(ops, "p1", "instagram", "test error", backoff_seconds=0)
+    for i in range(MAX_ATTEMPTS):
+        attempts = fail_item(ops, item_id, f"error {i}", backoff=0)
 
-    # Now delete from queue
-    delete(ops, "p1", "instagram")
+    assert attempts == MAX_ATTEMPTS
+
+    # Item should not be claimable (status = 'failed')
+    items2 = claim_pending_items(ops, batch["id"], limit=5)
+    assert len(items2) == 0
+
+    # Verify failed_items count
+    conn = ops.get_connection()
+    row = conn.execute(
+        "SELECT failed_items FROM batch_jobs WHERE id = ?",
+        [batch["id"]],
+    ).fetchone()
+    conn.close()
+    assert row[0] == 1
+
+
+def test_mark_complete(tmp_path):
+    """GIVEN a processing batch with all items done
+    WHEN mark_complete is called
+    THEN the batch status is set to 'complete'.
+    """
+    ops = _make_ops_db(tmp_path)
+    create_batch(ops, ["p1"], ["instagram"])
+    batch = claim_batch(ops)
+
+    mark_complete(ops, batch["id"])
 
     conn = ops.get_connection()
     row = conn.execute(
-        "SELECT COUNT(*) as cnt FROM enrichment_queue WHERE post_id = 'p1'"
+        "SELECT status FROM batch_jobs WHERE id = ?",
+        [batch["id"]],
     ).fetchone()
     conn.close()
-    assert row["cnt"] == 0
+    assert row[0] == "complete"
 
 
 # ── Enqueue asset tests ─────────────────────────────────────────────────────
 
 
-def test_enqueue_asset_writes_to_queue(tmp_path):
+def test_enqueue_asset_writes_batch(tmp_path):
     """GIVEN silver has unenriched posts
     WHEN ig_posts_gld_enqueue runs
-    THEN posts are enqueued and watermark advances.
+    THEN a batch is created and watermark advances.
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
@@ -264,17 +261,17 @@ def test_enqueue_asset_writes_to_queue(tmp_path):
 
     assert result["enqueued"][0] == 2
 
-    # Verify queue has the items
-    claimed = claim(ops, limit=10)
-    assert len(claimed) == 2
-    post_ids = {r["post_id"] for r in claimed}
-    assert post_ids == {"p1", "p2"}
+    # Verify batch has the items
+    batch = claim_batch(ops)
+    assert batch is not None
+    assert len(batch["post_ids"]) == 2
+    assert set(batch["post_ids"]) == {"p1", "p2"}
 
 
 def test_enqueue_skips_already_enriched(tmp_path):
     """GIVEN silver has posts that already exist in gold_analyses
     WHEN ig_posts_gld_enqueue runs
-    THEN those posts are not enqueued.
+    THEN those posts are not batched.
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
@@ -296,15 +293,15 @@ def test_enqueue_skips_already_enriched(tmp_path):
 
     assert result["enqueued"][0] == 1
 
-    claimed = claim(ops, limit=10)
-    assert len(claimed) == 1
-    assert claimed[0]["post_id"] == "p1"
+    batch = claim_batch(ops)
+    assert batch is not None
+    assert batch["post_ids"] == ["p1"]
 
 
 def test_enqueue_skips_empty_caption(tmp_path):
     """GIVEN silver has posts with empty captions
     WHEN ig_posts_gld_enqueue runs
-    THEN empty-caption posts are not enqueued.
+    THEN empty-caption posts are not batched.
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
@@ -318,8 +315,8 @@ def test_enqueue_skips_empty_caption(tmp_path):
 
     assert result["enqueued"][0] == 0
 
-    claimed = claim(ops, limit=10)
-    assert len(claimed) == 0
+    batch = claim_batch(ops)
+    assert batch is None
 
 
 def test_enqueue_no_pending_posts(tmp_path):

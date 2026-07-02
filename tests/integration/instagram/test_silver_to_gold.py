@@ -9,7 +9,7 @@ from __future__ import annotations
 from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.enrichment.queue import claim
+from datalake.defs.enrichment.batch import claim_batch
 from datalake.defs.instagram.assets import ig_posts_gld_enqueue, ig_posts_slv
 
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
@@ -54,9 +54,10 @@ def test_enqueue_reads_silver_output(tmp_path):
     assert result["enqueued"][0] == 1
 
     # Verify queue
-    claimed = claim(ops, limit=5)
-    assert len(claimed) == 1
-    assert claimed[0]["post_id"] == "p1"
+    batch = claim_batch(ops)
+    assert batch is not None
+    assert len(batch["post_ids"]) == 1
+    assert batch["post_ids"][0] == "p1"
 
 
 def test_enqueue_skips_already_completed(tmp_path):

@@ -65,13 +65,23 @@ EXPECTED_DUCKDB_VIEWS: list[str] = [
 # ── SQLite (data/ops.sqlite) ─────────────────────────────────────────────
 
 EXPECTED_SQLITE: dict[str, dict[str, str]] = {
-    "enrichment_queue": {
+    "batch_jobs": {
+        "id": "INTEGER",
+        "status": "TEXT",
+        "created_at": "TEXT",
+        "completed_at": "TEXT",
+        "total_items": "INTEGER",
+        "processed_items": "INTEGER",
+        "failed_items": "INTEGER",
+    },
+    "batch_items": {
+        "id": "INTEGER",
+        "job_id": "INTEGER",
         "post_id": "TEXT",
         "domain": "TEXT",
         "status": "TEXT",
         "attempts": "INTEGER",
-        "last_error": "TEXT",
-        "scheduled_for": "TEXT",
+        "error": "TEXT",
         "created_at": "TEXT",
         "updated_at": "TEXT",
     },

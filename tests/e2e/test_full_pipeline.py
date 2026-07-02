@@ -11,7 +11,7 @@ from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.enrichment.queue import claim
+from datalake.defs.enrichment.batch import claim_batch
 from datalake.defs.instagram.assets import ig_posts_gld_enqueue, ig_posts_slv
 from datalake.defs.serving.assets import analytics_views, profile_dimension
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
@@ -73,8 +73,10 @@ def test_full_pipeline_happy_path(tmp_path):
     assert enqueue_result["enqueued"][0] == 3
 
     # Verify queue
-    claimed = claim(ops, limit=10)
-    assert len(claimed) == 3
+    # Verify batch was created
+    batch = claim_batch(ops)
+    assert batch is not None
+    assert len(batch["post_ids"]) == 3
 
     # Serving (should run even with empty gold_analyses)
     _run_serving(duckdb)

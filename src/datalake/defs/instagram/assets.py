@@ -359,21 +359,17 @@ def ig_posts_gld_enqueue(
     duckdb: DuckDBResource,
     ops: SQLiteResource,
 ) -> pl.DataFrame:
-    """Read unenriched silver posts, enqueue them, advance watermark.
+    """Read unenriched silver posts, create a batch, advance watermark.
 
     Does NOT call Gemini — the enrichment worker handles that async.
-    Watermark advances once after all posts are enqueued.
+    Watermark advances once after all posts are batched.
     """
-    import time
-
-    from datalake.defs.enrichment.queue import enqueue as queue_enqueue
+    from datalake.defs.enrichment.batch import create_batch
 
     db = duckdb
     _ensure_state_tables(db)
 
     # Find pending posts via watermark, excluding already-enriched posts
-    limit_clause = ""
-    pending = None
     with db.get_connection() as conn:
         pending = conn.execute("""
             SELECT sp.post_id, sp.caption, sp.processed_on
@@ -392,18 +388,21 @@ def ig_posts_gld_enqueue(
         # All posts enriched — return empty summary
         return pl.DataFrame({"enqueued": pl.Series([], dtype=pl.Int32)})
 
-    # Enqueue each post (microseconds per row — no Gemini call)
-    enqueued_count = 0
+    # Collect post_ids with non-empty captions
+    post_ids = []
     max_processed = None
     for post_id, caption, processed_on in pending:
         if not (caption or "").strip():
-            continue  # Empty caption — skip, will be picked up by worker and completed
-        queue_enqueue(ops, post_id, domain="instagram")
-        enqueued_count += 1
+            continue  # Empty caption — skip; worker will skip these
+        post_ids.append(post_id)
         if max_processed is None or processed_on > max_processed:
             max_processed = processed_on
 
-    # Advance watermark once after all enqueued
+    # Create single batch for all posts
+    if post_ids:
+        create_batch(ops, post_ids)
+
+    # Advance watermark once after all batched
     if max_processed is not None:
         with db.get_connection() as conn:
             conn.execute(
@@ -412,7 +411,7 @@ def ig_posts_gld_enqueue(
                 [max_processed],
             )
 
-    return pl.DataFrame({"enqueued": pl.Series([enqueued_count], dtype=pl.Int32)})
+    return pl.DataFrame({"enqueued": pl.Series([len(post_ids)], dtype=pl.Int32)})
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────

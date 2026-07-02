@@ -119,9 +119,9 @@ def test_ad_hoc_run_sequence(tmp_path):
     assert result["enqueued"][0] == 1
 
     # Step 4: Verify queue has the item
-    # Step 4: Verify queue — claim picks up the enqueued item
-    from datalake.defs.enrichment.queue import claim
+    from datalake.defs.enrichment.batch import claim_batch
 
-    claimed = claim(ops_db, limit=5)
-    assert len(claimed) == 1
-    assert claimed[0]["post_id"] == "p1"
+    batch = claim_batch(ops_db)
+    assert batch is not None
+    assert len(batch["post_ids"]) == 1
+    assert batch["post_ids"][0] == "p1"

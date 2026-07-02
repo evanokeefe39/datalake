@@ -15,7 +15,7 @@ from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.enrichment.queue import claim
+from datalake.defs.enrichment.batch import claim_batch
 from datalake.defs.instagram.assets import ig_posts_gld_enqueue, ig_posts_slv
 from datalake.defs.serving.assets import analytics_views, profile_dimension
 
@@ -80,8 +80,9 @@ def test_enqueue_enqueues_silver_posts(db, ops_db, bronze_dir):
     assert result["enqueued"][0] >= 1
 
     # Verify queue
-    claimed = claim(ops_db, limit=100)
-    assert len(claimed) >= 1
+    batch = claim_batch(ops_db)
+    assert batch is not None
+    assert len(batch["post_ids"]) >= 1
 
 
 def test_serving_runs_on_empty_gold(db, bronze_dir):
