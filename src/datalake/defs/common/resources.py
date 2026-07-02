@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from pathlib import Path
+from typing import TypedDict
 
 import polars as pl
 from dagster import ConfigurableIOManager, ConfigurableResource
@@ -18,6 +19,17 @@ from pydantic import Field
 load_dotenv()
 _DEFAULT_OPS_DB = "data/ops.sqlite"
 
+
+
+class MediaFile(TypedDict):
+    """A media file reference for multimodal Gemini analysis.
+
+    ``uri`` is a Gemini File API URI (``files/…`` or full URL).
+    ``mime_type`` is the IANA media type (e.g. ``"video/mp4"``, ``"image/jpeg"``).
+    """
+
+    uri: str
+    mime_type: str
 
 class SQLiteResource(ConfigurableResource):
     """SQLite database resource for operational state (queue, media cache, dead_letter).
@@ -99,6 +111,7 @@ class GeminiResource(ConfigurableResource):
         model: str | None = None,
         media_resolution: str | None = None,
         count_tokens: bool = False,
+        media_files: list[MediaFile] | None = None,
     ) -> str:
         """Send a prompt to Gemini and return the response text.
 
@@ -113,8 +126,13 @@ class GeminiResource(ConfigurableResource):
             model: Model name (default ``gemini-3.1-flash-lite``).
             media_resolution: ``"low"`` to reduce video frame token cost
                 (66 vs 258 tokens/frame). Only relevant for video media.
+                Defaults to ``"low"`` when ``media_files`` is provided.
             count_tokens: If True, do a pre-flight token count and raise
                 if the prompt exceeds the safety limit before sending.
+            media_files: Optional list of MediaFile dicts with ``uri`` and
+                ``mime_type``. When provided, constructs multimodal contents
+                with file Parts + text Part. When None, text-only path
+                (unchanged behavior).
 
         Returns:
             Raw response text from Gemini. Caller is responsible for JSON
@@ -130,7 +148,7 @@ class GeminiResource(ConfigurableResource):
                 insufficient_quota).
         """
         from google.genai import Client as GeminiClient
-        from google.genai.types import GenerateContentConfig
+        from google.genai.types import GenerateContentConfig, Part
 
         model_name = model or _DEFAULT_GEMINI_MODEL
 
@@ -149,12 +167,30 @@ class GeminiResource(ConfigurableResource):
             temperature=0.2,
             max_output_tokens=2048,
         )
-        if media_resolution is not None:
+
+        # Build contents: multimodal when media_files provided, text-only otherwise
+        if media_files:
+            if media_resolution is None:
+                media_resolution = "low"
             config_kwargs["media_resolution"] = media_resolution
+
+            contents: list[Part | str] = []
+            for mf in media_files:
+                contents.append(
+                    Part.from_uri(
+                        file_uri=mf["uri"],
+                        mime_type=mf["mime_type"],
+                    )
+                )
+            contents.append(Part.from_text(text=prompt))
+        else:
+            if media_resolution is not None:
+                config_kwargs["media_resolution"] = media_resolution
+            contents = prompt
 
         response = client.models.generate_content(
             model=model_name,
-            contents=prompt,
+            contents=contents,
             config=GenerateContentConfig(**config_kwargs),
         )
         return response.text

@@ -86,3 +86,49 @@ in the pipeline?
 whether the improved retry loop resolves the 429s. If errors persist, check
 the error subtype in the updated dead_letter messages to distinguish burst
 from quota exhaustion.
+
+### 7. Multimodal processing — video, image, text enrichment
+
+The enrichment worker currently discards `lookup_or_upload` return values — file
+URIs never reach `gemini.analyze()`. All 56 gold_analyses rows are text-only.
+This tracks the full implementation: media download, Gemini File API upload with
+state polling, cache with TTL, tier gating (FREE skips video), and token budget
+checks. Plan: `tasks/plans/multimodal-processing.md`.
+
+The failing `test_worker_passes_media_uri_to_gemini` is the canary — once media
+URIs flow through the worker, it passes.
+
+#### Phase 1: Foundation
+
+- [ ] `GeminiResource.analyze()` accepts optional `media_files: list[MediaFile]` parameter using a `MediaFile` TypedDict `{uri: str, mime_type: str}`
+- [ ] `analyze()` constructs `contents = [Part.from_uri(file_uri=mf["uri"], mime_type=mf["mime_type"]), Part.from_text(text=prompt)]` when media_files provided
+- [ ] `analyze()` wires `media_resolution='low'` on `GenerateContentConfig` when media_files present
+- [ ] `test_worker_passes_media_uri_to_gemini` rewritten: captures `analyze()` kwargs, asserts `media_files` contains the URI
+
+#### Phase 2: Media pipeline
+
+- [ ] `lookup_or_upload` renamed to `lookup_or_upload_all`, returns `list[MediaFile]` instead of `str | None`
+- [ ] `lookup_or_upload_all` downloads URLs to temp files before `client.files.upload(file=<local_path>)`
+- [ ] `lookup_or_upload_all` polls `file.state == ACTIVE` after upload (30s timeout, 2s interval)
+- [ ] `lookup_or_upload_all` stores `expires_at` column in media_metadata (now + 24h); cache hits check expiry
+- [ ] `lookup_or_upload_all` processes ALL URLs in media_files (deduplicated), not just first
+- [ ] `lookup_or_upload_all` returns stored `mime_type` from media_metadata on cache hit
+- [ ] `lookup_or_upload_all` uses INSERT OR IGNORE with placeholder row to prevent TOCTOU duplicate uploads
+- [ ] `lookup_or_upload_all` adds INFO logging for cache hits, cache misses, upload start/complete
+- [ ] Schema migration: add `expires_at TEXT` column to `media_metadata` table (IF NOT EXISTS)
+- [ ] Unit tests: cache hit, cache miss, expiry, dedup, polling, ACTIVE state transition
+
+#### Phase 3: Worker integration
+
+- [ ] `process_item()` captures media_files from `lookup_or_upload_all` and passes to `gemini.analyze()`
+- [ ] `process_item()` gates video processing on tier: FREE tier skips video (text-only), Tier 2+ processes
+- [ ] `process_item()` estimates tokens from `video_metadata.duration_seconds` and skips video if over tier budget
+- [ ] `process_item()` classifies File API errors separately from generation errors (no batch abort on upload 429s)
+- [ ] `IG_GOLD_PROMPT` updated: "Analyze the Instagram post and any attached media below..."
+- [ ] Integration tests: text-only, single video, multiple files, free tier skip, upload failure, token budget skip
+
+#### Phase 4: Cleanup
+
+- [ ] Existing 20 tests still pass (19 original + text-only multimodal companion)
+- [ ] Ruff zero warnings
+- [ ] Logging + cost tracking per batch

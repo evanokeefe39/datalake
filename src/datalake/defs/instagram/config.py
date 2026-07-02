@@ -78,6 +78,11 @@ class GeminiTierConfig:
         return 0  # 0 = unlimited
 
     @property
+    def supports_video(self) -> bool:
+        """True if video processing is available (Tier 1+)."""
+        return self.tier in (GeminiTier.TIER_1, GeminiTier.TIER_2)
+
+    @property
     def supports_batch(self) -> bool:
         """True if batch API is available (Tier 1+)."""
         return self.tier in (GeminiTier.TIER_1, GeminiTier.TIER_2)

@@ -1,7 +1,7 @@
 """Integration test: video/audio processing via Gemini multimodal API.
 
 This test FAILS until the enrichment worker passes uploaded media file URIs
-to Gemini for multimodal analysis. Currently, ``lookup_or_upload`` uploads
+to Gemini for multimodal analysis. Currently, ``lookup_or_upload_all`` uploads
 media to Gemini File API but the returned URI is discarded — the prompt
 sent to Gemini is text-only (caption).
 
@@ -51,12 +51,11 @@ def _seed_silver_with_video(db: DuckDBResource, post_id: str, caption: str) -> N
 def test_worker_passes_media_uri_to_gemini(tmp_path):
     """GIVEN a silver post with a video URL
     WHEN the enrichment worker processes it
-    THEN the Gemini prompt includes the uploaded file URI for multimodal analysis.
-
-    FAILING: The worker calls ``lookup_or_upload`` to get a Gemini File API URI
-    but never passes it to ``gemini.analyze()``. The prompt is text-only.
+    THEN gemini.analyze() receives media_files kwarg with the uploaded file URI.
     """
     from scripts.enrichment_worker import process_item
+    import os
+    os.environ["GEMINI_TIER"] = "tier1"
 
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
@@ -92,37 +91,40 @@ def test_worker_passes_media_uri_to_gemini(tmp_path):
     mock_gemini = MagicMock()
     mock_gemini.analyze.return_value = '{"is_educational": true}'
 
-    # Capture what prompt was sent to analyze()
-    captured_prompts: list[str] = []
+    # Capture analyze() kwargs to assert media_files parameter
+    captured_kwargs: list[dict] = []
     mock_gemini.analyze.side_effect = lambda prompt, **kwargs: (
-        captured_prompts.append(prompt),
+        captured_kwargs.append(kwargs),
         '{"is_educational": true}',
     )[1]
 
-    # Mock lookup_or_upload to return a fake File API URI
+    # Mock lookup_or_upload_all to return MediaFile list
     fake_file_uri = "https://generativelanguage.googleapis.com/v1beta/files/fake-abc123"
     with patch(
-        "scripts.enrichment_worker.lookup_or_upload",
-        return_value=fake_file_uri,
+        "scripts.enrichment_worker.lookup_or_upload_all",
+        return_value=[{"uri": fake_file_uri, "mime_type": "video/mp4"}],
     ):
         process_item(ops, duckdb, mock_gemini, item)
 
     # ── Assertions ──────────────────────────────────────────────────────
-    assert len(captured_prompts) == 1, (
-        f"Expected 1 Gemini call, got {len(captured_prompts)}"
+    assert len(captured_kwargs) == 1, (
+        f"Expected 1 Gemini call, got {len(captured_kwargs)}"
     )
 
-    prompt = captured_prompts[0]
-
-    # FAILING: The file URI should appear in the prompt sent to Gemini.
-    # Currently the worker does text-only: prompt_text = IG_GOLD_PROMPT + "\n" + caption
-    assert fake_file_uri in prompt, (
-        f"Gemini prompt does not include uploaded file URI.\n"
-        f"Expected to find: {fake_file_uri}\n"
-        f"Actual prompt (first 300 chars): {prompt[:300]}\n"
-        f"\nFix: pass the lookup_or_upload return value to gemini.analyze() "
-        f"as multimodal content so video/audio posts get visual analysis."
+    media_files = captured_kwargs[0].get("media_files")
+    assert media_files is not None, (
+        f"gemini.analyze() was not called with media_files kwarg.\n"
+        f"Actual kwargs keys: {list(captured_kwargs[0].keys())}\n"
+        f"\nFix: process_item must pass lookup_or_upload_all result "
+        f"as media_files= kwarg to gemini.analyze()."
     )
+    assert len(media_files) == 1, (
+        f"Expected 1 media file, got {len(media_files)}"
+    )
+    assert media_files[0]["uri"] == fake_file_uri, (
+        f"Expected URI {fake_file_uri}, got {media_files[0]['uri']}"
+    )
+    assert media_files[0]["mime_type"] == "video/mp4"
 
     # Verify gold_analyses was written
     with duckdb.get_connection() as conn:
@@ -193,8 +195,8 @@ def test_video_post_without_media_files_still_works(tmp_path):
     mock_gemini = MagicMock()
     mock_gemini.analyze.return_value = '{"is_educational": false}'
 
-    with patch("scripts.enrichment_worker.lookup_or_upload", return_value=None):
-        result = process_item(ops, duckdb, mock_gemini, item)
+    with patch("scripts.enrichment_worker.lookup_or_upload_all", return_value=[]):
+         result = process_item(ops, duckdb, mock_gemini, item)
 
     assert result is True
 

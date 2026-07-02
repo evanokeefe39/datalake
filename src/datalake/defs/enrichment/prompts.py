@@ -16,8 +16,8 @@ def compute_prompt_hash(prompt: str, model: str) -> str:
 
 
 IG_GOLD_PROMPT = """\
-You are a social media classifier. Analyze the Instagram post caption below
-and classify it using these fields:
+You are a social media classifier. Analyze the Instagram post and any attached
+media below. Classify it using these fields:
 
 - is_educational: true if the post teaches or informs, false if purely entertaining
 - is_actionable: true if the post gives steps or actions the viewer can take

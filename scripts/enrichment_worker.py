@@ -36,8 +36,9 @@ from datalake.defs.enrichment.batch import (
     fail_item,
     mark_complete,
 )
-from datalake.defs.enrichment.media_cache import lookup_or_upload
+from datalake.defs.enrichment.media_cache import lookup_or_upload_all
 from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH, IG_GOLD_PROMPT
+from datalake.defs.instagram.config import GeminiTierConfig
 
 load_dotenv()
 
@@ -52,6 +53,11 @@ _SILVER_TABLES: dict[str, str] = {
 _PROMPTS: dict[str, str] = {
     "instagram": IG_GOLD_PROMPT,
 }
+
+# ── Token budget constants ───────────────────────────────────────────────────
+
+_TOKENS_PER_SECOND_VIDEO_LOW = 98  # low resolution: 66 video + 32 audio tokens/sec
+_PER_ITEM_TOKEN_CAP = 250_000  # conservative per-item cap for video processing
 
 # ── Dagster API ──────────────────────────────────────────────────────────────
 
@@ -93,6 +99,24 @@ def _exponential_backoff(attempt: int) -> int:
     """Exponential backoff with jitter: 2^attempt + random(0,1) seconds."""
     return int(2**attempt + random.uniform(0, 1))
 
+
+
+# ── File API error classification ────────────────────────────────────────────
+
+_FILE_API_KEYWORDS = {
+    "file api", "files/", "upload", "file state", "timeouterror",
+    "urllib", "urlretrieve", "download",
+}
+
+
+def _is_file_api_error(exc: Exception, error_text: str) -> bool:
+    """Return True if the exception is from media download or File API upload.
+
+    File API errors are per-item — they should NOT trigger batch-wide
+    quota rescheduling like generation 429s do.
+    """
+    lower = error_text.lower()
+    return any(kw in lower for kw in _FILE_API_KEYWORDS)
 
 # ── Dead letter ──────────────────────────────────────────────────────────────
 
@@ -170,13 +194,41 @@ def process_item(
         logger.info("Post %s has empty caption — completed", post_id)
         return True
 
-    # Media cache: pre-upload for future multimodal use
-    lookup_or_upload(ops, gemini, row[1])
+    # Media: download + upload to Gemini File API (or cache hit)
+    tier_cfg = GeminiTierConfig.detect()
+    media_files = lookup_or_upload_all(ops, gemini, row[1])
+
+    # Tier gate: FREE tier skips video — text-only fallback
+    if media_files and not tier_cfg.supports_video:
+        logger.info(
+            "Post %s has %d media files but tier is %s — text-only fallback",
+            post_id, len(media_files), tier_cfg.tier.value,
+        )
+        media_files = []
+
+    # Token budget check: skip video if estimated tokens exceed per-item cap
+    if media_files:
+        total_estimated = 0
+        for mf in media_files:
+            if mf.get("mime_type", "").startswith("video/"):
+                duration = mf.get("duration_seconds") or 0
+                if duration > 0:
+                    total_estimated += duration * _TOKENS_PER_SECOND_VIDEO_LOW
+                else:
+                    total_estimated += 60 * _TOKENS_PER_SECOND_VIDEO_LOW  # assume 1 min
+        if total_estimated > _PER_ITEM_TOKEN_CAP:
+            logger.warning(
+                "Post %s video token estimate %d > cap %d — text-only fallback",
+                post_id, total_estimated, _PER_ITEM_TOKEN_CAP,
+            )
+            media_files = []
 
     # Analyze via Gemini
     prompt_text = _PROMPTS.get(domain, IG_GOLD_PROMPT) + "\n" + caption
-    result = gemini.analyze(prompt_text)
-
+    analyze_kwargs: dict = {}
+    if media_files:
+        analyze_kwargs["media_files"] = media_files
+    result = gemini.analyze(prompt_text, **analyze_kwargs)
     # Validate JSON
     try:
         json.loads(result)
@@ -261,6 +313,28 @@ def process_batch(
 
             except Exception as exc:
                 error_text = str(exc)
+
+                # File API errors are per-item — never abort the batch
+                if _is_file_api_error(exc, error_text):
+                    attempts = fail_item(
+                        ops, item["id"], error_text,
+                        backoff=_exponential_backoff(1),
+                    )
+                    logger.warning(
+                        "File API error on %s (attempt %d): %s",
+                        item["post_id"], attempts, error_text[:120],
+                    )
+                    if attempts >= MAX_ATTEMPTS:
+                        _dead_letter_insert(
+                            ops, item["post_id"], item["domain"], error_text, attempts,
+                        )
+                        logger.error(
+                            "Post %s moved to dead_letter after %d File API attempts",
+                            item["post_id"], attempts,
+                        )
+                    total_failed += 1
+                    processed_count += 1
+                    continue
 
                 if _is_quota_exhausted(exc, error_text):
                     # Global condition — reschedule ALL remaining as pending
