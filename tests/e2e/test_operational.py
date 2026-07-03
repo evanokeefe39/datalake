@@ -3,7 +3,7 @@
 Per test-hardening plan Phase 3:
 - Schedule ``daily_medallion`` loads without error
 - Schedule target list matches actual asset keys
-- Ad-hoc run sequence: ``ig_posts_slv`` → ``ig_posts_gld_enqueue`` → serving, verify each step
+- Ad-hoc run sequence: ``ig_posts_slv`` → ``ig_posts_gld_batches`` → serving, verify each step
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from dagster import build_asset_context, build_schedule_context
 
 from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.common.schedules import daily_medallion
-from datalake.defs.instagram.assets import ig_posts_gld_enqueue, ig_posts_slv
-from datalake.defs.serving.assets import analytics_views, profile_dimension
+from datalake.defs.instagram.assets import ig_posts_gld_batches, ig_posts_slv
+from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ def _run_silver(duckdb, bronze_dir):
 def _run_enqueue(duckdb, ops_db):
     from datalake.defs.instagram.config import GoldConfig
 
-    return ig_posts_gld_enqueue(config=GoldConfig(), duckdb=duckdb, ops=ops_db)
+    return ig_posts_gld_batches(config=GoldConfig(), duckdb=duckdb, ops=ops_db)
 
 
 def _run_profile_dimension(duckdb):
@@ -38,9 +38,9 @@ def _run_profile_dimension(duckdb):
     profile_dimension(ctx)
 
 
-def _run_analytics_views(duckdb):
+def _run_serving_views(duckdb):
     ctx = build_asset_context(resources={"duckdb": duckdb})
-    analytics_views(ctx)
+    v_post_detail(ctx)
 
 
 
@@ -69,9 +69,9 @@ def test_schedule_target_matches_asset_keys():
     target_repr = repr(daily_medallion.target)
     # Bronze is on-demand; schedule drives silver → enqueue → serving
     assert "ig_posts_slv" in target_repr
-    assert "ig_posts_gld_enqueue" in target_repr
+    assert "ig_posts_gld_batches" in target_repr
     assert "dim_profile" in target_repr
-    assert "analytics_views" in target_repr
+    assert "v_post_detail" in target_repr
     assert "ig_posts_raw" not in target_repr
 
 

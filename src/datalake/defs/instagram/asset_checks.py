@@ -214,6 +214,34 @@ def _ig_posts_slv_row_count_bounded(context) -> AssetCheckResult:
     )
 
 
+@asset_check(
+    asset="ig_posts_slv",
+    name="ig_posts_slv_owner_not_null",
+    required_resource_keys={"duckdb"},
+    description="Fail if any owner_username is null — every post must have an owner.",
+)
+def _ig_posts_slv_owner_not_null(context) -> AssetCheckResult:
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM silver_ig_posts").fetchone()[0]
+        null_count = conn.execute(
+            "SELECT COUNT(*) FROM silver_ig_posts WHERE owner_username IS NULL"
+        ).fetchone()[0]
+    null_pct = (null_count / total * 100) if total > 0 else 0
+    if null_pct > 0:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=f"{null_count}/{total} rows ({null_pct:.1f}%) have null owner_username. "
+                         "Profile-scraped rows should fall back to the username column.",
+            metadata={"total_rows": total, "null_count": null_count, "null_pct": null_pct},
+        )
+    return AssetCheckResult(
+        passed=True,
+        metadata={"total_rows": total, "null_count": null_count, "null_pct": null_pct},
+    )
+
+
 # ── Gold checks ────────────────────────────────────────────────────────────
 #
 # These checks target ``gold_analyses`` (the enrichment worker's output),
@@ -307,6 +335,7 @@ ig_checks = [
     _ig_posts_raw_run_id_not_null,
     _ig_posts_slv_no_duplicates,
     _ig_posts_slv_row_count_bounded,
+    _ig_posts_slv_owner_not_null,
     _ig_posts_gld_valid_admiralty,
     _ig_posts_gld_valid_json,
 ]

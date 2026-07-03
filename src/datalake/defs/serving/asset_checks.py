@@ -116,24 +116,24 @@ def _dim_profile_no_gaps(context) -> AssetCheckResult:
     return AssetCheckResult(passed=True)
 
 
-# ── analytics_views check ──────────────────────────────────────────────────
+# ── v_post_detail check ──────────────────────────────────────────────────────
 
 
 @asset_check(
-    asset="analytics_views",
-    name="analytics_views_row_count_positive",
+    asset="v_post_detail",
+    name="v_post_detail_row_count_positive",
     required_resource_keys={"duckdb"},
-    description="View returns at least one row when data exists.",
+    description="Foundational view returns at least one row when data exists.",
 )
-def _analytics_views_row_count_positive(context) -> AssetCheckResult:
+def _v_post_detail_row_count_positive(context) -> AssetCheckResult:
     duckdb = context.resources.duckdb
     with duckdb.get_connection() as conn:
-        count = conn.execute("SELECT COUNT(*) FROM analytics_views").fetchone()[0] or 0
+        count = conn.execute("SELECT COUNT(*) FROM v_post_detail").fetchone()[0] or 0
     if count == 0:
         return AssetCheckResult(
             passed=False,
             severity=AssetCheckSeverity.WARN,
-            description="analytics_views returned 0 rows.",
+            description="v_post_detail returned 0 rows.",
             metadata={"row_count": 0},
         )
     return AssetCheckResult(
@@ -144,5 +144,5 @@ serving_checks = [
     _dim_profile_no_overlapping_intervals,
     _dim_profile_effective_range_valid,
     _dim_profile_no_gaps,
-    _analytics_views_row_count_positive,
+    _v_post_detail_row_count_positive,
 ]

@@ -56,10 +56,29 @@ EXPECTED_DUCKDB: dict[str, dict[str, str]] = {
         "effective_to": "TIMESTAMP",
         "is_current": "BOOLEAN",
     },
+    "dim_date": {
+        "date": "DATE",
+        "year": "BIGINT",
+        "quarter": "BIGINT",
+        "month_number": "BIGINT",
+        "month_name": "VARCHAR",
+        "week_number": "BIGINT",
+        "day_number": "BIGINT",
+        "day_of_week": "VARCHAR",
+        "is_weekend": "BOOLEAN",
+        "financial_year": "BIGINT",
+    },
 }
 
 EXPECTED_DUCKDB_VIEWS: list[str] = [
-    "analytics_views",
+    "v_post_detail",
+    "v_signal",
+    "v_quality_trend",
+    "v_profile_quality",
+    "v_domain_coverage",
+    "v_engagement_outliers",
+    "v_outlier_posts",
+    "v_creator_outlier_rate",
 ]
 
 # ── SQLite (data/ops.sqlite) ─────────────────────────────────────────────

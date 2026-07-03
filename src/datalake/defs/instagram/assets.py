@@ -121,6 +121,7 @@ _BRONZE_TO_SILVER: dict[str, str] = {
     "mentions": "mentions",
     "taggedUsers": "tagged_users",
     "latestComments": "latest_comments",
+    "username": "username",
     "timestamp": "timestamp",
 }
 
@@ -248,6 +249,16 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             if col not in df.columns:
                 df = df.with_columns(pl.lit(default).alias(col))
 
+        # Coalesce owner_username from username when ownerUsername is null.
+        # Profile-scraped rows have the author's handle in username, not ownerUsername.
+        if "username" in df.columns:
+            df = df.with_columns(
+                pl.when(pl.col("owner_username").is_null())
+                .then(pl.col("username"))
+                .otherwise(pl.col("owner_username"))
+                .alias("owner_username")
+            )
+
         # Serialize list-type columns to JSON strings for DuckDB TEXT columns.
         # map_elements on a List column passes each inner list as a Series.
         for col in _LIST_COLUMNS:
@@ -349,12 +360,12 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
 
 
 @asset(
-    name="ig_posts_gld_enqueue",
+    name="ig_posts_gld_batches",
     group_name="instagram",
     description="Enqueue unenriched silver posts for async Gemini enrichment.",
     deps=["ig_posts_slv"],
 )
-def ig_posts_gld_enqueue(
+def ig_posts_gld_batches(
     config: GoldConfig,
     duckdb: DuckDBResource,
     ops: SQLiteResource,

@@ -21,9 +21,9 @@ from datetime import datetime
 from dagster import build_asset_context
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
-from datalake.defs.instagram.assets import ig_posts_gld_enqueue, ig_posts_slv
+from datalake.defs.instagram.assets import ig_posts_gld_batches, ig_posts_slv
 from datalake.defs.instagram.config import GoldConfig
-from datalake.defs.serving.assets import analytics_views, profile_dimension
+from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
 
 logger = logging.getLogger("run_pipeline")
 
@@ -142,8 +142,8 @@ def run_silver(duckdb: DuckDBResource) -> int:
 
 
 def run_enqueue(duckdb: DuckDBResource, ops: SQLiteResource) -> int:
-    print("\n--- Enqueue (ig_posts_gld_enqueue) ---")
-    result = ig_posts_gld_enqueue(
+    print("\n--- Enqueue (ig_posts_gld_batches) ---")
+    result = ig_posts_gld_batches(
         config=GoldConfig(),
         duckdb=duckdb,
         ops=ops,
@@ -154,12 +154,14 @@ def run_enqueue(duckdb: DuckDBResource, ops: SQLiteResource) -> int:
 
 
 def run_serving(duckdb: DuckDBResource) -> None:
-    print("\n--- Serving (dim_profile + analytics_views) ---")
+    print("\n--- Serving (dim_date + dim_profile + v_post_detail) ---")
     ctx = build_asset_context(resources={"duckdb": duckdb})
+    dim_date(ctx)
+    print("  dim_date done")
     profile_dimension(ctx)
     print("  dim_profile done")
-    analytics_views(ctx)
-    print("  analytics_views done")
+    v_post_detail(ctx)
+    print("  v_post_detail done (cascades to all downstream views)")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────
