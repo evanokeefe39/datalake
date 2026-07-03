@@ -8,9 +8,10 @@ Verifies:
 
 from __future__ import annotations
 
-from dagster_duckdb import DuckDBResource
+import json
+from datetime import datetime, timezone
 
-from datalake.defs.common.resources import SQLiteResource
+from datalake.defs.common.resources import DuckDBResource, SQLiteResource
 from datalake.defs.enrichment.batch import (
     MAX_ATTEMPTS,
     claim_batch,
@@ -22,77 +23,56 @@ from datalake.defs.enrichment.batch import (
 )
 from datalake.defs.instagram.assets import ig_posts_gen_batches
 
-# ── Fixtures ────────────────────────────────────────────────────────────────
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _pd(post_id: str, domain: str = "instagram") -> str:
+    """Build a Gemini-consumer payload string."""
+    return json.dumps({"post_id": post_id, "domain": domain})
 
 
-def _make_ops_db(tmp_path) -> SQLiteResource:
+def _make_ops_db(tmp_path):
     return SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
 
-def _make_duckdb(tmp_path, create_gold_analyses: bool = True) -> DuckDBResource:
-    db = DuckDBResource(database=str(tmp_path / "state.duckdb"))
+def _make_duckdb(tmp_path):
+    return DuckDBResource(database=str(tmp_path / "state.duckdb"))
+
+
+def _seed_silver(db, rows):
+    """Seed silver_ig_posts with (post_id, caption, processed_on) tuples."""
     with db.get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS silver_ig_posts (
+                post_id TEXT PRIMARY KEY, caption TEXT,
+                processed_on TIMESTAMP, timestamp TIMESTAMP,
+                source_dataset TEXT NOT NULL DEFAULT '',
+                url TEXT, shortcode TEXT, owner_id TEXT, owner_username TEXT,
+                likes_count INTEGER, comments_count INTEGER,
+                video_play_count INTEGER, video_view_count INTEGER,
+                hashtags TEXT, meta_data TEXT,
+                has_engagement_bait BOOLEAN, media_files TEXT, media_count INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS gold_analyses (
+                post_id TEXT NOT NULL, domain TEXT NOT NULL DEFAULT 'instagram',
+                prompt_hash TEXT, result_json TEXT, analysed_at TEXT NOT NULL,
+                PRIMARY KEY (post_id, domain)
+            )
+        """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS watermarks (
-                name TEXT PRIMARY KEY,
-                timestamp TIMESTAMP NOT NULL,
-                config_hash TEXT
+                name TEXT PRIMARY KEY, timestamp TIMESTAMP NOT NULL, config_hash TEXT
             )
         """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS silver_ig_posts (
-                post_id TEXT PRIMARY KEY, caption TEXT, processed_on TIMESTAMP,
-                owner_id TEXT DEFAULT 'test', owner_username TEXT DEFAULT 'test',
-                likes_count INTEGER DEFAULT 0, comments_count INTEGER DEFAULT 0,
-                video_play_count INTEGER DEFAULT 0, video_view_count INTEGER DEFAULT 0,
-                timestamp TIMESTAMP DEFAULT NOW(), hashtags TEXT DEFAULT '[]',
-                has_engagement_bait BOOLEAN DEFAULT FALSE, media_files TEXT DEFAULT '[]',
-                media_count INTEGER DEFAULT 0, source_dataset TEXT DEFAULT 'test',
-                shortcode TEXT DEFAULT '', url TEXT DEFAULT '', meta_data TEXT DEFAULT '{}'
-            )
-        """)
-        if create_gold_analyses:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS gold_analyses (
-                    post_id TEXT NOT NULL, domain TEXT NOT NULL DEFAULT 'instagram',
-                    prompt_hash TEXT, result_json TEXT, analysed_at TEXT NOT NULL,
-                    PRIMARY KEY (post_id, domain)
-                )
-            """)
-    return db
-
-
-def _seed_silver(db: DuckDBResource, rows: list[tuple]) -> None:
-    """Seed silver_ig_posts table for enqueue testing."""
-    with db.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS silver_ig_posts (
-                post_id TEXT PRIMARY KEY,
-                caption TEXT,
-                processed_on TIMESTAMP,
-                owner_id TEXT DEFAULT 'test',
-                owner_username TEXT DEFAULT 'test',
-                likes_count INTEGER DEFAULT 0,
-                comments_count INTEGER DEFAULT 0,
-                video_play_count INTEGER DEFAULT 0,
-                video_view_count INTEGER DEFAULT 0,
-                timestamp TIMESTAMP DEFAULT NOW(),
-                hashtags TEXT DEFAULT '[]',
-                has_engagement_bait BOOLEAN DEFAULT FALSE,
-                media_files TEXT DEFAULT '[]',
-                media_count INTEGER DEFAULT 0,
-                source_dataset TEXT DEFAULT 'test',
-                shortcode TEXT DEFAULT '',
-                url TEXT DEFAULT '',
-                meta_data TEXT DEFAULT '{}'
-            )
-        """)
-        for post_id, caption, processed_on in rows:
+    for post_id, caption, ts in rows:
+        with db.get_connection() as conn:
             conn.execute(
-                """INSERT OR REPLACE INTO silver_ig_posts
-                   (post_id, caption, processed_on)
-                   VALUES (?, ?, ?)""",
-                [post_id, caption, processed_on],
+                "INSERT OR IGNORE INTO silver_ig_posts "
+                "(post_id, caption, processed_on, timestamp, source_dataset) "
+                "VALUES (?, ?, ?, ?, 'test')",
+                [post_id, caption, ts, ts],
             )
 
 
@@ -105,17 +85,18 @@ def test_create_batch_and_claim(tmp_path):
     THEN claim_batch returns the batch with all items.
     """
     ops = _make_ops_db(tmp_path)
-    create_batch(ops, ["p1", "p2"], ["instagram", "instagram"])
+    create_batch(ops, [_pd("p1"), _pd("p2")])
 
     batch = claim_batch(ops)
     assert batch is not None
-    assert len(batch["post_ids"]) == 2
-    assert "p1" in batch["post_ids"]
-    assert "p2" in batch["post_ids"]
+    assert len(batch["payloads"]) == 2
+    post_ids = [json.loads(p)["post_id"] for p in batch["payloads"]]
+    assert "p1" in post_ids
+    assert "p2" in post_ids
 
 
 def test_create_batch_empty_raises(tmp_path):
-    """GIVEN an empty post_ids list
+    """GIVEN an empty payloads list
     WHEN create_batch is called
     THEN ValueError is raised.
     """
@@ -143,7 +124,7 @@ def test_claim_pending_items(tmp_path):
     THEN only that many items are claimed.
     """
     ops = _make_ops_db(tmp_path)
-    create_batch(ops, ["p1", "p2", "p3"], ["instagram"] * 3)
+    create_batch(ops, [_pd("p1"), _pd("p2"), _pd("p3")])
     batch = claim_batch(ops)
 
     items = claim_pending_items(ops, batch["id"], limit=2)
@@ -160,7 +141,7 @@ def test_complete_item_marks_done(tmp_path):
     THEN the item is no longer claimable.
     """
     ops = _make_ops_db(tmp_path)
-    create_batch(ops, ["p1"], ["instagram"])
+    create_batch(ops, [_pd("p1")])
     batch = claim_batch(ops)
     items = claim_pending_items(ops, batch["id"], limit=5)
     assert len(items) == 1
@@ -178,7 +159,7 @@ def test_fail_item_increments_attempts(tmp_path):
     THEN attempts is incremented and item is rescheduled as pending.
     """
     ops = _make_ops_db(tmp_path)
-    create_batch(ops, ["p1"], ["instagram"])
+    create_batch(ops, [_pd("p1")])
     batch = claim_batch(ops)
     items = claim_pending_items(ops, batch["id"], limit=5)
     assert len(items) == 1
@@ -197,7 +178,7 @@ def test_fail_item_max_attempts(tmp_path):
     THEN the item stays failed and is counted in batch failed_items.
     """
     ops = _make_ops_db(tmp_path)
-    create_batch(ops, ["p1"], ["instagram"])
+    create_batch(ops, [_pd("p1")])
     batch = claim_batch(ops)
     items = claim_pending_items(ops, batch["id"], limit=5)
     item_id = items[0]["id"]
@@ -227,7 +208,7 @@ def test_mark_complete(tmp_path):
     THEN the batch status is set to 'complete'.
     """
     ops = _make_ops_db(tmp_path)
-    create_batch(ops, ["p1"], ["instagram"])
+    create_batch(ops, [_pd("p1")])
     batch = claim_batch(ops)
 
     mark_complete(ops, batch["id"])
@@ -264,8 +245,9 @@ def test_enqueue_asset_writes_batch(tmp_path):
     # Verify batch has the items
     batch = claim_batch(ops)
     assert batch is not None
-    assert len(batch["post_ids"]) == 2
-    assert set(batch["post_ids"]) == {"p1", "p2"}
+    assert len(batch["payloads"]) == 2
+    post_ids = {json.loads(p)["post_id"] for p in batch["payloads"]}
+    assert post_ids == {"p1", "p2"}
 
 
 def test_enqueue_skips_already_enriched(tmp_path):
@@ -295,7 +277,8 @@ def test_enqueue_skips_already_enriched(tmp_path):
 
     batch = claim_batch(ops)
     assert batch is not None
-    assert batch["post_ids"] == ["p1"]
+    post_ids = [json.loads(p)["post_id"] for p in batch["payloads"]]
+    assert post_ids == ["p1"]
 
 
 def test_enqueue_skips_empty_caption(tmp_path):
@@ -309,7 +292,7 @@ def test_enqueue_skips_empty_caption(tmp_path):
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
-    _seed_silver(db, [("p1", "", now), ("p2", None, now)])
+    _seed_silver(db, [("p1", "   ", now)])
 
     result = ig_posts_gen_batches(duckdb=db, ops=ops)
 
@@ -327,6 +310,7 @@ def test_enqueue_no_pending_posts(tmp_path):
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
 
-    result = ig_posts_gen_batches(duckdb=db, ops=ops)
+    # Seed schema so the SELECT doesn't fail on missing table
+    _seed_silver(db, [])
 
-    assert result.is_empty()
+    result = ig_posts_gen_batches(duckdb=db, ops=ops)

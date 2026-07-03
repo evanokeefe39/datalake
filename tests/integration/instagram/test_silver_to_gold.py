@@ -6,6 +6,8 @@ DuckDB) and ``ig_posts_gen_batches`` (batch-based enqueuer).
 
 from __future__ import annotations
 
+import json
+
 from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
@@ -56,8 +58,8 @@ def test_enqueue_reads_silver_output(tmp_path):
     # Verify queue
     batch = claim_batch(ops)
     assert batch is not None
-    assert len(batch["post_ids"]) == 1
-    assert batch["post_ids"][0] == "p1"
+    assert len(batch["payloads"]) == 1
+    assert json.loads(batch["payloads"][0])["post_id"] == "p1"
 
 
 def test_enqueue_skips_already_completed(tmp_path):

@@ -396,9 +396,12 @@ def ig_posts_gen_batches(
 ) -> pl.DataFrame:
     """Read unenriched silver posts, create a batch, advance watermark.
 
+    Builds Gemini-consumer payloads: ``{"post_id": ..., "domain": "instagram"}``.
     Does NOT call Gemini — the enrichment worker handles that async.
     Watermark advances once after all posts are batched.
     """
+    import json
+
     from datalake.defs.enrichment.batch import create_batch
 
     db = duckdb
@@ -420,22 +423,21 @@ def ig_posts_gen_batches(
         """).fetchall()
 
     if not pending:
-        # All posts enriched — return empty summary
         return pl.DataFrame({"enqueued": pl.Series([], dtype=pl.Int32)})
 
-    # Collect post_ids with non-empty captions
-    post_ids = []
+    # Collect post_ids with non-empty captions, build Gemini payloads
+    payloads = []
     max_processed = None
     for post_id, caption, processed_on in pending:
         if not (caption or "").strip():
-            continue  # Empty caption — skip; worker will skip these
-        post_ids.append(post_id)
+            continue
+        payloads.append(json.dumps({"post_id": post_id, "domain": "instagram"}))
         if max_processed is None or processed_on > max_processed:
             max_processed = processed_on
 
     # Create single batch for all posts
-    if post_ids:
-        create_batch(ops, post_ids, consumer="gemini")
+    if payloads:
+        create_batch(ops, payloads, consumer="gemini")
 
     # Advance watermark once after all batched
     if max_processed is not None:
@@ -446,7 +448,7 @@ def ig_posts_gen_batches(
                 [max_processed],
             )
 
-    return pl.DataFrame({"enqueued": pl.Series([len(post_ids)], dtype=pl.Int32)})
+    return pl.DataFrame({"enqueued": pl.Series([len(payloads)], dtype=pl.Int32)})
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────

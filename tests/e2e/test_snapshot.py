@@ -82,7 +82,7 @@ def test_enqueue_enqueues_silver_posts(db, ops_db, bronze_dir):
     # Verify queue
     batch = claim_batch(ops_db)
     assert batch is not None
-    assert len(batch["post_ids"]) >= 1
+    assert len(batch["payloads"]) >= 1
 
 
 def test_serving_runs_on_empty_gold(db, bronze_dir):

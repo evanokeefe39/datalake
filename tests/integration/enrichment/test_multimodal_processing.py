@@ -10,6 +10,8 @@ Success criterion on PR #7: this test must pass.
 
 from __future__ import annotations
 
+import json
+
 from unittest.mock import MagicMock, patch
 
 from dagster_duckdb import DuckDBResource
@@ -82,7 +84,7 @@ def test_worker_passes_media_uri_to_gemini(tmp_path):
     )
 
     _ensure_schema(ops)
-    job_id = create_batch(ops, ["vid1"], ["instagram"])
+    job_id = create_batch(ops, [json.dumps({"post_id": "vid1", "domain": "instagram"})])
     claim_batch(ops)
     items = claim_pending_items(ops, job_id, limit=1)
     item = items[0]
@@ -187,7 +189,7 @@ def test_video_post_without_media_files_still_works(tmp_path):
     )
 
     _ensure_schema(ops)
-    job_id = create_batch(ops, ["txt1"], ["instagram"])
+    job_id = create_batch(ops, [json.dumps({"post_id": "txt1", "domain": "instagram"})])
     claim_batch(ops)
     items = claim_pending_items(ops, job_id, limit=1)
     item = items[0]

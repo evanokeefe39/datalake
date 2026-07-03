@@ -1,11 +1,9 @@
-"""Batch abstraction for enrichment processing.
+"""Batch abstraction for enrichment processing — generic work queue.
 
-Replaces the old enrichment_queue table with a batch-level model:
-  - ``batch_jobs`` — one row per batch submission
-  - ``batch_items`` — one row per item within a batch
-
-The enqueue asset creates a batch. The standalone worker claims it, processes
-each item, and POSTs materialization events to Dagster when done.
+batch_items stores consumer-agnostic JSON payloads. Each consumer
+defines its own payload schema. The Gemini consumer uses
+``{"post_id": "...", "domain": "instagram"}``; a transcription
+consumer might use ``{"video_id": "...", "language": "en"}``.
 """
 
 from __future__ import annotations
@@ -30,14 +28,13 @@ CREATE TABLE IF NOT EXISTS batch_jobs (
 CREATE TABLE IF NOT EXISTS batch_items (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id      INTEGER NOT NULL REFERENCES batch_jobs(id),
-    post_id     TEXT NOT NULL,
-    domain      TEXT NOT NULL DEFAULT 'instagram',
+    payload     TEXT NOT NULL,
     status      TEXT NOT NULL DEFAULT 'pending',
     attempts    INTEGER NOT NULL DEFAULT 0,
     error       TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
-    UNIQUE(job_id, post_id, domain)
+    UNIQUE(job_id, payload)
 );
 
 CREATE INDEX IF NOT EXISTS idx_batch_items_job_status
@@ -70,28 +67,18 @@ def _ensure_schema(ops: SQLiteResource) -> None:
 
 def create_batch(
     ops: SQLiteResource,
-    post_ids: list[str],
-    domains: list[str] | None = None,
+    payloads: list[str],
     consumer: str = "gemini",
 ) -> int:
-    """Create a new batch job with items. Returns the new job_id.
+    """Create a new batch job with payload items. Returns the new job_id.
 
-    Each (post_id, domain) pair becomes a batch_items row.
-    ``consumer`` tags the batch for a specific downstream service
-    (e.g. ``"gemini"``, ``"transcription"``).
+    Each payload is a JSON string the consumer knows how to interpret.
+    ``consumer`` tags the batch so workers only claim their own.
 
-    Raises ValueError if post_ids and domains lengths mismatch.
+    Raises ValueError if payloads is empty.
     """
-    if not post_ids:
-        raise ValueError("post_ids must not be empty")
-
-    if domains is None:
-        domains = ["instagram"] * len(post_ids)
-
-    if len(post_ids) != len(domains):
-        raise ValueError(
-            f"post_ids ({len(post_ids)}) and domains ({len(domains)}) length mismatch"
-        )
+    if not payloads:
+        raise ValueError("payloads must not be empty")
 
     _ensure_schema(ops)
     now = _now_iso()
@@ -100,15 +87,15 @@ def create_batch(
         cur = conn.execute(
             "INSERT INTO batch_jobs (consumer, status, created_at, total_items) "
             "VALUES (?, 'pending', ?, ?)",
-            [consumer, now, len(post_ids)],
+            [consumer, now, len(payloads)],
         )
         job_id = cur.lastrowid
 
         conn.executemany(
             "INSERT OR IGNORE INTO batch_items "
-            "(job_id, post_id, domain, status, attempts, created_at, updated_at) "
-            "VALUES (?, ?, ?, 'pending', 0, ?, ?)",
-            [(job_id, pid, dom, now, now) for pid, dom in zip(post_ids, domains)],
+            "(job_id, payload, status, attempts, created_at, updated_at) "
+            "VALUES (?, ?, 'pending', 0, ?, ?)",
+            [(job_id, p, now, now) for p in payloads],
         )
         conn.commit()
         return job_id
@@ -120,7 +107,7 @@ def claim_batch(ops: SQLiteResource, consumer: str = "gemini") -> dict | None:
     """Claim the oldest pending batch for the given consumer.
 
     Returns None if no pending batches exist for this consumer.
-    Returns dict with keys: id, post_ids, domains, consumer.
+    Returns dict with keys: id, consumer, payloads (list of JSON strings).
     Sets batch status to 'processing'.
     """
     _ensure_schema(ops)
@@ -143,7 +130,7 @@ def claim_batch(ops: SQLiteResource, consumer: str = "gemini") -> dict | None:
         )
 
         items = conn.execute(
-            "SELECT post_id, domain FROM batch_items WHERE job_id = ? ORDER BY id",
+            "SELECT payload FROM batch_items WHERE job_id = ? ORDER BY id",
             [job_id],
         ).fetchall()
 
@@ -151,8 +138,7 @@ def claim_batch(ops: SQLiteResource, consumer: str = "gemini") -> dict | None:
         return {
             "id": job_id,
             "consumer": consumer,
-            "post_ids": [r[0] for r in items],
-            "domains": [r[1] for r in items],
+            "payloads": [r[0] for r in items],
         }
     finally:
         conn.close()
@@ -163,14 +149,14 @@ def claim_pending_items(
 ) -> list[dict]:
     """Claim up to ``limit`` pending items from a processing batch.
 
-    Returns list of dicts with keys: id, post_id, domain.
+    Returns list of dicts with keys: id, payload.
     Sets item status to 'processing'.
     """
     _ensure_schema(ops)
     conn = ops.get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, post_id, domain FROM batch_items "
+            "SELECT id, payload FROM batch_items "
             "WHERE job_id = ? AND status = 'pending' "
             "ORDER BY id LIMIT ?",
             [job_id, limit],
@@ -189,7 +175,7 @@ def claim_pending_items(
         conn.commit()
 
         return [
-            {"id": r[0], "post_id": r[1], "domain": r[2]}
+            {"id": r[0], "payload": r[1]}
             for r in rows
         ]
     finally:

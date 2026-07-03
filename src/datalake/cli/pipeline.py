@@ -54,9 +54,13 @@ def _run_update_stale(ops: SQLiteResource) -> int:
         print("  No stale analyses found.")
         return 0
 
-    post_ids = [r[0] for r in stale_rows]
-    domains = [r[1] for r in stale_rows]
-    create_batch(ops, post_ids, domains, consumer="gemini")
+    import json
+
+    payloads = [
+        json.dumps({"post_id": r[0], "domain": r[1]})
+        for r in stale_rows
+    ]
+    create_batch(ops, payloads, consumer="gemini")
     print(f"  Created batch with {len(stale_rows)} stale analyses for re-processing")
     return len(stale_rows)
 

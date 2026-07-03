@@ -8,6 +8,8 @@ Per test-hardening plan Phase 3:
 
 from __future__ import annotations
 
+import json
+
 from unittest.mock import patch
 
 from dagster import build_asset_context, build_schedule_context
@@ -123,5 +125,5 @@ def test_ad_hoc_run_sequence(tmp_path):
 
     batch = claim_batch(ops_db)
     assert batch is not None
-    assert len(batch["post_ids"]) == 1
-    assert batch["post_ids"][0] == "p1"
+    assert len(batch["payloads"]) == 1
+    assert json.loads(batch["payloads"][0])["post_id"] == "p1"

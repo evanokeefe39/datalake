@@ -166,8 +166,9 @@ def process_item(
     - Quota exhausted → raises to caller for global reschedule
     - Max attempts → dead letter
     """
-    post_id = item["post_id"]
-    domain = item["domain"]
+    payload = json.loads(item["payload"])
+    post_id = payload["post_id"]
+    domain = payload["domain"]
     item_id = item["id"]
 
     table = _SILVER_TABLES.get(domain)
@@ -272,7 +273,7 @@ def process_batch(
     with backoff, and max-attempt dead letter routing.
     """
     job_id = batch["id"]
-    all_post_ids = batch["post_ids"]
+    all_payloads = batch["payloads"]
 
     if dry_run:
         progress = batch_progress(ops, job_id)
@@ -290,7 +291,7 @@ def process_batch(
 
     total_processed = 0
     total_failed = 0
-    items_to_process = limit if limit else len(all_post_ids)
+    items_to_process = limit if limit else len(all_payloads)
     processed_count = 0
 
     while processed_count < items_to_process:
@@ -303,6 +304,11 @@ def process_batch(
             if processed_count >= items_to_process:
                 break
 
+            # Extract identity from payload for logging/error routing
+            item_payload = json.loads(item["payload"])
+            item["_post_id"] = item_payload["post_id"]
+            item["_domain"] = item_payload["domain"]
+
             try:
                 success = process_item(ops, duckdb, gemini, item)
                 if success:
@@ -310,7 +316,6 @@ def process_batch(
                 else:
                     total_failed += 1
                 processed_count += 1
-
             except Exception as exc:
                 error_text = str(exc)
 
@@ -322,15 +327,15 @@ def process_batch(
                     )
                     logger.warning(
                         "File API error on %s (attempt %d): %s",
-                        item["post_id"], attempts, error_text[:120],
+                        item["_post_id"], attempts, error_text[:120],
                     )
                     if attempts >= MAX_ATTEMPTS:
                         _dead_letter_insert(
-                            ops, item["post_id"], item["domain"], error_text, attempts,
+                            ops, item["_post_id"], item["_domain"], error_text, attempts,
                         )
                         logger.error(
                             "Post %s moved to dead_letter after %d File API attempts",
-                            item["post_id"], attempts,
+                            item["_post_id"], attempts,
                         )
                     total_failed += 1
                     processed_count += 1
@@ -362,7 +367,7 @@ def process_batch(
                     )
                     logger.warning(
                         "Rate limited on %s (attempt %d) — rescheduled",
-                        item["post_id"], attempts,
+                        item["_post_id"], attempts,
                     )
                 else:
                     attempts = fail_item(ops, item["id"], error_text, backoff=0)
@@ -370,11 +375,11 @@ def process_batch(
                 # Dead letter check
                 if attempts >= MAX_ATTEMPTS:
                     _dead_letter_insert(
-                        ops, item["post_id"], item["domain"], error_text, attempts,
+                        ops, item["_post_id"], item["_domain"], error_text, attempts,
                     )
                     logger.error(
                         "Post %s moved to dead_letter after %d attempts: %s",
-                        item["post_id"], attempts, error_text,
+                        item["_post_id"], attempts, error_text,
                     )
 
                 total_failed += 1
@@ -502,7 +507,7 @@ def main() -> None:
 
     # Claim or use specified batch
     if args.batch_id:
-        batch = {"id": args.batch_id, "post_ids": [], "domains": [], "consumer": "gemini"}
+        batch = {"id": args.batch_id, "payloads": [], "consumer": "gemini"}
         # Load items for the specified batch
         from datalake.defs.enrichment.batch import _ensure_schema
 
@@ -510,14 +515,13 @@ def main() -> None:
         conn = ops.get_connection()
         try:
             items = conn.execute(
-                "SELECT post_id, domain FROM batch_items WHERE job_id = ? ORDER BY id",
+                "SELECT payload FROM batch_items WHERE job_id = ? ORDER BY id",
                 [args.batch_id],
             ).fetchall()
             if not items:
                 logger.error("Batch %d not found or has no items.", args.batch_id)
                 sys.exit(1)
-            batch["post_ids"] = [r[0] for r in items]
-            batch["domains"] = [r[1] for r in items]
+            batch["payloads"] = [r[0] for r in items]
         finally:
             conn.close()
     else:
@@ -529,7 +533,7 @@ def main() -> None:
 
         logger.info(
             "Claimed batch %d with %d items",
-            batch["id"], len(batch["post_ids"]),
+            batch["id"], len(batch["payloads"]),
         )
 
     # Process

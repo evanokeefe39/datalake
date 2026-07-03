@@ -77,7 +77,7 @@ def test_full_pipeline_happy_path(tmp_path):
     # Verify batch was created
     batch = claim_batch(ops)
     assert batch is not None
-    assert len(batch["post_ids"]) == 3
+    assert len(batch["payloads"]) == 3
 
     # Serving (should run even with empty gold_analyses)
     _run_serving(duckdb)
