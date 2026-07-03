@@ -1,6 +1,8 @@
 data/lake/
 data/state.duckdb
 data/state.duckdb.wal
+data/state.duckdb-shm
+data/state.*.duckdb
 data/lake/bronze/*.jsonl
 data/lake/bronze/*.meta
 __pycache__/
