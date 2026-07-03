@@ -43,7 +43,7 @@ gold_analyses = AssetSpec(
     key=AssetKey("gold_analyses"),
     group_name="enrichment",
     description="Enriched social media posts — multi-domain gold layer.",
-    deps=[AssetKey("ig_posts_slv")],
+    deps=[AssetKey("ig_posts_slv"), AssetKey("ig_posts_gld_batches")],
 )
 
 

@@ -24,6 +24,7 @@ from dagster_duckdb import DuckDBResource
     name="dim_profile",
     group_name="serving",
     description="SCD2 profile dimension tracking owner attributes over time.",
+    deps=[AssetKey("ig_posts_slv")],
 )
 def profile_dimension(duckdb: DuckDBResource) -> None:
     """Upsert profile dimension with SCD2 tracking.
