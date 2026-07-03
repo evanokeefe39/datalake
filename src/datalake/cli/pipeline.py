@@ -8,7 +8,7 @@ import typer
 from dagster import build_asset_context
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
-from datalake.defs.instagram.assets import ig_posts_ext_api_batches, ig_posts_slv
+from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
 from datalake.defs.instagram.config import GoldConfig
 from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
 
@@ -74,8 +74,8 @@ def _run_silver(duckdb: DuckDBResource) -> int:
 
 
 def _run_enqueue(duckdb: DuckDBResource, ops: SQLiteResource) -> int:
-    print("\n--- Enqueue (ig_posts_ext_api_batches) ---")
-    result = ig_posts_ext_api_batches(
+    print("\n--- Enqueue (ig_posts_gen_batches) ---")
+    result = ig_posts_gen_batches(
         config=GoldConfig(), duckdb=duckdb, ops=ops
     )
     n = result["enqueued"][0] if len(result) > 0 else 0

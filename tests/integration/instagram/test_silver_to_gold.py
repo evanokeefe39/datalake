@@ -1,7 +1,7 @@
 """Integration tests: silver DuckDB state → gold enqueue.
 
 Tests the cross-asset boundary between ``ig_posts_slv`` (silver output in
-DuckDB) and ``ig_posts_ext_api_batches`` (batch-based enqueuer).
+DuckDB) and ``ig_posts_gen_batches`` (batch-based enqueuer).
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.enrichment.batch import claim_batch
-from datalake.defs.instagram.assets import ig_posts_ext_api_batches, ig_posts_slv
+from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
 
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
@@ -28,12 +28,12 @@ def _run_silver(duckdb, bronze_dir):
 def _run_enqueue(duckdb, ops):
     from datalake.defs.instagram.config import GoldConfig
 
-    return ig_posts_ext_api_batches(config=GoldConfig(), duckdb=duckdb, ops=ops)
+    return ig_posts_gen_batches(config=GoldConfig(), duckdb=duckdb, ops=ops)
 
 
 def test_enqueue_reads_silver_output(tmp_path):
     """GIVEN silver has posts via bronze→silver pipeline
-    WHEN ig_posts_ext_api_batches runs
+    WHEN ig_posts_gen_batches runs
     THEN posts are enqueued in ops.sqlite.
     """
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
@@ -62,7 +62,7 @@ def test_enqueue_reads_silver_output(tmp_path):
 
 def test_enqueue_skips_already_completed(tmp_path):
     """GIVEN a post already in gold_analyses
-    WHEN ig_posts_ext_api_batches runs
+    WHEN ig_posts_gen_batches runs
     THEN it is not re-enqueued.
     """
     from datetime import datetime, timezone

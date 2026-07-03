@@ -2,7 +2,7 @@
 
 Verifies:
 - Batch operations (create_batch, claim_batch, complete_item, fail_item, reschedule)
-- ig_posts_ext_api_batches asset behaviour
+- ig_posts_gen_batches asset behaviour
 - SQLiteResource integration
 """
 
@@ -20,7 +20,7 @@ from datalake.defs.enrichment.batch import (
     fail_item,
     mark_complete,
 )
-from datalake.defs.instagram.assets import ig_posts_ext_api_batches
+from datalake.defs.instagram.assets import ig_posts_gen_batches
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -246,7 +246,7 @@ def test_mark_complete(tmp_path):
 
 def test_enqueue_asset_writes_batch(tmp_path):
     """GIVEN silver has unenriched posts
-    WHEN ig_posts_ext_api_batches runs
+    WHEN ig_posts_gen_batches runs
     THEN a batch is created and watermark advances.
     """
     db = _make_duckdb(tmp_path)
@@ -257,7 +257,7 @@ def test_enqueue_asset_writes_batch(tmp_path):
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "Test caption", now), ("p2", "Another caption", now)])
 
-    result = ig_posts_ext_api_batches(duckdb=db, ops=ops)
+    result = ig_posts_gen_batches(duckdb=db, ops=ops)
 
     assert result["enqueued"][0] == 2
 
@@ -270,7 +270,7 @@ def test_enqueue_asset_writes_batch(tmp_path):
 
 def test_enqueue_skips_already_enriched(tmp_path):
     """GIVEN silver has posts that already exist in gold_analyses
-    WHEN ig_posts_ext_api_batches runs
+    WHEN ig_posts_gen_batches runs
     THEN those posts are not batched.
     """
     db = _make_duckdb(tmp_path)
@@ -289,7 +289,7 @@ def test_enqueue_skips_already_enriched(tmp_path):
             ["p2", now.isoformat()],
         )
 
-    result = ig_posts_ext_api_batches(duckdb=db, ops=ops)
+    result = ig_posts_gen_batches(duckdb=db, ops=ops)
 
     assert result["enqueued"][0] == 1
 
@@ -300,7 +300,7 @@ def test_enqueue_skips_already_enriched(tmp_path):
 
 def test_enqueue_skips_empty_caption(tmp_path):
     """GIVEN silver has posts with empty captions
-    WHEN ig_posts_ext_api_batches runs
+    WHEN ig_posts_gen_batches runs
     THEN empty-caption posts are not batched.
     """
     db = _make_duckdb(tmp_path)
@@ -311,7 +311,7 @@ def test_enqueue_skips_empty_caption(tmp_path):
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "", now), ("p2", None, now)])
 
-    result = ig_posts_ext_api_batches(duckdb=db, ops=ops)
+    result = ig_posts_gen_batches(duckdb=db, ops=ops)
 
     assert result["enqueued"][0] == 0
 
@@ -321,12 +321,12 @@ def test_enqueue_skips_empty_caption(tmp_path):
 
 def test_enqueue_no_pending_posts(tmp_path):
     """GIVEN no unenriched silver posts
-    WHEN ig_posts_ext_api_batches runs
+    WHEN ig_posts_gen_batches runs
     THEN it returns an empty DataFrame.
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
 
-    result = ig_posts_ext_api_batches(duckdb=db, ops=ops)
+    result = ig_posts_gen_batches(duckdb=db, ops=ops)
 
     assert result.is_empty()

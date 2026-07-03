@@ -22,7 +22,7 @@ from .defs.enrichment import (
 )
 from .defs.instagram import (
     ig_checks,
-    ig_posts_ext_api_batches,
+    ig_posts_gen_batches,
     ig_posts_raw,
     ig_posts_slv,
 )
@@ -48,7 +48,7 @@ all_resources = {
 all_assets = [
     ig_posts_raw,
     ig_posts_slv,
-    ig_posts_ext_api_batches,
+    ig_posts_gen_batches,
     gold_analyses,
     *serving_assets,
 ]
