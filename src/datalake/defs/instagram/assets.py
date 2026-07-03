@@ -24,6 +24,7 @@ from ..common.resources import (
     DuckDBResource,
     SQLiteResource,
 )
+from ..common.schemas import SILVER_COLUMNS
 from .config import GoldConfig, ScrapeConfig
 
 # ── Apify client (from old ig_pipeline) ───────────────────────────────────
@@ -129,12 +130,6 @@ _BRONZE_TO_SILVER: dict[str, str] = {
 # before Arrow → DuckDB insertion (DuckDB TEXT cannot store Polars List).
 _LIST_COLUMNS: set[str] = {"hashtags"}
 
-_SILVER_COLUMNS = [
-    "post_id", "shortcode", "url", "caption", "owner_id", "owner_username",
-    "likes_count", "comments_count", "video_play_count", "video_view_count",
-    "timestamp", "hashtags", "meta_data", "has_engagement_bait",
-    "media_files", "media_count", "source_dataset", "processed_on",
-]
 
 
 @asset(
@@ -187,13 +182,19 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
 
     bronze_files = sorted(BRONZE_LAKE.glob("*.parquet"))
     if not bronze_files:
-        return pl.DataFrame(schema={c: pl.Utf8 for c in _SILVER_COLUMNS})
+        return pl.DataFrame(schema={c: pl.Utf8 for c in SILVER_COLUMNS})
 
     with db.get_connection() as conn:
         row = conn.execute(
             "SELECT timestamp FROM watermarks WHERE name = 'silver_ig'"
         ).fetchone()
-    watermark_ts = row[0].timestamp() if row and row[0] is not None else 0.0
+    if row and row[0] is not None:
+        dt = row[0]
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        watermark_ts = dt.timestamp()
+    else:
+        watermark_ts = 0.0
 
     new_files = [f for f in bronze_files if _os.path.getmtime(f) > watermark_ts]
 
@@ -204,7 +205,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             ).fetchone()[0]
             if count == 0:
                 return pl.DataFrame(
-                    schema={c: pl.Utf8 for c in _SILVER_COLUMNS}
+                    schema={c: pl.Utf8 for c in SILVER_COLUMNS}
                 )
             reader = conn.execute(
                 "SELECT * FROM silver_ig_posts ORDER BY timestamp DESC"
@@ -249,15 +250,21 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             if col not in df.columns:
                 df = df.with_columns(pl.lit(default).alias(col))
 
-        # Coalesce owner_username from username when ownerUsername is null.
-        # Profile-scraped rows have the author's handle in username, not ownerUsername.
+        # Coalesce owner_username from username when ownerUsername is null or missing.
+        # Profile-scraped rows have the author's handle in username, not ownerUsername
+        # (and some profile-scraped files lack ownerUsername entirely).
         if "username" in df.columns:
-            df = df.with_columns(
-                pl.when(pl.col("owner_username").is_null())
-                .then(pl.col("username"))
-                .otherwise(pl.col("owner_username"))
-                .alias("owner_username")
-            )
+            if "owner_username" in df.columns:
+                df = df.with_columns(
+                    pl.when(pl.col("owner_username").is_null())
+                    .then(pl.col("username"))
+                    .otherwise(pl.col("owner_username"))
+                    .alias("owner_username")
+                )
+            else:
+                df = df.with_columns(
+                    pl.col("username").alias("owner_username")
+                )
 
         # Serialize list-type columns to JSON strings for DuckDB TEXT columns.
         # map_elements on a List column passes each inner list as a Series.
@@ -293,7 +300,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
 
         # Keep only silver columns (drop any Apify extras)
         df = df.select(
-            [c for c in _SILVER_COLUMNS if c in df.columns]
+            [c for c in SILVER_COLUMNS if c in df.columns]
         )
 
         # Drop rows without a valid post_id (failed Apify requests)
@@ -314,18 +321,40 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
                 "SELECT * FROM silver_ig_posts"
             ).arrow()
         existing_df = pl.from_arrow(existing_reader.read_all())
+
+        # Backfill null owner_username from reprocessed bronze data.
+        # Existing rows processed before the coalesce fix may have null
+        # owner_username even though the bronze file has a username fallback.
+        if frames:
+            new_owners = (
+                pl.concat(frames, how="diagonal_relaxed")
+                .select(["post_id", "owner_username"])
+                .filter(pl.col("owner_username").is_not_null())
+                .unique(subset=["post_id"])
+            )
+            existing_df = (
+                existing_df
+                .join(new_owners, on="post_id", how="left", suffix="_new")
+                .with_columns(
+                    pl.when(pl.col("owner_username").is_null())
+                    .then(pl.col("owner_username_new"))
+                    .otherwise(pl.col("owner_username"))
+                    .alias("owner_username")
+                )
+                .drop("owner_username_new")
+            )
+
         # Keep existing processed_on — new posts get NULL, stamped below
         frames.insert(0, existing_df)
 
     # ── 5. Union + dedup via DuckDB ───────────────────────────────────────
     if not frames:
         # All bronze files were empty or had only null-id rows
-        return pl.DataFrame(schema={c: pl.Utf8 for c in _SILVER_COLUMNS})
+        return pl.DataFrame(schema={c: pl.Utf8 for c in SILVER_COLUMNS})
     unified = pl.concat(frames, how="diagonal_relaxed")
     if unified.is_empty():
-        return pl.DataFrame(schema={c: pl.Utf8 for c in _SILVER_COLUMNS})
+        return pl.DataFrame(schema={c: pl.Utf8 for c in SILVER_COLUMNS})
     unified_arrow = unified.to_arrow()
-
     with db.get_connection() as conn:
         conn.register("unified", unified_arrow)
 

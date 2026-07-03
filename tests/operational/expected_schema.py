@@ -1,130 +1,22 @@
-"""Canonical schema catalog — single source of truth for all DB tables.
+"""Schema catalog — re-exports from the canonical ``datalake.defs.common.schemas``.
 
-This file DEFINES what tables, columns, and types the pipeline expects
-across both DuckDB and SQLite. Every other reference — DDL statements,
-AGENTS.md docs, migration scripts — derives from here.
-
-**DuckDB types** match ``information_schema.columns.data_type``
-(VARCHAR, INTEGER, TIMESTAMP, BOOLEAN, BIGINT, DOUBLE).
-
-**SQLite types** match ``PRAGMA table_info`` (TEXT, INTEGER, REAL).
+This file exists for backward compatibility and test imports. The single
+source of truth is ``src/datalake/defs/common/schemas.py``.
 """
 
 from __future__ import annotations
 
-# ── DuckDB (data/state.duckdb) ────────────────────────────────────────────
+from datalake.defs.common.schemas import (  # noqa: F401
+    DUCKDB_TABLES,
+    DUCKDB_VIEWS,
+    SILVER_COLUMNS,
+    SQLITE_TABLES,
+)
 
-EXPECTED_DUCKDB: dict[str, dict[str, str]] = {
-    "silver_ig_posts": {
-        "post_id": "VARCHAR",
-        "shortcode": "VARCHAR",
-        "url": "VARCHAR",
-        "caption": "VARCHAR",
-        "owner_id": "VARCHAR",
-        "owner_username": "VARCHAR",
-        "likes_count": "INTEGER",
-        "comments_count": "INTEGER",
-        "video_play_count": "INTEGER",
-        "video_view_count": "INTEGER",
-        "timestamp": "TIMESTAMP",
-        "hashtags": "VARCHAR",
-        "meta_data": "VARCHAR",
-        "has_engagement_bait": "BOOLEAN",
-        "media_files": "VARCHAR",
-        "media_count": "INTEGER",
-        "source_dataset": "VARCHAR",
-        "processed_on": "TIMESTAMP",
-    },
-    "gold_analyses": {
-        "post_id": "VARCHAR",
-        "domain": "VARCHAR",
-        "prompt_hash": "VARCHAR",
-        "result_json": "VARCHAR",
-        "analysed_at": "VARCHAR",
-    },
-    "watermarks": {
-        "name": "VARCHAR",
-        "timestamp": "TIMESTAMP",
-        "config_hash": "VARCHAR",
-    },
-    "dim_profile": {
-        "profile_key": "INTEGER",
-        "owner_id": "VARCHAR",
-        "owner_username": "VARCHAR",
-        "channel": "VARCHAR",
-        "effective_from": "TIMESTAMP",
-        "effective_to": "TIMESTAMP",
-        "is_current": "BOOLEAN",
-    },
-    "dim_date": {
-        "date": "DATE",
-        "year": "BIGINT",
-        "quarter": "BIGINT",
-        "month_number": "BIGINT",
-        "month_name": "VARCHAR",
-        "week_number": "BIGINT",
-        "day_number": "BIGINT",
-        "day_of_week": "VARCHAR",
-        "is_weekend": "BOOLEAN",
-        "financial_year": "BIGINT",
-    },
-}
+# ── Backward-compat aliases ───────────────────────────────────────────────
 
-EXPECTED_DUCKDB_VIEWS: list[str] = [
-    "v_post_detail",
-    "v_signal",
-    "v_quality_trend",
-    "v_profile_quality",
-    "v_domain_coverage",
-    "v_engagement_outliers",
-    "v_outlier_posts",
-    "v_creator_outlier_rate",
-]
-
-# ── SQLite (data/ops.sqlite) ─────────────────────────────────────────────
-
-EXPECTED_SQLITE: dict[str, dict[str, str]] = {
-    "batch_jobs": {
-        "id": "INTEGER",
-        "status": "TEXT",
-        "created_at": "TEXT",
-        "completed_at": "TEXT",
-        "total_items": "INTEGER",
-        "processed_items": "INTEGER",
-        "failed_items": "INTEGER",
-    },
-    "batch_items": {
-        "id": "INTEGER",
-        "job_id": "INTEGER",
-        "post_id": "TEXT",
-        "domain": "TEXT",
-        "status": "TEXT",
-        "attempts": "INTEGER",
-        "error": "TEXT",
-        "created_at": "TEXT",
-        "updated_at": "TEXT",
-    },
-    "media_metadata": {
-        "media_url_hash": "TEXT",
-        "media_url": "TEXT",
-        "file_api_uri": "TEXT",
-        "mime_type": "TEXT",
-        "file_size": "INTEGER",
-        "upload_state": "TEXT",
-        "created_at": "TEXT",
-        "uploaded_at": "TEXT",
-    },
-    "dead_letter": {
-        "post_id": "TEXT",
-        "domain": "TEXT",
-        "error": "TEXT",
-        "attempts": "INTEGER",
-        "failed_at": "TEXT",
-    },
-}
-
-# ── Backward-compat alias ─────────────────────────────────────────────────
-# Old code imports EXPECTED_SCHEMA — keep it working during transition.
-
-EXPECTED_SCHEMA = EXPECTED_DUCKDB
-EXPECTED_VIEWS = EXPECTED_DUCKDB_VIEWS
+EXPECTED_DUCKDB = DUCKDB_TABLES
+EXPECTED_DUCKDB_VIEWS = DUCKDB_VIEWS
+EXPECTED_SQLITE = SQLITE_TABLES
+EXPECTED_SCHEMA = DUCKDB_TABLES
+EXPECTED_VIEWS = DUCKDB_VIEWS

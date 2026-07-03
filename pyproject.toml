@@ -21,6 +21,7 @@ dependencies = [
     "python-dotenv",
     "tenacity",
     "pyarrow>=24.0.0",
+    "typer>=0.26.8",
 ]
 
 [project.optional-dependencies]
