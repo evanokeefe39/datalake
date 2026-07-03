@@ -322,27 +322,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             ).arrow()
         existing_df = pl.from_arrow(existing_reader.read_all())
 
-        # Backfill null owner_username from reprocessed bronze data.
-        # Existing rows processed before the coalesce fix may have null
-        # owner_username even though the bronze file has a username fallback.
-        if frames:
-            new_owners = (
-                pl.concat(frames, how="diagonal_relaxed")
-                .select(["post_id", "owner_username"])
-                .filter(pl.col("owner_username").is_not_null())
-                .unique(subset=["post_id"])
-            )
-            existing_df = (
-                existing_df
-                .join(new_owners, on="post_id", how="left", suffix="_new")
-                .with_columns(
-                    pl.when(pl.col("owner_username").is_null())
-                    .then(pl.col("owner_username_new"))
-                    .otherwise(pl.col("owner_username"))
-                    .alias("owner_username")
-                )
-                .drop("owner_username_new")
-            )
+
 
         # Keep existing processed_on — new posts get NULL, stamped below
         frames.insert(0, existing_df)

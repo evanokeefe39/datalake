@@ -142,10 +142,11 @@ Any table the pipeline reads or writes must be listed here. The readiness test
 
 | Script | Purpose |
 |---|---|
-| `scripts/run_pipeline.py` | Run silver → batches → serving. `--reset` clears watermarks (datetime-aware), `--update-stale-analyses` re-enqueues stale records, `--dry-run` shows state. |
+| `scripts/run_pipeline.py` | Thin entry point → delegates to ``python -m datalake.cli``. Subcommands: ``run`` (pipeline), ``batches`` (inspect/reset), ``watermarks`` (inspect/reset). |
 | `scripts/migrate_schema_drift.py` | Apply schema migrations: rename tables, move data between DBs, drop vestigial tables. Idempotent. |
 | `scripts/migrate_to_v2.py` | One-shot migration from Phase 1-4 schema to v2 domain-scoped tables. |
 | `scripts/migrate_from_ig_pipeline.py` | Import bronze Parquet from legacy ig-pipeline repo. |
+| `scripts/migrate_owner_username.py` | Backfill null ``owner_username`` in silver from bronze ``username`` fallback. Idempotent. |
 
 ## Stale analysis update
 
