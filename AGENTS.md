@@ -17,7 +17,7 @@ This repo is operated by Claude. Keep this file current — Claude reads it on e
 |-------|---------|--------|----------------|
 | Bronze | Parquet (`data/lake/bronze/`) | Polars (direct write) | None — file-based |
 | Silver | Parquet (`data/lake/silver/`) | PolarsIOManager | DuckDB `silver_ig_posts` + watermarks |
-| Batches | SQLite (`data/ops.sqlite`) | `ig_posts_gld_batches` | `batch_jobs` + `batch_items` |
+| Batches | SQLite (`data/ops.sqlite`) | `ig_posts_ext_api_batches` | `batch_jobs` + `batch_items` |
 | Gold | DuckDB table | `enrichment_worker` (standalone) | `gold_analyses` (AssetSpec, externally materialized) |
 | Serving | DuckDB views + tables | DuckDB | `dim_profile` (SCD2), `dim_date`, 8 analytics views |
 
@@ -30,7 +30,7 @@ This repo is operated by Claude. Keep this file current — Claude reads it on e
 src/datalake/defs/
 ├── common/          # PolarsIOManager, ApifyResource, GeminiResource, SQLiteResource, lake.py, schedules.py
 ├── enrichment/      # batch.py, assets.py, prompts.py
-├── instagram/       # ig_posts_raw, ig_posts_slv, ig_posts_gld_batches, config
+├── instagram/       # ig_posts_raw, ig_posts_slv, ig_posts_ext_api_batches, config
 └── serving/         # dim_profile, dim_date, v_post_detail + 7 downstream analytics views
 
 **Storage split:**
@@ -175,7 +175,7 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
 - **Apify flow:** trigger_run → poll_run → stream_dataset (NDJSON) → Polars read_ndjson → write_parquet
 ## Gold assets (batch-based, async)
 
-### ig_posts_gld_batches (batch creation, no Gemini)
+### ig_posts_ext_api_batches (batch creation, no Gemini)
 
 - **Trigger:** downstream of silver (`deps=["ig_posts_slv"]`), plus daily schedule
 - **Discovery:** `WHERE processed_on > watermark('gold_ig')` with `NOT EXISTS in gold_analyses` guard

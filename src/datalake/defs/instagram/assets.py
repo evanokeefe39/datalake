@@ -384,12 +384,12 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
 
 
 @asset(
-    name="ig_posts_gld_batches",
+    name="ig_posts_ext_api_batches",
     group_name="instagram",
     description="Enqueue unenriched silver posts for async Gemini enrichment.",
     deps=["ig_posts_slv"],
 )
-def ig_posts_gld_batches(
+def ig_posts_ext_api_batches(
     config: GoldConfig,
     duckdb: DuckDBResource,
     ops: SQLiteResource,

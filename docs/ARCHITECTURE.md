@@ -12,7 +12,7 @@ Bronze ──→ Silver ──→ Gold ──→ Serving
 |---|---|---|---|
 | Bronze | Parquet (`data/lake/bronze/`) | Polars (direct write) | None — file-based |
 | Silver | Parquet (`data/lake/silver/`) | PolarsIOManager | DuckDB `silver_ig_posts` + watermarks |
-| Enqueue | SQLite (`data/ops.sqlite`) | `ig_posts_gld_batches` | `batch_jobs` + `batch_items` |
+| Enqueue | SQLite (`data/ops.sqlite`) | `ig_posts_ext_api_batches` | `batch_jobs` + `batch_items` |
 | Gold | DuckDB table | Standalone worker | `gold_analyses` (AssetSpec, externally materialized) |
 | Serving | DuckDB views + tables | DuckDB | `dim_profile` (SCD2), `dim_date`, analytics views |
 
@@ -38,7 +38,7 @@ Three storage backends, each chosen for its access pattern:
 src/datalake/defs/
 ├── common/          # PolarsIOManager, ApifyResource, GeminiResource, SQLiteResource, lake.py, schedules.py
 ├── enrichment/      # batch.py (batch coordination), assets.py (gold_analyses AssetSpec + checks), prompts.py
-├── instagram/       # ig_posts_raw, ig_posts_slv, ig_posts_gld_batches, config
+├── instagram/       # ig_posts_raw, ig_posts_slv, ig_posts_ext_api_batches, config
 └── serving/         # dim_profile, dim_date, analytics views (cross-domain)
 ```
 
@@ -76,7 +76,7 @@ CREATE TABLE batch_items (
 
 ### Lifecycle
 
-1. `ig_posts_gld_batches` creates a batch via `create_batch()`, inserts post IDs as items.
+1. `ig_posts_ext_api_batches` creates a batch via `create_batch()`, inserts post IDs as items.
 2. Worker calls `claim_batch()` to claim the oldest pending batch (status → `processing`).
 3. Worker calls `claim_pending_items()` to claim up to 5 items at a time.
 4. Per-item: `complete_item()` on success, `fail_item()` on failure (retry with exponential backoff, `MAX_ATTEMPTS=5`). Terminal failures route to `dead_letter`.
@@ -115,7 +115,7 @@ ig_posts_slv ─┬─→ gold_analyses ─┬─→ v_post_detail ─┬─→ 
                      dim_date ─────┘                   └─→ v_creator_outlier_rate
 ```
 
-`ig_posts_gld_batches` is a coordination asset — it creates batches in SQLite. There is no formal Dagster data dependency from `gold_analyses` to `ig_posts_gld_batches` because the worker reads from SQLite (not from Dagster IOManager output). Both depend on `ig_posts_slv`.
+`ig_posts_ext_api_batches` is a coordination asset — it creates batches in SQLite. There is no formal Dagster data dependency from `gold_analyses` to `ig_posts_ext_api_batches` because the worker reads from SQLite (not from Dagster IOManager output). Both depend on `ig_posts_slv`.
 
 ## Watermarks
 

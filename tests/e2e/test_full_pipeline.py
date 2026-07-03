@@ -12,7 +12,7 @@ from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.enrichment.batch import claim_batch
-from datalake.defs.instagram.assets import ig_posts_gld_batches, ig_posts_slv
+from datalake.defs.instagram.assets import ig_posts_ext_api_batches, ig_posts_slv
 from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
@@ -24,7 +24,7 @@ def _run_silver(duckdb, bronze_dir):
 
 
 def _run_enqueue(duckdb, ops):
-    return ig_posts_gld_batches(duckdb=duckdb, ops=ops)
+    return ig_posts_ext_api_batches(duckdb=duckdb, ops=ops)
 
 
 def _run_serving(duckdb):

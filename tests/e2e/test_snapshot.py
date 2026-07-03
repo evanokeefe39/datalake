@@ -16,7 +16,7 @@ from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.enrichment.batch import claim_batch
-from datalake.defs.instagram.assets import ig_posts_gld_batches, ig_posts_slv
+from datalake.defs.instagram.assets import ig_posts_ext_api_batches, ig_posts_slv
 from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
 
 SAMPLE_PARQUET = Path(__file__).resolve().parent.parent / "data" / "bronze_sample.parquet"
@@ -56,7 +56,7 @@ def test_silver_deduplication_preserves_all_posts(db, bronze_dir):
 
 def test_enqueue_enqueues_silver_posts(db, ops_db, bronze_dir):
     """GIVEN silver populated from the committed bronze Parquet
-    WHEN ig_posts_gld_batches runs
+    WHEN ig_posts_ext_api_batches runs
     THEN posts are enqueued in ops.sqlite.
     """
     # Setup serving table for enqueue NOT EXISTS guard
@@ -75,7 +75,7 @@ def test_enqueue_enqueues_silver_posts(db, ops_db, bronze_dir):
         ig_posts_slv(ctx)
 
     # Run enqueue
-    result = ig_posts_gld_batches(duckdb=db, ops=ops_db)
+    result = ig_posts_ext_api_batches(duckdb=db, ops=ops_db)
 
     assert result["enqueued"][0] >= 1
 
