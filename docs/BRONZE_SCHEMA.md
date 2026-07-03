@@ -74,13 +74,14 @@ The same Apify actor is used for both, but the input URL determines the output s
 | Post scrape | `https://www.instagram.com/p/CODE/` | Present | Present |
 | Profile scrape | `https://www.instagram.com/username/` | **null** | Present (but in `username` column) |
 
-In profile-scraped rows, the author's handle appears in the `username` column (not `ownerUsername`). Silver handles this with a COALESCE fallback:
+In profile-scraped rows, the author's handle appears in the `username` column (not `ownerUsername`). Silver handles this with a COALESCE fallback in ``ig_posts_slv``:
 
 ```python
 owner_username = COALESCE("ownerUsername", "username")
 ```
 
-As of 2026-07-03, 365 rows in silver have null `owner_username` — these are profile-scraped rows where `username` was also null (edge case). The `ig_posts_slv_owner_not_null` DQ check monitors this.
+The ``ig_posts_slv_owner_not_null`` DQ check (0% tolerance) monitors for nulls.
+Historical nulls are fixed by the idempotent migration ``scripts/migrate_owner_username.py``.
 
 ## Column names dropped by silver
 
@@ -93,7 +94,23 @@ Silver projects only 16 columns. The other 18 are discarded because they are eit
 
 ## File layout
 
-Bronze Parquet files are named by Apify run ID (e.g. `3zkcRGyHtAbMczeZG.parquet`). Each file has a `.meta` JSON sidecar with `run_id`, `actor`, `item_count`, and `created_at`.
+Bronze Parquet files are named by Apify dataset ID (e.g. ``3zkcRGyHtAbMczeZG.parquet``).
+Each file has a ``.parquet.meta`` JSON sidecar with full lineage:
+
+```json
+{
+  "run_id": "abc123",
+  "dataset_id": "abc123",
+  "actor": "apify~instagram-scraper",
+  "item_count": 5,
+  "input": {
+    "urls": ["https://instagram.com/..."],
+    "results_limit": 12,
+    "results_type": "posts"
+  },
+  "downloaded_at": "2026-07-03T..."
+}
+```
 
 The `ig_posts_slv` asset reads all `.parquet` files in `data/lake/bronze/` on each run, using a watermark to skip already-processed runs.
 

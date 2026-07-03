@@ -127,7 +127,8 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 
 ## Schema catalog and drift detection
 
-`tests/operational/expected_schema.py` is the canonical schema definition for both databases.
+`src/datalake/defs/common/schemas.py` is the canonical schema definition for both databases.
+`tests/operational/expected_schema.py` re-exports it for backward compatibility.
 Any table the pipeline reads or writes must be listed here. The readiness test
 (`test_state_compatibility.py`) asserts the catalog matches the running databases.
 

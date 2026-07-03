@@ -6,26 +6,28 @@
 - `data/state.duckdb` and `data/ops.sqlite` exist (created automatically on first run)
 - DAGSTER_HOME set to `data/dagster_home` (set in `.env`)
 
-## Pipeline runs
+## Pipeline CLI
 
-### Silver + enqueue + serving
+The pipeline is operated via ``python -m datalake.cli`` (or the thin wrapper
+``scripts/run_pipeline.py``). Three subcommands:
 
 ```bash
-uv run python scripts/run_pipeline.py
+uv run python -m datalake.cli run                      # incremental pipeline
+uv run python -m datalake.cli run --dry-run             # state only
+uv run python -m datalake.cli run --reset-watermarks    # full re-scan then run
+uv run python -m datalake.cli run --reset-watermarks --date 2026-06-15
+uv run python -m datalake.cli run --update-stale        # re-process stale analyses
+uv run python -m datalake.cli batches                  # list batch state
+uv run python -m datalake.cli batches --reset           # clear all batches
+uv run python -m datalake.cli watermarks               # list watermarks
+uv run python -m datalake.cli watermarks --reset        # reset to epoch-safe date
+uv run python -m datalake.cli watermarks --reset --date 2026-06-15
 ```
 
 Steps:
-1. Silver — reads new bronze files, deduplicates, writes to `data/lake/silver/` and DuckDB
-2. Enqueue — finds unenriched silver posts, creates a batch in `ops.sqlite`
-3. Serving — materializes `dim_profile` (SCD2) and analytics views
-
-### Flags
-
-| Flag | Effect |
-|---|---|
-| `--reset` | Reset silver + gold watermarks (datetime-aware — scans for re-processable runs) |
-| `--update-stale-analyses` | Find posts with stale `prompt_hash` and create a re-processing batch |
-| `--dry-run` | Show current batch/watermark state without executing |
+1. Silver — reads new bronze files, deduplicates, writes to ``data/lake/silver/`` and DuckDB
+2. Batches — finds unenriched silver posts, creates a batch in ``ops.sqlite``
+3. Serving — materializes ``dim_date``, ``dim_profile`` (SCD2), and ``v_post_detail`` (cascades to all downstream views)
 
 ## Enrichment worker
 
@@ -66,20 +68,25 @@ If the worker crashes mid-batch, items stuck in `processing` state are reclaimed
 
 ## Watermark resets
 
-To re-process everything from scratch:
+Inspect or reset watermarks via the ``watermarks`` subcommand:
 
 ```bash
-uv run python scripts/run_pipeline.py --reset
+uv run python -m datalake.cli watermarks               # list current watermarks
+uv run python -m datalake.cli watermarks --reset        # reset to epoch-safe date
+uv run python -m datalake.cli watermarks --reset --date 2026-06-15
 ```
 
-This resets both `silver_ig` and `gold_ig` watermarks. To reset only the enqueue watermark (re-create batches for existing silver posts):
+Then run the pipeline normally:
 
-```sql
--- In DuckDB
-DELETE FROM watermarks WHERE name = 'gold_ig';
+```bash
+uv run python -m datalake.cli run
 ```
 
-Then run `scripts/run_pipeline.py` (without `--reset`).
+To reset only batches (clear stale batch_jobs/batch_items):
+
+```bash
+uv run python -m datalake.cli batches --reset
+```
 
 ## Dead letter triage
 
@@ -118,7 +125,7 @@ Then run the worker normally.
 When the enrichment prompt or model changes, existing `gold_analyses` rows have stale `prompt_hash`. To re-process them:
 
 ```bash
-uv run python scripts/run_pipeline.py --update-stale-analyses
+uv run python -m datalake.cli run --update-stale
 ```
 
 This queries `gold_analyses WHERE prompt_hash IS NULL OR prompt_hash != CURRENT_PROMPT_HASH`, creates a batch, and the worker picks it up and UPSERTs fresh analyses.
@@ -134,21 +141,33 @@ Current prompt hash is available in `src/datalake/defs/enrichment/prompts.py` as
 
 ## Schema drift
 
-The schema catalog lives at `tests/operational/expected_schema.py`. The readiness test checks it against the running databases:
+The canonical schema catalog is ``src/datalake/defs/common/schemas.py``.
+``tests/operational/expected_schema.py`` re-exports from it for test compatibility.
+The readiness test checks it against the running databases:
 
 ```bash
 uv run pytest tests/operational/test_state_compatibility.py -v
 ```
 
-If the test fails with a "run the pipeline or migration" message, it means a table or column exists in the catalog but not in the running database. Run the pipeline or apply the migration.
+If the test fails with a "run the pipeline or migration" message, it means a table
+or column exists in the catalog but not in the running database. Run the pipeline
+or apply the relevant migration.
 
-If it fails with a "stale table" message, a table in the database was renamed or dropped in the catalog. Apply `scripts/migrate_schema_drift.py`:
+If it fails with a "stale table" message, a table in the database was renamed or
+dropped in the catalog. Apply ``scripts/migrate_schema_drift.py``:
 
 ```bash
 uv run python scripts/migrate_schema_drift.py
 ```
 
-This script is idempotent — safe to run multiple times.
+## Data migrations
+
+| Script | Purpose |
+|---|---|
+| ``scripts/migrate_owner_username.py`` | Backfill null ``owner_username`` from bronze ``username`` fallback. Idempotent, ``--dry-run`` supported. |
+| ``scripts/migrate_schema_drift.py`` | Apply schema migrations: rename tables, move data between DBs, drop vestigial tables. |
+| ``scripts/migrate_to_v2.py`` | One-shot migration from Phase 1-4 schema to v2 domain-scoped tables. |
+| ``scripts/migrate_from_ig_pipeline.py`` | Import bronze Parquet from legacy ig-pipeline repo. |
 
 ## Dagster UI
 
