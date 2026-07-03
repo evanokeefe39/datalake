@@ -38,17 +38,31 @@ logger = logging.getLogger(__name__)
 
 # ── Metadata sidecar ──────────────────────────────────────────────────────
 
-def _write_meta(parquet_path: Path, run_id: str, actor: str, item_count: int) -> None:
+def _write_meta(
+    parquet_path: Path,
+    run_id: str,
+    dataset_id: str,
+    actor: str,
+    item_count: int,
+    urls: list[str],
+    results_limit: int,
+    results_type: str,
+) -> None:
     """Write a ``.meta`` JSON sidecar alongside the Parquet file."""
     meta = {
         "run_id": run_id,
+        "dataset_id": dataset_id,
         "actor": actor,
         "item_count": item_count,
+        "input": {
+            "urls": urls,
+            "results_limit": results_limit,
+            "results_type": results_type,
+        },
         "downloaded_at": datetime.now(timezone.utc).isoformat(),
     }
     meta_path = parquet_path.with_suffix(".parquet.meta")
     meta_path.write_text(json.dumps(meta, indent=2))
-
 
 # ── Asset ─────────────────────────────────────────────────────────────────
 
@@ -96,7 +110,8 @@ def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource) -> pl.DataFrame:
     # 4. Cleanup + metadata
     if ndjson_path.exists():
         ndjson_path.unlink()
-    _write_meta(dest, run.run_id, run.actor, item_count)
+    _write_meta(dest, run.run_id, dataset_id, run.actor, item_count,
+                config.urls, config.results_limit, config.results_type)
 
     return df
 

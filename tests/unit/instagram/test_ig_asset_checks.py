@@ -71,6 +71,8 @@ class TestBronzeChecks:
         meta_path = p.with_suffix(".parquet.meta")
         meta_path.write_text(json.dumps({
             "run_id": "run_1", "actor": "test", "item_count": 1,
+            "dataset_id": "ds_001",
+            "input": {"urls": ["https://instagram.com/test"], "results_limit": 12, "results_type": "posts"},
             "downloaded_at": "2024-01-01T00:00:00Z",
         }))
         with patch("datalake.defs.instagram.asset_checks.BRONZE_LAKE", tmp_path):

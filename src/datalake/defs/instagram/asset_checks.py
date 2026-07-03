@@ -104,7 +104,7 @@ def _ig_posts_raw_has_meta() -> AssetCheckResult:
             severity=AssetCheckSeverity.WARN,
             description=f"Invalid JSON in .meta: {exc}",
         )
-    required = {"run_id", "actor", "item_count", "downloaded_at"}
+    required = {"run_id", "actor", "item_count", "downloaded_at", "dataset_id", "input"}
     missing = required - set(meta)
     if missing:
         return AssetCheckResult(
