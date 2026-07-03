@@ -502,7 +502,7 @@ def main() -> None:
 
     # Claim or use specified batch
     if args.batch_id:
-        batch = {"id": args.batch_id, "post_ids": [], "domains": []}
+        batch = {"id": args.batch_id, "post_ids": [], "domains": [], "consumer": "gemini"}
         # Load items for the specified batch
         from datalake.defs.enrichment.batch import _ensure_schema
 
@@ -522,7 +522,7 @@ def main() -> None:
             conn.close()
     else:
         logger.info("Looking for pending batch...")
-        batch = claim_batch(ops)
+        batch = claim_batch(ops, consumer="gemini")
         if not batch:
             logger.info("No pending batches found.")
             return

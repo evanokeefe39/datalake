@@ -69,7 +69,7 @@ def test_schedule_target_matches_asset_keys():
     target_repr = repr(daily_medallion.target)
     # Bronze is on-demand; schedule drives silver → enqueue → serving
     assert "ig_posts_slv" in target_repr
-72:    assert "ig_posts_gen_batches" in target_repr
+    assert "ig_posts_gen_batches" in target_repr
     assert "dim_profile" in target_repr
     assert "v_post_detail" in target_repr
     assert "ig_posts_raw" not in target_repr

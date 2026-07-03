@@ -435,7 +435,7 @@ def ig_posts_gen_batches(
 
     # Create single batch for all posts
     if post_ids:
-        create_batch(ops, post_ids)
+        create_batch(ops, post_ids, consumer="gemini")
 
     # Advance watermark once after all batched
     if max_processed is not None:

@@ -56,7 +56,7 @@ def _run_update_stale(ops: SQLiteResource) -> int:
 
     post_ids = [r[0] for r in stale_rows]
     domains = [r[1] for r in stale_rows]
-    create_batch(ops, post_ids, domains)
+    create_batch(ops, post_ids, domains, consumer="gemini")
     print(f"  Created batch with {len(stale_rows)} stale analyses for re-processing")
     return len(stale_rows)
 

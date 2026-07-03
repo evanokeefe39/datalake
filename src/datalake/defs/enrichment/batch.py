@@ -19,6 +19,7 @@ from datalake.defs.common.resources import SQLiteResource
 _BATCH_SCHEMA = """
 CREATE TABLE IF NOT EXISTS batch_jobs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    consumer        TEXT NOT NULL DEFAULT 'gemini',
     status          TEXT NOT NULL DEFAULT 'pending',
     created_at      TEXT NOT NULL,
     completed_at    TEXT,
@@ -26,7 +27,6 @@ CREATE TABLE IF NOT EXISTS batch_jobs (
     processed_items INTEGER NOT NULL DEFAULT 0,
     failed_items    INTEGER NOT NULL DEFAULT 0
 );
-
 CREATE TABLE IF NOT EXISTS batch_items (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id      INTEGER NOT NULL REFERENCES batch_jobs(id),
@@ -72,10 +72,14 @@ def create_batch(
     ops: SQLiteResource,
     post_ids: list[str],
     domains: list[str] | None = None,
+    consumer: str = "gemini",
 ) -> int:
     """Create a new batch job with items. Returns the new job_id.
 
     Each (post_id, domain) pair becomes a batch_items row.
+    ``consumer`` tags the batch for a specific downstream service
+    (e.g. ``"gemini"``, ``"transcription"``).
+
     Raises ValueError if post_ids and domains lengths mismatch.
     """
     if not post_ids:
@@ -94,9 +98,9 @@ def create_batch(
     conn = ops.get_connection()
     try:
         cur = conn.execute(
-            "INSERT INTO batch_jobs (status, created_at, total_items) "
-            "VALUES ('pending', ?, ?)",
-            [now, len(post_ids)],
+            "INSERT INTO batch_jobs (consumer, status, created_at, total_items) "
+            "VALUES (?, 'pending', ?, ?)",
+            [consumer, now, len(post_ids)],
         )
         job_id = cur.lastrowid
 
@@ -112,10 +116,11 @@ def create_batch(
         conn.close()
 
 
-def claim_batch(ops: SQLiteResource) -> dict | None:
-    """Claim the oldest pending batch. Returns None if no pending batches.
+def claim_batch(ops: SQLiteResource, consumer: str = "gemini") -> dict | None:
+    """Claim the oldest pending batch for the given consumer.
 
-    Returns dict with keys: id, post_ids, domains
+    Returns None if no pending batches exist for this consumer.
+    Returns dict with keys: id, post_ids, domains, consumer.
     Sets batch status to 'processing'.
     """
     _ensure_schema(ops)
@@ -123,8 +128,9 @@ def claim_batch(ops: SQLiteResource) -> dict | None:
     try:
         row = conn.execute(
             "SELECT id FROM batch_jobs "
-            "WHERE status = 'pending' "
-            "ORDER BY created_at ASC LIMIT 1"
+            "WHERE status = 'pending' AND consumer = ? "
+            "ORDER BY created_at ASC LIMIT 1",
+            [consumer],
         ).fetchone()
 
         if not row:
@@ -144,6 +150,7 @@ def claim_batch(ops: SQLiteResource) -> dict | None:
         conn.commit()
         return {
             "id": job_id,
+            "consumer": consumer,
             "post_ids": [r[0] for r in items],
             "domains": [r[1] for r in items],
         }
