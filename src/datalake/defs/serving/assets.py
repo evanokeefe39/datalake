@@ -293,7 +293,7 @@ def v_profile_quality(duckdb: DuckDBResource) -> None:
         conn.execute("""
             CREATE OR REPLACE VIEW v_profile_quality AS
             SELECT
-                owner_id,
+                COALESCE(MAX(owner_id) FILTER (WHERE owner_id IS NOT NULL), 'unknown') AS owner_id,
                 owner_username,
                 COUNT(*)                                                     AS total_posts,
                 COUNT(CASE WHEN result_json IS NOT NULL THEN 1 END)          AS enriched_posts,
@@ -310,7 +310,7 @@ def v_profile_quality(duckdb: DuckDBResource) -> None:
                 MAX(likes_count)                                             AS max_likes
             FROM v_post_detail
             WHERE result_json IS NOT NULL
-            GROUP BY owner_id, owner_username
+            GROUP BY owner_username
             ORDER BY admiralty_score DESC
         """)
 
@@ -403,7 +403,7 @@ def v_creator_outlier_rate(duckdb: DuckDBResource) -> None:
         conn.execute("""
             CREATE OR REPLACE VIEW v_creator_outlier_rate AS
             SELECT
-                owner_id,
+                COALESCE(MAX(owner_id) FILTER (WHERE owner_id IS NOT NULL), 'unknown') AS owner_id,
                 owner_username,
                 COUNT(*)                                                       AS total_posts,
                 SUM(CASE WHEN sigma_tier IN ('1σ', '2σ', '3σ+')
@@ -413,7 +413,7 @@ def v_creator_outlier_rate(duckdb: DuckDBResource) -> None:
                 AVG(likes_zscore)                                              AS avg_zscore,
                 MAX(likes_zscore)                                              AS max_zscore
             FROM v_engagement_outliers
-            GROUP BY owner_id, owner_username
+            GROUP BY owner_username
             ORDER BY outlier_rate DESC
         """)
 
