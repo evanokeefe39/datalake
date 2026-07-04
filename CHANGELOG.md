@@ -1,3 +1,48 @@
+## 0.3.0 (2026-07-02) — Queue-Based Enrichment Architecture
+
+### Architecture
+- Queue-based work-queue architecture replaces synchronous Gemini enrichment
+- SQLite (`ops.sqlite`) for operational state: `enrichment_queue`, `media_metadata`, `dead_letter`
+- DuckDB (`state.duckdb`) remains analytical: silver tables, `gold_analyses`, watermarks, views
+- Per-item backpressure via `scheduled_for` column; one 429 doesn't kill the batch
+- Crash recovery via stale-item reaper (inline in `claim()` transaction)
+- URL-based media dedup cache: same media URL → cached File API URI, no re-upload
+
+### New Modules (`defs/enrichment/`)
+- `queue.py` — five functions: `enqueue`, `claim` (with reaper), `complete`, `fail`, `reschedule` + `delete`, `depth`
+- `worker.py` — `enrichment_worker` op + `enrichment_job`: reads silver, calls Gemini, writes `gold_analyses`
+- `sensor.py` — `enrichment_sensor`: polls queue every 30s, claims up to 5 items, emits RunRequest
+- `media_cache.py` — URL hash → Gemini File API URI cache in ops.sqlite
+- `assets.py` — `gold_analyses` AssetSpec (not @asset), `check_enrichment_health`, `check_prompt_currency`
+- `prompts.py` — `IG_GOLD_PROMPT` with `hashlib.sha256` prompt hash (deterministic across processes)
+
+### Resource Changes
+- New `SQLiteResource` in `defs/common/resources.py` (WAL mode, row factory, busy timeout)
+- `ops` resource wired in `definitions.py`
+
+### Asset Changes
+- `ig_posts_gld` → `ig_posts_gld_enqueue`: depends on silver, writes to queue, advances watermark
+- `ig_posts_gld_backfill` deleted (batch API deferred)
+- Gold checks now target `gold_analyses` (instagram domain only); `schema_version` check removed
+- `analytics_views` LEFT JOINs `gold_analyses` (not `gold_ig_analyses`) with domain filter
+
+### Schedule Change
+- `weekly_medallion` → `daily_medallion`: cron `0 3 * * *` (bronze→silver→enqueue is sub-second)
+
+### Key Design Decisions
+- `hashlib.sha256` for prompt_hash (Python `hash()` is non-deterministic across processes)
+- `reschedule()` preserves attempts (quota exhaustion is global, not per-item)
+- Worker owns dead_letter transition (checks `attempts >= MAX_ATTEMPTS` after `fail()`)
+- `NOT EXISTS in gold_analyses` guard in enqueue query prevents re-processing
+- All timestamps Python-generated ISO 8601 UTC — no `DEFAULT (datetime('now'))`
+- No `priority` column (FIFO by `created_at`); no `domain` in silver (table name IS the domain)
+
+### Tests
+- 87 tests passing, 3 skipped (1 operational — needs pipeline run to create `gold_analyses` in real DB)
+- New: queue operation tests (enqueue, claim, complete, fail, reschedule, depth, max attempts)
+- New: enqueue asset tests (writes to queue, skips already-enriched, skips empty captions)
+- Updated: integration, E2E, and snapshot tests for new architecture
+
 ## 0.2.2 (2026-07-01) — State Readiness Validation
 
 ### Operational Tests

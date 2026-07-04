@@ -1,205 +1,107 @@
-"""Integration tests: silver DuckDB state → gold enrichment.
+"""Integration tests: silver DuckDB state → gold enqueue.
 
 Tests the cross-asset boundary between ``ig_posts_slv`` (silver output in
-DuckDB) and ``ig_posts_gld`` (gold reader). Uses shared DuckDB persistence
-and a mocked ``GeminiResource.analyze`` so no real API calls are made.
-
-Per test-hardening plan Phase 2:
-- Silver outputs → gold reads correct posts (watermark-driven discovery)
-- Watermark chain: silver watermark advances → gold picks up correct posts
-- Backfill scenario: watermark 30 days stale, 100 new bronze files, LIMIT
-  pagination
-- Gold enrichments reflect silver data correctly (no stale rows)
+DuckDB) and ``ig_posts_gen_batches`` (batch-based enqueuer).
 """
-import json
-from unittest.mock import patch
 
-from dagster import build_asset_context
+from __future__ import annotations
+
+import json
+
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.common.resources import GeminiResource
-from datalake.defs.instagram.assets import ig_posts_gld, ig_posts_slv
+from datalake.defs.common.resources import SQLiteResource
+from datalake.defs.enrichment.batch import claim_batch
+from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
 
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
-from tests.fixtures.gold_factories import FAKE_ANALYSIS
-from tests.fixtures.silver_factories import seed_silver_posts
 
 
-# ── Test: gold reads silver posts correctly ───────────────────────────────
+def _run_silver(duckdb, bronze_dir):
+    from unittest.mock import patch
+
+    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
+        from dagster import build_asset_context
+
+        ctx = build_asset_context(resources={"duckdb": duckdb})
+        return ig_posts_slv(ctx)
 
 
-def test_gold_reads_silver_output(tmp_path):
-    """GIVEN silver has unenriched posts (via bronze→silver pipeline)
-    WHEN gold enrichment runs
-    THEN correct posts are read and enriched.
+def _run_enqueue(duckdb, ops):
+    from datalake.defs.instagram.config import GoldConfig
+
+    return ig_posts_gen_batches(config=GoldConfig(), duckdb=duckdb, ops=ops)
+
+
+def test_enqueue_reads_silver_output(tmp_path):
+    """GIVEN silver has posts via bronze→silver pipeline
+    WHEN ig_posts_gen_batches runs
+    THEN posts are enqueued in ops.sqlite.
     """
-    # Seed bronze → silver as a realistic integration path
-    row = make_ig_bronze_row("p1", "abc", "Great AI marketing post", "user1")
-    write_ig_bronze(tmp_path / "ds_001.parquet", [row])
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
-    gemini = GeminiResource()
 
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        ctx_slv = build_asset_context(resources={"duckdb": duckdb})
-        ig_posts_slv(ctx_slv)
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
-    # Drop watermarks table so gold creates it with config_hash column
-    # (silver creates watermarks without config_hash; gold expects it)
-    with duckdb.get_connection() as conn:
-        conn.execute("DROP TABLE IF EXISTS watermarks")
+    # Run bronze → silver
+    bronze_dir = tmp_path / "bronze"
+    bronze_dir.mkdir()
+    row = make_ig_bronze_row(post_id="p1", shortcode="sc1", caption="Test caption", username="test")
+    write_ig_bronze(bronze_dir / "test.parquet", [row])
 
-    # Now run gold with mocked Gemini
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        ctx_gld = build_asset_context(resources={"duckdb": duckdb, "gemini": gemini})
-        result = ig_posts_gld(ctx_gld)
-
+    result = _run_silver(duckdb, bronze_dir)
     assert len(result) == 1
-    assert result["post_id"][0] == "p1"
-    parsed = json.loads(result["result_json"][0])
-    assert parsed["domain"] == "Business"
+
+    # Run enqueue
+    result = _run_enqueue(duckdb, ops)
+    assert result["enqueued"][0] == 1
+
+    # Verify queue
+    batch = claim_batch(ops)
+    assert batch is not None
+    assert len(batch["payloads"]) == 1
+    assert json.loads(batch["payloads"][0])["post_id"] == "p1"
 
 
-def test_gold_reads_silver_output_duckdb(tmp_path):
-    """GIVEN silver has unenriched posts (seeded directly in DuckDB)
-    WHEN gold enrichment runs with mocked Gemini
-    THEN posts are enriched and appear in gold_ig_analyses.
+def test_enqueue_skips_already_completed(tmp_path):
+    """GIVEN a post already in gold_analyses
+    WHEN ig_posts_gen_batches runs
+    THEN it is not re-enqueued.
     """
+    from datetime import datetime, timezone
+
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
-    gemini = GeminiResource()
-    seed_silver_posts(duckdb, [("p1", "Great AI marketing post")])
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        context = build_asset_context(resources={"duckdb": duckdb, "gemini": gemini})
-        result = ig_posts_gld(context)
-
-    assert len(result) == 1
-    assert result["post_id"][0] == "p1"
-    parsed = json.loads(result["result_json"][0])
-    assert parsed["domain"] == "Business"
-
-    # DuckDB state also has the analysis
+    # Seed silver
+    now = datetime.now(timezone.utc)
     with duckdb.get_connection() as conn:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM gold_ig_analyses WHERE post_id = 'p1'"
-        ).fetchone()[0]
-    assert count == 1
-
-# ── Test: watermark chain — silver advances → gold reads new posts ────────
-
-
-def test_watermark_chain_advances(tmp_path):
-    """GIVEN a first batch of silver posts is enriched
-    WHEN a second batch of silver posts is added and gold runs again
-    THEN only the new posts are enriched (watermark advanced correctly).
-    """
-    duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
-    gemini = GeminiResource()
-
-    # Batch 1
-    seed_silver_posts(duckdb, [("p1", "First batch post")])
-
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        ctx1 = build_asset_context(resources={"duckdb": duckdb, "gemini": gemini})
-        r1 = ig_posts_gld(ctx1)
-
-    assert len(r1) == 1
-    assert r1["post_id"][0] == "p1"
-
-    # Batch 2 — seed new posts after first gold run
-    seed_silver_posts(duckdb, [("p2", "Second batch post")])
-
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        ctx2 = build_asset_context(resources={"duckdb": duckdb, "gemini": gemini})
-        r2 = ig_posts_gld(ctx2)
-
-    # Both posts are in gold now
-    assert len(r2) == 2
-    gold_post_ids = set(r2["post_id"].to_list())
-    assert gold_post_ids == {"p1", "p2"}
-
-    # DuckDB has both analyses
-    with duckdb.get_connection() as conn:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM gold_ig_analyses"
-        ).fetchone()[0]
-    assert count == 2
-
-
-def test_backfill_limit_pagination(tmp_path):
-    """GIVEN more unenriched posts than the gold LIMIT (10)
-    WHEN gold runs once
-    THEN only LIMIT posts are processed; remaining posts require another run.
-    """
-    duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
-    gemini = GeminiResource()
-
-    # Seed 15 posts (gold LIMIT is 10)
-    posts = [(f"p{i}", f"Post number {i}") for i in range(15)]
-    seed_silver_posts(duckdb, posts)
-
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        ctx = build_asset_context(resources={"duckdb": duckdb, "gemini": gemini})
-        result = ig_posts_gld(ctx)
-
-    # Only LIMIT (10) posts processed in first run
-    assert len(result) == 10
-
-    with duckdb.get_connection() as conn:
-        completed = conn.execute(
-            "SELECT COUNT(*) FROM gold_ig_analyses"
-        ).fetchone()[0]
-    assert completed == 10
-
-    # Note: the gold watermark advances past all 15 posts regardless of LIMIT,
-    # so the remaining 5 will not be picked up on the next run unless the
-    # watermark is reset. This is a known pagination gap documented in
-    # test-hardening plan — the test verifies current behavior.
-
-
-def test_gold_reflects_silver_updates(tmp_path):
-    """GIVEN a silver post is updated with a new caption
-    """
-    duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
-    gemini = GeminiResource()
-
-    # Seed a post
-    seed_silver_posts(duckdb, [("p1", "Original caption")])
-
-    # First gold run
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)):
-        ctx1 = build_asset_context(resources={"duckdb": duckdb, "gemini": gemini})
-        ig_posts_gld(ctx1)
-
-    # Update caption via direct DuckDB — simulate silver update
-    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS gold_analyses (
+                post_id TEXT NOT NULL, domain TEXT NOT NULL DEFAULT 'instagram',
+                prompt_hash TEXT, result_json TEXT, analysed_at TEXT NOT NULL,
+                PRIMARY KEY (post_id, domain)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS silver_ig_posts (
+                post_id TEXT PRIMARY KEY, caption TEXT, processed_on TIMESTAMP,
+                owner_id TEXT DEFAULT 'test', owner_username TEXT DEFAULT 'test',
+                likes_count INTEGER DEFAULT 0, comments_count INTEGER DEFAULT 0,
+                video_play_count INTEGER DEFAULT 0, video_view_count INTEGER DEFAULT 0,
+                timestamp TIMESTAMP DEFAULT NOW(), hashtags TEXT DEFAULT '[]',
+                has_engagement_bait BOOLEAN DEFAULT FALSE, media_files TEXT DEFAULT '[]',
+                media_count INTEGER DEFAULT 0, source_dataset TEXT DEFAULT 'test',
+                shortcode TEXT DEFAULT '', url TEXT DEFAULT '', meta_data TEXT DEFAULT '{}'
+            )
+        """)
         conn.execute(
-            "UPDATE silver_ig_posts SET caption = 'Updated caption' "
-            "WHERE post_id = 'p1'"
+            "INSERT INTO silver_ig_posts (post_id, caption, processed_on) VALUES (?, ?, ?)",
+            ["p1", "Test caption", now],
         )
-        # Also update processed_on so gold sees it as pending again
         conn.execute(
-            "UPDATE silver_ig_posts SET processed_on = NOW() "
-            "WHERE post_id = 'p1'"
-        )
-        # Also need to reset watermark so gold picks it up
-        conn.execute(
-            "DELETE FROM watermarks WHERE name = 'gold_ig'"
+            "INSERT INTO gold_analyses (post_id, domain, analysed_at) VALUES (?, 'instagram', ?)",
+            ["p1", now.isoformat()],
         )
 
-    with patch.object(GeminiResource, "analyze",
-                      return_value=json.dumps(FAKE_ANALYSIS)) as mock_analyze:
-        ctx2 = build_asset_context(resources={"duckdb": duckdb, "gemini": gemini})
-        ig_posts_gld(ctx2)
-
-    # Verify the prompt sent to Gemini contained the updated caption
-    call_args = mock_analyze.call_args
-    assert call_args is not None
-    prompt = call_args[0] if isinstance(call_args[0], str) else call_args[0][0]
-    assert "Updated caption" in prompt
-    assert "Original caption" not in prompt
+    result = _run_enqueue(duckdb, ops)
+    assert result.is_empty()

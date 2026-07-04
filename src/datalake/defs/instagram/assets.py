@@ -19,8 +19,13 @@ import polars as pl
 from dagster import asset
 
 from ..common.lake import BRONZE_LAKE, bronze_path
-from ..common.resources import ApifyResource, DuckDBResource, GeminiResource
-from .config import ScrapeConfig
+from ..common.resources import (
+    ApifyResource,
+    DuckDBResource,
+    SQLiteResource,
+)
+from ..common.schemas import SILVER_COLUMNS
+from .config import GoldConfig, ScrapeConfig
 
 # ── Apify client (from old ig_pipeline) ───────────────────────────────────
 _OLD_IG_SRC = Path("C:/Users/evano/repos/ig-pipeline/src")
@@ -33,17 +38,31 @@ logger = logging.getLogger(__name__)
 
 # ── Metadata sidecar ──────────────────────────────────────────────────────
 
-def _write_meta(parquet_path: Path, run_id: str, actor: str, item_count: int) -> None:
+def _write_meta(
+    parquet_path: Path,
+    run_id: str,
+    dataset_id: str,
+    actor: str,
+    item_count: int,
+    urls: list[str],
+    results_limit: int,
+    results_type: str,
+) -> None:
     """Write a ``.meta`` JSON sidecar alongside the Parquet file."""
     meta = {
         "run_id": run_id,
+        "dataset_id": dataset_id,
         "actor": actor,
         "item_count": item_count,
+        "input": {
+            "urls": urls,
+            "results_limit": results_limit,
+            "results_type": results_type,
+        },
         "downloaded_at": datetime.now(timezone.utc).isoformat(),
     }
     meta_path = parquet_path.with_suffix(".parquet.meta")
     meta_path.write_text(json.dumps(meta, indent=2))
-
 
 # ── Asset ─────────────────────────────────────────────────────────────────
 
@@ -91,7 +110,8 @@ def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource) -> pl.DataFrame:
     # 4. Cleanup + metadata
     if ndjson_path.exists():
         ndjson_path.unlink()
-    _write_meta(dest, run.run_id, run.actor, item_count)
+    _write_meta(dest, run.run_id, dataset_id, run.actor, item_count,
+                config.urls, config.results_limit, config.results_type)
 
     return df
 
@@ -117,6 +137,7 @@ _BRONZE_TO_SILVER: dict[str, str] = {
     "mentions": "mentions",
     "taggedUsers": "tagged_users",
     "latestComments": "latest_comments",
+    "username": "username",
     "timestamp": "timestamp",
 }
 
@@ -124,12 +145,6 @@ _BRONZE_TO_SILVER: dict[str, str] = {
 # before Arrow → DuckDB insertion (DuckDB TEXT cannot store Polars List).
 _LIST_COLUMNS: set[str] = {"hashtags"}
 
-_SILVER_COLUMNS = [
-    "post_id", "shortcode", "url", "caption", "owner_id", "owner_username",
-    "likes_count", "comments_count", "video_play_count", "video_view_count",
-    "timestamp", "hashtags", "meta_data", "has_engagement_bait",
-    "media_files", "media_count", "source_dataset", "processed_on",
-]
 
 
 @asset(
@@ -171,13 +186,6 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             )
         """)
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS silver_ig_progress (
-                source_dataset TEXT PRIMARY KEY,
-                post_count     INTEGER NOT NULL DEFAULT 0,
-                completed_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.execute("""
             CREATE TABLE IF NOT EXISTS watermarks (
                 name        TEXT PRIMARY KEY,
                 timestamp   TIMESTAMP NOT NULL,
@@ -189,13 +197,19 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
 
     bronze_files = sorted(BRONZE_LAKE.glob("*.parquet"))
     if not bronze_files:
-        return pl.DataFrame(schema={c: pl.Utf8 for c in _SILVER_COLUMNS})
+        return pl.DataFrame(schema={c: pl.Utf8 for c in SILVER_COLUMNS})
 
     with db.get_connection() as conn:
         row = conn.execute(
             "SELECT timestamp FROM watermarks WHERE name = 'silver_ig'"
         ).fetchone()
-    watermark_ts = row[0].timestamp() if row and row[0] is not None else 0.0
+    if row and row[0] is not None:
+        dt = row[0]
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        watermark_ts = dt.timestamp()
+    else:
+        watermark_ts = 0.0
 
     new_files = [f for f in bronze_files if _os.path.getmtime(f) > watermark_ts]
 
@@ -206,7 +220,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             ).fetchone()[0]
             if count == 0:
                 return pl.DataFrame(
-                    schema={c: pl.Utf8 for c in _SILVER_COLUMNS}
+                    schema={c: pl.Utf8 for c in SILVER_COLUMNS}
                 )
             reader = conn.execute(
                 "SELECT * FROM silver_ig_posts ORDER BY timestamp DESC"
@@ -251,6 +265,22 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             if col not in df.columns:
                 df = df.with_columns(pl.lit(default).alias(col))
 
+        # Coalesce owner_username from username when ownerUsername is null or missing.
+        # Profile-scraped rows have the author's handle in username, not ownerUsername
+        # (and some profile-scraped files lack ownerUsername entirely).
+        if "username" in df.columns:
+            if "owner_username" in df.columns:
+                df = df.with_columns(
+                    pl.when(pl.col("owner_username").is_null())
+                    .then(pl.col("username"))
+                    .otherwise(pl.col("owner_username"))
+                    .alias("owner_username")
+                )
+            else:
+                df = df.with_columns(
+                    pl.col("username").alias("owner_username")
+                )
+
         # Serialize list-type columns to JSON strings for DuckDB TEXT columns.
         # map_elements on a List column passes each inner list as a Series.
         for col in _LIST_COLUMNS:
@@ -285,7 +315,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
 
         # Keep only silver columns (drop any Apify extras)
         df = df.select(
-            [c for c in _SILVER_COLUMNS if c in df.columns]
+            [c for c in SILVER_COLUMNS if c in df.columns]
         )
 
         # Drop rows without a valid post_id (failed Apify requests)
@@ -306,18 +336,20 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
                 "SELECT * FROM silver_ig_posts"
             ).arrow()
         existing_df = pl.from_arrow(existing_reader.read_all())
+
+
+
         # Keep existing processed_on — new posts get NULL, stamped below
         frames.insert(0, existing_df)
 
     # ── 5. Union + dedup via DuckDB ───────────────────────────────────────
     if not frames:
         # All bronze files were empty or had only null-id rows
-        return pl.DataFrame(schema={c: pl.Utf8 for c in _SILVER_COLUMNS})
+        return pl.DataFrame(schema={c: pl.Utf8 for c in SILVER_COLUMNS})
     unified = pl.concat(frames, how="diagonal_relaxed")
     if unified.is_empty():
-        return pl.DataFrame(schema={c: pl.Utf8 for c in _SILVER_COLUMNS})
+        return pl.DataFrame(schema={c: pl.Utf8 for c in SILVER_COLUMNS})
     unified_arrow = unified.to_arrow()
-
     with db.get_connection() as conn:
         conn.register("unified", unified_arrow)
 
@@ -345,87 +377,96 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             "INSERT OR REPLACE INTO silver_ig_posts SELECT * FROM to_upsert"
         )
 
-        # Record progress for each processed dataset
-        for f in new_files:
-            dataset_id = f.stem
-            src_count = len(deduped.filter(
-                pl.col("source_dataset") == dataset_id
-            ))
-            conn.execute(
-                "INSERT OR REPLACE INTO silver_ig_progress "
-                "(source_dataset, post_count, completed_at) "
-                "VALUES (?, ?, ?)",
-                [dataset_id, src_count, now_iso],
-            )
 
     return deduped
 
 
-# ── Gold enrichment prompt ────────────────────────────────────────────────
-
-_GOLD_PROMPT = """\
-Analyze this Instagram post caption and classify it into the following taxonomy.
-Return ONLY valid JSON with no markdown fencing, no explanation.
-
-Taxonomy:
-- is_educational (bool): does the post teach something?
-- is_actionable (bool): can the viewer do something after watching?
-- admirality (str): A1 (authoritative) through C2 (entertainment)
-- domain (str): e.g. "Business", "Marketing", "Design", "Web Dev", "AI"
-- subdomain (str): within domain
-- topic (str): specific topic
-- subtopic (str, optional): narrower still
-- content_type (str): "tutorial", "listicle", "opinion", "case_study"
-  or "storytelling", "thought_leadership", "news", "entertainment"
-- style (str): e.g. "casual", "professional", "educational"
-- format (str): e.g. "talking head", "screen recording", "carousel"
-If is_educational:
-- educational_json.summary (str): TL;DR of what's taught
-- educational_json.workflow (list of {step, tool, detail}): actionable steps
-- educational_json.concepts (list of {term, explanation}): key concepts introduced
-- educational_json.principles (list of str): lessons/principles
-- educational_json.techniques (list of str): specific techniques
-
-If is_actionable:
-- actionable_json.summary (str): what the viewer can do
-- actionable_json.resources (list of {name, url, type, purpose}): tools/links mentioned
-- actionable_json.tools (list of str): tools mentioned
-- actionable_json.guides (list of str): step-by-step guides
-- actionable_json.downloads (list of str): any downloads offered
-
-Caption:"""  # no trailing whitespace needed, prompt below feeds the caption
 
 
 @asset(
-    name="ig_posts_gld",
+    name="ig_posts_gen_batches",
     group_name="instagram",
-    description="Enrich silver posts via Gemini classification.",
+    description="Enqueue unenriched silver posts for async Gemini enrichment.",
     deps=["ig_posts_slv"],
 )
-def ig_posts_gld(duckdb: DuckDBResource, gemini: GeminiResource) -> pl.DataFrame:
-    """Read unenriched silver posts, classify each caption via Gemini.
+def ig_posts_gen_batches(
+    config: GoldConfig,
+    duckdb: DuckDBResource,
+    ops: SQLiteResource,
+) -> pl.DataFrame:
+    """Read unenriched silver posts, create a batch, advance watermark.
 
-    Finds pending posts via watermark-based discovery on silver_ig_posts.
-    Successful results land in gold_ig_analyses; failures (empty captions,
-    API errors) go to dead_letter. Advances the gold_ig watermark after
-    each batch.
+    Builds Gemini-consumer payloads: ``{"post_id": ..., "domain": "instagram"}``.
+    Does NOT call Gemini — the enrichment worker handles that async.
+    Watermark advances once after all posts are batched.
     """
-    import json as _json
-    import time
+    import json
 
+    from datalake.defs.enrichment.batch import create_batch
 
-    # ── 1. Ensure state tables exist ──────────────────────────────────────
     db = duckdb
+    _ensure_state_tables(db)
+
+    # Find pending posts via watermark, excluding already-enriched posts
+    with db.get_connection() as conn:
+        pending = conn.execute("""
+            SELECT sp.post_id, sp.caption, sp.processed_on
+            FROM silver_ig_posts sp
+            WHERE sp.processed_on > COALESCE(
+                (SELECT timestamp FROM watermarks WHERE name = 'gold_ig'),
+                '1970-01-01'::TIMESTAMP
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM gold_analyses
+                WHERE post_id = sp.post_id AND domain = 'instagram'
+            )
+        """).fetchall()
+
+    if not pending:
+        return pl.DataFrame({"enqueued": pl.Series([], dtype=pl.Int32)})
+
+    # Collect post_ids with non-empty captions, build Gemini payloads
+    payloads = []
+    max_processed = None
+    for post_id, caption, processed_on in pending:
+        if not (caption or "").strip():
+            continue
+        payloads.append(json.dumps({"post_id": post_id, "domain": "instagram"}))
+        if max_processed is None or processed_on > max_processed:
+            max_processed = processed_on
+
+    # Create single batch for all posts
+    if payloads:
+        create_batch(ops, payloads, consumer="gemini")
+
+    # Advance watermark once after all batched
+    if max_processed is not None:
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO watermarks (name, timestamp) "
+                "VALUES ('gold_ig', ?)",
+                [max_processed],
+            )
+
+    return pl.DataFrame({"enqueued": pl.Series([len(payloads)], dtype=pl.Int32)})
+
+
+# ── Shared helpers ────────────────────────────────────────────────────────
+
+
+def _ensure_state_tables(db: DuckDBResource) -> None:
+    """Create shared state tables if they don't exist."""
     with db.get_connection() as conn:
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_ig_analyses (
-                post_id         TEXT PRIMARY KEY REFERENCES silver_ig_posts(post_id),
-                schema_version  INTEGER NOT NULL DEFAULT 3,
+            CREATE TABLE IF NOT EXISTS gold_analyses (
+                post_id         TEXT NOT NULL,
+                domain          TEXT NOT NULL DEFAULT 'instagram',
+                prompt_hash     TEXT,
                 result_json     TEXT,
-                analysed_at     TIMESTAMP
+                analysed_at     TEXT NOT NULL,
+                PRIMARY KEY (post_id, domain)
             )
         """)
-        # Ensure watermarks and dead_letter exist (shared tables)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS watermarks (
                 name        TEXT PRIMARY KEY,
@@ -433,124 +474,5 @@ def ig_posts_gld(duckdb: DuckDBResource, gemini: GeminiResource) -> pl.DataFrame
                 config_hash TEXT
             )
         """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS dead_letter (
-                post_id     TEXT NOT NULL,
-                domain      TEXT NOT NULL DEFAULT 'instagram',
-                error       TEXT,
-                attempts    INTEGER NOT NULL DEFAULT 0,
-                failed_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                status      TEXT NOT NULL DEFAULT 'pending',
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
 
-    # ── 2. Find pending posts via watermark ────────────────────────────────
-    with db.get_connection() as conn:
-        pending = conn.execute("""
-            SELECT sp.post_id, sp.caption
-            FROM silver_ig_posts sp
-            WHERE sp.processed_on > COALESCE(
-                (SELECT timestamp FROM watermarks WHERE name = 'gold_ig'),
-                '1970-01-01'::TIMESTAMP
-            )
-            LIMIT 10
-        """).fetchall()
 
-    if not pending:
-        # All posts enriched — return existing completed rows
-        with db.get_connection() as conn:
-            reader = conn.execute(
-                "SELECT post_id, schema_version, result_json, analysed_at "
-                "FROM gold_ig_analyses"
-            ).arrow()
-            table = reader.read_all()
-            if table.num_rows == 0:
-                return pl.DataFrame({
-                    "post_id": pl.Series([], dtype=pl.Utf8),
-                    "schema_version": pl.Series([], dtype=pl.Int32),
-                    "result_json": pl.Series([], dtype=pl.Utf8),
-                    "analysed_at": pl.Series([], dtype=pl.Utf8),
-                })
-            return pl.from_arrow(table)
-
-    # ── 3. Enrich via Gemini ──────────────────────────────────────────────
-    successes = []
-    now_iso = datetime.now(timezone.utc).isoformat()
-
-    for post_id, caption in pending:
-        caption_text = caption or ""
-        if not caption_text.strip():
-            logger.info("Skipping %s — empty caption", post_id)
-            with db.get_connection() as conn:
-                conn.execute(
-                    "INSERT INTO dead_letter (post_id, domain, error, attempts, status) "
-                    "VALUES (?, 'instagram', 'Empty caption', 0, 'skipped')",
-                    [post_id],
-                )
-            continue
-
-        attempt = 0
-        error_text = None
-        result_json = None
-
-        while attempt < 3:
-            attempt += 1
-            try:
-                prompt = _GOLD_PROMPT + "\n" + caption_text
-                result_json = gemini.analyze(prompt)
-                # Validate it's parseable JSON
-                _json.loads(result_json)
-                break
-            except Exception as exc:
-                error_text = str(exc)
-                logger.warning(
-                    "Gemini call failed for %s (attempt %d/3): %s",
-                    post_id, attempt, error_text,
-                )
-                if attempt < 3:
-                    time.sleep(2 ** attempt)
-
-        with db.get_connection() as conn:
-            if result_json is not None:
-                # Success — write to gold_ig_analyses
-                successes.append(post_id)
-                conn.execute(
-                    "INSERT OR REPLACE INTO gold_ig_analyses "
-                    "(post_id, schema_version, result_json, analysed_at) "
-                    "VALUES (?, 3, ?, ?)",
-                    [post_id, result_json, now_iso],
-                )
-            else:
-                # Failure — write to dead_letter
-                conn.execute(
-                    "INSERT INTO dead_letter (post_id, domain, error, attempts, status) "
-                    "VALUES (?, 'instagram', ?, ?, 'pending')",
-                    [post_id, error_text, attempt],
-                )
-
-    # ── 4. Advance watermark ──────────────────────────────────────────────
-    # Compute prompt hash for deferred auto-reset (Phase B1)
-    prompt_hash = str(hash(_GOLD_PROMPT + "gemini-2.0-flash-lite"))
-    with db.get_connection() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO watermarks (name, timestamp, config_hash) "
-            "VALUES ('gold_ig', ?, ?)",
-            [now_iso, prompt_hash],
-        )
-
-    # ── 5. Return completed gold DataFrame ────────────────────────────────
-    with db.get_connection() as conn:
-        reader = conn.execute(
-            "SELECT post_id, schema_version, result_json, analysed_at "
-            "FROM gold_ig_analyses"
-        ).arrow()
-        table = reader.read_all()
-        if table.num_rows == 0:
-            return pl.DataFrame({
-                "post_id": pl.Series([], dtype=pl.Utf8),
-                "schema_version": pl.Series([], dtype=pl.Int32),
-                "result_json": pl.Series([], dtype=pl.Utf8),
-                "analysed_at": pl.Series([], dtype=pl.Utf8),
-            })
-        return pl.from_arrow(table)

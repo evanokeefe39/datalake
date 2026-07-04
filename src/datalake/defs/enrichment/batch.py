@@ -1,0 +1,299 @@
+"""Batch abstraction for enrichment processing — generic work queue.
+
+batch_items stores consumer-agnostic JSON payloads. Each consumer
+defines its own payload schema. The Gemini consumer uses
+``{"post_id": "...", "domain": "instagram"}``; a transcription
+consumer might use ``{"video_id": "...", "language": "en"}``.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from datalake.defs.common.resources import SQLiteResource
+
+# ── Schema ───────────────────────────────────────────────────────────────────
+
+_BATCH_SCHEMA = """
+CREATE TABLE IF NOT EXISTS batch_jobs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    consumer        TEXT NOT NULL DEFAULT 'gemini',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    created_at      TEXT NOT NULL,
+    completed_at    TEXT,
+    total_items     INTEGER NOT NULL DEFAULT 0,
+    processed_items INTEGER NOT NULL DEFAULT 0,
+    failed_items    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS batch_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      INTEGER NOT NULL REFERENCES batch_jobs(id),
+    payload     TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    error       TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE(job_id, payload)
+);
+
+CREATE INDEX IF NOT EXISTS idx_batch_items_job_status
+    ON batch_items(job_id, status);
+"""
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+MAX_ATTEMPTS = 5
+"""Max retry attempts before an item is routed to dead_letter."""
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _now_iso() -> str:
+    """Current UTC timestamp as ISO 8601 string."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _ensure_schema(ops: SQLiteResource) -> None:
+    """Create batch tables if they don't exist (idempotent)."""
+    conn = ops.get_connection()
+    try:
+        conn.executescript(_BATCH_SCHEMA)
+    finally:
+        conn.close()
+
+
+# ── Batch operations ─────────────────────────────────────────────────────────
+
+
+def create_batch(
+    ops: SQLiteResource,
+    payloads: list[str],
+    consumer: str = "gemini",
+) -> int:
+    """Create a new batch job with payload items. Returns the new job_id.
+
+    Each payload is a JSON string the consumer knows how to interpret.
+    ``consumer`` tags the batch so workers only claim their own.
+
+    Raises ValueError if payloads is empty.
+    """
+    if not payloads:
+        raise ValueError("payloads must not be empty")
+
+    _ensure_schema(ops)
+    now = _now_iso()
+    conn = ops.get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO batch_jobs (consumer, status, created_at, total_items) "
+            "VALUES (?, 'pending', ?, ?)",
+            [consumer, now, len(payloads)],
+        )
+        job_id = cur.lastrowid
+
+        conn.executemany(
+            "INSERT OR IGNORE INTO batch_items "
+            "(job_id, payload, status, attempts, created_at, updated_at) "
+            "VALUES (?, ?, 'pending', 0, ?, ?)",
+            [(job_id, p, now, now) for p in payloads],
+        )
+        conn.commit()
+        return job_id
+    finally:
+        conn.close()
+
+
+def claim_batch(ops: SQLiteResource, consumer: str = "gemini") -> dict | None:
+    """Claim the oldest pending batch for the given consumer.
+
+    Returns None if no pending batches exist for this consumer.
+    Returns dict with keys: id, consumer, payloads (list of JSON strings).
+    Sets batch status to 'processing'.
+    """
+    _ensure_schema(ops)
+    conn = ops.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id FROM batch_jobs "
+            "WHERE status = 'pending' AND consumer = ? "
+            "ORDER BY created_at ASC LIMIT 1",
+            [consumer],
+        ).fetchone()
+
+        if not row:
+            return None
+
+        job_id = row[0]
+        conn.execute(
+            "UPDATE batch_jobs SET status = 'processing' WHERE id = ?",
+            [job_id],
+        )
+
+        items = conn.execute(
+            "SELECT payload FROM batch_items WHERE job_id = ? ORDER BY id",
+            [job_id],
+        ).fetchall()
+
+        conn.commit()
+        return {
+            "id": job_id,
+            "consumer": consumer,
+            "payloads": [r[0] for r in items],
+        }
+    finally:
+        conn.close()
+
+
+def claim_pending_items(
+    ops: SQLiteResource, job_id: int, limit: int = 5
+) -> list[dict]:
+    """Claim up to ``limit`` pending items from a processing batch.
+
+    Returns list of dicts with keys: id, payload.
+    Sets item status to 'processing'.
+    """
+    _ensure_schema(ops)
+    conn = ops.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, payload FROM batch_items "
+            "WHERE job_id = ? AND status = 'pending' "
+            "ORDER BY id LIMIT ?",
+            [job_id, limit],
+        ).fetchall()
+
+        if not rows:
+            return []
+
+        ids = [r[0] for r in rows]
+        now = _now_iso()
+        conn.executemany(
+            "UPDATE batch_items SET status = 'processing', updated_at = ? "
+            "WHERE id = ?",
+            [(now, rid) for rid in ids],
+        )
+        conn.commit()
+
+        return [
+            {"id": r[0], "payload": r[1]}
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def complete_item(ops: SQLiteResource, item_id: int) -> None:
+    """Mark a batch item as successfully processed."""
+    conn = ops.get_connection()
+    try:
+        conn.execute(
+            "UPDATE batch_items SET status = 'complete', updated_at = ? "
+            "WHERE id = ?",
+            [_now_iso(), item_id],
+        )
+        conn.execute(
+            "UPDATE batch_jobs SET "
+            "processed_items = processed_items + 1 "
+            "WHERE id = (SELECT job_id FROM batch_items WHERE id = ?)",
+            [item_id],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fail_item(
+    ops: SQLiteResource,
+    item_id: int,
+    error: str,
+    backoff: int = 0,
+) -> int:
+    """Mark an item as failed. Returns new attempt count.
+
+    If attempts >= MAX_ATTEMPTS, item stays 'failed' — caller should dead-letter it.
+    """
+    conn = ops.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT attempts FROM batch_items WHERE id = ?",
+            [item_id],
+        ).fetchone()
+
+        if not row:
+            return 0
+
+        new_attempts = row[0] + 1
+        now = _now_iso()
+
+        if new_attempts >= MAX_ATTEMPTS:
+            conn.execute(
+                "UPDATE batch_items SET status = 'failed', attempts = ?, "
+                "error = ?, updated_at = ? WHERE id = ?",
+                [new_attempts, error, now, item_id],
+            )
+            conn.execute(
+                "UPDATE batch_jobs SET failed_items = failed_items + 1 "
+                "WHERE id = (SELECT job_id FROM batch_items WHERE id = ?)",
+                [item_id],
+            )
+        else:
+            conn.execute(
+                "UPDATE batch_items SET status = 'pending', attempts = ?, "
+                "error = ?, updated_at = ? WHERE id = ?",
+                [new_attempts, error, now, item_id],
+            )
+
+        conn.commit()
+        return new_attempts
+    finally:
+        conn.close()
+
+
+def mark_complete(ops: SQLiteResource, job_id: int) -> None:
+    """Mark a batch job as complete."""
+    conn = ops.get_connection()
+    try:
+        conn.execute(
+            "UPDATE batch_jobs SET status = 'complete', completed_at = ? "
+            "WHERE id = ?",
+            [_now_iso(), job_id],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def batch_progress(ops: SQLiteResource, job_id: int) -> dict:
+    """Return batch progress summary: total, processed, failed, pending, processing."""
+    conn = ops.get_connection()
+    try:
+        job = conn.execute(
+            "SELECT total_items, processed_items, failed_items "
+            "FROM batch_jobs WHERE id = ?",
+            [job_id],
+        ).fetchone()
+
+        if not job:
+            return {"total": 0, "processed": 0, "failed": 0, "pending": 0, "processing": 0}
+
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM batch_items "
+            "WHERE job_id = ? AND status = 'pending'",
+            [job_id],
+        ).fetchone()[0]
+
+        processing = conn.execute(
+            "SELECT COUNT(*) FROM batch_items "
+            "WHERE job_id = ? AND status = 'processing'",
+            [job_id],
+        ).fetchone()[0]
+
+        return {
+            "total": job[0],
+            "processed": job[1],
+            "failed": job[2],
+            "pending": pending,
+            "processing": processing,
+        }
+    finally:
+        conn.close()

@@ -16,8 +16,9 @@ from .resources import (
     DuckDBResource,
     GeminiResource,
     PolarsIOManager,
+    SQLiteResource,
 )
-from .schedules import weekly_medallion
+from .schedules import daily_medallion
 
 __all__ = [
     # Resources
@@ -25,6 +26,7 @@ __all__ = [
     "DuckDBResource",
     "GeminiResource",
     "PolarsIOManager",
+    "SQLiteResource",
     # Paths
     "BRONZE_LAKE",
     "SILVER_LAKE",
@@ -36,5 +38,5 @@ __all__ = [
     "silver_glob",
     "gold_glob",
     # Schedules
-    "weekly_medallion",
+    "daily_medallion",
 ]

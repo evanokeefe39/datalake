@@ -13,13 +13,14 @@ from .common import (
     DuckDBResource,
     GeminiResource,
     PolarsIOManager,
+    SQLiteResource,
     bronze_glob,
     bronze_path,
     gold_glob,
     gold_path,
     silver_glob,
     silver_path,
-    weekly_medallion,
+    daily_medallion,
 )
 from .instagram import GoldConfig, ScrapeConfig
 from .serving import assets as serving_assets
@@ -43,8 +44,7 @@ __all__ = [
     "bronze_glob",
     "silver_glob",
     "gold_glob",
-    # Schedules
-    "weekly_medallion",
+    "daily_medallion",
     # Serving
     "serving_assets",
 ]

@@ -71,6 +71,8 @@ class TestBronzeChecks:
         meta_path = p.with_suffix(".parquet.meta")
         meta_path.write_text(json.dumps({
             "run_id": "run_1", "actor": "test", "item_count": 1,
+            "dataset_id": "ds_001",
+            "input": {"urls": ["https://instagram.com/test"], "results_limit": 12, "results_type": "posts"},
             "downloaded_at": "2024-01-01T00:00:00Z",
         }))
         with patch("datalake.defs.instagram.asset_checks.BRONZE_LAKE", tmp_path):
@@ -194,17 +196,19 @@ class TestSilverChecks:
 
 
 class TestGoldChecks:
-    """Tests for ``ig_posts_gld_*`` checks."""
+    """Tests for gold data quality checks targeting ``gold_analyses``."""
 
     @pytest.fixture(autouse=True)
     def _setup_gold_table(self, duckdb):
         with duckdb.get_connection() as conn:
             conn.execute("""
-                CREATE TABLE gold_ig_analyses (
-                    post_id TEXT PRIMARY KEY,
-                    schema_version INTEGER NOT NULL DEFAULT 3,
+                CREATE TABLE IF NOT EXISTS gold_analyses (
+                    post_id TEXT NOT NULL,
+                    domain TEXT NOT NULL DEFAULT 'instagram',
+                    prompt_hash TEXT,
                     result_json TEXT,
-                    analysed_at TIMESTAMP
+                    analysed_at TEXT NOT NULL,
+                    PRIMARY KEY (post_id, domain)
                 )
             """)
         yield
@@ -216,7 +220,8 @@ class TestGoldChecks:
         """
         with duckdb.get_connection() as conn:
             conn.execute(
-                "INSERT INTO gold_ig_analyses (post_id, result_json) VALUES (?, ?)",
+                "INSERT INTO gold_analyses (post_id, domain, result_json, analysed_at) "
+                "VALUES (?, 'instagram', ?, '2024-01-01T00:00:00')",
                 ["p1", json.dumps(FAKE_ANALYSIS)],
             )
 
@@ -234,7 +239,8 @@ class TestGoldChecks:
         bad["admirality"] = "Z9"
         with duckdb.get_connection() as conn:
             conn.execute(
-                "INSERT INTO gold_ig_analyses (post_id, result_json) VALUES (?, ?)",
+                "INSERT INTO gold_analyses (post_id, domain, result_json, analysed_at) "
+                "VALUES (?, 'instagram', ?, '2024-01-01T00:00:00')",
                 ["p1", json.dumps(bad)],
             )
 
@@ -250,7 +256,8 @@ class TestGoldChecks:
         """
         with duckdb.get_connection() as conn:
             conn.execute(
-                "INSERT INTO gold_ig_analyses (post_id, result_json) VALUES (?, ?)",
+                "INSERT INTO gold_analyses (post_id, domain, result_json, analysed_at) "
+                "VALUES (?, 'instagram', ?, '2024-01-01T00:00:00')",
                 ["p1", json.dumps(FAKE_ANALYSIS)],
             )
 
@@ -268,44 +275,12 @@ class TestGoldChecks:
         del bad["educational_json"]
         with duckdb.get_connection() as conn:
             conn.execute(
-                "INSERT INTO gold_ig_analyses (post_id, result_json) VALUES (?, ?)",
+                "INSERT INTO gold_analyses (post_id, domain, result_json, analysed_at) "
+                "VALUES (?, 'instagram', ?, '2024-01-01T00:00:00')",
                 ["p1", json.dumps(bad)],
             )
 
         ctx = build_asset_check_context(resources={"duckdb": duckdb})
         check = _CHECKS_BY_NAME["ig_posts_gld_valid_json"]
-        result = check(ctx)
-        assert result.passed is False
-
-    def test_schema_version_current_passes(self, duckdb):
-        """GIVEN all gold rows have schema_version = 3
-        WHEN the check runs
-        THEN it passes.
-        """
-        with duckdb.get_connection() as conn:
-            conn.execute(
-                "INSERT INTO gold_ig_analyses (post_id, result_json) VALUES (?, ?)",
-                ["p1", json.dumps(FAKE_ANALYSIS)],
-            )
-
-        ctx = build_asset_check_context(resources={"duckdb": duckdb})
-        check = _CHECKS_BY_NAME["ig_posts_gld_schema_version_current"]
-        result = check(ctx)
-        assert result.passed is True
-
-    def test_schema_version_current_fails(self, duckdb):
-        """GIVEN a gold row with stale schema_version
-        WHEN the check runs
-        THEN it fails.
-        """
-        with duckdb.get_connection() as conn:
-            conn.execute(
-                "INSERT INTO gold_ig_analyses "
-                "(post_id, schema_version, result_json) VALUES (?, ?, ?)",
-                ["p1", 2, json.dumps(FAKE_ANALYSIS)],
-            )
-
-        ctx = build_asset_check_context(resources={"duckdb": duckdb})
-        check = _CHECKS_BY_NAME["ig_posts_gld_schema_version_current"]
         result = check(ctx)
         assert result.passed is False
