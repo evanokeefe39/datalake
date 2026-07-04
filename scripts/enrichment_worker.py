@@ -543,14 +543,23 @@ def main() -> None:
         dry_run=False,
     )
 
+    quota_hit = result.get("quota_exhausted", False)
     logger.info(
-        "Batch %d complete: processed=%d failed=%d",
+        "Batch %d complete: processed=%d failed=%d%s",
         batch["id"], result["processed"], result["failed"],
+        " (quota exhausted — remaining items rescheduled)" if quota_hit else "",
     )
 
-    # Mark batch complete and POST to Dagster
-    mark_complete(ops, batch["id"])
+    # Only mark batch complete if we weren't stopped by quota exhaustion
+    if not quota_hit:
+        mark_complete(ops, batch["id"])
     post_materialization(ops, batch["id"], result["processed"], result["failed"], dagster_url)
+    if quota_hit:
+        logger.info(
+            "Batch %d not marked complete — items remain pending. "
+            "Re-run worker after quota reset (UTC midnight).",
+            batch["id"],
+        )
 
 
 if __name__ == "__main__":
