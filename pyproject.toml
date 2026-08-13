@@ -14,6 +14,7 @@ dependencies = [
     "dagster-duckdb>=0.29",
     "dagster-webserver>=1.9",
     "duckdb>=1.0",
+    "fastapi",
     "httpx",
     "google-genai",
     "polars>=1.0",
@@ -22,6 +23,7 @@ dependencies = [
     "tenacity",
     "pyarrow>=24.0.0",
     "typer>=0.26.8",
+    "uvicorn",
 ]
 
 [dependency-groups]
