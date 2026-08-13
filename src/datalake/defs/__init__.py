@@ -16,11 +16,11 @@ from .common import (
     SQLiteResource,
     bronze_glob,
     bronze_path,
+    daily_medallion,
     gold_glob,
     gold_path,
     silver_glob,
     silver_path,
-    daily_medallion,
 )
 from .instagram import GoldConfig, ScrapeConfig
 from .serving import assets as serving_assets
@@ -31,6 +31,7 @@ __all__ = [
     "DuckDBResource",
     "GeminiResource",
     "PolarsIOManager",
+    "SQLiteResource",
     # Configs
     "ScrapeConfig",
     "GoldConfig",

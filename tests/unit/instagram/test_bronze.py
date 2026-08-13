@@ -17,7 +17,6 @@ from datalake.defs.instagram.assets import ig_posts_raw
 from datalake.defs.instagram.config import ScrapeConfig
 
 
-
 class _FakeRunInfo:
     """Mimics ig_pipeline.models.RunInfo."""
 

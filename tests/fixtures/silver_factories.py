@@ -45,7 +45,11 @@ def seed_silver_posts(
             post_id = row[0]
             caption = row[caption_idx]
             owner_id = row[owner_id_idx] if owner_id_idx is not None else "default_owner"
-            owner_username = row[owner_username_idx] if owner_username_idx is not None else "default_user"
+            owner_username = (
+                row[owner_username_idx]
+                if owner_username_idx is not None
+                else "default_user"
+            )
             conn.execute(
                 """INSERT OR REPLACE INTO silver_ig_posts
                    (post_id, caption, owner_id, owner_username,
