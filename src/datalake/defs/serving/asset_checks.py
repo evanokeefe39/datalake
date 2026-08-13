@@ -7,7 +7,7 @@ Per test-hardening plan Phase 4:
 - No overlapping SCD2 intervals
 - effective_from ≤ effective_to
 - No gaps between consecutive intervals per profile_key
-- analytics_views returns rows
+- v_post_detail returns rows
 """
 
 from __future__ import annotations
@@ -46,7 +46,8 @@ def _dim_profile_no_overlapping_intervals(context) -> AssetCheckResult:
               ON a.owner_id = b.owner_id
              AND a.profile_key < b.profile_key
              AND a.effective_from < COALESCE(b.effective_to, '9999-12-31'::TIMESTAMP)
-             AND COALESCE(b.effective_from, '1970-01-01'::TIMESTAMP) < COALESCE(a.effective_to, '9999-12-31'::TIMESTAMP)
+             AND COALESCE(b.effective_from, '1970-01-01'::TIMESTAMP)
+                 < COALESCE(a.effective_to, '9999-12-31'::TIMESTAMP)
         """).fetchone()[0] or 0
     if overlaps > 0:
         return AssetCheckResult(

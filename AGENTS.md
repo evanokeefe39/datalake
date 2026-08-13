@@ -353,6 +353,22 @@ enrichment via batch. Interactive asset for ad-hoc single-post only.
 | Adding video enrichment | **Tier 2** (immediately) |
 | $250/mo spend cap exhausted | **Tier 2** |
 | $2,000/mo spend cap exhausted | **Tier 3** |
+### Tier 1 → Tier 2 escalation threshold (numeric)
+
+Current decision (2026-08-12): operate on **Tier 1**. Escalate to Tier 2 when
+any of these three numeric triggers fires (monitor via a metric query or the
+``batches`` CLI):
+
+|Metric|Threshold|Why|
+|---|---|---|
+|Weekly post volume|≥ 1,000 posts/week for 2 consecutive weeks|Interactive-only processing exceeds per-item rate limiting at sustained volume|
+|Batch token projection|Any batch job projected > 10M tokens|Tier 1 flash-lite batch cap is 10M; Tier 2 is 500M|
+|Rolling 30-day Gemini spend|≥ $200 (80% of Tier 1's $250/mo cap)|Leaves 20% headroom to avoid a hard stop mid-cycle|
+
+Video enrichment remains an immediate Tier 2 trigger regardless of these
+metrics (token volume + upload time make interactive processing impractical
+above ~100 videos/week).
+
 
 ### Video scaling
 

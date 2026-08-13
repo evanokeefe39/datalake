@@ -1,21 +1,19 @@
 """Integration tests: gold DuckDB state → serving layer.
 
-Tests the cross-asset boundary between ``ig_posts_gld`` (gold output in DuckDB)
-and serving assets (``profile_dimension``, ``analytics_views``). Uses shared
-DuckDB persistence and real asset execution.
+Tests the cross-asset boundary between gold output in DuckDB and serving
+assets (``profile_dimension``, ``v_post_detail``). Uses shared DuckDB
+persistence and real asset execution.
 
 Per test-hardening plan Phase 2:
-- analytics_views with NULL gold_ig_analyses join (all columns NULL)
+- v_post_detail with NULL gold_analyses join (all columns NULL)
 - SCD2 effective_to precision: synchronous with next row's effective_from
 - Cross-domain channel attribute: instagram rows have channel='instagram'
 """
 
-import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.serving.assets import analytics_views, profile_dimension
-
+from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
 from tests.fixtures.silver_factories import seed_silver_posts
 
 
@@ -23,16 +21,29 @@ def _run_profile_dimension(duckdb):
     profile_dimension(build_asset_context(resources={"duckdb": duckdb}))
 
 
-def _run_analytics_views(duckdb):
-    analytics_views(build_asset_context(resources={"duckdb": duckdb}))
+def _run_v_post_detail(duckdb):
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS gold_analyses (
+                post_id TEXT NOT NULL,
+                domain TEXT NOT NULL DEFAULT 'instagram',
+                prompt_hash TEXT,
+                result_json TEXT,
+                analysed_at TEXT NOT NULL,
+                PRIMARY KEY (post_id, domain)
+            )
+        """)
+    ctx = build_asset_context(resources={"duckdb": duckdb})
+    dim_date(ctx)
+    v_post_detail(ctx)
 
 
-# ── Test: NULL gold_ig_analyses join ──────────────────────────────────────
+# ── Test: NULL gold_analyses join ──────────────────────────────────────────
 
 
-def test_analytics_views_null_join(tmp_path):
+def test_v_post_detail_null_join(tmp_path):
     """GIVEN silver posts exist but gold has NOT been run
-    WHEN analytics_views is created
+    WHEN v_post_detail is created
     THEN the view returns rows with NULL gold columns (LEFT JOIN).
     """
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
@@ -45,18 +56,18 @@ def test_analytics_views_null_join(tmp_path):
     )
 
     _run_profile_dimension(duckdb)
-    _run_analytics_views(duckdb)
+    _run_v_post_detail(duckdb)
 
     with duckdb.get_connection() as conn:
         rows = conn.execute(
             "SELECT post_id, result_json, gold_analysed_at, profile_key, channel "
-            "FROM analytics_views"
+            "FROM v_post_detail"
         ).fetchall()
 
     assert len(rows) == 1
     post_id, result_json, gold_analysed_at, profile_key, channel = rows[0]
     assert post_id == "1"
-    # Gold columns are NULL since gold_ig_analyses was never populated
+    # Gold columns are NULL since gold_analyses was never populated
     assert result_json is None
     assert gold_analysed_at is None
     # Profile dimension should exist

@@ -58,6 +58,6 @@ Caption:"""  # no trailing whitespace needed
 
 # ── Model ───────────────────────────────────────────────────────────────────
 
-_DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
+_DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 CURRENT_PROMPT_HASH = compute_prompt_hash(IG_GOLD_PROMPT, _DEFAULT_GEMINI_MODEL)
