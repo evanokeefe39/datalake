@@ -36,15 +36,23 @@ def profile_dimension(duckdb: DuckDBResource) -> None:
     with db.get_connection() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS dim_profile (
-                profile_key     INTEGER PRIMARY KEY,
-                owner_id        TEXT NOT NULL,
-                owner_username  TEXT,
-                channel         TEXT NOT NULL DEFAULT 'instagram',
-                effective_from  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                effective_to    TIMESTAMP,
-                is_current      BOOLEAN NOT NULL DEFAULT TRUE
+                profile_key      INTEGER PRIMARY KEY,
+                owner_id         TEXT NOT NULL,
+                owner_username   TEXT,
+                channel          TEXT NOT NULL DEFAULT 'instagram',
+                effective_from   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                effective_to     TIMESTAMP,
+                is_current       BOOLEAN NOT NULL DEFAULT TRUE,
+                profile_pic_path TEXT
             )
         """)
+
+        # Migration: existing DBs predate profile_pic_path. DuckDB ALTER has no
+        # IF NOT EXISTS, so tolerate the duplicate-column error.
+        try:
+            conn.execute("ALTER TABLE dim_profile ADD COLUMN profile_pic_path TEXT")
+        except Exception:
+            pass  # column already exists
 
         # Get distinct profiles from silver_ig_posts
         profiles = conn.execute("""

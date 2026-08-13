@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { AgGridReact } from "ag-grid-react";
+import type { CustomHeaderProps } from "ag-grid-react";
 import type {
   ColDef,
   GridReadyEvent,
@@ -13,6 +14,7 @@ import {
 } from "ag-grid-community";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Info } from "lucide-react";
 import { fetchPosts, fetchSearchResults, type PostRow } from "@/lib/api";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -164,6 +166,16 @@ function toggleSet<T>(set: Set<T>, item: T): Set<T> {
 const DOMAIN_OPTIONS = ["Tech", "Business", "Creative", "Lifestyle", "Education"] as const;
 const RANK_OPTIONS = ["A", "B", "C"] as const;
 
+
+
+function InfoHeader(props: CustomHeaderProps & { tooltip?: string }) {
+  return (
+    <div className="flex items-center gap-1.5" title={props.tooltip}>
+      <span>{props.displayName}</span>
+      <Info className="w-3 h-3 text-muted/70 cursor-help shrink-0" aria-hidden />
+    </div>
+  );
+}
 // ── Column definitions ──────────────────────────────────────────
 
 const COLUMN_DEFS: ColDef<PostRow>[] = [
@@ -301,7 +313,11 @@ const COLUMN_DEFS: ColDef<PostRow>[] = [
     headerName: "Edu",
     width: 80,
     filter: BooleanFilter,
+    headerComponent: InfoHeader,
     cellClass: "flex !items-center !justify-center",
+    headerComponentParams: {
+      tooltip: "Educational — the post teaches or informs vs. purely entertaining.",
+    },
     cellRenderer: ({ value }: { value: boolean | null }) => {
       if (value === null) return <span className="text-muted text-xs">--</span>;
       return value ? (
@@ -316,7 +332,11 @@ const COLUMN_DEFS: ColDef<PostRow>[] = [
     headerName: "Act",
     width: 80,
     filter: BooleanFilter,
+    headerComponent: InfoHeader,
     cellClass: "flex !items-center !justify-center",
+    headerComponentParams: {
+      tooltip: "Actionable — the post gives steps or actions the viewer can take.",
+    },
     cellRenderer: ({ value }: { value: boolean | null }) => {
       if (value === null) return <span className="text-muted text-xs">--</span>;
       return value ? (

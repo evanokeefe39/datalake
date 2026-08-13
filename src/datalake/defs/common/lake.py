@@ -10,7 +10,11 @@ def _env_path(key: str, default: str) -> Path:
     return Path(os.environ.get(key, default))
 
 
-DATA_DIR = _env_path("IG_DATA_DIR", "data")
+# Anchor the default data dir to the repository root so the dashboard server
+# (run from dashboard/) and the pipeline (run from root) resolve the same
+# path regardless of cwd. Still overridable via IG_DATA_DIR.
+_PROJECT_ROOT = Path(__file__).resolve().parents[4]
+DATA_DIR = _env_path("IG_DATA_DIR", str(_PROJECT_ROOT / "data"))
 
 BRONZE_LAKE = _env_path("IG_BRONZE_DIR", str(DATA_DIR / "lake" / "bronze"))
 SILVER_LAKE = _env_path("IG_SILVER_DIR", str(DATA_DIR / "lake" / "silver"))
@@ -48,3 +52,22 @@ def silver_glob() -> str:
 def gold_glob() -> str:
     """Glob for all gold Parquet files."""
     return str(GOLD_LAKE / "*.parquet")
+
+
+# ── Media cache (dashboard + pipeline shared paths) ──────────────────────
+
+MEDIA_ROOT = DATA_DIR / "media"
+THUMBNAIL_DIR = MEDIA_ROOT / "thumbnails"
+AVATAR_DIR = MEDIA_ROOT / "avatars"
+
+
+def thumbnail_path(shortcode: str) -> Path:
+    """Path to a cached post thumbnail on disk."""
+    THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
+    return THUMBNAIL_DIR / f"{shortcode}.jpg"
+
+
+def avatar_path(username: str) -> Path:
+    """Path to a cached profile picture on disk."""
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    return AVATAR_DIR / f"{username}.jpg"

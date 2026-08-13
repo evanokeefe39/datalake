@@ -3,6 +3,11 @@ data/state.duckdb
 data/state.duckdb.wal
 data/state.duckdb-shm
 data/state.*.duckdb
+data/ops.sqlite
+data/ops.sqlite-wal
+data/ops.sqlite-shm
+data/media/
+data/*_bak_*
 data/lake/bronze/*.jsonl
 data/lake/bronze/*.meta
 __pycache__/

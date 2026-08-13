@@ -64,6 +64,42 @@ def _write_meta(
     meta_path = parquet_path.with_suffix(".parquet.meta")
     meta_path.write_text(json.dumps(meta, indent=2))
 
+
+def _classify_bronze(df: pl.DataFrame, meta_path: Path | None) -> str:
+    """Classify bronze dataset by entity type.
+
+    Priority: meta sidecar ``input.results_type`` > schema sniffing.
+    Returns ``"posts"``, ``"details"``, ``"comments"``, or ``"unknown"``.
+    """
+    # 1. Meta sidecar takes priority when present
+    if meta_path and meta_path.exists():
+        try:
+            meta_text = meta_path.read_text(encoding="utf-8")
+            meta = json.loads(meta_text)
+            rt = meta.get("input", {}).get("results_type")
+            if rt in ("posts", "details", "comments"):
+                return rt
+        except (json.JSONDecodeError, KeyError, OSError):
+            pass
+
+    # 2. Schema sniffing fallback for files without meta
+    if len(df) == 0 or df.schema is None:
+        return "unknown"
+
+    cols = set(df.columns)
+
+    # Posts have id + shortCode (the primary Apify identifiers)
+    if "id" in cols and "shortCode" in cols:
+        return "posts"
+    # Details/profiles have biography + either followersCount or profilePicUrlHD
+    if "biography" in cols or "followersCount" in cols:
+        return "details"
+    # Comments have commentId
+    if "commentId" in cols:
+        return "comments"
+
+    return "unknown"
+
 # ── Asset ─────────────────────────────────────────────────────────────────
 
 @asset(
@@ -238,6 +274,13 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             logger.info("Skipping %s — 0 rows", f.name)
             continue
 
+        # Classify entity type; skip non-post files
+        meta_path = f.with_suffix(".parquet.meta")
+        entity_type = _classify_bronze(df, meta_path)
+        if entity_type != "posts":
+            logger.info("Skipping %s — entity type '%s' (not 'posts')", f.name, entity_type)
+            continue
+
         # Rename known columns, but skip if the target name already exists
         # (some bronze files already have the silver column name).
         to_rename = {
@@ -381,6 +424,246 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     return deduped
 
 
+# ── Entity-specific assets ────────────────────────────────────────────────
+
+
+@asset(
+    name="ig_profiles_slv",
+    group_name="instagram",
+    description="Extract profiles + download avatars from post/details scrapes.",
+    deps=["ig_posts_raw"],
+)
+def ig_profiles_slv(duckdb: DuckDBResource) -> pl.DataFrame:
+    """Extract profiles from post and details scrapes; download avatars.
+
+    Post scrapes carry the author's profile fields (username, profilePicUrlHD,
+    owner_id) on every row, so profiles can be built from either entity type.
+    Avatars are downloaded at scrape time — CDN URLs expire in ~4-5 days.
+    """
+
+    from ..common.lake import avatar_path
+    from ..common.schemas import DUCKDB_TABLES
+
+    db = duckdb
+    _ensure_state_tables(db)
+
+    # Find details-type bronze files that haven't been processed
+    bronze_files = sorted(BRONZE_LAKE.glob("*.parquet"))
+    if not bronze_files:
+        return pl.DataFrame(schema={"owner_id": pl.Utf8})
+
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT timestamp FROM watermarks WHERE name = 'profiles_ig'"
+        ).fetchone()
+    if row and row[0] is not None:
+        dt = row[0]
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        watermark_ts = dt.timestamp()
+    else:
+        watermark_ts = 0.0
+
+    import os as _os
+
+    new_files = [f for f in bronze_files if _os.path.getmtime(f) > watermark_ts]
+    if not new_files:
+        with db.get_connection() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM silver_ig_profiles"
+            ).fetchone()[0]
+            if count == 0:
+                return pl.DataFrame(schema={"owner_id": pl.Utf8})
+            reader = conn.execute(
+                "SELECT * FROM silver_ig_profiles ORDER BY owner_username"
+            ).arrow()
+        return pl.from_arrow(reader.read_all())
+
+    frames = []
+    max_mtime = 0.0
+    for f in new_files:
+        try:
+            df = pl.read_parquet(f)
+        except Exception as exc:
+            logger.warning("Skipping %s — unreadable: %s", f.name, exc)
+            continue
+
+        if len(df) == 0:
+            logger.info("Skipping %s — 0 rows", f.name)
+            continue
+
+        # Classify — process both details-type and post-type (both carry
+        # profile fields). Comments carry no profile data.
+        meta_path = f.with_suffix(".parquet.meta")
+        entity_type = _classify_bronze(df, meta_path)
+        if entity_type not in ("details", "posts"):
+            continue
+
+        mtime = _os.path.getmtime(f)
+        if mtime > max_mtime:
+            max_mtime = mtime
+
+        # Map camelCase columns → snake_case
+        _profile_col_map = {
+            "ownerId": "owner_id",
+            "username": "owner_username",
+            "fullName": "full_name",
+            "biography": "biography",
+            "followersCount": "followers_count",
+            "followsCount": "follows_count",
+            "postsCount": "posts_count",
+            "isBusinessAccount": "is_business",
+            "isVerified": "is_verified",
+            "externalUrl": "external_url",
+        }
+        to_rename = {
+            old: new
+            for old, new in _profile_col_map.items()
+            if old in df.columns and new not in df.columns
+        }
+        df = df.rename(to_rename)
+
+        # Profile pic: prefer HD, fall back to standard. Handled separately
+        # because both source columns map to the same target.
+        if "profilePicUrlHD" in df.columns:
+            df = df.rename({"profilePicUrlHD": "profile_pic_url"})
+        elif "profilePicUrl" in df.columns:
+            df = df.rename({"profilePicUrl": "profile_pic_url"})
+
+        dataset_id = f.stem
+        for col, default in [
+            ("owner_id", None),
+            ("owner_username", None),
+            ("full_name", None),
+            ("biography", None),
+            ("followers_count", 0),
+            ("follows_count", 0),
+            ("posts_count", 0),
+            ("is_business", False),
+            ("is_verified", False),
+            ("profile_pic_url", None),
+            ("external_url", None),
+            ("source_dataset", dataset_id),
+            ("processed_on", None),
+        ]:
+            if col not in df.columns:
+                df = df.with_columns(pl.lit(default).alias(col))
+
+        # Download avatar from fresh CDN URL (they expire in ~4-5 days)
+        if "profile_pic_url" in df.columns:
+            profile_rows = df.select(
+                ["owner_username", "profile_pic_url"]
+            ).unique().rows()
+            for owner_username, pic_url in profile_rows:
+                if not owner_username or not pic_url:
+                    continue
+                local = avatar_path(owner_username)
+                if local.exists() and local.stat().st_size > 0:
+                    continue  # Already cached
+                try:
+                    import urllib.request as _urllib
+
+                    req = _urllib.Request(
+                        pic_url,
+                        headers={
+                            "User-Agent": (
+                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/120.0.0.0 Safari/537.36"
+                            ),
+                            "Referer": "https://www.instagram.com/",
+                        },
+                    )
+                    resp = _urllib.urlopen(req, timeout=15)
+                    body = resp.read()
+                    local.write_bytes(body)
+                    logger.info(
+                        "Downloaded avatar %s -> %s (%d bytes)",
+                        owner_username, local, len(body),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to download avatar for %s: %s",
+                        owner_username, exc,
+                    )
+                    continue
+
+        # Keep only valid profile columns
+        schema_cols = list(DUCKDB_TABLES["silver_ig_profiles"].keys())
+        df = df.select([c for c in schema_cols if c in df.columns])
+
+        # Drop rows without owner_id, then collapse post scrapes (one row per
+        # post) to a single row per profile.
+        df = df.filter(pl.col("owner_id").is_not_null())
+        df = df.unique(subset=["owner_id"], keep="first")
+        frames.append(df)
+
+    # ── 3. Load existing + dedup via DuckDB ─────────────────────────────
+    with db.get_connection() as conn:
+        existing_count = conn.execute(
+            "SELECT COUNT(*) FROM silver_ig_profiles"
+        ).fetchone()[0]
+
+    if existing_count > 0:
+        with db.get_connection() as conn:
+            reader = conn.execute(
+                "SELECT * FROM silver_ig_profiles"
+            ).arrow()
+        existing_df = pl.from_arrow(reader.read_all())
+        frames.insert(0, existing_df)
+
+    if not frames:
+        return pl.DataFrame(schema={"owner_id": pl.Utf8})
+
+    unified = pl.concat(frames, how="diagonal_relaxed")
+    if unified.is_empty():
+        return pl.DataFrame(schema={"owner_id": pl.Utf8})
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    unified = unified.with_columns(
+        pl.when(pl.col("processed_on").is_null())
+        .then(pl.lit(now_iso))
+        .otherwise(pl.col("processed_on"))
+        .alias("processed_on")
+    )
+
+    with db.get_connection() as conn:
+        conn.register("to_upsert", unified.to_arrow())
+        conn.execute(
+            "INSERT OR REPLACE INTO silver_ig_profiles SELECT * FROM to_upsert"
+        )
+
+    # Advance watermark
+    if max_mtime > 0:
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO watermarks (name, timestamp) "
+                "VALUES ('profiles_ig', ?)",
+                [datetime.fromtimestamp(max_mtime, tz=timezone.utc)],
+            )
+
+    return unified
+
+
+@asset(
+    name="ig_comments_slv",
+    group_name="instagram",
+    description="Comment scrapes from bronze → silver (STUB — not yet implemented).",
+    deps=["ig_posts_raw"],
+)
+def ig_comments_slv(duckdb: DuckDBResource) -> pl.DataFrame:
+    """Stub for comment-type bronze processing.
+
+    No comment-type bronze datasets exist yet. Full implementation deferred
+    until real comment data arrives (modeling against non-existent data is
+    a confirmed anti-pattern from Phase 2 false start). Ensures the table
+    exists so the schema contract holds, but reads no bronze files.
+    """
+    _ensure_state_tables(duckdb)
+    logger.warning("ig_comments_slv: not yet implemented — returning empty")
+    return pl.DataFrame(schema={"comment_id": pl.Utf8})
+
+
 
 
 @asset(
@@ -472,6 +755,38 @@ def _ensure_state_tables(db: DuckDBResource) -> None:
                 name        TEXT PRIMARY KEY,
                 timestamp   TIMESTAMP NOT NULL,
                 config_hash TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS silver_ig_profiles (
+                owner_id        TEXT PRIMARY KEY,
+                owner_username  TEXT,
+                full_name       TEXT,
+                biography       TEXT,
+                followers_count INTEGER,
+                follows_count   INTEGER,
+                posts_count     INTEGER,
+                is_business     BOOLEAN,
+                is_verified     BOOLEAN,
+                profile_pic_url TEXT,
+                external_url    TEXT,
+                source_dataset  TEXT,
+                processed_on    TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS silver_ig_comments (
+                comment_id     TEXT PRIMARY KEY,
+                post_id        TEXT,
+                post_shortcode TEXT,
+                text           TEXT,
+                owner_username TEXT,
+                owner_id       TEXT,
+                likes_count    INTEGER,
+                timestamp      TIMESTAMP,
+                reply_to_id    TEXT,
+                source_dataset TEXT,
+                processed_on   TIMESTAMP
             )
         """)
 
