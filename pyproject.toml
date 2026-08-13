@@ -24,7 +24,7 @@ dependencies = [
     "typer>=0.26.8",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = ["pytest", "pytest-asyncio", "ruff"]
 
 [tool.hatch.build.targets.wheel]
