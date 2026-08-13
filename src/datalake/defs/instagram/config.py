@@ -8,12 +8,20 @@ from enum import Enum
 from dagster import Config
 
 
+class ResultsType(str, Enum):
+    """Valid ``resultsType`` values for the Apify Instagram scraper."""
+
+    POSTS = "posts"
+    DETAILS = "details"
+    COMMENTS = "comments"
+
+
 class ScrapeConfig(Config):
     """Configuration for triggering an Apify Instagram scrape."""
 
     urls: list[str]
     results_limit: int = 12
-    results_type: str = "posts"
+    results_type: ResultsType = ResultsType.POSTS
 
 
 class GoldConfig(Config):

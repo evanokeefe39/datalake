@@ -37,7 +37,12 @@ _STALE_DUCKDB_TABLES: dict[str, str] = {
     ),
 }
 
-_STALE_SQLITE_TABLES: dict[str, str] = {}
+_STALE_SQLITE_TABLES: dict[str, str] = {
+    "instagram_media_cache": (
+        "Drop — replaced by 'media_cache' (byte cache). "
+        "Run scripts/migrate_schema_drift.py"
+    ),
+}
 
 # ── Tables that exist in the DB but are not in the catalog ───────────────
 # Extra tables are detected and reported as warnings. They might be

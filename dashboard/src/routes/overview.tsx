@@ -14,7 +14,7 @@ import {
   type ProfileRow,
   type StandoutRow,
 } from "@/lib/api";
-import { TrendingUp, Zap } from "lucide-react";
+import { Zap } from "lucide-react";
 
 function admiraltyTier(score: number | undefined | null): string {
   if (score == null) return "--";
@@ -96,8 +96,12 @@ export default function OverviewPage() {
           </CardHeader>
           <div className="space-y-3 max-h-[420px] overflow-y-auto">
             {standouts.slice(0, 8).map((s) => (
-              <div
+              <a
                 key={s.post_id}
+                href={`https://www.instagram.com/p/${s.shortcode}/`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open on Instagram"
                 className="flex gap-3 p-2 border border-border hover:border-accent-dim transition-colors group"
               >
                 <Thumbnail shortcode={s.shortcode} size={80} />
@@ -121,7 +125,7 @@ export default function OverviewPage() {
                     <span>vs {Math.round(s.mean_likes).toLocaleString()} avg</span>
                   </div>
                 </div>
-              </div>
+              </a>
             ))}
           </div>
         </Card>

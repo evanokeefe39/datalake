@@ -10,6 +10,33 @@ This repo is operated by Claude. Keep this file current — Claude reads it on e
 - No direct pushes to `main`.
 - Never use PowerShell.
 
+## Current direction (2026-08-12)
+
+The user's priority is a **robust pipeline that extracts rich signal from video
+and image across multiple sources** — not hosting/infra. Hosting (S3/R2, DuckLake,
+MotherDuck, cloud warehouse) is explicitly deferred and migrates cleanly later.
+
+**Next branch = pipeline hardening.** The critical gap: `ig_posts_slv` hardcodes
+`media_files = "[]"` and `media_count = 0`, so bronze media URLs (`videoUrl`,
+`displayUrl`) never reach Gemini — every `gold_analyses` row is text-only. The
+multimodal worker code is correct but starved of input. Work items, in order:
+
+1. Wire media end-to-end (bronze → silver `media_files` → worker → Gemini),
+   proven by an External Integration Gate smoke test: 1 real image + 1 real video.
+2. Fix the media-expiry race: cache media bytes at scrape time (CDN URLs die in
+   ~4-5 days). This is the load-bearing part of the media cache, distinct from
+   the dashboard thumbnail serving.
+3. Multi-source as additive work, not an architecture project: the worker already
+   dispatches by `domain`, gold PK is `(post_id, domain)`. YouTube first (video +
+   stable URLs + free transcripts), then TikTok.
+4. Triage-first video processing: deep-pass only high-value posts; uniform deep
+   video is ~17.4k tokens/min and pure waste.
+
+**Pending user decision:** video at scale is a Tier 2 batch-API problem (free
+tier skips video in the worker gate). Tier choice is a cost call, not infra.
+
+
+
 ## Architecture
 **Medallion lakehouse with async enrichment batches:**
 

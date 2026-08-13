@@ -55,6 +55,7 @@ DUCKDB_TABLES: dict[str, dict[str, str]] = {
         "effective_from": "TIMESTAMP",
         "effective_to": "TIMESTAMP",
         "is_current": "BOOLEAN",
+        "profile_pic_path": "VARCHAR",
     },
     "dim_date": {
         "date": "DATE",
@@ -67,6 +68,34 @@ DUCKDB_TABLES: dict[str, dict[str, str]] = {
         "day_of_week": "VARCHAR",
         "is_weekend": "BOOLEAN",
         "financial_year": "BIGINT",
+    },
+    "silver_ig_profiles": {
+        "owner_id": "VARCHAR",
+        "owner_username": "VARCHAR",
+        "full_name": "VARCHAR",
+        "biography": "VARCHAR",
+        "followers_count": "INTEGER",
+        "follows_count": "INTEGER",
+        "posts_count": "INTEGER",
+        "is_business": "BOOLEAN",
+        "is_verified": "BOOLEAN",
+        "profile_pic_url": "VARCHAR",
+        "external_url": "VARCHAR",
+        "source_dataset": "VARCHAR",
+        "processed_on": "TIMESTAMP",
+    },
+    "silver_ig_comments": {
+        "comment_id": "VARCHAR",
+        "post_id": "VARCHAR",
+        "post_shortcode": "VARCHAR",
+        "text": "VARCHAR",
+        "owner_username": "VARCHAR",
+        "owner_id": "VARCHAR",
+        "likes_count": "INTEGER",
+        "timestamp": "TIMESTAMP",
+        "reply_to_id": "VARCHAR",
+        "source_dataset": "VARCHAR",
+        "processed_on": "TIMESTAMP",
     },
 }
 
@@ -86,6 +115,7 @@ DUCKDB_VIEWS: list[str] = [
 SQLITE_TABLES: dict[str, dict[str, str]] = {
     "batch_jobs": {
         "id": "INTEGER",
+        "consumer": "TEXT",
         "status": "TEXT",
         "created_at": "TEXT",
         "completed_at": "TEXT",
@@ -96,8 +126,7 @@ SQLITE_TABLES: dict[str, dict[str, str]] = {
     "batch_items": {
         "id": "INTEGER",
         "job_id": "INTEGER",
-        "post_id": "TEXT",
-        "domain": "TEXT",
+        "payload": "TEXT",
         "status": "TEXT",
         "attempts": "INTEGER",
         "error": "TEXT",
@@ -113,6 +142,7 @@ SQLITE_TABLES: dict[str, dict[str, str]] = {
         "upload_state": "TEXT",
         "created_at": "TEXT",
         "uploaded_at": "TEXT",
+        "expires_at": "TEXT",
     },
     "dead_letter": {
         "post_id": "TEXT",
@@ -120,6 +150,14 @@ SQLITE_TABLES: dict[str, dict[str, str]] = {
         "error": "TEXT",
         "attempts": "INTEGER",
         "failed_at": "TEXT",
+    },
+    "media_cache": {
+        "cache_key": "TEXT",
+        "local_path": "TEXT",
+        "content_type": "TEXT",
+        "size_bytes": "INTEGER",
+        "fetched_at": "TEXT",
+        "source_url": "TEXT",
     },
 }
 

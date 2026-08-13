@@ -7,15 +7,23 @@ Run with: uv run uvicorn server:app --port 3002 --reload
 from __future__ import annotations
 
 import logging
-import re
+import os
 import sqlite3
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
+
+from datalake.defs.common.lake import (
+    AVATAR_DIR,
+    THUMBNAIL_DIR,
+    avatar_path,
+    thumbnail_path,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dashboard-api")
@@ -46,18 +54,27 @@ def _ops_connect() -> sqlite3.Connection:
 
 
 # ── Media Cache ─────────────────────────────────────────────────
+#
+# Instagram CDN URLs expire in ~4-5 days, so the dashboard caches image
+# *bytes* to disk — never the URLs. Two endpoints:
+#   - thumbnails: fetched from Instagram's public /media/ endpoint on first
+#     request, then served from disk (byte-cache, tracked in ops.sqlite).
+#   - avatars: populated at pipeline time by ig_profiles_slv; served from
+#     disk, or a DiceBear identicon redirect when absent.
 
-def _ensure_media_cache():
-    """Idempotent schema creation for instagram media cache."""
+
+def _ensure_media_cache_table() -> None:
+    """Idempotent schema creation for the dashboard media cache."""
     con = _ops_connect()
     try:
         con.execute("""
-            CREATE TABLE IF NOT EXISTS instagram_media_cache (
-                cache_key   TEXT PRIMARY KEY,
-                media_url   TEXT NOT NULL,
-                media_type  TEXT NOT NULL,
-                fetched_at  TEXT NOT NULL,
-                error       TEXT
+            CREATE TABLE IF NOT EXISTS media_cache (
+                cache_key    TEXT PRIMARY KEY,
+                local_path   TEXT NOT NULL,
+                content_type TEXT,
+                size_bytes   INTEGER,
+                fetched_at   TEXT NOT NULL,
+                source_url   TEXT
             )
         """)
         con.commit()
@@ -65,107 +82,120 @@ def _ensure_media_cache():
         con.close()
 
 
-
-
-_ensure_media_cache()
-
-
-def _fetch_og_image(url: str) -> str | None:
-    """Scrape a URL and extract og:image meta tag. Returns None on failure."""
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                )
-            },
-        )
-        resp = urllib.request.urlopen(req, timeout=8)
-        html = resp.read().decode("utf-8", errors="replace")
-        match = re.search(
-            r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', html
-        )
-        if match:
-            return match.group(1)
-    except Exception as exc:
-        logger.warning("Failed to fetch og:image from %s: %s", url, exc)
-    return None
-
-
-def _get_cached_media(cache_key: str) -> dict | None:
-    """Return cached media entry or None."""
+def _cache_media_row(
+    cache_key: str,
+    local_path: Path,
+    content_type: str,
+    source_url: str,
+) -> None:
+    """Record a cached media file in ops.sqlite."""
     con = _ops_connect()
     try:
-        row = con.execute(
-            "SELECT media_url, media_type, fetched_at, error "
-            "FROM instagram_media_cache WHERE cache_key = ?",
-            [cache_key],
-        ).fetchone()
-        if row:
-            return dict(row)
-    finally:
-        con.close()
-    return None
-
-
-def _cache_media(cache_key: str, media_url: str, media_type: str) -> None:
-    """Store a media URL in the cache."""
-    con = _ops_connect()
-    try:
-        now = datetime.now(timezone.utc).isoformat()
         con.execute(
-            "INSERT OR REPLACE INTO instagram_media_cache "
-            "(cache_key, media_url, media_type, fetched_at) VALUES (?, ?, ?, ?)",
-            [cache_key, media_url, media_type, now],
+            "INSERT OR REPLACE INTO media_cache "
+            "(cache_key, local_path, content_type, size_bytes, fetched_at, source_url) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                cache_key,
+                str(local_path),
+                content_type,
+                local_path.stat().st_size,
+                datetime.now(timezone.utc).isoformat(),
+                source_url,
+            ],
         )
         con.commit()
     finally:
         con.close()
 
 
+def _fetch_thumbnail_bytes(shortcode: str) -> tuple[bytes, str] | None:
+    """Fetch raw image bytes + content type for a post thumbnail.
+
+    Returns None on non-200, non-image content type, or empty body — the
+    caller turns that into a 404.
+    """
+    url = f"https://www.instagram.com/p/{shortcode}/media/?size=m"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://www.instagram.com/",
+        },
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+    except Exception as exc:
+        logger.warning("Thumbnail fetch failed for %s: %s", shortcode, exc)
+        return None
+    content_type = resp.headers.get("Content-Type", "")
+    if not content_type.startswith("image/"):
+        logger.warning(
+            "Thumbnail %s returned non-image type %s", shortcode, content_type
+        )
+        return None
+    body = resp.read()
+    if not body:
+        logger.warning("Thumbnail %s returned empty body", shortcode)
+        return None
+    return body, content_type
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write bytes atomically (temp file + rename) to avoid partial reads."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
 @app.get("/api/media/avatar/{username}")
 def avatar(username: str):
-    """Get profile picture URL for an Instagram user. Cached after first fetch."""
-    cache_key = f"avatar:{username}"
-    cached = _get_cached_media(cache_key)
-    if cached and not cached.get("error"):
-        return {"url": cached["media_url"], "cached": True}
+    """Serve a profile picture from disk, or redirect to a DiceBear identicon.
 
-    # Fetch from Instagram profile page
-    url = _fetch_og_image(f"https://www.instagram.com/{username}/")
-    if url:
-        _cache_media(cache_key, url, "avatar")
-        return {"url": url, "cached": False}
-
-    # Fallback: DiceBear identicon
+    Avatars are populated at pipeline time (ig_profiles_slv), never fetched
+    from Instagram here — CDN URLs expire and can't be refreshed at runtime.
+    """
+    local = avatar_path(username)
+    if local.exists() and local.stat().st_size > 0:
+        return FileResponse(local, media_type="image/jpeg")
     fallback = (
         f"https://api.dicebear.com/9.x/identicon/svg"
         f"?seed={username}&backgroundColor=000000&foregroundColor=00ffff"
     )
-    _cache_media(cache_key, fallback, "avatar")
-    return {"url": fallback, "cached": False, "fallback": True}
+    return RedirectResponse(url=fallback, status_code=302)
 
 
 @app.get("/api/media/thumbnail/{shortcode}")
 def thumbnail(shortcode: str):
-    """Get post thumbnail URL. Lazy-loaded: fetched on first request, cached after."""
-    cache_key = f"thumb:{shortcode}"
-    cached = _get_cached_media(cache_key)
-    if cached and not cached.get("error"):
-        return {"url": cached["media_url"], "cached": True}
+    """Serve a post thumbnail, byte-caching from Instagram on first request."""
+    local = thumbnail_path(shortcode)
+    if local.exists() and local.stat().st_size > 0:
+        return FileResponse(local, media_type="image/jpeg")
 
-    # Fetch from Instagram post page
-    post_url = f"https://www.instagram.com/p/{shortcode}/"
-    url = _fetch_og_image(post_url)
-    if url:
-        _cache_media(cache_key, url, "thumbnail")
-        return {"url": url, "cached": False}
+    fetched = _fetch_thumbnail_bytes(shortcode)
+    if fetched is None:
+        raise HTTPException(status_code=404, detail="thumbnail unavailable")
+    body, content_type = fetched
 
-    # Return empty — frontend will show placeholder
-    return {"url": None, "cached": False}
+    _atomic_write(local, body)
+    _cache_media_row(
+        f"thumb:{shortcode}",
+        local,
+        content_type,
+        f"https://www.instagram.com/p/{shortcode}/media/?size=m",
+    )
+    return FileResponse(local, media_type=content_type)
+
+
+# ── Startup: ensure media dirs + cache table exist ─────────────────────
+AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
+_ensure_media_cache_table()
 
 
 # ── Health ──────────────────────────────────────────────────────
@@ -199,7 +229,8 @@ def overview():
 
         admiralty = (
             db.execute(
-                "SELECT ROUND(AVG(admiralty_score), 2) FROM v_profile_quality WHERE enriched_posts > 0"
+                "SELECT ROUND(AVG(admiralty_score), 2) FROM v_profile_quality "
+                "WHERE enriched_posts > 0"
             ).fetchone()[0]
             or 0
         )
@@ -446,7 +477,11 @@ def standout_posts(limit: int = Query(20, ge=1, le=100)):
                        sp.caption, sp.likes_count, sp.comments_count,
                        sp.video_view_count, sp.timestamp,
                        cs.mean_likes, cs.std_likes,
-                       ROUND((sp.likes_count - cs.mean_likes) / NULLIF(cs.std_likes, 0), 2) AS z_score
+                       ROUND(
+                           (sp.likes_count - cs.mean_likes)
+                           / NULLIF(cs.std_likes, 0),
+                           2
+                       ) AS z_score
                 FROM silver_ig_posts sp
                 JOIN creator_stats cs ON sp.owner_username = cs.owner_username
                 WHERE sp.likes_count > cs.mean_likes + cs.std_likes
@@ -538,7 +573,11 @@ def recent_standouts(limit: int = Query(10, ge=1, le=50)):
                        sp.caption, sp.likes_count, sp.comments_count,
                        sp.timestamp,
                        cs.mean_likes, cs.std_likes,
-                       ROUND((sp.likes_count - cs.mean_likes) / NULLIF(cs.std_likes, 0), 2) AS z_score,
+                       ROUND(
+                           (sp.likes_count - cs.mean_likes)
+                           / NULLIF(cs.std_likes, 0),
+                           2
+                       ) AS z_score,
                        ROW_NUMBER() OVER (
                            PARTITION BY sp.owner_username
                            ORDER BY (sp.likes_count - cs.mean_likes) / NULLIF(cs.std_likes, 0) DESC
