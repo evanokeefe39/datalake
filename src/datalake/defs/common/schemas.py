@@ -159,6 +159,15 @@ SQLITE_TABLES: dict[str, dict[str, str]] = {
         "fetched_at": "TEXT",
         "source_url": "TEXT",
     },
+    "scrape_targets": {
+        "username": "TEXT",
+        "profile_url": "TEXT",
+        "results_type": "TEXT",
+        "results_limit": "INTEGER",
+        "enabled": "INTEGER",
+        "tier": "TEXT",
+        "updated_at": "TEXT",
+    },
 }
 
 # ── Convenience: column-name-only lists for asset code ────────────────────

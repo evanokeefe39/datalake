@@ -16,6 +16,7 @@ from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 from pydantic import ValidationError
 
+from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.instagram.assets import (
     _classify_bronze,
     ig_comments_slv,
@@ -96,9 +97,7 @@ def test_classifier_meta_fallback_when_field_absent(tmp_path):
 
 
 def test_scrape_config_valid_types():
-    cfg = ScrapeConfig(
-        urls=["https://instagram.com/x"], results_type=ResultsType.DETAILS
-    )
+    cfg = ScrapeConfig(urls=["https://instagram.com/x"], results_type=ResultsType.DETAILS)
     assert cfg.results_type == ResultsType.DETAILS
 
 
@@ -148,9 +147,10 @@ def test_profiles_slv_upsert(tmp_path):
     """Details-type bronze upserts rows into silver_ig_profiles."""
     _details_df(rows=2).write_parquet(tmp_path / "ds_profile.parquet")
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_profiles_slv(context)
 
     assert len(result) == 2
@@ -164,9 +164,10 @@ def test_profiles_slv_upsert(tmp_path):
 def test_profiles_slv_no_bronze(tmp_path):
     """Zero bronze files → empty DataFrame."""
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_profiles_slv(context)
 
     assert result.is_empty()
@@ -181,14 +182,16 @@ def test_profiles_slv_extracts_from_post_bronze(tmp_path):
     ]
     write_ig_bronze(tmp_path / "ds_posts.parquet", rows)
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_profiles_slv(context)
 
     # 3 posts, 2 distinct authors → 2 profiles (deduped by owner_id)
     assert set(result["owner_id"].to_list()) == {"own_1", "own_2"}
     assert set(result["owner_username"].to_list()) == {"user1", "user2"}
+
 
 # ── Comments stub (US-04) ────────────────────────────────────────────────
 

@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 # ── Metadata sidecar ──────────────────────────────────────────────────────
 
+
 def _write_meta(
     parquet_path: Path,
     run_id: str,
@@ -92,7 +93,9 @@ def _classify_bronze(df: pl.DataFrame, meta_path: Path | None) -> str:
 
     return "unknown"
 
+
 # ── Asset ─────────────────────────────────────────────────────────────────
+
 
 @asset(
     name="ig_posts_raw",
@@ -138,8 +141,16 @@ def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource) -> pl.DataFrame:
     # 4. Cleanup + metadata
     if ndjson_path.exists():
         ndjson_path.unlink()
-    _write_meta(dest, run.run_id, dataset_id, run.actor, item_count,
-                config.urls, config.results_limit, config.results_type)
+    _write_meta(
+        dest,
+        run.run_id,
+        dataset_id,
+        run.actor,
+        item_count,
+        config.urls,
+        config.results_limit,
+        config.results_type,
+    )
 
     return df
 
@@ -172,7 +183,6 @@ _BRONZE_TO_SILVER: dict[str, str] = {
 # List-type columns that must be serialized to JSON strings
 # before Arrow → DuckDB insertion (DuckDB TEXT cannot store Polars List).
 _LIST_COLUMNS: set[str] = {"hashtags"}
-
 
 
 @asset(
@@ -228,9 +238,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
         return pl.DataFrame(schema={c: pl.Utf8 for c in SILVER_COLUMNS})
 
     with db.get_connection() as conn:
-        row = conn.execute(
-            "SELECT timestamp FROM watermarks WHERE name = 'silver_ig'"
-        ).fetchone()
+        row = conn.execute("SELECT timestamp FROM watermarks WHERE name = 'silver_ig'").fetchone()
     if row and row[0] is not None:
         dt = row[0]
         if dt.tzinfo is None:
@@ -243,16 +251,10 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
 
     if not new_files:
         with db.get_connection() as conn:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM silver_ig_posts"
-            ).fetchone()[0]
+            count = conn.execute("SELECT COUNT(*) FROM silver_ig_posts").fetchone()[0]
             if count == 0:
-                return pl.DataFrame(
-                    schema={c: pl.Utf8 for c in SILVER_COLUMNS}
-                )
-            reader = conn.execute(
-                "SELECT * FROM silver_ig_posts ORDER BY timestamp DESC"
-            ).arrow()
+                return pl.DataFrame(schema={c: pl.Utf8 for c in SILVER_COLUMNS})
+            reader = conn.execute("SELECT * FROM silver_ig_posts ORDER BY timestamp DESC").arrow()
         return pl.from_arrow(reader.read_all())
     frames = []
     for f in new_files:
@@ -312,9 +314,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
                     .alias("owner_username")
                 )
             else:
-                df = df.with_columns(
-                    pl.col("username").alias("owner_username")
-                )
+                df = df.with_columns(pl.col("username").alias("owner_username"))
 
         # Serialize list-type columns to JSON strings for DuckDB TEXT columns.
         # map_elements on a List column passes each inner list as a Series.
@@ -336,7 +336,6 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
                 .alias("url")
             )
 
-
         # Cast timestamp column to ensure it's parseable.
         # Strip trailing Z (UTC) then parse — Polars 1.42 rejects timezone
         # suffixes on str.to_datetime() / str.strptime() without a format.
@@ -349,30 +348,21 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             )
 
         # Keep only silver columns (drop any Apify extras)
-        df = df.select(
-            [c for c in SILVER_COLUMNS if c in df.columns]
-        )
+        df = df.select([c for c in SILVER_COLUMNS if c in df.columns])
 
         # Drop rows without a valid post_id (failed Apify requests)
         df = df.filter(pl.col("post_id").is_not_null())
-
 
         frames.append(df)
     # ── 4. Load existing silver from DuckDB ───────────────────────────────
     existing_count = 0
     with db.get_connection() as conn:
-        existing_count = conn.execute(
-            "SELECT COUNT(*) FROM silver_ig_posts"
-        ).fetchone()[0]
+        existing_count = conn.execute("SELECT COUNT(*) FROM silver_ig_posts").fetchone()[0]
 
     if existing_count > 0:
         with db.get_connection() as conn:
-            existing_reader = conn.execute(
-                "SELECT * FROM silver_ig_posts"
-            ).arrow()
+            existing_reader = conn.execute("SELECT * FROM silver_ig_posts").arrow()
         existing_df = pl.from_arrow(existing_reader.read_all())
-
-
 
         # Keep existing processed_on — new posts get NULL, stamped below
         frames.insert(0, existing_df)
@@ -408,10 +398,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     # ── 6. Upsert into state tables ───────────────────────────────────────
     with db.get_connection() as conn:
         conn.register("to_upsert", deduped.to_arrow())
-        conn.execute(
-            "INSERT OR REPLACE INTO silver_ig_posts SELECT * FROM to_upsert"
-        )
-
+        conn.execute("INSERT OR REPLACE INTO silver_ig_posts SELECT * FROM to_upsert")
 
     return deduped
 
@@ -425,7 +412,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     description="Extract profiles + download avatars from post/details scrapes.",
     deps=["ig_posts_raw"],
 )
-def ig_profiles_slv(duckdb: DuckDBResource) -> pl.DataFrame:
+def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
     """Extract profiles from post and details scrapes; download avatars.
 
     Post scrapes carry the author's profile fields (username, profilePicUrlHD,
@@ -435,19 +422,29 @@ def ig_profiles_slv(duckdb: DuckDBResource) -> pl.DataFrame:
 
     from ..common.lake import avatar_path
     from ..common.schemas import DUCKDB_TABLES
+    from .scrape_targets import enabled_targets
 
     db = duckdb
     _ensure_state_tables(db)
 
+    # Profile list now comes from the scrape_targets control table (ops).
+    targets = enabled_targets(ops)
+    if targets:
+        logger.info(
+            "Tracking %d enabled scrape target(s): %s",
+            len(targets),
+            sorted(t["username"] for t in targets),
+        )
+
     # Find details-type bronze files that haven't been processed
     bronze_files = sorted(BRONZE_LAKE.glob("*.parquet"))
     if not bronze_files:
+        if targets:
+            logger.warning("No bronze files for %d enabled target(s)", len(targets))
         return pl.DataFrame(schema={"owner_id": pl.Utf8})
 
     with db.get_connection() as conn:
-        row = conn.execute(
-            "SELECT timestamp FROM watermarks WHERE name = 'profiles_ig'"
-        ).fetchone()
+        row = conn.execute("SELECT timestamp FROM watermarks WHERE name = 'profiles_ig'").fetchone()
     if row and row[0] is not None:
         dt = row[0]
         if dt.tzinfo is None:
@@ -461,9 +458,7 @@ def ig_profiles_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     new_files = [f for f in bronze_files if _os.path.getmtime(f) > watermark_ts]
     if not new_files:
         with db.get_connection() as conn:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM silver_ig_profiles"
-            ).fetchone()[0]
+            count = conn.execute("SELECT COUNT(*) FROM silver_ig_profiles").fetchone()[0]
             if count == 0:
                 return pl.DataFrame(schema={"owner_id": pl.Utf8})
             reader = conn.execute(
@@ -543,9 +538,7 @@ def ig_profiles_slv(duckdb: DuckDBResource) -> pl.DataFrame:
 
         # Download avatar from fresh CDN URL (they expire in ~4-5 days)
         if "profile_pic_url" in df.columns:
-            profile_rows = df.select(
-                ["owner_username", "profile_pic_url"]
-            ).unique().rows()
+            profile_rows = df.select(["owner_username", "profile_pic_url"]).unique().rows()
             for owner_username, pic_url in profile_rows:
                 if not owner_username or not pic_url:
                     continue
@@ -571,12 +564,15 @@ def ig_profiles_slv(duckdb: DuckDBResource) -> pl.DataFrame:
                     local.write_bytes(body)
                     logger.info(
                         "Downloaded avatar %s -> %s (%d bytes)",
-                        owner_username, local, len(body),
+                        owner_username,
+                        local,
+                        len(body),
                     )
                 except Exception as exc:
                     logger.warning(
                         "Failed to download avatar for %s: %s",
-                        owner_username, exc,
+                        owner_username,
+                        exc,
                     )
                     continue
 
@@ -592,15 +588,11 @@ def ig_profiles_slv(duckdb: DuckDBResource) -> pl.DataFrame:
 
     # ── 3. Load existing + dedup via DuckDB ─────────────────────────────
     with db.get_connection() as conn:
-        existing_count = conn.execute(
-            "SELECT COUNT(*) FROM silver_ig_profiles"
-        ).fetchone()[0]
+        existing_count = conn.execute("SELECT COUNT(*) FROM silver_ig_profiles").fetchone()[0]
 
     if existing_count > 0:
         with db.get_connection() as conn:
-            reader = conn.execute(
-                "SELECT * FROM silver_ig_profiles"
-            ).arrow()
+            reader = conn.execute("SELECT * FROM silver_ig_profiles").arrow()
         existing_df = pl.from_arrow(reader.read_all())
         frames.insert(0, existing_df)
 
@@ -621,16 +613,13 @@ def ig_profiles_slv(duckdb: DuckDBResource) -> pl.DataFrame:
 
     with db.get_connection() as conn:
         conn.register("to_upsert", unified.to_arrow())
-        conn.execute(
-            "INSERT OR REPLACE INTO silver_ig_profiles SELECT * FROM to_upsert"
-        )
+        conn.execute("INSERT OR REPLACE INTO silver_ig_profiles SELECT * FROM to_upsert")
 
     # Advance watermark
     if max_mtime > 0:
         with db.get_connection() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO watermarks (name, timestamp) "
-                "VALUES ('profiles_ig', ?)",
+                "INSERT OR REPLACE INTO watermarks (name, timestamp) VALUES ('profiles_ig', ?)",
                 [datetime.fromtimestamp(max_mtime, tz=timezone.utc)],
             )
 
@@ -654,8 +643,6 @@ def ig_comments_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     _ensure_state_tables(duckdb)
     logger.warning("ig_comments_slv: not yet implemented — returning empty")
     return pl.DataFrame(schema={"comment_id": pl.Utf8})
-
-
 
 
 @asset(
@@ -718,8 +705,7 @@ def ig_posts_gen_batches(
     if max_processed is not None:
         with db.get_connection() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO watermarks (name, timestamp) "
-                "VALUES ('gold_ig', ?)",
+                "INSERT OR REPLACE INTO watermarks (name, timestamp) VALUES ('gold_ig', ?)",
                 [max_processed],
             )
 
@@ -781,5 +767,3 @@ def _ensure_state_tables(db: DuckDBResource) -> None:
                 processed_on   TIMESTAMP
             )
         """)
-
-

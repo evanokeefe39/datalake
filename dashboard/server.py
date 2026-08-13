@@ -15,9 +15,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
+from pydantic import BaseModel, Field
 
 from datalake.defs.common.lake import (
     AVATAR_DIR,
@@ -25,12 +26,20 @@ from datalake.defs.common.lake import (
     avatar_path,
     thumbnail_path,
 )
+from datalake.defs.common.resources import SQLiteResource
+from datalake.defs.instagram.scrape_targets import (
+    delete_target,
+    list_targets,
+    scrape_details_to_bronze,
+    upsert_target,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dashboard-api")
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "state.duckdb"
 OPS_PATH = Path(__file__).resolve().parent.parent / "data" / "ops.sqlite"
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -144,9 +153,7 @@ def _fetch_thumbnail_bytes(shortcode: str) -> tuple[bytes, str] | None:
         return None
     content_type = resp.headers.get("Content-Type", "")
     if not content_type.startswith("image/"):
-        logger.warning(
-            "Thumbnail %s returned non-image type %s", shortcode, content_type
-        )
+        logger.warning("Thumbnail %s returned non-image type %s", shortcode, content_type)
         return None
     body = resp.read()
     if not body:
@@ -204,6 +211,7 @@ def thumbnail(shortcode: str):
 
 # ── Health ──────────────────────────────────────────────────────
 
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
@@ -211,13 +219,12 @@ def health():
 
 # ── Overview Metrics ───────────────────────────────────────────
 
+
 @app.get("/api/overview")
 def overview():
     db = _connect()
     try:
-        total_posts = db.execute(
-            "SELECT COUNT(*) FROM silver_ig_posts"
-        ).fetchone()[0]
+        total_posts = db.execute("SELECT COUNT(*) FROM silver_ig_posts").fetchone()[0]
 
         total_enriched = db.execute(
             "SELECT COUNT(*) FROM gold_analyses WHERE domain = 'instagram'"
@@ -227,9 +234,7 @@ def overview():
             "SELECT COUNT(DISTINCT owner_username) FROM silver_ig_posts"
         ).fetchone()[0]
 
-        enrichment_pct = (
-            round((total_enriched / total_posts * 100), 1) if total_posts else 0
-        )
+        enrichment_pct = round((total_enriched / total_posts * 100), 1) if total_posts else 0
 
         admiralty = (
             db.execute(
@@ -254,6 +259,7 @@ def overview():
 
 
 # ── Profiles ────────────────────────────────────────────────────
+
 
 @app.get("/api/profiles")
 def profiles():
@@ -288,6 +294,7 @@ def profiles():
 
 
 # ── Signals ─────────────────────────────────────────────────────
+
 
 @app.get("/api/signals")
 def signals():
@@ -331,6 +338,7 @@ def signals():
 
 # ── Posts ───────────────────────────────────────────────────────
 
+
 @app.get("/api/posts")
 def posts(
     limit: int = Query(0, ge=0, le=5000),
@@ -349,10 +357,19 @@ def posts(
 
         order_clause = "ORDER BY v.timestamp DESC"
         if sort:
-            safe_sort = sort if sort in (
-                "likes_count", "comments_count", "video_view_count",
-                "timestamp", "owner_username", "admiralty",
-            ) else "timestamp"
+            safe_sort = (
+                sort
+                if sort
+                in (
+                    "likes_count",
+                    "comments_count",
+                    "video_view_count",
+                    "timestamp",
+                    "owner_username",
+                    "admiralty",
+                )
+                else "timestamp"
+            )
             safe_order = "DESC" if order and order.upper() == "DESC" else "ASC"
             order_clause = f"ORDER BY v.{safe_sort} {safe_order}"
 
@@ -404,6 +421,7 @@ def posts(
 
 
 # ── Full-text Search ────────────────────────────────────────────
+
 
 @app.get("/api/search")
 def search_posts(
@@ -459,14 +477,17 @@ def search_posts(
     finally:
         db.close()
 
+
 # ── Standout Posts ( >1σ above creator mean ) ──────────────────
+
 
 @app.get("/api/standout-posts")
 def standout_posts(limit: int = Query(20, ge=1, le=100)):
     """Posts exceeding 1 standard deviation above their creator's mean likes."""
     db = _connect()
     try:
-        rows = db.execute("""
+        rows = db.execute(
+            """
             WITH creator_stats AS (
                 SELECT owner_username,
                        AVG(likes_count) AS mean_likes,
@@ -493,7 +514,9 @@ def standout_posts(limit: int = Query(20, ge=1, le=100)):
             SELECT * FROM standouts
             ORDER BY z_score DESC
             LIMIT ?
-        """, [limit]).fetchall()
+        """,
+            [limit],
+        ).fetchall()
 
         return [
             {
@@ -516,6 +539,7 @@ def standout_posts(limit: int = Query(20, ge=1, le=100)):
 
 
 # ── Weekly Summary (standout posts per day of month) ────────────
+
 
 @app.get("/api/weekly-summary")
 def weekly_summary():
@@ -547,22 +571,21 @@ def weekly_summary():
             ORDER BY day_of_month
         """).fetchall()
 
-        return [
-            {"day": int(r[0]), "standout_count": r[1]}
-            for r in rows
-        ]
+        return [{"day": int(r[0]), "standout_count": r[1]} for r in rows]
     finally:
         db.close()
 
 
 # ── Recent Standouts by Creator ─────────────────────────────────
 
+
 @app.get("/api/recent-standouts")
 def recent_standouts(limit: int = Query(10, ge=1, le=50)):
     """Recent standout posts grouped by creator, for homepage cards."""
     db = _connect()
     try:
-        rows = db.execute("""
+        rows = db.execute(
+            """
             WITH creator_stats AS (
                 SELECT owner_username,
                        AVG(likes_count) AS mean_likes,
@@ -597,7 +620,9 @@ def recent_standouts(limit: int = Query(10, ge=1, le=50)):
             WHERE rn <= 3
             ORDER BY z_score DESC
             LIMIT ?
-        """, [limit]).fetchall()
+        """,
+            [limit],
+        ).fetchall()
 
         return [
             {
@@ -618,6 +643,66 @@ def recent_standouts(limit: int = Query(10, ge=1, le=50)):
         db.close()
 
 
+# ── Scrape Targets (profile management) ──────────────────────────
+
+
+class ScrapeTargetIn(BaseModel):
+    """Request body for adding/updating a scrape target."""
+
+    username: str
+    profile_url: str
+    results_type: str = "details"
+    results_limit: int = Field(1, ge=1)
+    enabled: bool = True
+    tier: str = "tier1"
+
+
+def _scrape_ops() -> SQLiteResource:
+    """SQLiteResource bound to the dashboard's ops database."""
+    return SQLiteResource(database=str(OPS_PATH))
+
+
+def _run_details_scrape(profile_url: str) -> None:
+    """Background: details scrape → bronze (never raises into the request)."""
+    token = os.environ.get("APIFY_API_TOKEN", "")
+    if not token:
+        logger.warning("Skipping details scrape for %s — no APIFY_API_TOKEN", profile_url)
+        return
+    try:
+        dataset_id = scrape_details_to_bronze(profile_url, token=token)
+        logger.info("Details scrape for %s → dataset %s", profile_url, dataset_id)
+    except Exception as exc:  # noqa: BLE001 — background task must not crash
+        logger.error("Details scrape failed for %s: %s", profile_url, exc)
+
+
+@app.get("/api/scrape-targets")
+def scrape_targets():
+    return list_targets(_scrape_ops())
+
+
+@app.post("/api/scrape-targets", status_code=201)
+def add_scrape_target(payload: ScrapeTargetIn, background: BackgroundTasks):
+    upsert_target(
+        _scrape_ops(),
+        username=payload.username,
+        profile_url=payload.profile_url,
+        results_type=payload.results_type,
+        results_limit=payload.results_limit,
+        enabled=payload.enabled,
+        tier=payload.tier,
+    )
+    if payload.enabled:
+        background.add_task(_run_details_scrape, payload.profile_url)
+    return {"username": payload.username, "status": "created"}
+
+
+@app.delete("/api/scrape-targets/{username}")
+def remove_scrape_target(username: str):
+    delete_target(_scrape_ops(), username)
+    return {"username": username, "status": "deleted"}
+
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=3002)
