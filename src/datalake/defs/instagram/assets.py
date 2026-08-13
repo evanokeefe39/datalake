@@ -4,20 +4,19 @@ Bronze asset (``ig_posts_raw``) is manual-trigger via the launchpad.
 It calls Apify, downloads NDJSON, converts to typed Parquet via Polars,
 and writes a ``.meta`` JSON sidecar for lineage.
 
-Apify client functions are temporarily imported from the old ig_pipeline
-repo via ``sys.path``. They will be extracted into the datalake package
-in a future phase.
+Apify client functions live in ``common/apify.py`` (extracted from the
+legacy ig_pipeline repo to remove the local-checkout dependency).
 """
 
 import json
 import logging
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
 from dagster import asset
 
+from ..common.apify import poll_run, stream_dataset, trigger_run
 from ..common.lake import BRONZE_LAKE, bronze_path
 from ..common.resources import (
     ApifyResource,
@@ -26,13 +25,6 @@ from ..common.resources import (
 )
 from ..common.schemas import SILVER_COLUMNS
 from .config import GoldConfig, ScrapeConfig
-
-# ── Apify client (from old ig_pipeline) ───────────────────────────────────
-_OLD_IG_SRC = Path("C:/Users/evano/repos/ig-pipeline/src")
-if str(_OLD_IG_SRC) not in sys.path:
-    sys.path.insert(0, str(_OLD_IG_SRC))
-
-from ig_pipeline.apify import poll_run, stream_dataset, trigger_run  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
