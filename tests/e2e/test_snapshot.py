@@ -9,7 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import polars as pl
 import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
@@ -106,6 +105,7 @@ def test_serving_runs_on_empty_gold(db, bronze_dir):
 
     ctx = build_asset_context(resources={"duckdb": db})
     profile_dimension(ctx)
+    dim_date(ctx)
     v_post_detail(ctx)
 
     with db.get_connection() as conn:

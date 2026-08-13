@@ -1,4 +1,4 @@
-"""Tests for the serving layer assets (profile_dimension, analytics_views).
+"""Tests for the serving layer assets (profile_dimension, v_post_detail).
 
 Gap-fills per test-hardening plan:
 - SCD2 integrity, no overlapping intervals, no gaps, multi-owner→profile_key
@@ -10,19 +10,39 @@ import pytest
 from dagster import build_asset_context
 
 from datalake.defs.serving.assets import (
-    analytics_views as _analytics_views_asset,
+    dim_date as _dim_date_asset,
+)
+from datalake.defs.serving.assets import (
     profile_dimension as _profile_dimension_asset,
 )
-
+from datalake.defs.serving.assets import (
+    v_post_detail as _v_post_detail_asset,
+)
 from tests.fixtures.silver_factories import seed_silver_posts
+
+
+def _ensure_gold_table(db):
+    """Create an empty gold_analyses table so v_post_detail can LEFT JOIN it."""
+    with db.get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS gold_analyses (
+                post_id TEXT NOT NULL,
+                domain TEXT NOT NULL DEFAULT 'instagram',
+                prompt_hash TEXT,
+                result_json TEXT,
+                analysed_at TEXT NOT NULL,
+                PRIMARY KEY (post_id, domain)
+            )
+        """)
 
 
 def _run_profile_dimension(ctx):
     _profile_dimension_asset(ctx)
 
 
-def _run_analytics_views(ctx):
-    _analytics_views_asset(ctx)
+def _run_v_post_detail(ctx):
+    _dim_date_asset(ctx)
+    _v_post_detail_asset(ctx)
 
 
 # ── Profile dimension tests ────────────────────────────────────────────────
@@ -146,11 +166,11 @@ def test_scd2_integrity(db, rows, expected_ranges):
             )
 
 
-# ── Analytics views tests ──────────────────────────────────────────────────
+# ── v_post_detail tests ────────────────────────────────────────────────────
 
 
-def test_analytics_views_joins_correctly(db):
-    """analytics_views joins silver_ig_posts with profile_dimension."""
+def test_v_post_detail_joins_correctly(db):
+    """v_post_detail joins silver_ig_posts with profile_dimension."""
     seed_silver_posts(
         db,
         [("1", "owner_a", "user_a", "Test post")],
@@ -158,27 +178,29 @@ def test_analytics_views_joins_correctly(db):
         owner_id_idx=1,
         owner_username_idx=2,
     )
+    _ensure_gold_table(db)
     ctx = build_asset_context(resources={"duckdb": db})
     _run_profile_dimension(ctx)
-    _run_analytics_views(ctx)
+    _run_v_post_detail(ctx)
 
     with db.get_connection() as conn:
         row = conn.execute(
             "SELECT post_id, owner_username, owner_id, is_current "
-            "FROM analytics_views"
+            "FROM v_post_detail"
         ).fetchone()
     assert row == ("1", "user_a", "owner_a", True)
 
 
-def test_analytics_views_empty_data(db):
-    """analytics_views runs cleanly with empty silver_ig_posts."""
+def test_v_post_detail_empty_data(db):
+    """v_post_detail runs cleanly with empty silver_ig_posts."""
     seed_silver_posts(db, [])
+    _ensure_gold_table(db)
     context = build_asset_context(resources={"duckdb": db})
     _run_profile_dimension(context)
-    _run_analytics_views(context)
+    _run_v_post_detail(context)
 
     with db.get_connection() as conn:
         count = conn.execute(
-            "SELECT COUNT(*) FROM analytics_views"
+            "SELECT COUNT(*) FROM v_post_detail"
         ).fetchone()[0]
     assert count == 0

@@ -13,7 +13,6 @@ from dagster_duckdb import DuckDBResource
 from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.enrichment.batch import claim_batch
 from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
-
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 

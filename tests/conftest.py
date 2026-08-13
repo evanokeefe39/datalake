@@ -7,14 +7,12 @@
 
 from __future__ import annotations
 
-
+from pathlib import Path
 
 import pytest
 from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import ApifyResource, GeminiResource
-from pathlib import Path
-
 
 
 @pytest.fixture

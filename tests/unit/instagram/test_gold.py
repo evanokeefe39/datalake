@@ -23,7 +23,6 @@ from datalake.defs.enrichment.batch import (
 )
 from datalake.defs.instagram.assets import ig_posts_gen_batches
 
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _pd(post_id: str, domain: str = "instagram") -> str:
@@ -233,8 +232,6 @@ def test_enqueue_asset_writes_batch(tmp_path):
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
 
-    from datetime import datetime, timezone
-
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "Test caption", now), ("p2", "Another caption", now)])
 
@@ -257,8 +254,6 @@ def test_enqueue_skips_already_enriched(tmp_path):
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
-
-    from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "Test caption", now), ("p2", "Already done", now)])
@@ -289,8 +284,6 @@ def test_enqueue_skips_empty_caption(tmp_path):
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
 
-    from datetime import datetime, timezone
-
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "   ", now)])
 
@@ -314,3 +307,4 @@ def test_enqueue_no_pending_posts(tmp_path):
     _seed_silver(db, [])
 
     result = ig_posts_gen_batches(duckdb=db, ops=ops)
+    assert len(result) == 0

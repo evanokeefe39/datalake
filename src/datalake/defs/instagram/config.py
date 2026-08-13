@@ -25,7 +25,7 @@ class ScrapeConfig(Config):
 
 
 class GoldConfig(Config):
-    """Configuration for the ``gold_ig_analyses`` asset.
+    """Configuration for ``ig_posts_gen_batches`` (gold batch creation).
 
     ``post_ids`` (optional) restricts enrichment to specific posts.
     Default (empty) = all pending posts.

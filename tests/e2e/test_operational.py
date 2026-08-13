@@ -9,7 +9,6 @@ Per test-hardening plan Phase 3:
 from __future__ import annotations
 
 import json
-
 from unittest.mock import patch
 
 from dagster import build_asset_context, build_schedule_context
@@ -17,7 +16,7 @@ from dagster import build_asset_context, build_schedule_context
 from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.common.schedules import daily_medallion
 from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
-from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
+from datalake.defs.serving.assets import profile_dimension, v_post_detail
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Helpers ────────────────────────────────────────────────────────────────

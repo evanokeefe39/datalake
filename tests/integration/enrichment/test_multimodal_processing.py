@@ -11,7 +11,6 @@ Success criterion on PR #7: this test must pass.
 from __future__ import annotations
 
 import json
-
 from unittest.mock import MagicMock, patch
 
 from dagster_duckdb import DuckDBResource
@@ -55,8 +54,9 @@ def test_worker_passes_media_uri_to_gemini(tmp_path):
     WHEN the enrichment worker processes it
     THEN gemini.analyze() receives media_files kwarg with the uploaded file URI.
     """
-    from scripts.enrichment_worker import process_item
     import os
+
+    from scripts.enrichment_worker import process_item
     os.environ["GEMINI_TIER"] = "tier1"
 
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))

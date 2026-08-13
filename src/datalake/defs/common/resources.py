@@ -65,8 +65,8 @@ class ApifyResource(ConfigurableResource):
     )
 
 
-_DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
-"""Default model — gemini-2.0-flash-lite is deprecated."""
+_DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
+"""Default model — flash-lite family, lowest cost for high-volume enrichment."""
 
 _TOKEN_SAFETY_LIMIT = 1_000_000
 """Max input tokens before count_tokens pre-check raises (safety net)."""
@@ -123,7 +123,7 @@ class GeminiResource(ConfigurableResource):
 
         Args:
             prompt: The full prompt text to send.
-            model: Model name (default ``gemini-3.1-flash-lite``).
+            model: Model name (default ``gemini-3.5-flash-lite``).
             media_resolution: ``"low"`` to reduce video frame token cost
                 (66 vs 258 tokens/frame). Only relevant for video media.
                 Defaults to ``"low"`` when ``media_files`` is provided.

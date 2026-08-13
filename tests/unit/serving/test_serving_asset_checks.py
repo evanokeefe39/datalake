@@ -168,14 +168,14 @@ class TestProfileChecks:
         assert result.passed is False
 
 
-# ===== analytics_views check ===============================================
+# ===== v_post_detail check ===============================================
 
 
-class TestAnalyticsViewsCheck:
-    """Tests for ``analytics_views_row_count_positive``."""
+class TestVPostDetailCheck:
+    """Tests for ``v_post_detail_row_count_positive``."""
 
     def test_row_count_positive_passes(self, duckdb):
-        """GIVEN analytics_views has rows
+        """GIVEN v_post_detail has rows
         WHEN the check runs
         THEN it passes.
         """
@@ -208,7 +208,7 @@ class TestAnalyticsViewsCheck:
                 )
             """)
             conn.execute("""
-                CREATE OR REPLACE VIEW analytics_views AS
+                CREATE OR REPLACE VIEW v_post_detail AS
                 SELECT sp.post_id
                 FROM silver_ig_posts sp
                 LEFT JOIN gold_analyses ga
@@ -217,12 +217,12 @@ class TestAnalyticsViewsCheck:
             """)
 
         ctx = build_asset_check_context(resources={"duckdb": duckdb})
-        result = _CHECKS_BY_NAME["analytics_views_row_count_positive"](ctx)
+        result = _CHECKS_BY_NAME["v_post_detail_row_count_positive"](ctx)
         assert result.passed is True
         assert result.metadata["row_count"].value == 1
 
     def test_row_count_positive_fails_no_rows(self, duckdb):
-        """GIVEN analytics_views returns 0 rows
+        """GIVEN v_post_detail returns 0 rows
         WHEN the check runs
         THEN it fails.
         """
@@ -254,12 +254,12 @@ class TestAnalyticsViewsCheck:
                 )
             """)
             conn.execute("""
-                CREATE OR REPLACE VIEW analytics_views AS
+                CREATE OR REPLACE VIEW v_post_detail AS
                 SELECT sp.post_id
                 FROM silver_ig_posts sp
                 LEFT JOIN dim_profile dp ON 1=0
             """)
 
         ctx = build_asset_check_context(resources={"duckdb": duckdb})
-        result = _CHECKS_BY_NAME["analytics_views_row_count_positive"](ctx)
+        result = _CHECKS_BY_NAME["v_post_detail_row_count_positive"](ctx)
         assert result.passed is False

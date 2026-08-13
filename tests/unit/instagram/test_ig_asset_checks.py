@@ -17,8 +17,8 @@ from dagster_duckdb import DuckDBResource
 from datalake.defs.instagram.asset_checks import (
     ig_checks,
 )
-from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 from tests.fixtures.gold_factories import FAKE_ANALYSIS
+from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Resolve individual check functions by name ─────────────────────────────
 
@@ -72,7 +72,11 @@ class TestBronzeChecks:
         meta_path.write_text(json.dumps({
             "run_id": "run_1", "actor": "test", "item_count": 1,
             "dataset_id": "ds_001",
-            "input": {"urls": ["https://instagram.com/test"], "results_limit": 12, "results_type": "posts"},
+            "input": {
+                "urls": ["https://instagram.com/test"],
+                "results_limit": 12,
+                "results_type": "posts",
+            },
             "downloaded_at": "2024-01-01T00:00:00Z",
         }))
         with patch("datalake.defs.instagram.asset_checks.BRONZE_LAKE", tmp_path):

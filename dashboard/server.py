@@ -10,6 +10,7 @@ import logging
 import os
 import sqlite3
 import urllib.request
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,7 +32,16 @@ logger = logging.getLogger("dashboard-api")
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "state.duckdb"
 OPS_PATH = Path(__file__).resolve().parent.parent / "data" / "ops.sqlite"
 
-app = FastAPI(title="Lakehouse Dashboard API")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Create media dirs + cache table at startup, not import time."""
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_media_cache_table()
+    yield
+
+
+app = FastAPI(title="Lakehouse Dashboard API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -190,12 +200,6 @@ def thumbnail(shortcode: str):
         f"https://www.instagram.com/p/{shortcode}/media/?size=m",
     )
     return FileResponse(local, media_type=content_type)
-
-
-# ── Startup: ensure media dirs + cache table exist ─────────────────────
-AVATAR_DIR.mkdir(parents=True, exist_ok=True)
-THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
-_ensure_media_cache_table()
 
 
 # ── Health ──────────────────────────────────────────────────────

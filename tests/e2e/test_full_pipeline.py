@@ -83,7 +83,7 @@ def test_full_pipeline_happy_path(tmp_path):
     _run_serving(duckdb)
 
     with duckdb.get_connection() as conn:
-        rows = conn.execute("SELECT COUNT(*) FROM analytics_views").fetchone()
+        rows = conn.execute("SELECT COUNT(*) FROM v_post_detail").fetchone()
         assert rows[0] == 3
 
 
@@ -123,5 +123,5 @@ def test_empty_gold_does_not_block_serving(tmp_path):
     _run_serving(duckdb)
 
     with duckdb.get_connection() as conn:
-        row = conn.execute("SELECT COUNT(*) FROM analytics_views").fetchone()
+        row = conn.execute("SELECT COUNT(*) FROM v_post_detail").fetchone()
         assert row[0] == 1
