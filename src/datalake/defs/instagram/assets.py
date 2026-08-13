@@ -620,7 +620,7 @@ def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame
         with db.get_connection() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO watermarks (name, timestamp) VALUES ('profiles_ig', ?)",
-                [datetime.fromtimestamp(max_mtime, tz=timezone.utc)],
+                [datetime.fromtimestamp(max_mtime, tz=timezone.utc).replace(tzinfo=None)],
             )
 
     return unified
