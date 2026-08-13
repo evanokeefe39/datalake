@@ -320,6 +320,36 @@ via post/details scrapes whose CDN URLs expire in ~4-5 days. A details scrape
 at add-time gives fresh ``profilePicUrlHD`` immediately, and the ops table makes
 the list durable and independently manageable.
 
+### 12. Serving-layer test breakage (analytics_views staleness)
+
+**Status:** Open
+
+The serving layer was refactored from a single ``analytics_views`` asset into
+``v_post_detail`` + 7 downstream views, but 5 test files still reference the
+old name and fail at collection or assertion:
+
+- ``tests/unit/serving/test_serving.py`` — imports ``analytics_views`` (collection error)
+- ``tests/integration/serving/test_gold_to_serving.py`` — imports ``analytics_views`` (collection error)
+- ``tests/e2e/test_full_pipeline.py`` — 2 tests query ``analytics_views``
+- ``tests/e2e/test_snapshot.py`` — runs ``v_post_detail`` without ``dim_date`` (DuckDB replacement-scan error)
+- ``tests/unit/serving/test_serving_asset_checks.py`` — references ``analytics_views_row_count_positive`` (KeyError)
+
+Fix: migrate these tests to ``v_post_detail`` + the individual view names, and
+add a ``dim_date`` setup in the snapshot test. This predates
+``feat/media-and-entity-routing`` and is unrelated to it.
+
+### 13. Stale code + doc references
+
+**Status:** Open
+
+- ``README.md`` still shows the pre-refactor architecture: ``analytics_views``,
+  ``ig_posts_gld_enqueue``, and ``enrichment/ # Queue, worker, sensor``.
+- Default Gemini model string ``gemini-3.1-flash-lite`` (``common/resources.py``,
+  ``enrichment/prompts.py``) is stale — current models are ``gemini-3.5-flash-lite``
+  and ``gemini-3.6-flash``. Verify before the next enrichment run.
+- ``GoldConfig`` docstring references ``gold_ig_analyses`` (renamed ``gold_analyses``).
+- ``defs/serving/asset_checks.py`` docstring references ``analytics_views returns rows``.
+
 ## Resolved
 
 ### 1. Comprehensive medallion testing strategy ✅ (2026-07-01)
