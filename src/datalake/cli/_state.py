@@ -114,13 +114,12 @@ def print_watermarks() -> None:
 
 def reset_watermarks(since: datetime) -> None:
     db = duckdb.connect(DB_PATH)
-    db.execute("DELETE FROM watermarks")
-    db.execute(
-        "INSERT INTO watermarks (name, timestamp) VALUES ('silver_ig', ?)", [since]
-    )
-    db.execute(
-        "INSERT INTO watermarks (name, timestamp) VALUES ('gold_ig', ?)", [since]
-    )
+    for name in ("silver_ig", "gold_ig"):
+        db.execute(
+            "INSERT INTO watermarks (name, timestamp) VALUES (?, ?) "
+            "ON CONFLICT (name) DO UPDATE SET timestamp = excluded.timestamp",
+            [name, since],
+        )
     db.close()
 
 
