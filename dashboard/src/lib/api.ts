@@ -35,6 +35,7 @@ export interface ProfileRow {
   owner_id: string;
   owner_username: string;
   creator_id: number | null;
+  platform: string;
   total_posts: number;
   enriched_posts: number;
   admiralty_score: number;
@@ -49,6 +50,7 @@ export interface SignalRow {
   post_id: string;
   owner_username: string;
   creator_id: number | null;
+  platform: string;
   admiralty: string;
   gold_domain: string;
   gold_topic: string;
@@ -64,6 +66,7 @@ export interface PostRow {
   post_id: string;
   owner_username: string;
   creator_id: number | null;
+  platform: string;
   caption: string;
   likes_count: number;
   comments_count: number;
@@ -85,6 +88,8 @@ export interface PostRow {
 export interface StandoutRow {
   post_id: string;
   owner_username: string;
+  creator_id: number | null;
+  platform: string;
   shortcode: string;
   caption: string;
   likes_count: number;
@@ -95,6 +100,7 @@ export interface StandoutRow {
   std_likes: number;
   z_score: number;
 }
+
 
 export interface WeeklySummaryRow {
   day: number;
@@ -109,6 +115,9 @@ export interface Creator {
   profile_count: number;
   platforms: string[];
   total_posts: number;
+  standout_count: number;
+  hot_count: number;
+  avatar_handle: string | null;
 }
 
 export interface CreatorProfile {
@@ -184,8 +193,8 @@ export async function fetchWeeklySummary(): Promise<WeeklySummaryRow[]> {
   return fetchJSON("/weekly-summary");
 }
 
-export async function fetchRecentStandouts(limit = 10): Promise<StandoutRow[]> {
-  return fetchJSON(`/recent-standouts?limit=${limit}`);
+export async function fetchHotPosts(limit = 10): Promise<StandoutRow[]> {
+  return fetchJSON(`/hot-posts?limit=${limit}`);
 }
 
 export async function fetchSearchResults(q: string): Promise<PostRow[]> {

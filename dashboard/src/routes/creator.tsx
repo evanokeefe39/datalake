@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Avatar } from "@/components/ui/avatar";
 import { Thumbnail } from "@/components/ui/thumbnail";
+import { PlatformIcon } from "@/components/ui/platform-icon";
 import { DataTable } from "@/components/ui/data-table";
 import { CreatorModal } from "@/components/ui/creator-modal";
 import { Users, ArrowLeft } from "lucide-react";
-import { platformBadge } from "@/lib/platform";
 import {
   fetchCreator,
   fetchCreatorPosts,
@@ -102,9 +101,7 @@ export default function CreatorPage() {
               {creator.name}
             </h2>
             {platforms.map((p) => (
-              <Badge key={p} variant={platformBadge(p)}>
-                {p}
-              </Badge>
+              <PlatformIcon key={p} platform={p} size={18} />
             ))}
           </div>
           <p className="text-[11px] text-muted font-data mt-1">
@@ -130,6 +127,7 @@ export default function CreatorPage() {
             {
               key: "thumbnail",
               header: "",
+              sortable: false,
               render: (row: PostRow) => (
                 <Thumbnail shortcode={row.shortcode} size={80} />
               ),
@@ -142,6 +140,11 @@ export default function CreatorPage() {
                   {row.caption || <span className="italic">no caption</span>}
                 </span>
               ),
+            },
+            {
+              key: "platform",
+              header: "Platform",
+              render: (row: PostRow) => <PlatformIcon platform={row.platform} size={16} />,
             },
             {
               key: "likes_count",

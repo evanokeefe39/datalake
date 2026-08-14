@@ -283,6 +283,7 @@ def profiles():
         return [
             {
                 "owner_id": r[0],
+                "platform": "instagram",
                 "owner_username": r[1],
                 "creator_id": r[2],
                 "total_posts": r[3],
@@ -311,7 +312,7 @@ def signals():
             SELECT post_id, owner_username, creator_id, admiralty, gold_domain, gold_topic,
                    is_educational, is_actionable,
                    caption, likes_count, comments_count, video_view_count,
-                   shortcode
+                   shortcode, channel
             FROM v_signal
             ORDER BY
                 CASE
@@ -337,6 +338,7 @@ def signals():
                 "comments_count": r[10] or 0,
                 "video_view_count": r[11] or 0,
                 "shortcode": r[12] or "",
+                "platform": r[13] or "instagram",
             }
             for r in rows
         ]
@@ -353,7 +355,7 @@ _POST_SELECT = """
            v.is_educational, v.is_actionable,
            v.admiralty, v.gold_domain, v.gold_topic, v.gold_subtopic,
            v.content_type, v.style, v.format,
-           v.gold_analysed_at, v.timestamp, v.shortcode
+           v.gold_analysed_at, v.timestamp, v.shortcode, v.channel
     FROM v_post_detail v
 """
 
@@ -381,6 +383,7 @@ def _rows_to_posts(rows) -> list[dict]:
             "analysed_at": r[16],
             "timestamp": str(r[17]) if r[17] else None,
             "shortcode": r[18] or "",
+            "platform": r[19] or "instagram",
         }
         for r in rows
     ]
@@ -520,9 +523,12 @@ def standout_posts(limit: int = Query(20, ge=1, le=100)):
                            (sp.likes_count - cs.mean_likes)
                            / NULLIF(cs.std_likes, 0),
                            2
-                       ) AS z_score
+                       ) AS z_score,
+                       dp.creator_id, dp.channel
                 FROM silver_ig_posts sp
                 JOIN creator_stats cs ON sp.owner_username = cs.owner_username
+                LEFT JOIN dim_profile dp
+                    ON sp.owner_id = dp.owner_id AND dp.is_current = TRUE
                 WHERE sp.likes_count > cs.mean_likes + cs.std_likes
             )
             SELECT * FROM standouts
@@ -545,6 +551,8 @@ def standout_posts(limit: int = Query(20, ge=1, le=100)):
                 "mean_likes": round(r[8], 0) if r[8] else 0,
                 "std_likes": round(r[9], 0) if r[9] else 0,
                 "z_score": float(r[10]) if r[10] else 0,
+                "creator_id": r[11],
+                "platform": r[12] or "instagram",
             }
             for r in rows
         ]
@@ -590,12 +598,12 @@ def weekly_summary():
         db.close()
 
 
-# ── Recent Standouts by Creator ─────────────────────────────────
+# ── Hot Posts ( >2σ above creator mean ) ────────────────────────
 
 
-@app.get("/api/recent-standouts")
-def recent_standouts(limit: int = Query(10, ge=1, le=50)):
-    """Recent standout posts grouped by creator, for homepage cards."""
+@app.get("/api/hot-posts")
+def hot_posts(limit: int = Query(10, ge=1, le=50)):
+    """Posts exceeding 2σ above their creator's mean likes, for the homepage."""
     db = _connect()
     try:
         rows = db.execute(
@@ -609,7 +617,7 @@ def recent_standouts(limit: int = Query(10, ge=1, le=50)):
                 GROUP BY owner_username
                 HAVING COUNT(*) >= 3
             ),
-            standouts AS (
+            hots AS (
                 SELECT sp.post_id, sp.owner_username, sp.shortcode,
                        sp.caption, sp.likes_count, sp.comments_count,
                        sp.timestamp,
@@ -619,18 +627,21 @@ def recent_standouts(limit: int = Query(10, ge=1, le=50)):
                            / NULLIF(cs.std_likes, 0),
                            2
                        ) AS z_score,
+                       dp.creator_id, dp.channel,
                        ROW_NUMBER() OVER (
                            PARTITION BY sp.owner_username
                            ORDER BY (sp.likes_count - cs.mean_likes) / NULLIF(cs.std_likes, 0) DESC
                        ) AS rn
                 FROM silver_ig_posts sp
                 JOIN creator_stats cs ON sp.owner_username = cs.owner_username
-                WHERE sp.likes_count > cs.mean_likes + cs.std_likes
+                LEFT JOIN dim_profile dp
+                    ON sp.owner_id = dp.owner_id AND dp.is_current = TRUE
+                WHERE sp.likes_count > cs.mean_likes + 2 * cs.std_likes
             )
             SELECT post_id, owner_username, shortcode, caption,
                    likes_count, comments_count, timestamp,
-                   mean_likes, std_likes, z_score
-            FROM standouts
+                   mean_likes, std_likes, z_score, creator_id, channel
+            FROM hots
             WHERE rn <= 3
             ORDER BY z_score DESC
             LIMIT ?
@@ -650,6 +661,8 @@ def recent_standouts(limit: int = Query(10, ge=1, le=50)):
                 "mean_likes": round(r[7], 0) if r[7] else 0,
                 "std_likes": round(r[8], 0) if r[8] else 0,
                 "z_score": float(r[9]) if r[9] else 0,
+                "creator_id": r[10],
+                "platform": r[11] or "instagram",
             }
             for r in rows
         ]
@@ -729,6 +742,30 @@ def _post_counts(db: duckdb.DuckDBPyConnection) -> dict[str, int]:
     return {r[0]: r[1] for r in rows}
 
 
+def _sigma_counts_by_owner(db: duckdb.DuckDBPyConnection, sigma: float) -> dict[str, int]:
+    """Map owner_username → count of posts exceeding ``sigma``σ above their own mean."""
+    rows = db.execute(
+        """
+        WITH creator_stats AS (
+            SELECT owner_username,
+                   AVG(likes_count) AS mean_likes,
+                   STDDEV(likes_count) AS std_likes
+            FROM silver_ig_posts
+            WHERE likes_count > 0
+            GROUP BY owner_username
+            HAVING COUNT(*) >= 3
+        )
+        SELECT sp.owner_username, COUNT(*) AS cnt
+        FROM silver_ig_posts sp
+        JOIN creator_stats cs ON sp.owner_username = cs.owner_username
+        WHERE sp.likes_count > cs.mean_likes + (? * cs.std_likes)
+        GROUP BY sp.owner_username
+        """,
+        [sigma],
+    ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
 def _profiles_by_creator(ops: SQLiteResource) -> dict[int, list[dict]]:
     """Map creator_id → list of {platform, handle}."""
     conn = ops.get_connection()
@@ -753,15 +790,16 @@ def creators():
         rows = list_creators(_ops_resource())
         grouped = _profiles_by_creator(_ops_resource())
         post_counts = _post_counts(db)
+        standout_counts = _sigma_counts_by_owner(db, 1.0)
+        hot_counts = _sigma_counts_by_owner(db, 2.0)
         result = []
         for c in rows:
             profiles = grouped.get(c["id"], [])
             platforms = sorted({p["platform"] for p in profiles})
-            total_posts = sum(
-                post_counts.get(p["handle"], 0)
-                for p in profiles
-                if p["platform"] == "instagram"
-            )
+            handles = [p["handle"] for p in profiles]
+            total_posts = sum(post_counts.get(h, 0) for h in handles)
+            standout_count = sum(standout_counts.get(h, 0) for h in handles)
+            hot_count = sum(hot_counts.get(h, 0) for h in handles)
             result.append(
                 {
                     "id": c["id"],
@@ -771,6 +809,9 @@ def creators():
                     "profile_count": c["profile_count"],
                     "platforms": platforms,
                     "total_posts": total_posts,
+                    "standout_count": standout_count,
+                    "hot_count": hot_count,
+                    "avatar_handle": handles[0] if handles else None,
                 }
             )
         return result

@@ -7,10 +7,11 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar } from "@/components/ui/avatar";
 import { StandoutChart } from "@/components/ui/standout-chart";
 import { Thumbnail } from "@/components/ui/thumbnail";
+import { PlatformIcon } from "@/components/ui/platform-icon";
 import {
   fetchOverview,
   fetchProfiles,
-  fetchRecentStandouts,
+  fetchHotPosts,
   type OverviewMetrics,
   type ProfileRow,
   type StandoutRow,
@@ -29,19 +30,19 @@ function admiraltyTier(score: number | undefined | null): string {
 export default function OverviewPage() {
   const [metrics, setMetrics] = useState<OverviewMetrics | null>(null);
   const [profiles, setProfiles] = useState<ProfileRow[]>([]);
-  const [standouts, setStandouts] = useState<StandoutRow[]>([]);
+  const [hots, setHots] = useState<StandoutRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
       fetchOverview(),
       fetchProfiles(),
-      fetchRecentStandouts(12),
+      fetchHotPosts(12),
     ])
       .then(([m, p, s]) => {
         setMetrics(m);
         setProfiles(p);
-        setStandouts(s);
+        setHots(s);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -84,7 +85,7 @@ export default function OverviewPage() {
         <MetricCard label="High Signal" value={metrics?.high_signal_count?.toLocaleString() ?? "--"} accent="orange" />
       </div>
 
-      {/* ── Chart + Standouts ───────────────────────────── */}
+      {/* ── Chart + Hot Posts ─────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2">
           <StandoutChart />
@@ -92,41 +93,75 @@ export default function OverviewPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Top Standouts</CardTitle>
+            <div>
+              <CardTitle>Hot Posts</CardTitle>
+              <span className="text-[10px] text-muted font-data">
+                {hots.length} posts &gt;2&sigma; above creator mean
+              </span>
+            </div>
             <Zap className="w-3.5 h-3.5 text-accent-yellow" />
           </CardHeader>
           <div className="space-y-3 max-h-[420px] overflow-y-auto">
-            {standouts.slice(0, 8).map((s) => (
-              <a
+            {hots.slice(0, 8).map((s) => (
+              <div
                 key={s.post_id}
-                href={`https://www.instagram.com/p/${s.shortcode}/`}
-                target="_blank"
-                rel="noopener noreferrer"
-                title="Open on Instagram"
-                className="flex gap-3 p-2 border border-border hover:border-accent-dim transition-colors group"
+                className="flex gap-3 p-2 border border-border hover:border-accent-dim transition-colors"
               >
-                <Thumbnail shortcode={s.shortcode} size={80} />
+                <a
+                  href={`https://www.instagram.com/p/${s.shortcode}/`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open post on Instagram"
+                  className="flex-shrink-0"
+                >
+                  <Thumbnail shortcode={s.shortcode} size={80} />
+                </a>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
-                    <Avatar username={s.owner_username} size={18} />
-                    <span className="text-[11px] font-semibold text-cyan-400">
-                      {s.owner_username}
-                    </span>
+                    {s.creator_id != null ? (
+                      <Link
+                        to="/creators/$id"
+                        params={{ id: String(s.creator_id) }}
+                        className="flex items-center gap-1.5 hover:opacity-75 transition-opacity"
+                        title={`View @${s.owner_username}`}
+                      >
+                        <Avatar username={s.owner_username} size={18} />
+                        <span className="text-[11px] font-semibold text-cyan-400">
+                          {s.owner_username}
+                        </span>
+                      </Link>
+                    ) : (
+                      <span className="flex items-center gap-1.5">
+                        <Avatar username={s.owner_username} size={18} />
+                        <span className="text-[11px] font-semibold text-cyan-400">
+                          {s.owner_username}
+                        </span>
+                      </span>
+                    )}
+                    <PlatformIcon platform={s.platform} size={16} />
                     <Badge variant={s.z_score > 5 ? "green" : "yellow"}>
                       {s.z_score.toFixed(1)}&sigma;
                     </Badge>
                   </div>
-                  <p className="text-[11px] text-muted leading-tight line-clamp-2 mb-1.5">
-                    {s.caption}
-                  </p>
-                  <div className="flex items-center gap-3 text-[10px] font-data text-muted">
-                    <span className="text-accent-green">
-                      {s.likes_count?.toLocaleString()} likes
-                    </span>
-                    <span>vs {Math.round(s.mean_likes).toLocaleString()} avg</span>
-                  </div>
+                  <a
+                    href={`https://www.instagram.com/p/${s.shortcode}/`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open post on Instagram"
+                    className="block group/post"
+                  >
+                    <p className="text-[11px] text-muted leading-tight line-clamp-2 mb-1.5 group-hover/post:text-[#C9D4D4] transition-colors">
+                      {s.caption}
+                    </p>
+                    <div className="flex items-center gap-3 text-[10px] font-data text-muted">
+                      <span className="text-accent-green">
+                        {s.likes_count?.toLocaleString()} likes
+                      </span>
+                      <span>vs {Math.round(s.mean_likes).toLocaleString()} avg</span>
+                    </div>
+                  </a>
                 </div>
-              </a>
+              </div>
             ))}
           </div>
         </Card>
@@ -146,6 +181,7 @@ export default function OverviewPage() {
               {
                 key: "owner_username",
                 header: "PROFILE",
+                sortValue: (row: ProfileRow) => row.owner_username,
                 render: (row: ProfileRow) =>
                   row.creator_id != null ? (
                     <Link
@@ -176,6 +212,7 @@ export default function OverviewPage() {
               {
                 key: "enriched_posts",
                 header: "ENRICHED",
+                sortValue: (row: ProfileRow) => row.enriched_posts,
                 className: "text-right font-data tabular-nums",
                 render: (row: ProfileRow) => (
                   <span className={row.enriched_posts > 0 ? "text-accent-green" : "text-muted"}>
@@ -186,12 +223,14 @@ export default function OverviewPage() {
               {
                 key: "educational_rate",
                 header: "EDU",
+                sortValue: (row: ProfileRow) => row.educational_rate,
                 className: "text-right font-data tabular-nums",
                 render: (row: ProfileRow) => `${(row.educational_rate * 100).toFixed(0)}%`,
               },
               {
                 key: "admiralty_score",
                 header: "ADMIRALTY",
+                sortValue: (row: ProfileRow) => row.admiralty_score,
                 className: "text-center",
                 render: (row: ProfileRow) => {
                   const score = row.admiralty_score;
@@ -205,12 +244,14 @@ export default function OverviewPage() {
               {
                 key: "avg_likes",
                 header: "AVG LIKES",
+                sortValue: (row: ProfileRow) => row.avg_likes,
                 className: "text-right font-data tabular-nums hidden sm:table-cell",
                 render: (row: ProfileRow) => row.avg_likes?.toLocaleString() ?? "--",
               },
               {
                 key: "max_likes",
                 header: "MAX",
+                sortValue: (row: ProfileRow) => row.max_likes,
                 className: "text-right font-data tabular-nums hidden sm:table-cell",
                 render: (row: ProfileRow) => row.max_likes?.toLocaleString() ?? "--",
               },

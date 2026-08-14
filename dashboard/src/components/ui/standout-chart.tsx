@@ -79,8 +79,8 @@ export function StandoutChart() {
                   fontSize: 11,
                   color: "#C9D4D4",
                 }}
-                formatter={(value: number) => [value, "Standout Posts"]}
-                labelFormatter={(day: number) => `Day ${day}`}
+                formatter={(value) => [String(value ?? ""), "Standout Posts"]}
+                labelFormatter={(label) => `Day ${label}`}
               />
               <Bar
                 dataKey="standout_count"

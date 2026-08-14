@@ -11,10 +11,22 @@ export type BadgeVariant =
   | "accent";
 
 export function platformBadge(platform: string): BadgeVariant {
-  if (platform === "instagram") return "cyan";
-  if (platform === "tiktok") return "magenta";
-  if (platform === "youtube") return "red";
+  if (!platform) return "default";
+  const p = platform.toLowerCase();
+  if (p === "instagram") return "cyan";
+  if (p === "tiktok") return "magenta";
+  if (p === "youtube") return "red";
+  if (p === "reddit") return "orange";
+  if (p === "twitter" || p === "x") return "accent";
   return "default";
+}
+
+/** Normalize a platform key to a display label ("twitter" → "X"). */
+export function platformLabel(platform: string): string {
+  if (!platform) return "";
+  const p = platform.toLowerCase();
+  if (p === "twitter" || p === "x") return "X";
+  return p.charAt(0).toUpperCase() + p.slice(1);
 }
 
 /**
