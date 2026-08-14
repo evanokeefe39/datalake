@@ -36,7 +36,7 @@ def tmp_db(tmp_path, monkeypatch):
             is_educational BOOLEAN, is_actionable BOOLEAN,
             admiralty TEXT, gold_domain TEXT, gold_topic TEXT, gold_subtopic TEXT,
             content_type TEXT, style TEXT, format TEXT,
-            gold_analysed_at TIMESTAMP, timestamp TIMESTAMP, shortcode TEXT
+            gold_analysed_at TIMESTAMP, timestamp TIMESTAMP, shortcode TEXT, channel TEXT
         )
         """
     )
@@ -44,11 +44,11 @@ def tmp_db(tmp_path, monkeypatch):
         """
         INSERT INTO v_post_detail VALUES
         ('p1', 'jane', 1, 'hello', 10, 2, 100, TRUE, FALSE, 'A1', 'Tech', 't', 's',
-         'reel', 's', 'f', NULL, TIMESTAMP '2026-01-01 00:00:00', 'sc1'),
+         'reel', 's', 'f', NULL, TIMESTAMP '2026-01-01 00:00:00', 'sc1', 'instagram'),
         ('p2', 'jane', 1, 'world', 20, 3, 200, NULL, NULL, NULL, NULL, NULL, NULL,
-         NULL, NULL, NULL, NULL, TIMESTAMP '2026-01-02 00:00:00', 'sc2'),
+         NULL, NULL, NULL, NULL, TIMESTAMP '2026-01-02 00:00:00', 'sc2', 'instagram'),
         ('p3', 'other', 2, 'x', 5, 0, 50, NULL, NULL, NULL, NULL, NULL, NULL,
-         NULL, NULL, NULL, NULL, TIMESTAMP '2026-01-03 00:00:00', 'sc3')
+         NULL, NULL, NULL, NULL, TIMESTAMP '2026-01-03 00:00:00', 'sc3', 'instagram')
         """
     )
     con.close()
@@ -98,3 +98,4 @@ def test_posts_endpoint_still_shapes_rows(tmp_db, jane_id):
     rows = resp.json()
     assert len(rows) == 3
     assert {r["post_id"] for r in rows} == {"p1", "p2", "p3"}
+    assert all(r["platform"] == "instagram" for r in rows)

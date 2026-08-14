@@ -3,10 +3,11 @@ import { Link } from "@tanstack/react-router";
 import { AgGridReact } from "ag-grid-react";
 import type { ColDef, GridReadyEvent, GridSizeChangedEvent } from "ag-grid-community";
 import { AllCommunityModule, ModuleRegistry } from "ag-grid-community";
-import { Badge } from "@/components/ui/badge";
+import { Avatar } from "@/components/ui/avatar";
+import { FilterModal } from "@/components/ui/filter-modal";
+import { PlatformIcon } from "@/components/ui/platform-icon";
 import { CreatorModal } from "@/components/ui/creator-modal";
-import { Users } from "lucide-react";
-import { platformBadge } from "@/lib/platform";
+import { Users, Search } from "lucide-react";
 import { fetchCreators, type Creator } from "@/lib/api";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -14,58 +15,35 @@ ModuleRegistry.registerModules([AllCommunityModule]);
 const COLUMN_DEFS: ColDef<Creator>[] = [
   {
     field: "name",
-    headerName: "Name",
+    headerName: "Creator",
     pinned: "left",
     flex: 2,
-    minWidth: 200,
-    filter: "agTextColumnFilter",
-    filterParams: {
-      filterOptions: ["contains", "notContains", "equals", "startsWith"],
-      buttons: ["reset"],
-    } as Record<string, unknown>,
+    minWidth: 220,
     cellClass: "flex !items-center",
     cellRenderer: ({ data }: { data: Creator }) => (
       <Link
         to="/creators/$id"
         params={{ id: String(data.id) }}
-        className="text-cyan-400 font-semibold hover:opacity-75 transition-opacity"
+        className="flex items-center gap-2 py-1 hover:opacity-75 transition-opacity"
       >
-        {data.name}
+        <Avatar username={data.avatar_handle ?? data.name} size={28} />
+        <span className="text-cyan-400 font-semibold text-[13px]">{data.name}</span>
       </Link>
     ),
   },
   {
-    field: "profile_count",
-    headerName: "Profiles",
-    width: 110,
-    sortable: true,
-    filter: "agNumberColumnFilter",
-    filterParams: {
-      filterOptions: ["equals", "notEqual", "greaterThan", "lessThan", "inRange"],
-      buttons: ["reset"],
-    } as Record<string, unknown>,
-    cellClass: "font-data tabular-nums !justify-center",
-  },
-  {
     field: "platforms",
     headerName: "Platforms",
-    width: 220,
-    filter: "agTextColumnFilter",
-    filterParams: {
-      filterOptions: ["contains", "equals"],
-      buttons: ["reset"],
-    } as Record<string, unknown>,
+    width: 180,
     valueGetter: (params) => params.data?.platforms.join(", ") ?? "",
     cellClass: "flex !items-center",
     cellRenderer: ({ data }: { data: Creator }) =>
       data.platforms.length === 0 ? (
-        <span className="text-muted">—</span>
+        <span className="text-muted text-xs">—</span>
       ) : (
-        <span className="flex gap-1.5 flex-wrap">
+        <span className="flex gap-2 flex-wrap">
           {data.platforms.map((p) => (
-            <Badge key={p} variant={platformBadge(p)}>
-              {p}
-            </Badge>
+            <PlatformIcon key={p} platform={p} size={16} />
           ))}
         </span>
       ),
@@ -74,13 +52,31 @@ const COLUMN_DEFS: ColDef<Creator>[] = [
     field: "total_posts",
     headerName: "Posts",
     width: 110,
-    sortable: true,
-    filter: "agNumberColumnFilter",
-    filterParams: {
-      filterOptions: ["equals", "notEqual", "greaterThan", "lessThan", "inRange"],
-      buttons: ["reset"],
-    } as Record<string, unknown>,
     cellClass: "font-data tabular-nums !justify-center",
+  },
+  {
+    field: "standout_count",
+    headerName: "Standouts",
+    width: 120,
+    cellClass: "font-data tabular-nums !justify-center",
+    cellRenderer: ({ value }: { value: number }) =>
+      value > 0 ? (
+        <span className="text-accent-yellow">{value}</span>
+      ) : (
+        <span className="text-muted">0</span>
+      ),
+  },
+  {
+    field: "hot_count",
+    headerName: "Hot",
+    width: 100,
+    cellClass: "font-data tabular-nums !justify-center",
+    cellRenderer: ({ value }: { value: number }) =>
+      value > 0 ? (
+        <span className="text-accent-red">{value}</span>
+      ) : (
+        <span className="text-muted">0</span>
+      ),
   },
 ];
 
@@ -89,6 +85,8 @@ export default function CreatorsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filterText, setFilterText] = useState("");
   const gridRef = useRef<AgGridReact<Creator>>(null);
 
   const refresh = () => {
@@ -101,7 +99,10 @@ export default function CreatorsPage() {
 
   useEffect(refresh, []);
 
-  const defaultColDef = useMemo(() => ({ resizable: true }), []);
+  const defaultColDef = useMemo(
+    () => ({ resizable: true, sortable: true, suppressHeaderMenuButton: true }),
+    [],
+  );
 
   const onGridReady = useCallback((params: GridReadyEvent) => {
     params.api.sizeColumnsToFit();
@@ -127,12 +128,27 @@ export default function CreatorsPage() {
             </p>
           </div>
         </div>
-        <button
-          onClick={() => setModalOpen(true)}
-          className="border border-accent text-accent px-4 py-2 text-sm hover:bg-accent hover:text-black transition-colors"
-        >
-          Add creator
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setFilterOpen(true)}
+            className={`px-3 py-2 text-[11px] font-data border transition-colors flex items-center gap-2
+              ${filterText
+                ? "border-accent text-accent bg-[#1c1818]"
+                : "border-border text-muted hover:border-accent-dim hover:text-[#C9D4D4]"
+              }`}
+            aria-label="Open filters"
+          >
+            <Search className="w-3.5 h-3.5" />
+            Filter
+            {filterText && <span className="w-2 h-2 rounded-full bg-accent inline-block" />}
+          </button>
+          <button
+            onClick={() => setModalOpen(true)}
+            className="border border-accent text-accent px-4 py-2 text-sm hover:bg-accent hover:text-black transition-colors"
+          >
+            Add creator
+          </button>
+        </div>
       </div>
 
       {error && <p className="text-red-400 text-xs">{error}</p>}
@@ -147,10 +163,41 @@ export default function CreatorsPage() {
           onGridSizeChanged={onGridSizeChanged}
           loading={loading}
           suppressCellFocus
+          quickFilterText={filterText}
           rowHeight={40}
           headerHeight={36}
         />
       </div>
+
+      <FilterModal
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        title="Filters"
+      >
+        <div className="space-y-2">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted" />
+            <input
+              type="text"
+              placeholder="Search creators, handles, platforms..."
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              className="w-full bg-[#100e0e] border border-border text-[#C9D4D4] text-[13px]
+                         pl-10 pr-4 py-2 placeholder:text-muted
+                         focus:border-accent focus:outline-none transition-colors font-data"
+              aria-label="Search creators"
+            />
+          </div>
+          {filterText.length > 0 && (
+            <button
+              onClick={() => setFilterText("")}
+              className="text-[10px] font-data text-muted hover:text-accent transition-colors"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </FilterModal>
 
       <CreatorModal
         open={modalOpen}

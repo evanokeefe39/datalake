@@ -141,6 +141,58 @@ Plan: `tasks/plans/state-readiness-impl.md`
 - **Absent-DB handling** — `state_db` fixture skips all 8 tests cleanly when `data/state.duckdb` doesn't exist
 - **Drift detection** — tested against missing column, type mismatch, and missing table scenarios; each produces a clear failure message
 - **8 new tests** running at <0.5s
+## Future: Creator 360 Analytics (DW metrics)
+
+**Intent:** Move the creators list from a static directory to a rich per-creator
+analytics profile in the DW. A creator (person/brand) owns 1..N profiles across
+platforms; every metric must aggregate across all of them, tolerating multiple
+profiles on a single platform.
+
+**Engagement metrics (per creator, all profiles/platforms aggregated):**
+
+- **Total posts** — sum across every profile (already surfaced in the creators
+  list; promote to a first-class DW metric).
+- **Posting frequency** — posts/week and posts/month, plus cadence (median gap
+  between posts and recent trend). Drives "is this creator active/consistent?"
+- **Standout vs Hot (standardized thresholds)** — a post is a *standout* when
+  its likes exceed the creator's own mean by **1σ**; a post is *Hot* when it
+  exceeds **2σ**. Both counts are materialized per creator (all
+  profiles/platforms aggregated) and refreshed on each ingest. The σ threshold
+  is a tunable constant (1σ / 2σ today, may become 1σ / 1.5σ later). Frontend:
+  the creators-list "Standouts" column = 1σ, "Hot" column = 2σ, and the
+  overview "Hot Posts" feed = 2σ.
+- **Engagement trend (σ)** — time series of each post's z-score (likes, views)
+  relative to the creator's rolling mean. Powers a line chart showing whether
+  the creator is trending above or below their own baseline lately.
+
+**Content metrics:**
+
+- **Topics + domain** — aggregate `gold_domain` / `gold_topic` / `gold_subtopic`
+  per creator (top-N by post count), so a creator's coverage area is queryable
+  without scanning posts.
+
+**Commercial intelligence (new gold extraction):**
+
+Extend the Gemini enrichment prompt + `result_json` schema to catalogue a
+creator's monetization surface, then expose it via a dedicated serving view:
+
+- **Products/services promoted** — sponsored or affiliate mentions.
+- **Products/services founded/owned** — the creator's own products, courses,
+  SaaS, agencies, etc.
+- **Affiliations** — brands, partners, recurring sponsors.
+- **Funnel strategy / CTAs** — link-in-bio, comment-to-DM, "comment X", watch
+  next, etc.
+- **Lead magnets** — freebies, checklists, ebooks, templates, webinars.
+
+**Implementation notes:**
+
+- Gold/serving-layer work only — no new source systems.
+- Commercial extraction is additive JSON fields on `gold_analyses`; stale
+  `prompt_hash` re-processing already handles backfilling existing posts when
+  the prompt changes.
+- Likely a `v_creator_profile` (or `v_creator_360`) view joining
+  `creators`/`profiles` (ops) with silver/gold aggregates.
+
 ## Future: Evaluate DuckLake
 
 **When:** After the pipeline has been running in production for 3+ months and

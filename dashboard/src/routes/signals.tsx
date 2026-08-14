@@ -3,8 +3,19 @@ import { Link } from "@tanstack/react-router";
 import { Card } from "@/components/ui/card";
 import { DataTable } from "@/components/ui/data-table";
 import { Badge } from "@/components/ui/badge";
+import { Avatar } from "@/components/ui/avatar";
+import { PlatformIcon } from "@/components/ui/platform-icon";
 import { fetchSignals, type SignalRow } from "@/lib/api";
-import { Zap } from "lucide-react";
+import { Zap, Info } from "lucide-react";
+
+function InfoHeader({ children, tooltip }: { children: React.ReactNode; tooltip?: string }) {
+  return (
+    <span className="inline-flex items-center gap-1" title={tooltip}>
+      {children}
+      <Info className="w-3 h-3 text-muted/70 cursor-help shrink-0" aria-hidden />
+    </span>
+  );
+}
 
 export default function SignalsPage() {
   const [signals, setSignals] = useState<SignalRow[]>([]);
@@ -39,25 +50,40 @@ export default function SignalsPage() {
             {
               key: "owner_username",
               header: "PROFILE",
+              sortValue: (row: SignalRow) => row.owner_username,
               render: (row: SignalRow) =>
                 row.creator_id != null ? (
                   <Link
                     to="/creators/$id"
                     params={{ id: String(row.creator_id) }}
-                    className="text-cyan-400 font-semibold text-[13px] hover:opacity-75 transition-opacity"
+                    className="flex items-center gap-2 hover:opacity-75 transition-opacity"
+                    title={`View @${row.owner_username}`}
                   >
-                    {row.owner_username}
+                    <Avatar username={row.owner_username} size={24} />
+                    <span className="text-cyan-400 font-semibold text-[13px]">
+                      {row.owner_username}
+                    </span>
                   </Link>
                 ) : (
-                  <span className="text-cyan-400 font-semibold text-[13px]">
-                    {row.owner_username}
+                  <span className="flex items-center gap-2">
+                    <Avatar username={row.owner_username} size={24} />
+                    <span className="text-cyan-400 font-semibold text-[13px]">
+                      {row.owner_username}
+                    </span>
                   </span>
                 ),
+            },
+            {
+              key: "platform",
+              header: "PLATFORM",
+              sortValue: (row: SignalRow) => row.platform,
+              render: (row: SignalRow) => <PlatformIcon platform={row.platform} size={16} />,
             },
             {
               key: "admiralty",
               header: "RANK",
               className: "text-center",
+              sortValue: (row: SignalRow) => row.admiralty,
               render: (row: SignalRow) => {
                 const tier = row.admiralty?.charAt(0);
                 let variant: "green" | "yellow" | "orange" | "default" =
@@ -75,6 +101,7 @@ export default function SignalsPage() {
             {
               key: "gold_domain",
               header: "DOMAIN",
+              sortValue: (row: SignalRow) => row.gold_domain,
               render: (row: SignalRow) => (
                 <span className="text-accent-magenta text-[13px]">
                   {row.gold_domain}
@@ -84,6 +111,7 @@ export default function SignalsPage() {
             {
               key: "gold_topic",
               header: "TOPIC",
+              sortValue: (row: SignalRow) => row.gold_topic,
               render: (row: SignalRow) => (
                 <span
                   className="text-[13px] text-white/80 truncate block max-w-[260px]"
@@ -95,8 +123,13 @@ export default function SignalsPage() {
             },
             {
               key: "is_educational",
-              header: "EDU",
+              header: (
+                <InfoHeader tooltip="Educational — the post teaches or informs vs. purely entertaining.">
+                  EDU
+                </InfoHeader>
+              ),
               className: "text-center",
+              sortValue: (row: SignalRow) => (row.is_educational ? 1 : 0),
               render: (row: SignalRow) =>
                 row.is_educational ? (
                   <Badge variant="green">YES</Badge>
@@ -106,8 +139,13 @@ export default function SignalsPage() {
             },
             {
               key: "is_actionable",
-              header: "ACT",
+              header: (
+                <InfoHeader tooltip="Actionable — the post gives steps or actions the viewer can take.">
+                  ACT
+                </InfoHeader>
+              ),
               className: "text-center",
+              sortValue: (row: SignalRow) => (row.is_actionable ? 1 : 0),
               render: (row: SignalRow) =>
                 row.is_actionable ? (
                   <Badge variant="accent">YES</Badge>
@@ -118,6 +156,7 @@ export default function SignalsPage() {
             {
               key: "caption",
               header: "CAPTION",
+              sortValue: (row: SignalRow) => row.caption,
               render: (row: SignalRow) => (
                 <span
                   className="text-[11px] text-muted truncate block max-w-[240px]"
