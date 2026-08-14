@@ -11,7 +11,8 @@ import { LayoutDashboard, Zap, FileText, Users, Activity, Menu, X } from "lucide
 import OverviewPage from "@/routes/overview";
 import SignalsPage from "@/routes/signals";
 import PostsPage from "@/routes/posts";
-import ProfilesPage from "@/routes/profiles";
+import CreatorsPage from "@/routes/creators";
+import CreatorPage from "@/routes/creator";
 import { cn } from "@/lib/utils";
 
 function RootLayout() {
@@ -76,8 +77,8 @@ function RootLayout() {
             <NavLink to="/posts" icon={<FileText className="w-4 h-4" />} onClick={() => setSidebarOpen(false)}>
               Posts
             </NavLink>
-            <NavLink to="/profiles" icon={<Users className="w-4 h-4" />} onClick={() => setSidebarOpen(false)}>
-              Profiles
+            <NavLink to="/creators" icon={<Users className="w-4 h-4" />} onClick={() => setSidebarOpen(false)}>
+              Creators
             </NavLink>
           </nav>
           <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-border">
@@ -133,9 +134,10 @@ const rootRoute = createRootRoute({ component: RootLayout });
 const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: OverviewPage });
 const signalsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/signals", component: SignalsPage });
 const postsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/posts", component: PostsPage });
-const profilesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/profiles", component: ProfilesPage });
+const creatorsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/creators", component: CreatorsPage });
+const creatorRoute = createRoute({ getParentRoute: () => rootRoute, path: "/creators/$id", component: CreatorPage });
 
-const routeTree = rootRoute.addChildren([indexRoute, signalsRoute, postsRoute, profilesRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, signalsRoute, postsRoute, creatorsRoute, creatorRoute]);
 const router = createRouter({ routeTree });
 
 declare module "@tanstack/react-router" {

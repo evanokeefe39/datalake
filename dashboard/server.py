@@ -27,11 +27,17 @@ from datalake.defs.common.lake import (
     thumbnail_path,
 )
 from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.instagram.scrape_targets import (
-    delete_target,
-    list_targets,
+from datalake.defs.instagram.creators import (
+    add_profile,
+    batch_add_profiles,
+    create_creator,
+    edit_depth,
+    get_creator,
+    list_creators,
+    remove_creator,
+    remove_profile,
+    rename_creator,
     scrape_details_to_bronze,
-    upsert_target,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -266,7 +272,7 @@ def profiles():
     db = _connect()
     try:
         rows = db.execute("""
-            SELECT owner_id, owner_username, total_posts, enriched_posts,
+            SELECT owner_id, owner_username, creator_id, total_posts, enriched_posts,
                    admiralty_score, educational_rate,
                    avg_likes, avg_comments, avg_video_views, max_likes
             FROM v_profile_quality
@@ -278,14 +284,15 @@ def profiles():
             {
                 "owner_id": r[0],
                 "owner_username": r[1],
-                "total_posts": r[2],
-                "enriched_posts": r[3],
-                "admiralty_score": float(r[4]) if r[4] else 0,
-                "educational_rate": float(r[5]) if r[5] else 0,
-                "avg_likes": float(r[6]) if r[6] else 0,
-                "avg_comments": float(r[7]) if r[7] else 0,
-                "avg_video_views": float(r[8]) if r[8] else 0,
-                "max_likes": r[9] or 0,
+                "creator_id": r[2],
+                "total_posts": r[3],
+                "enriched_posts": r[4],
+                "admiralty_score": float(r[5]) if r[5] else 0,
+                "educational_rate": float(r[6]) if r[6] else 0,
+                "avg_likes": float(r[7]) if r[7] else 0,
+                "avg_comments": float(r[8]) if r[8] else 0,
+                "avg_video_views": float(r[9]) if r[9] else 0,
+                "max_likes": r[10] or 0,
             }
             for r in rows
         ]
@@ -301,7 +308,7 @@ def signals():
     db = _connect()
     try:
         rows = db.execute("""
-            SELECT post_id, owner_username, admiralty, gold_domain, gold_topic,
+            SELECT post_id, owner_username, creator_id, admiralty, gold_domain, gold_topic,
                    is_educational, is_actionable,
                    caption, likes_count, comments_count, video_view_count,
                    shortcode
@@ -319,16 +326,17 @@ def signals():
             {
                 "post_id": r[0],
                 "owner_username": r[1],
-                "admiralty": r[2],
-                "gold_domain": r[3],
-                "gold_topic": r[4],
-                "is_educational": bool(r[5]) if r[5] is not None else False,
-                "is_actionable": bool(r[6]) if r[6] is not None else False,
-                "caption": r[7] or "",
-                "likes_count": r[8] or 0,
-                "comments_count": r[9] or 0,
-                "video_view_count": r[10] or 0,
-                "shortcode": r[11] or "",
+                "creator_id": r[2],
+                "admiralty": r[3],
+                "gold_domain": r[4],
+                "gold_topic": r[5],
+                "is_educational": bool(r[6]) if r[6] is not None else False,
+                "is_actionable": bool(r[7]) if r[7] is not None else False,
+                "caption": r[8] or "",
+                "likes_count": r[9] or 0,
+                "comments_count": r[10] or 0,
+                "video_view_count": r[11] or 0,
+                "shortcode": r[12] or "",
             }
             for r in rows
         ]
@@ -379,7 +387,7 @@ def posts(
 
         rows = db.execute(
             f"""
-            SELECT v.post_id, v.owner_username, v.caption,
+            SELECT v.post_id, v.owner_username, v.creator_id, v.caption,
                    v.likes_count, v.comments_count, v.video_view_count,
                    v.is_educational, v.is_actionable,
                    v.admiralty, v.gold_domain, v.gold_topic, v.gold_subtopic,
@@ -397,22 +405,23 @@ def posts(
             {
                 "post_id": r[0],
                 "owner_username": r[1],
-                "caption": r[2] or "",
-                "likes_count": r[3] or 0,
-                "comments_count": r[4] or 0,
-                "video_view_count": r[5] or 0,
-                "is_educational": bool(r[6]) if r[6] is not None else None,
-                "is_actionable": bool(r[7]) if r[7] is not None else None,
-                "admiralty": r[8],
-                "gold_domain": r[9],
-                "gold_topic": r[10],
-                "gold_subtopic": r[11],
-                "content_type": r[12],
-                "style": r[13],
-                "format": r[14],
-                "analysed_at": r[15],
-                "timestamp": str(r[16]) if r[16] else None,
-                "shortcode": r[17] or "",
+                "creator_id": r[2],
+                "caption": r[3] or "",
+                "likes_count": r[4] or 0,
+                "comments_count": r[5] or 0,
+                "video_view_count": r[6] or 0,
+                "is_educational": bool(r[7]) if r[7] is not None else None,
+                "is_actionable": bool(r[8]) if r[8] is not None else None,
+                "admiralty": r[9],
+                "gold_domain": r[10],
+                "gold_topic": r[11],
+                "gold_subtopic": r[12],
+                "content_type": r[13],
+                "style": r[14],
+                "format": r[15],
+                "analysed_at": r[16],
+                "timestamp": str(r[17]) if r[17] else None,
+                "shortcode": r[18] or "",
             }
             for r in rows
         ]
@@ -643,21 +652,44 @@ def recent_standouts(limit: int = Query(10, ge=1, le=50)):
         db.close()
 
 
-# ── Scrape Targets (profile management) ──────────────────────────
+# ── Creators + Profiles (profile management) ────────────────────
 
 
-class ScrapeTargetIn(BaseModel):
-    """Request body for adding/updating a scrape target."""
+class CreatorIn(BaseModel):
+    """Request body for creating or renaming a creator."""
 
-    username: str
-    profile_url: str
+    name: str
+
+
+class ProfileIn(BaseModel):
+    """Request body for adding a profile to a creator."""
+
+    platform: str = "instagram"
+    handle: str
     results_type: str = "details"
     results_limit: int = Field(1, ge=1)
     enabled: bool = True
     tier: str = "tier1"
 
 
-def _scrape_ops() -> SQLiteResource:
+class BatchProfilesIn(BaseModel):
+    """Request body for batch-adding profiles to a creator."""
+
+    platform: str = "instagram"
+    handles: list[str]
+    results_type: str = "details"
+    results_limit: int = Field(1, ge=1)
+    enabled: bool = True
+    tier: str = "tier1"
+
+
+class DepthIn(BaseModel):
+    """Request body for editing a profile's depth."""
+
+    results_limit: int = Field(1, ge=1)
+
+
+def _ops_resource() -> SQLiteResource:
     """SQLiteResource bound to the dashboard's ops database."""
     return SQLiteResource(database=str(OPS_PATH))
 
@@ -675,31 +707,179 @@ def _run_details_scrape(profile_url: str) -> None:
         logger.error("Details scrape failed for %s: %s", profile_url, exc)
 
 
-@app.get("/api/scrape-targets")
-def scrape_targets():
-    return list_targets(_scrape_ops())
+def _extract_handle(value: str) -> str:
+    """Normalize a profile handle, accepting a bare handle or a full URL."""
+    h = value.strip().lstrip("@")
+    if h.startswith("http"):
+        h = h.rstrip("/").split("/")[-1].split("?")[0]
+    return h
 
 
-@app.post("/api/scrape-targets", status_code=201)
-def add_scrape_target(payload: ScrapeTargetIn, background: BackgroundTasks):
-    upsert_target(
-        _scrape_ops(),
-        username=payload.username,
-        profile_url=payload.profile_url,
+def _post_counts(db: duckdb.DuckDBPyConnection) -> dict[str, int]:
+    """Map owner_username → post count from silver."""
+    rows = db.execute(
+        "SELECT owner_username, COUNT(*) FROM silver_ig_posts "
+        "WHERE owner_username IS NOT NULL GROUP BY owner_username"
+    ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def _profiles_by_creator(ops: SQLiteResource) -> dict[int, list[dict]]:
+    """Map creator_id → list of {platform, handle}."""
+    conn = ops.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT creator_id, platform, handle FROM profiles ORDER BY handle"
+        ).fetchall()
+    finally:
+        conn.close()
+    out: dict[int, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r["creator_id"], []).append(
+            {"platform": r["platform"], "handle": r["handle"]}
+        )
+    return out
+
+
+@app.get("/api/creators")
+def creators():
+    db = _connect()
+    try:
+        rows = list_creators(_ops_resource())
+        grouped = _profiles_by_creator(_ops_resource())
+        post_counts = _post_counts(db)
+        result = []
+        for c in rows:
+            profiles = grouped.get(c["id"], [])
+            platforms = sorted({p["platform"] for p in profiles})
+            total_posts = sum(
+                post_counts.get(p["handle"], 0)
+                for p in profiles
+                if p["platform"] == "instagram"
+            )
+            result.append(
+                {
+                    "id": c["id"],
+                    "name": c["name"],
+                    "created_at": c["created_at"],
+                    "updated_at": c["updated_at"],
+                    "profile_count": c["profile_count"],
+                    "platforms": platforms,
+                    "total_posts": total_posts,
+                }
+            )
+        return result
+    finally:
+        db.close()
+
+
+@app.get("/api/creators/{creator_id}")
+def creator_detail(creator_id: int):
+    creator = get_creator(_ops_resource(), creator_id)
+    if creator is None:
+        raise HTTPException(status_code=404, detail="Creator not found")
+
+    db = _connect()
+    try:
+        post_counts = _post_counts(db)
+        profiles_out = []
+        for p in creator["profiles"]:
+            profile = dict(p)
+            profile["post_count"] = (
+                post_counts.get(p["handle"], 0) if p["platform"] == "instagram" else 0
+            )
+            if p["platform"] == "instagram":
+                meta = db.execute(
+                    "SELECT full_name, biography, followers_count, posts_count "
+                    "FROM silver_ig_profiles WHERE owner_username = ?",
+                    [p["handle"]],
+                ).fetchone()
+                if meta:
+                    profile["full_name"] = meta[0]
+                    profile["biography"] = meta[1]
+                    profile["followers_count"] = meta[2]
+                    profile["posts_count"] = meta[3]
+            profiles_out.append(profile)
+        creator["profiles"] = profiles_out
+        return creator
+    finally:
+        db.close()
+
+
+@app.post("/api/creators", status_code=201)
+def add_creator(payload: CreatorIn):
+    return create_creator(_ops_resource(), payload.name)
+
+
+@app.patch("/api/creators/{creator_id}")
+def update_creator(creator_id: int, payload: CreatorIn):
+    creator = rename_creator(_ops_resource(), creator_id, payload.name)
+    if creator is None:
+        raise HTTPException(status_code=404, detail="Creator not found")
+    return creator
+
+
+@app.delete("/api/creators/{creator_id}")
+def delete_creator(creator_id: int):
+    remove_creator(_ops_resource(), creator_id)
+    return {"id": creator_id, "status": "deleted"}
+
+
+@app.post("/api/creators/{creator_id}/profiles", status_code=201)
+def add_creator_profile(
+    creator_id: int, payload: ProfileIn, background: BackgroundTasks
+):
+    if get_creator(_ops_resource(), creator_id) is None:
+        raise HTTPException(status_code=404, detail="Creator not found")
+    profile = add_profile(
+        _ops_resource(),
+        creator_id=creator_id,
+        platform=payload.platform,
+        handle=_extract_handle(payload.handle),
         results_type=payload.results_type,
         results_limit=payload.results_limit,
         enabled=payload.enabled,
         tier=payload.tier,
     )
-    if payload.enabled:
-        background.add_task(_run_details_scrape, payload.profile_url)
-    return {"username": payload.username, "status": "created"}
+    if payload.enabled and payload.platform == "instagram":
+        background.add_task(_run_details_scrape, profile["profile_url"])
+    return profile
 
 
-@app.delete("/api/scrape-targets/{username}")
-def remove_scrape_target(username: str):
-    delete_target(_scrape_ops(), username)
-    return {"username": username, "status": "deleted"}
+@app.post("/api/creators/{creator_id}/profiles/batch", status_code=201)
+def add_creator_profiles_batch(creator_id: int, payload: BatchProfilesIn):
+    if get_creator(_ops_resource(), creator_id) is None:
+        raise HTTPException(status_code=404, detail="Creator not found")
+    profiles = batch_add_profiles(
+        _ops_resource(),
+        creator_id=creator_id,
+        platform=payload.platform,
+        handles=[_extract_handle(h) for h in payload.handles],
+        results_type=payload.results_type,
+        results_limit=payload.results_limit,
+        enabled=payload.enabled,
+        tier=payload.tier,
+    )
+    return {"creator_id": creator_id, "added": len(profiles), "profiles": profiles}
+
+
+@app.patch("/api/profiles/{platform}/{handle}")
+def update_profile_depth(platform: str, handle: str, payload: DepthIn):
+    profile = edit_depth(
+        _ops_resource(),
+        platform=platform,
+        handle=handle,
+        results_limit=payload.results_limit,
+    )
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return profile
+
+
+@app.delete("/api/profiles/{platform}/{handle}")
+def delete_profile(platform: str, handle: str):
+    remove_profile(_ops_resource(), platform=platform, handle=handle)
+    return {"platform": platform, "handle": handle, "status": "deleted"}
 
 
 if __name__ == "__main__":

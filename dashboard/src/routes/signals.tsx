@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { Card } from "@/components/ui/card";
 import { DataTable } from "@/components/ui/data-table";
 import { Badge } from "@/components/ui/badge";
@@ -38,11 +39,20 @@ export default function SignalsPage() {
             {
               key: "owner_username",
               header: "PROFILE",
-              render: (row: SignalRow) => (
-                <span className="text-cyan-400 font-semibold text-[13px]">
-                  {row.owner_username}
-                </span>
-              ),
+              render: (row: SignalRow) =>
+                row.creator_id != null ? (
+                  <Link
+                    to="/creators/$id"
+                    params={{ id: String(row.creator_id) }}
+                    className="text-cyan-400 font-semibold text-[13px] hover:opacity-75 transition-opacity"
+                  >
+                    {row.owner_username}
+                  </Link>
+                ) : (
+                  <span className="text-cyan-400 font-semibold text-[13px]">
+                    {row.owner_username}
+                  </span>
+                ),
             },
             {
               key: "admiralty",

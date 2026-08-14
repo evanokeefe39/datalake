@@ -191,12 +191,26 @@ const COLUMN_DEFS: ColDef<PostRow>[] = [
       buttons: ["reset"],
     } as Record<string, unknown>,
     cellClass: "flex !items-center",
-    cellRenderer: ({ value }: { value: string }) => (
-      <div className="flex items-center gap-2 py-1">
-        <Avatar username={value} size={24} />
-        <span className="text-accent font-semibold text-[13px]">{value}</span>
-      </div>
-    ),
+    cellRenderer: ({ data }: { data: PostRow }) =>
+      data.creator_id != null ? (
+        <Link
+          to="/creators/$id"
+          params={{ id: String(data.creator_id) }}
+          className="flex items-center gap-2 py-1 hover:opacity-75 transition-opacity"
+        >
+          <Avatar username={data.owner_username} size={24} />
+          <span className="text-accent font-semibold text-[13px]">
+            {data.owner_username}
+          </span>
+        </Link>
+      ) : (
+        <div className="flex items-center gap-2 py-1">
+          <Avatar username={data.owner_username} size={24} />
+          <span className="text-accent font-semibold text-[13px]">
+            {data.owner_username}
+          </span>
+        </div>
+      ),
   },
   {
     field: "caption",

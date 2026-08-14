@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from dagster import AssetKey, asset
 from dagster_duckdb import DuckDBResource
 
+from datalake.defs.common.resources import SQLiteResource
+
 # ── Dimensions ──────────────────────────────────────────────────────────────
 
 
@@ -26,12 +28,16 @@ from dagster_duckdb import DuckDBResource
     description="SCD2 profile dimension tracking owner attributes over time.",
     deps=[AssetKey("ig_posts_slv")],
 )
-def profile_dimension(duckdb: DuckDBResource) -> None:
+def profile_dimension(duckdb: DuckDBResource, ops: SQLiteResource) -> None:
     """Upsert profile dimension with SCD2 tracking.
 
     Reads distinct owner profiles from ``silver_ig_posts`` and maintains
-    ``effective_from``/``effective_to``/``is_current`` in DuckDB.
+    ``effective_from``/``effective_to``/``is_current`` in DuckDB. ``creator_id``
+    and ``creator_name`` are linked from the ``profiles``/``creators`` tables in
+    ops.sqlite so every serving view can expose the owning creator.
     """
+    from datalake.defs.instagram.creators import creator_map
+
     db = duckdb
     with db.get_connection() as conn:
         conn.execute("""
@@ -43,16 +49,24 @@ def profile_dimension(duckdb: DuckDBResource) -> None:
                 effective_from   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 effective_to     TIMESTAMP,
                 is_current       BOOLEAN NOT NULL DEFAULT TRUE,
-                profile_pic_path TEXT
+                profile_pic_path TEXT,
+                creator_id       INTEGER,
+                creator_name     TEXT
             )
         """)
 
-        # Migration: existing DBs predate profile_pic_path. DuckDB ALTER has no
-        # IF NOT EXISTS, so tolerate the duplicate-column error.
-        try:
-            conn.execute("ALTER TABLE dim_profile ADD COLUMN profile_pic_path TEXT")
-        except Exception:
-            pass  # column already exists
+        # Migration: existing DBs predate profile_pic_path and the creator
+        # columns. DuckDB ALTER has no IF NOT EXISTS, so tolerate the
+        # duplicate-column error.
+        for col, typ in (
+            ("profile_pic_path", "TEXT"),
+            ("creator_id", "INTEGER"),
+            ("creator_name", "TEXT"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE dim_profile ADD COLUMN {col} {typ}")
+            except Exception:
+                pass  # column already exists
 
         # Get distinct profiles from silver_ig_posts
         profiles = conn.execute("""
@@ -60,6 +74,9 @@ def profile_dimension(duckdb: DuckDBResource) -> None:
             FROM silver_ig_posts
             WHERE owner_id IS NOT NULL
         """).fetchall()
+
+        # Creator link: {handle: {creator_id, creator_name}} from ops.
+        handle_map = creator_map(ops)
 
         if not profiles:
             return
@@ -72,6 +89,8 @@ def profile_dimension(duckdb: DuckDBResource) -> None:
         now_ts = datetime.now(timezone.utc).isoformat()
 
         for owner_id, owner_username in profiles:
+            creator = handle_map.get(owner_username, {})
+
             # Check existing current row
             existing = conn.execute(
                 """
@@ -85,7 +104,7 @@ def profile_dimension(duckdb: DuckDBResource) -> None:
             if existing:
                 existing_key, existing_username = existing
                 if existing_username == owner_username:
-                    # No change — skip
+                    # No identity change — creator link refreshed below.
                     continue
                 # Close the old row
                 conn.execute(
@@ -103,10 +122,31 @@ def profile_dimension(duckdb: DuckDBResource) -> None:
                 """
                 INSERT INTO dim_profile
                     (profile_key, owner_id, owner_username, channel,
-                     effective_from, effective_to, is_current)
-                VALUES (?, ?, ?, 'instagram', ?, NULL, TRUE)
+                     effective_from, effective_to, is_current,
+                     creator_id, creator_name)
+                VALUES (?, ?, ?, 'instagram', ?, NULL, TRUE, ?, ?)
             """,
-                [max_key, owner_id, owner_username, now_ts],
+                [
+                    max_key,
+                    owner_id,
+                    owner_username,
+                    now_ts,
+                    creator.get("creator_id"),
+                    creator.get("creator_name"),
+                ],
+            )
+
+        # Refresh the creator link on current rows. This is a mutable
+        # relationship (a profile's owner), not a slowly-changing attribute,
+        # so it updates in place rather than versioning a new SCD2 row.
+        for owner_username, creator in handle_map.items():
+            conn.execute(
+                """
+                UPDATE dim_profile
+                SET creator_id = ?, creator_name = ?
+                WHERE owner_username = ? AND is_current = TRUE
+            """,
+                [creator["creator_id"], creator["creator_name"], owner_username],
             )
 
 
@@ -210,6 +250,8 @@ def v_post_detail(duckdb: DuckDBResource) -> None:
                 dp.effective_from,
                 dp.effective_to,
                 dp.is_current,
+                dp.creator_id,
+                dp.creator_name,
 
                 -- Date dimension
                 dd.date                                        AS dim_date,
@@ -303,6 +345,7 @@ def v_profile_quality(duckdb: DuckDBResource) -> None:
             SELECT
                 COALESCE(MAX(owner_id) FILTER (WHERE owner_id IS NOT NULL), 'unknown') AS owner_id,
                 owner_username,
+                MAX(creator_id)                                              AS creator_id,
                 COUNT(*)                                                     AS total_posts,
                 COUNT(CASE WHEN result_json IS NOT NULL THEN 1 END)          AS enriched_posts,
                 AVG(CASE
@@ -413,6 +456,7 @@ def v_creator_outlier_rate(duckdb: DuckDBResource) -> None:
             SELECT
                 COALESCE(MAX(owner_id) FILTER (WHERE owner_id IS NOT NULL), 'unknown') AS owner_id,
                 owner_username,
+                MAX(creator_id)                                                       AS creator_id,
                 COUNT(*)                                                       AS total_posts,
                 SUM(CASE WHEN sigma_tier IN ('1σ', '2σ', '3σ+')
                          THEN 1 ELSE 0 END)                                    AS outlier_posts,
