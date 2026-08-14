@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { MetricCard } from "@/components/ui/metric-card";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -146,12 +147,17 @@ export default function OverviewPage() {
                 key: "owner_username",
                 header: "PROFILE",
                 render: (row: ProfileRow) => (
-                  <div className="flex items-center gap-2">
+                  <Link
+                    to="/posts"
+                    search={{ username: row.owner_username }}
+                    className="flex items-center gap-2 hover:opacity-75 transition-opacity"
+                    title={`View @${row.owner_username} posts`}
+                  >
                     <Avatar username={row.owner_username} size={24} />
                     <span className="text-cyan-400 font-semibold text-[13px]">
                       {row.owner_username}
                     </span>
-                  </div>
+                  </Link>
                 ),
               },
               {

@@ -123,3 +123,48 @@ export async function fetchRecentStandouts(limit = 10): Promise<StandoutRow[]> {
 export async function fetchSearchResults(q: string): Promise<PostRow[]> {
   return fetchJSON(`/search?q=${encodeURIComponent(q)}&limit=500`);
 }
+
+// ── Scrape targets (profile management) ──────────────────────
+
+export interface ScrapeTarget {
+  username: string;
+  profile_url: string;
+  results_type: string;
+  results_limit: number;
+  enabled: number;
+  tier: string;
+  updated_at: string;
+}
+
+export interface ScrapeTargetInput {
+  username: string;
+  profile_url: string;
+  results_type?: string;
+  results_limit?: number;
+  enabled?: boolean;
+  tier?: string;
+}
+
+async function sendJSON<T>(endpoint: string, method: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${endpoint}`, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    throw new Error(`API error: ${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchScrapeTargets(): Promise<ScrapeTarget[]> {
+  return fetchJSON("/scrape-targets");
+}
+
+export async function addScrapeTarget(input: ScrapeTargetInput): Promise<unknown> {
+  return sendJSON("/scrape-targets", "POST", input);
+}
+
+export async function removeScrapeTarget(username: string): Promise<unknown> {
+  return sendJSON(`/scrape-targets/${encodeURIComponent(username)}`, "DELETE");
+}

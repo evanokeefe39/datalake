@@ -7,10 +7,11 @@ import {
   Link,
   RouterProvider,
 } from "@tanstack/react-router";
-import { LayoutDashboard, Zap, FileText, Activity, Menu, X } from "lucide-react";
+import { LayoutDashboard, Zap, FileText, Users, Activity, Menu, X } from "lucide-react";
 import OverviewPage from "@/routes/overview";
 import SignalsPage from "@/routes/signals";
 import PostsPage from "@/routes/posts";
+import ProfilesPage from "@/routes/profiles";
 import { cn } from "@/lib/utils";
 
 function RootLayout() {
@@ -75,6 +76,9 @@ function RootLayout() {
             <NavLink to="/posts" icon={<FileText className="w-4 h-4" />} onClick={() => setSidebarOpen(false)}>
               Posts
             </NavLink>
+            <NavLink to="/profiles" icon={<Users className="w-4 h-4" />} onClick={() => setSidebarOpen(false)}>
+              Profiles
+            </NavLink>
           </nav>
           <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-border">
             <div className="text-[10px] text-muted font-data uppercase tracking-widest">
@@ -129,8 +133,9 @@ const rootRoute = createRootRoute({ component: RootLayout });
 const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: OverviewPage });
 const signalsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/signals", component: SignalsPage });
 const postsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/posts", component: PostsPage });
+const profilesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/profiles", component: ProfilesPage });
 
-const routeTree = rootRoute.addChildren([indexRoute, signalsRoute, postsRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, signalsRoute, postsRoute, profilesRoute]);
 const router = createRouter({ routeTree });
 
 declare module "@tanstack/react-router" {

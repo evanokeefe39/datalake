@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import { Link, useLocation } from "@tanstack/react-router";
 import { AgGridReact } from "ag-grid-react";
 import type { CustomHeaderProps } from "ag-grid-react";
 import type {
@@ -15,7 +16,7 @@ import {
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Info } from "lucide-react";
-import { fetchPosts, fetchSearchResults, type PostRow } from "@/lib/api";
+import { fetchPosts, fetchPostsByProfile, fetchSearchResults, type PostRow } from "@/lib/api";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -371,19 +372,25 @@ export default function PostsPage() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [filters, setFilters] = useState<AdvancedFilters>(emptyFilters);
   const gridRef = useRef<AgGridReact<PostRow>>(null);
+  const location = useLocation();
+  const search = location.search as { username?: string };
 
   // Load initial data
   useEffect(() => {
-    fetchPosts(0, 0)
-      .then(setData)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
+    setLoading(true);
+    const req = search.username
+      ? fetchPostsByProfile(search.username)
+      : fetchPosts(0, 0);
+    req.then(setData).catch(console.error).finally(() => setLoading(false));
+  }, [search.username]);
 
   // Search handler — debounced server-side full-text search
   useEffect(() => {
     if (searchText.length === 0) {
-      fetchPosts(0, 0).then(setData).catch(console.error);
+      const req = search.username
+        ? fetchPostsByProfile(search.username)
+        : fetchPosts(0, 0);
+      req.then(setData).catch(console.error);
       return;
     }
     if (searchText.length < 2) return;
@@ -397,7 +404,7 @@ export default function PostsPage() {
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [searchText]);
+  }, [searchText, search.username]);
 
   // Apply external filter to AG Grid when advanced filters change
   const isExternalFilterPresent = useCallback((): boolean => {
@@ -465,6 +472,16 @@ export default function PostsPage() {
           {filtersActive(filters) ? " · advanced filters active" : ""}
           {" · click column headers to filter"}
         </p>
+        {search.username && (
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-[11px] text-accent font-data tracking-widest">
+              FILTERED: @{search.username}
+            </span>
+            <Link to="/posts" className="text-[11px] text-muted hover:text-white underline">
+              clear
+            </Link>
+          </div>
+        )}
       </div>
 
       {/* ── Search bar + Advanced toggle ────────────────────────── */}
