@@ -347,6 +347,45 @@ def signals():
 # ── Posts ───────────────────────────────────────────────────────
 
 
+_POST_SELECT = """
+    SELECT v.post_id, v.owner_username, v.creator_id, v.caption,
+           v.likes_count, v.comments_count, v.video_view_count,
+           v.is_educational, v.is_actionable,
+           v.admiralty, v.gold_domain, v.gold_topic, v.gold_subtopic,
+           v.content_type, v.style, v.format,
+           v.gold_analysed_at, v.timestamp, v.shortcode
+    FROM v_post_detail v
+"""
+
+
+def _rows_to_posts(rows) -> list[dict]:
+    """Shape ``v_post_detail`` rows into the dashboard PostRow JSON shape."""
+    return [
+        {
+            "post_id": r[0],
+            "owner_username": r[1],
+            "creator_id": r[2],
+            "caption": r[3] or "",
+            "likes_count": r[4] or 0,
+            "comments_count": r[5] or 0,
+            "video_view_count": r[6] or 0,
+            "is_educational": bool(r[7]) if r[7] is not None else None,
+            "is_actionable": bool(r[8]) if r[8] is not None else None,
+            "admiralty": r[9],
+            "gold_domain": r[10],
+            "gold_topic": r[11],
+            "gold_subtopic": r[12],
+            "content_type": r[13],
+            "style": r[14],
+            "format": r[15],
+            "analysed_at": r[16],
+            "timestamp": str(r[17]) if r[17] else None,
+            "shortcode": r[18] or "",
+        }
+        for r in rows
+    ]
+
+
 @app.get("/api/posts")
 def posts(
     limit: int = Query(0, ge=0, le=5000),
@@ -386,45 +425,11 @@ def posts(
             limit_clause = f"LIMIT {int(limit)} OFFSET {int(offset)}"
 
         rows = db.execute(
-            f"""
-            SELECT v.post_id, v.owner_username, v.creator_id, v.caption,
-                   v.likes_count, v.comments_count, v.video_view_count,
-                   v.is_educational, v.is_actionable,
-                   v.admiralty, v.gold_domain, v.gold_topic, v.gold_subtopic,
-                   v.content_type, v.style, v.format,
-                   v.gold_analysed_at, v.timestamp, v.shortcode
-            FROM v_post_detail v
-            {where}
-            {order_clause}
-            {limit_clause}
-        """,
+            f"{_POST_SELECT} {where} {order_clause} {limit_clause}",
             params,
         ).fetchall()
 
-        return [
-            {
-                "post_id": r[0],
-                "owner_username": r[1],
-                "creator_id": r[2],
-                "caption": r[3] or "",
-                "likes_count": r[4] or 0,
-                "comments_count": r[5] or 0,
-                "video_view_count": r[6] or 0,
-                "is_educational": bool(r[7]) if r[7] is not None else None,
-                "is_actionable": bool(r[8]) if r[8] is not None else None,
-                "admiralty": r[9],
-                "gold_domain": r[10],
-                "gold_topic": r[11],
-                "gold_subtopic": r[12],
-                "content_type": r[13],
-                "style": r[14],
-                "format": r[15],
-                "analysed_at": r[16],
-                "timestamp": str(r[17]) if r[17] else None,
-                "shortcode": r[18] or "",
-            }
-            for r in rows
-        ]
+        return _rows_to_posts(rows)
     finally:
         db.close()
 
@@ -802,6 +807,29 @@ def creator_detail(creator_id: int):
             profiles_out.append(profile)
         creator["profiles"] = profiles_out
         return creator
+    finally:
+        db.close()
+
+
+@app.get("/api/creators/{creator_id}/posts")
+def creator_posts(creator_id: int):
+    creator = get_creator(_ops_resource(), creator_id)
+    if creator is None:
+        raise HTTPException(status_code=404, detail="Creator not found")
+    handles = [
+        p["handle"] for p in creator["profiles"] if p["platform"] == "instagram"
+    ]
+    if not handles:
+        return []
+    db = _connect()
+    try:
+        placeholders = ",".join("?" for _ in handles)
+        rows = db.execute(
+            f"{_POST_SELECT} WHERE v.owner_username IN ({placeholders}) "
+            "ORDER BY v.timestamp DESC",
+            handles,
+        ).fetchall()
+        return _rows_to_posts(rows)
     finally:
         db.close()
 

@@ -202,7 +202,11 @@ export async function fetchCreator(id: number | string): Promise<CreatorDetail> 
   return fetchJSON(`/creators/${id}`);
 }
 
-export async function addCreator(name: string): Promise<unknown> {
+export async function fetchCreatorPosts(id: number | string): Promise<PostRow[]> {
+  return fetchJSON(`/creators/${id}/posts`);
+}
+
+export async function addCreator(name: string): Promise<{ id: number; name: string }> {
   return sendJSON("/creators", "POST", { name });
 }
 
