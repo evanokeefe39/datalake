@@ -27,8 +27,8 @@ def _run_enqueue(duckdb, ops):
     return ig_posts_gen_batches(duckdb=duckdb, ops=ops)
 
 
-def _run_serving(duckdb):
-    ctx = build_asset_context(resources={"duckdb": duckdb})
+def _run_serving(duckdb, ops):
+    ctx = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
     dim_date(ctx)
     profile_dimension(ctx)
     v_post_detail(ctx)
@@ -80,7 +80,7 @@ def test_full_pipeline_happy_path(tmp_path):
     assert len(batch["payloads"]) == 3
 
     # Serving (should run even with empty gold_analyses)
-    _run_serving(duckdb)
+    _run_serving(duckdb, ops)
 
     with duckdb.get_connection() as conn:
         rows = conn.execute("SELECT COUNT(*) FROM v_post_detail").fetchone()
@@ -93,6 +93,7 @@ def test_empty_gold_does_not_block_serving(tmp_path):
     THEN views are created with NULL gold columns (LEFT JOIN).
     """
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
     # Setup serving schema
     with duckdb.get_connection() as conn:
@@ -120,7 +121,7 @@ def test_empty_gold_does_not_block_serving(tmp_path):
             ["p1", "Test"],
         )
 
-    _run_serving(duckdb)
+    _run_serving(duckdb, ops)
 
     with duckdb.get_connection() as conn:
         row = conn.execute("SELECT COUNT(*) FROM v_post_detail").fetchone()

@@ -36,8 +36,8 @@ def _ensure_gold_table(db):
         """)
 
 
-def _run_profile_dimension(ctx):
-    _profile_dimension_asset(ctx)
+def _run_profile_dimension(db, ops):
+    _profile_dimension_asset(build_asset_context(resources={"duckdb": db, "ops": ops}))
 
 
 def _run_v_post_detail(ctx):
@@ -48,7 +48,7 @@ def _run_v_post_detail(ctx):
 # ── Profile dimension tests ────────────────────────────────────────────────
 
 
-def test_profile_dimension_creates_rows(db):
+def test_profile_dimension_creates_rows(db, ops):
     """Distinct owner_ids from silver_ig_posts → rows in profile_dimension."""
     seed_silver_posts(
         db,
@@ -58,7 +58,7 @@ def test_profile_dimension_creates_rows(db):
         owner_id_idx=1,
         owner_username_idx=2,
     )
-    _run_profile_dimension(build_asset_context(resources={"duckdb": db}))
+    _run_profile_dimension(db, ops)
 
     with db.get_connection() as conn:
         rows = conn.execute(
@@ -71,7 +71,7 @@ def test_profile_dimension_creates_rows(db):
     ]
 
 
-def test_profile_dimension_scd2_username_change(db):
+def test_profile_dimension_scd2_username_change(db, ops):
     """Same owner with new username → closes old row, inserts new."""
     seed_silver_posts(
         db,
@@ -81,7 +81,7 @@ def test_profile_dimension_scd2_username_change(db):
         owner_id_idx=1,
         owner_username_idx=2,
     )
-    _run_profile_dimension(build_asset_context(resources={"duckdb": db}))
+    _run_profile_dimension(db, ops)
 
     with db.get_connection() as conn:
         rows = conn.execute(
@@ -98,7 +98,7 @@ def test_profile_dimension_scd2_username_change(db):
     assert any(not r[1] and r[2] for r in rows)
 
 
-def test_profile_dimension_no_change_idempotent(db):
+def test_profile_dimension_no_change_idempotent(db, ops):
     """Same owner, same username → no new rows added."""
     seed_silver_posts(
         db,
@@ -107,7 +107,7 @@ def test_profile_dimension_no_change_idempotent(db):
         owner_id_idx=1,
         owner_username_idx=2,
     )
-    _run_profile_dimension(build_asset_context(resources={"duckdb": db}))
+    _run_profile_dimension(db, ops)
 
     with db.get_connection() as conn:
         count = conn.execute(
@@ -133,7 +133,7 @@ def test_profile_dimension_no_change_idempotent(db):
         id="same_owner_scd2",
     ),
 ])
-def test_scd2_integrity(db, rows, expected_ranges):
+def test_scd2_integrity(db, ops, rows, expected_ranges):
     """SCD2 invariants: effective_from ≤ effective_to, no overlaps, no gaps."""
     seed_silver_posts(
         db, rows,
@@ -141,7 +141,7 @@ def test_scd2_integrity(db, rows, expected_ranges):
         owner_id_idx=1,
         owner_username_idx=2,
     )
-    _run_profile_dimension(build_asset_context(resources={"duckdb": db}))
+    _run_profile_dimension(db, ops)
 
     with db.get_connection() as conn:
         data = conn.execute(
@@ -169,7 +169,7 @@ def test_scd2_integrity(db, rows, expected_ranges):
 # ── v_post_detail tests ────────────────────────────────────────────────────
 
 
-def test_v_post_detail_joins_correctly(db):
+def test_v_post_detail_joins_correctly(db, ops):
     """v_post_detail joins silver_ig_posts with profile_dimension."""
     seed_silver_posts(
         db,
@@ -179,9 +179,8 @@ def test_v_post_detail_joins_correctly(db):
         owner_username_idx=2,
     )
     _ensure_gold_table(db)
-    ctx = build_asset_context(resources={"duckdb": db})
-    _run_profile_dimension(ctx)
-    _run_v_post_detail(ctx)
+    _run_profile_dimension(db, ops)
+    _run_v_post_detail(build_asset_context(resources={"duckdb": db}))
 
     with db.get_connection() as conn:
         row = conn.execute(
@@ -191,16 +190,56 @@ def test_v_post_detail_joins_correctly(db):
     assert row == ("1", "user_a", "owner_a", True)
 
 
-def test_v_post_detail_empty_data(db):
+def test_v_post_detail_empty_data(db, ops):
     """v_post_detail runs cleanly with empty silver_ig_posts."""
     seed_silver_posts(db, [])
     _ensure_gold_table(db)
-    context = build_asset_context(resources={"duckdb": db})
-    _run_profile_dimension(context)
-    _run_v_post_detail(context)
+    _run_profile_dimension(db, ops)
+    _run_v_post_detail(build_asset_context(resources={"duckdb": db}))
 
     with db.get_connection() as conn:
         count = conn.execute(
             "SELECT COUNT(*) FROM v_post_detail"
         ).fetchone()[0]
     assert count == 0
+
+
+def test_profile_dimension_links_creator(db, ops):
+    """dim_profile gains creator_id/creator_name from ops profiles/creators."""
+    from datalake.defs.instagram.creators import add_profile, create_creator
+
+    creator = create_creator(ops, "Jane Doe")
+    add_profile(ops, creator_id=creator["id"], platform="instagram", handle="user_a")
+
+    seed_silver_posts(
+        db,
+        [("1", "owner_a", "user_a", "Post")],
+        caption_idx=3,
+        owner_id_idx=1,
+        owner_username_idx=2,
+    )
+    _run_profile_dimension(db, ops)
+
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT creator_id, creator_name FROM dim_profile WHERE owner_id = 'owner_a'"
+        ).fetchone()
+    assert row == (creator["id"], "Jane Doe")
+
+
+def test_profile_dimension_unlinked_creator_null(db, ops):
+    """A handle with no creator yields NULL creator_id/creator_name."""
+    seed_silver_posts(
+        db,
+        [("1", "owner_a", "user_a", "Post")],
+        caption_idx=3,
+        owner_id_idx=1,
+        owner_username_idx=2,
+    )
+    _run_profile_dimension(db, ops)
+
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT creator_id, creator_name FROM dim_profile WHERE owner_id = 'owner_a'"
+        ).fetchone()
+    assert row == (None, None)

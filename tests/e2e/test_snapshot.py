@@ -84,7 +84,7 @@ def test_enqueue_enqueues_silver_posts(db, ops_db, bronze_dir):
     assert len(batch["payloads"]) >= 1
 
 
-def test_serving_runs_on_empty_gold(db, bronze_dir):
+def test_serving_runs_on_empty_gold(db, ops_db, bronze_dir):
     """GIVEN silver from the committed bronze Parquet
     WHEN serving assets run (with empty gold_analyses)
     THEN views are created successfully.
@@ -103,7 +103,7 @@ def test_serving_runs_on_empty_gold(db, bronze_dir):
         ctx = build_asset_context(resources={"duckdb": db})
         ig_posts_slv(ctx)
 
-    ctx = build_asset_context(resources={"duckdb": db})
+    ctx = build_asset_context(resources={"duckdb": db, "ops": ops_db})
     profile_dimension(ctx)
     dim_date(ctx)
     v_post_detail(ctx)

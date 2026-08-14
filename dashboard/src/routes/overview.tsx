@@ -146,19 +146,27 @@ export default function OverviewPage() {
               {
                 key: "owner_username",
                 header: "PROFILE",
-                render: (row: ProfileRow) => (
-                  <Link
-                    to="/posts"
-                    search={{ username: row.owner_username }}
-                    className="flex items-center gap-2 hover:opacity-75 transition-opacity"
-                    title={`View @${row.owner_username} posts`}
-                  >
-                    <Avatar username={row.owner_username} size={24} />
-                    <span className="text-cyan-400 font-semibold text-[13px]">
-                      {row.owner_username}
+                render: (row: ProfileRow) =>
+                  row.creator_id != null ? (
+                    <Link
+                      to="/creators/$id"
+                      params={{ id: String(row.creator_id) }}
+                      className="flex items-center gap-2 hover:opacity-75 transition-opacity"
+                      title={`View @${row.owner_username}`}
+                    >
+                      <Avatar username={row.owner_username} size={24} />
+                      <span className="text-cyan-400 font-semibold text-[13px]">
+                        {row.owner_username}
+                      </span>
+                    </Link>
+                  ) : (
+                    <span className="flex items-center gap-2">
+                      <Avatar username={row.owner_username} size={24} />
+                      <span className="text-cyan-400 font-semibold text-[13px]">
+                        {row.owner_username}
+                      </span>
                     </span>
-                  </Link>
-                ),
+                  ),
               },
               {
                 key: "total_posts",

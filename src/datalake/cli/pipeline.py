@@ -87,9 +87,9 @@ def _run_enqueue(duckdb: DuckDBResource, ops: SQLiteResource) -> int:
     return n
 
 
-def _run_serving(duckdb: DuckDBResource) -> None:
+def _run_serving(duckdb: DuckDBResource, ops: SQLiteResource) -> None:
     print("\n--- Serving (dim_date + dim_profile + v_post_detail) ---")
-    ctx = build_asset_context(resources={"duckdb": duckdb})
+    ctx = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
     dim_date(ctx)
     print("  dim_date done")
     profile_dimension(ctx)
@@ -158,7 +158,7 @@ def run(
 
     _run_silver(duckdb)
     enqueued = _run_enqueue(duckdb, ops)
-    _run_serving(duckdb)
+    _run_serving(duckdb, ops)
 
     print_full_state("After")
 

@@ -34,8 +34,8 @@ def _run_enqueue(duckdb, ops_db):
     return ig_posts_gen_batches(config=GoldConfig(), duckdb=duckdb, ops=ops_db)
 
 
-def _run_profile_dimension(duckdb):
-    ctx = build_asset_context(resources={"duckdb": duckdb})
+def _run_profile_dimension(duckdb, ops):
+    ctx = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
     profile_dimension(ctx)
 
 

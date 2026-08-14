@@ -12,13 +12,19 @@ from pathlib import Path
 import pytest
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.common.resources import ApifyResource, GeminiResource
+from datalake.defs.common.resources import ApifyResource, GeminiResource, SQLiteResource
 
 
 @pytest.fixture
 def db(tmp_path) -> DuckDBResource:
     """Create a DuckDB resource backed by tmp_path (auto-cleaned by pytest)."""
     return DuckDBResource(database=str(tmp_path / "test.duckdb"))
+
+
+@pytest.fixture
+def ops(tmp_path) -> SQLiteResource:
+    """A SQLiteResource backed by tmp_path (auto-cleaned by pytest)."""
+    return SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
 
 @pytest.fixture

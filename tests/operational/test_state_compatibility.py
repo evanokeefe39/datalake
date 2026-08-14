@@ -42,6 +42,10 @@ _STALE_SQLITE_TABLES: dict[str, str] = {
         "Drop — replaced by 'media_cache' (byte cache). "
         "Run scripts/migrate_schema_drift.py"
     ),
+    "scrape_targets": (
+        "Replace with 'creators' + 'profiles'. "
+        "Run scripts/migrate_creators_profiles.py"
+    ),
 }
 
 # ── Tables that exist in the DB but are not in the catalog ───────────────

@@ -13,12 +13,13 @@ Per test-hardening plan Phase 2:
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
+from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
 from tests.fixtures.silver_factories import seed_silver_posts
 
 
-def _run_profile_dimension(duckdb):
-    profile_dimension(build_asset_context(resources={"duckdb": duckdb}))
+def _run_profile_dimension(duckdb, ops):
+    profile_dimension(build_asset_context(resources={"duckdb": duckdb, "ops": ops}))
 
 
 def _run_v_post_detail(duckdb):
@@ -47,6 +48,7 @@ def test_v_post_detail_null_join(tmp_path):
     THEN the view returns rows with NULL gold columns (LEFT JOIN).
     """
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
     seed_silver_posts(
         duckdb,
         [("1", "owner_a", "user_a", "Post without gold analysis")],
@@ -54,8 +56,7 @@ def test_v_post_detail_null_join(tmp_path):
         owner_id_idx=1,
         owner_username_idx=2,
     )
-
-    _run_profile_dimension(duckdb)
+    _run_profile_dimension(duckdb, ops)
     _run_v_post_detail(duckdb)
 
     with duckdb.get_connection() as conn:
@@ -84,6 +85,7 @@ def test_scd2_effective_to_precision(tmp_path):
     THEN effective_to of the closed row equals effective_from of the new row.
     """
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
     # ── Pass 1: seed with old username, run profile dimension ─────────────
     seed_silver_posts(
@@ -93,7 +95,7 @@ def test_scd2_effective_to_precision(tmp_path):
         owner_id_idx=1,
         owner_username_idx=2,
     )
-    _run_profile_dimension(duckdb)
+    _run_profile_dimension(duckdb, ops)
 
     with duckdb.get_connection() as conn:
         c1 = conn.execute(
@@ -108,7 +110,7 @@ def test_scd2_effective_to_precision(tmp_path):
             "UPDATE silver_ig_posts SET owner_username = 'new_name' "
             "WHERE post_id = '1'"
         )
-    _run_profile_dimension(duckdb)
+    _run_profile_dimension(duckdb, ops)
     with duckdb.get_connection() as conn:
         c2 = conn.execute(
             "SELECT COUNT(*) FROM dim_profile WHERE owner_id = 'owner_a'"
@@ -148,6 +150,7 @@ def test_channel_attribute_on_instagram_rows(tmp_path):
     THEN dim_profile has channel='instagram' for those rows.
     """
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
     seed_silver_posts(
         duckdb,
@@ -158,7 +161,7 @@ def test_channel_attribute_on_instagram_rows(tmp_path):
         owner_username_idx=2,
     )
 
-    _run_profile_dimension(duckdb)
+    _run_profile_dimension(duckdb, ops)
 
     with duckdb.get_connection() as conn:
         rows = conn.execute(

@@ -56,6 +56,8 @@ DUCKDB_TABLES: dict[str, dict[str, str]] = {
         "effective_to": "TIMESTAMP",
         "is_current": "BOOLEAN",
         "profile_pic_path": "VARCHAR",
+        "creator_id": "INTEGER",
+        "creator_name": "VARCHAR",
     },
     "dim_date": {
         "date": "DATE",
@@ -159,13 +161,21 @@ SQLITE_TABLES: dict[str, dict[str, str]] = {
         "fetched_at": "TEXT",
         "source_url": "TEXT",
     },
-    "scrape_targets": {
-        "username": "TEXT",
+    "creators": {
+        "id": "INTEGER",
+        "name": "TEXT",
+        "created_at": "TEXT",
+        "updated_at": "TEXT",
+    },
+    "profiles": {
+        "platform": "TEXT",
+        "handle": "TEXT",
         "profile_url": "TEXT",
         "results_type": "TEXT",
         "results_limit": "INTEGER",
         "enabled": "INTEGER",
         "tier": "TEXT",
+        "creator_id": "INTEGER",
         "updated_at": "TEXT",
     },
 }

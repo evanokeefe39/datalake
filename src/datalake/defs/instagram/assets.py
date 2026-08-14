@@ -422,18 +422,18 @@ def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame
 
     from ..common.lake import avatar_path
     from ..common.schemas import DUCKDB_TABLES
-    from .scrape_targets import enabled_targets
+    from .creators import enabled_profiles
 
     db = duckdb
     _ensure_state_tables(db)
 
-    # Profile list now comes from the scrape_targets control table (ops).
-    targets = enabled_targets(ops)
+    # Profile list comes from the profiles control table (ops).
+    targets = enabled_profiles(ops)
     if targets:
         logger.info(
-            "Tracking %d enabled scrape target(s): %s",
+            "Tracking %d enabled profile(s): %s",
             len(targets),
-            sorted(t["username"] for t in targets),
+            sorted(t["handle"] for t in targets),
         )
 
     # Find details-type bronze files that haven't been processed

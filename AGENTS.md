@@ -77,13 +77,15 @@ Domain-scoped, not generic. Supports multi-source expansion (TikTok, YouTube, Li
 |---|---|---|
 | DuckDB | `silver_ig_posts` | Deduped, normalized Instagram posts |
 | DuckDB | `gold_analyses` | Completed enrichments with domain PK (`post_id`, `domain`) and `prompt_hash` |
-| DuckDB | `dim_profile` | SCD2 profile dimension (cross-domain, `channel` column) |
+| DuckDB | `dim_profile` | SCD2 profile dimension (cross-domain, `channel` column), carries `creator_id`/`creator_name` |
 | DuckDB | `dim_date` | Generated date dimension — 1 year back, fiscal year (Jul–Jun) |
 | DuckDB | `watermarks` | Generic progress tracking for any pipeline (`name`, `timestamp`) |
 | SQLite | `batch_jobs` | Batch coordination: job-level status (`pending`/`processing`/`complete`) |
 | SQLite | `batch_items` | Per-post items within a batch, with retry tracking (`attempts`, `scheduled_for`) |
 | SQLite | `media_metadata` | URL hash → Gemini File API URI cache |
 | SQLite | `dead_letter` | Terminal failures after `MAX_ATTEMPTS` retries exhausted |
+| SQLite | `creators` | A person/brand (`id`, `name`) — owns 1..N profiles across platforms |
+| SQLite | `profiles` | One account per platform (`platform`, `handle` PK) linked to a creator; carries scrape config (depth, enabled, tier) |
 
 **DuckDB views:** `v_post_detail` (foundational), `v_signal`, `v_quality_trend`, `v_profile_quality`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`
 
@@ -158,9 +160,8 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 `tests/operational/expected_schema.py` re-exports it for backward compatibility.
 Any table the pipeline reads or writes must be listed here. The readiness test
 (`test_state_compatibility.py`) asserts the catalog matches the running databases.
-
 **DuckDB tables:** `silver_ig_posts`, `gold_analyses`, `watermarks`, `dim_profile`, `dim_date`
-**SQLite tables:** `batch_jobs`, `batch_items`, `media_metadata`, `dead_letter`
+**SQLite tables:** `batch_jobs`, `batch_items`, `media_metadata`, `dead_letter`, `creators`, `profiles`
 **Views:** `v_post_detail`, `v_signal`, `v_quality_trend`, `v_profile_quality`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`
 - **Missing tables/columns** — fails with "run the pipeline or migration"
 - **Stale table names** — tables in the DB that were renamed/dropped (e.g. `gold_ig_analyses`). Fails with migration hint.
@@ -175,7 +176,7 @@ Any table the pipeline reads or writes must be listed here. The readiness test
 | `scripts/migrate_to_v2.py` | One-shot migration from Phase 1-4 schema to v2 domain-scoped tables. |
 | `scripts/migrate_from_ig_pipeline.py` | Import bronze Parquet from legacy ig-pipeline repo. |
 | `scripts/migrate_owner_username.py` | Backfill null ``owner_username`` in silver from bronze ``username`` fallback. Idempotent. |
-
+| `scripts/migrate_creators_profiles.py` | Split `scrape_targets` → `creators` + `profiles` (1:1 backfill), recreate lost batch tables, drop `scrape_targets`. Idempotent. |
 ## Stale analysis update
 
 When the enrichment prompt or model changes, existing `gold_analyses` rows have stale `prompt_hash`.
@@ -229,7 +230,7 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
 
 ## Serving layer
 
-- `dim_profile`: SCD2 profile dimension. Reads DISTINCT profiles from `silver_ig_posts`. Closes old rows on username change, inserts new rows. `channel = 'instagram'`.
+- `dim_profile`: SCD2 profile dimension. Reads DISTINCT profiles from `silver_ig_posts`. Closes old rows on username change, inserts new rows. `channel = 'instagram'`. Carries `creator_id`/`creator_name` linked from `profiles`/`creators` in ops.
 - `dim_date`: Generated date table — 1 year back from today, with fiscal year (Jul–Jun).
 - `v_post_detail`: Foundational flat view joining silver + gold (JSON-extracted) + dim_profile + dim_date. LEFT JOINs throughout — posts without enrichment or profiles still appear.
 - Seven downstream views: `v_signal` (high-value filter), `v_quality_trend` (weekly aggregates), `v_profile_quality` (creator rankings), `v_domain_coverage` (heatmap), `v_engagement_outliers` (per-creator z-scores), `v_outlier_posts` (1σ+ outliers), `v_creator_outlier_rate` (outlier production rate).
@@ -428,3 +429,4 @@ Set in `.env`:
 | 2026-07-01 | Domain-scoped table names (`silver_ig_posts`) | Supports multi-source expansion. Cross-domain normalization happens in gold, not silver |
 | 2026-07-01 | Panel of experts for architecture review | Data Architect + ML Engineer + Dagster Expert review non-trivial design decisions |
 | 2026-07-01 | Smoke tests between phases | Temp DB with subset of data, wiped after verification. Self-steering during implementation |
+| 2026-08-14 | `creators` + `profiles` split (replaces `scrape_targets`) | Multi-platform enabler: creator (person/brand) owns 1..N profiles (account per platform). `dim_profile` carries `creator_id`/`creator_name` for click-through without cross-DB joins. Depth is per-profile. Backfill is 1:1 (IG-only today). |

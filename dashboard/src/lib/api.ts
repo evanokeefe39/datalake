@@ -8,6 +8,18 @@ async function fetchJSON<T>(endpoint: string): Promise<T> {
   return res.json();
 }
 
+async function sendJSON<T>(endpoint: string, method: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${endpoint}`, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    throw new Error(`API error: ${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+
 // ── Types ─────────────────────────────────────────────────────
 
 export interface OverviewMetrics {
@@ -22,6 +34,7 @@ export interface OverviewMetrics {
 export interface ProfileRow {
   owner_id: string;
   owner_username: string;
+  creator_id: number | null;
   total_posts: number;
   enriched_posts: number;
   admiralty_score: number;
@@ -35,6 +48,7 @@ export interface ProfileRow {
 export interface SignalRow {
   post_id: string;
   owner_username: string;
+  creator_id: number | null;
   admiralty: string;
   gold_domain: string;
   gold_topic: string;
@@ -49,6 +63,7 @@ export interface SignalRow {
 export interface PostRow {
   post_id: string;
   owner_username: string;
+  creator_id: number | null;
   caption: string;
   likes_count: number;
   comments_count: number;
@@ -86,7 +101,60 @@ export interface WeeklySummaryRow {
   standout_count: number;
 }
 
-// ── API ────────────────────────────────────────────────────────
+export interface Creator {
+  id: number;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  profile_count: number;
+  platforms: string[];
+  total_posts: number;
+}
+
+export interface CreatorProfile {
+  platform: string;
+  handle: string;
+  profile_url: string;
+  results_type: string;
+  results_limit: number;
+  enabled: number;
+  tier: string;
+  creator_id: number;
+  updated_at: string;
+  post_count?: number;
+  full_name?: string | null;
+  biography?: string | null;
+  followers_count?: number;
+  posts_count?: number;
+}
+
+export interface CreatorDetail {
+  id: number;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  profiles: CreatorProfile[];
+}
+
+export interface ProfileInput {
+  platform?: string;
+  handle: string;
+  results_type?: string;
+  results_limit?: number;
+  enabled?: boolean;
+  tier?: string;
+}
+
+export interface BatchProfilesInput {
+  platform?: string;
+  handles: string[];
+  results_type?: string;
+  results_limit?: number;
+  enabled?: boolean;
+  tier?: string;
+}
+
+// ── Analytics API ──────────────────────────────────────────────
 
 export async function fetchOverview(): Promise<OverviewMetrics> {
   return fetchJSON("/overview");
@@ -124,47 +192,59 @@ export async function fetchSearchResults(q: string): Promise<PostRow[]> {
   return fetchJSON(`/search?q=${encodeURIComponent(q)}&limit=500`);
 }
 
-// ── Scrape targets (profile management) ──────────────────────
+// ── Creators + profiles (profile management) ──────────────────
 
-export interface ScrapeTarget {
-  username: string;
-  profile_url: string;
-  results_type: string;
-  results_limit: number;
-  enabled: number;
-  tier: string;
-  updated_at: string;
+export async function fetchCreators(): Promise<Creator[]> {
+  return fetchJSON("/creators");
 }
 
-export interface ScrapeTargetInput {
-  username: string;
-  profile_url: string;
-  results_type?: string;
-  results_limit?: number;
-  enabled?: boolean;
-  tier?: string;
+export async function fetchCreator(id: number | string): Promise<CreatorDetail> {
+  return fetchJSON(`/creators/${id}`);
 }
 
-async function sendJSON<T>(endpoint: string, method: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE}${endpoint}`, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+export async function fetchCreatorPosts(id: number | string): Promise<PostRow[]> {
+  return fetchJSON(`/creators/${id}/posts`);
+}
+
+export async function addCreator(name: string): Promise<{ id: number; name: string }> {
+  return sendJSON("/creators", "POST", { name });
+}
+
+export async function renameCreator(id: number, name: string): Promise<unknown> {
+  return sendJSON(`/creators/${id}`, "PATCH", { name });
+}
+
+export async function removeCreator(id: number): Promise<unknown> {
+  return sendJSON(`/creators/${id}`, "DELETE");
+}
+
+export async function addProfile(
+  creatorId: number,
+  input: ProfileInput,
+): Promise<unknown> {
+  return sendJSON(`/creators/${creatorId}/profiles`, "POST", input);
+}
+
+export async function addProfilesBatch(
+  creatorId: number,
+  input: BatchProfilesInput,
+): Promise<unknown> {
+  return sendJSON(`/creators/${creatorId}/profiles/batch`, "POST", input);
+}
+
+export async function editDepth(
+  platform: string,
+  handle: string,
+  resultsLimit: number,
+): Promise<unknown> {
+  return sendJSON(`/profiles/${platform}/${encodeURIComponent(handle)}`, "PATCH", {
+    results_limit: resultsLimit,
   });
-  if (!res.ok) {
-    throw new Error(`API error: ${res.status} ${res.statusText}`);
-  }
-  return res.json();
 }
 
-export async function fetchScrapeTargets(): Promise<ScrapeTarget[]> {
-  return fetchJSON("/scrape-targets");
-}
-
-export async function addScrapeTarget(input: ScrapeTargetInput): Promise<unknown> {
-  return sendJSON("/scrape-targets", "POST", input);
-}
-
-export async function removeScrapeTarget(username: string): Promise<unknown> {
-  return sendJSON(`/scrape-targets/${encodeURIComponent(username)}`, "DELETE");
+export async function removeProfile(
+  platform: string,
+  handle: string,
+): Promise<unknown> {
+  return sendJSON(`/profiles/${platform}/${encodeURIComponent(handle)}`, "DELETE");
 }
