@@ -257,12 +257,16 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             reader = conn.execute("SELECT * FROM silver_ig_posts ORDER BY timestamp DESC").arrow()
         return pl.from_arrow(reader.read_all())
     frames = []
+    max_mtime = 0.0
     for f in new_files:
         try:
             df = pl.read_parquet(f)
         except Exception as exc:
             logger.warning("Skipping %s — unreadable: %s", f.name, exc)
             continue
+        mtime = _os.path.getmtime(f)
+        if mtime > max_mtime:
+            max_mtime = mtime
 
         if len(df) == 0:
             logger.info("Skipping %s — 0 rows", f.name)
@@ -374,6 +378,16 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     unified = pl.concat(frames, how="diagonal_relaxed")
     if unified.is_empty():
         return pl.DataFrame(schema={c: pl.Utf8 for c in SILVER_COLUMNS})
+
+    # Preserve first-seen processed_on across re-scrapes. The dedup below
+    # breaks ties on source_dataset (a random dataset id); carrying the
+    # existing non-null processed_on forward to every row of a post_id means
+    # the tie-break can never re-stamp it to "now".
+    unified = unified.with_columns(
+        pl.col("processed_on").fill_null(
+            pl.col("processed_on").max().over("post_id")
+        )
+    )
     unified_arrow = unified.to_arrow()
     with db.get_connection() as conn:
         conn.register("unified", unified_arrow)
@@ -399,6 +413,16 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     with db.get_connection() as conn:
         conn.register("to_upsert", deduped.to_arrow())
         conn.execute("INSERT OR REPLACE INTO silver_ig_posts SELECT * FROM to_upsert")
+
+    # Advance the silver watermark to the newest bronze file examined this
+    # run so the next materialization only re-reads genuinely new files.
+    if max_mtime > 0:
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO watermarks (name, timestamp) "
+                "VALUES ('silver_ig', ?)",
+                [datetime.fromtimestamp(max_mtime, tz=timezone.utc).replace(tzinfo=None)],
+            )
 
     return deduped
 

@@ -8,7 +8,7 @@ consumer might use ``{"video_id": "...", "language": "en"}``.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from datalake.defs.common.resources import SQLiteResource
 
@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS batch_items (
     status      TEXT NOT NULL DEFAULT 'pending',
     attempts    INTEGER NOT NULL DEFAULT 0,
     error       TEXT,
+    scheduled_for TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     UNIQUE(job_id, payload)
@@ -53,11 +54,20 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _now_plus_seconds(seconds: float) -> str:
+    """ISO timestamp ``seconds`` from now (UTC)."""
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
 def _ensure_schema(ops: SQLiteResource) -> None:
     """Create batch tables if they don't exist (idempotent)."""
     conn = ops.get_connection()
     try:
         conn.executescript(_BATCH_SCHEMA)
+        # Migration: add scheduled_for to pre-existing DBs (idempotent).
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(batch_items)")}
+        if "scheduled_for" not in cols:
+            conn.execute("ALTER TABLE batch_items ADD COLUMN scheduled_for TEXT")
     finally:
         conn.close()
 
@@ -104,18 +114,20 @@ def create_batch(
 
 
 def claim_batch(ops: SQLiteResource, consumer: str = "gemini") -> dict | None:
-    """Claim the oldest pending batch for the given consumer.
+    """Claim the oldest batch with pending items for the given consumer.
 
-    Returns None if no pending batches exist for this consumer.
-    Returns dict with keys: id, consumer, payloads (list of JSON strings).
-    Sets batch status to 'processing'.
+    Reclaims 'processing' batches that still have pending items (e.g. a
+    previous run stopped early on quota/backoff), so retries across worker
+    runs work. Returns None if no such batch exists.
     """
     _ensure_schema(ops)
     conn = ops.get_connection()
     try:
         row = conn.execute(
             "SELECT id FROM batch_jobs "
-            "WHERE status = 'pending' AND consumer = ? "
+            "WHERE consumer = ? AND status IN ('pending', 'processing') "
+            "AND EXISTS (SELECT 1 FROM batch_items i "
+            "            WHERE i.job_id = batch_jobs.id AND i.status = 'pending') "
             "ORDER BY created_at ASC LIMIT 1",
             [consumer],
         ).fetchone()
@@ -158,8 +170,9 @@ def claim_pending_items(
         rows = conn.execute(
             "SELECT id, payload FROM batch_items "
             "WHERE job_id = ? AND status = 'pending' "
+            "AND (scheduled_for IS NULL OR scheduled_for <= ?) "
             "ORDER BY id LIMIT ?",
-            [job_id, limit],
+            [job_id, _now_iso(), limit],
         ).fetchall()
 
         if not rows:
@@ -206,11 +219,21 @@ def fail_item(
     ops: SQLiteResource,
     item_id: int,
     error: str,
-    backoff: int = 0,
+    backoff: float = 0,
+    *,
+    preserve_attempts: bool = False,
 ) -> int:
-    """Mark an item as failed. Returns new attempt count.
+    """Mark an item as failed/rescheduled. Returns the (possibly unchanged)
+    attempt count.
 
-    If attempts >= MAX_ATTEMPTS, item stays 'failed' — caller should dead-letter it.
+    Default (``preserve_attempts=False``): attempts is incremented; at
+    MAX_ATTEMPTS the item becomes terminal ('failed'), otherwise it is
+    rescheduled as 'pending' and claimable again once ``scheduled_for``
+    passes.
+
+    ``preserve_attempts=True``: attempts is left untouched — used for global
+    conditions (quota exhaustion) that are not the item's fault, so innocent
+    items never burn an attempt or dead-letter.
     """
     conn = ops.get_connection()
     try:
@@ -222,13 +245,15 @@ def fail_item(
         if not row:
             return 0
 
-        new_attempts = row[0] + 1
+        attempts = row[0]
+        new_attempts = attempts if preserve_attempts else attempts + 1
         now = _now_iso()
+        scheduled_for = _now_plus_seconds(backoff) if backoff > 0 else None
 
-        if new_attempts >= MAX_ATTEMPTS:
+        if not preserve_attempts and new_attempts >= MAX_ATTEMPTS:
             conn.execute(
                 "UPDATE batch_items SET status = 'failed', attempts = ?, "
-                "error = ?, updated_at = ? WHERE id = ?",
+                "error = ?, updated_at = ?, scheduled_for = NULL WHERE id = ?",
                 [new_attempts, error, now, item_id],
             )
             conn.execute(
@@ -239,8 +264,8 @@ def fail_item(
         else:
             conn.execute(
                 "UPDATE batch_items SET status = 'pending', attempts = ?, "
-                "error = ?, updated_at = ? WHERE id = ?",
-                [new_attempts, error, now, item_id],
+                "error = ?, updated_at = ?, scheduled_for = ? WHERE id = ?",
+                [new_attempts, error, now, scheduled_for, item_id],
             )
 
         conn.commit()

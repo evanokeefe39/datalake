@@ -67,23 +67,32 @@ _DAGSTER_URL = "http://localhost:3000"
 # ── Rate-limit helpers ───────────────────────────────────────────────────────
 
 _QUOTA_KEYWORDS = {
-    "quota", "exhausted", "daily limit", "rate limit exceeded",
-    "resource has been exhausted", "429", "rpd", "tpm",
+    "quota", "insufficient", "daily limit", "insufficient_quota",
 }
 
 
 def _is_quota_exhausted(exc: Exception, error_text: str) -> bool:
-    """Return True if the exception indicates daily quota (RPD) exhaustion."""
+    """Return True if the exception indicates daily quota (RPD) exhaustion.
+
+    The structured ``insufficient_quota`` marker (from the API's error.details)
+    is authoritative; fall back to quota-specific keywords. A bare 429 or
+    "rate limit" must NOT match here — that is a burst, handled by
+    ``_is_rate_limited``.
+    """
     lower = error_text.lower()
+    details = str(getattr(exc, "details", "")).lower()
+    if "insufficient_quota" in details or "insufficient_quota" in lower:
+        return True
     return any(kw in lower for kw in _QUOTA_KEYWORDS)
 
 
 def _is_rate_limited(exc: Exception, error_text: str) -> bool:
     """Return True if the exception is a rate-limit burst (RPM/TPM)."""
     lower = error_text.lower()
-    if "429" in lower or "rate limit" in lower:
+    details = str(getattr(exc, "details", "")).lower()
+    if "rate_limit_exceeded" in details or "rate_limit_exceeded" in lower:
         return True
-    return False
+    return "429" in lower or "rate limit" in lower
 
 
 def _quota_reset_backoff() -> int:
@@ -95,9 +104,21 @@ def _quota_reset_backoff() -> int:
     return int((tomorrow - now).total_seconds()) + 60
 
 
-def _exponential_backoff(attempt: int) -> int:
+def _exponential_backoff(attempt: int) -> float:
     """Exponential backoff with jitter: 2^attempt + random(0,1) seconds."""
-    return int(2**attempt + random.uniform(0, 1))
+    return 2**attempt + random.uniform(0, 1)
+
+
+def _item_attempts(ops: SQLiteResource, item_id: int) -> int:
+    """Current attempt count for an item (0 if absent)."""
+    conn = ops.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT attempts FROM batch_items WHERE id = ?", [item_id]
+        ).fetchone()
+        return row[0] if row else 0
+    finally:
+        conn.close()
 
 
 
@@ -323,7 +344,7 @@ def process_batch(
                 if _is_file_api_error(exc, error_text):
                     attempts = fail_item(
                         ops, item["id"], error_text,
-                        backoff=_exponential_backoff(1),
+                        backoff=_exponential_backoff(_item_attempts(ops, item["id"])),
                     )
                     logger.warning(
                         "File API error on %s (attempt %d): %s",
@@ -342,7 +363,9 @@ def process_batch(
                     continue
 
                 if _is_quota_exhausted(exc, error_text):
-                    # Global condition — reschedule ALL remaining as pending
+                    # Global condition — reschedule the current item and all
+                    # remaining claimed items without burning attempts (quota
+                    # is not their fault). Halts the batch for today.
                     backoff_secs = _quota_reset_backoff()
                     logger.warning(
                         "Quota exhausted — rescheduling remaining items. "
@@ -351,9 +374,11 @@ def process_batch(
                         total_processed,
                         items_to_process,
                     )
-                    # Reset remaining claimed items to pending
-                    for remaining in chunk[chunk.index(item) + 1:]:
-                        fail_item(ops, remaining["id"], error_text, backoff=0)
+                    for remaining in chunk[chunk.index(item):]:
+                        fail_item(
+                            ops, remaining["id"], error_text,
+                            backoff=backoff_secs, preserve_attempts=True,
+                        )
                     return {
                         "processed": total_processed,
                         "failed": total_failed,
@@ -363,7 +388,7 @@ def process_batch(
                 if _is_rate_limited(exc, error_text):
                     attempts = fail_item(
                         ops, item["id"], error_text,
-                        backoff=_exponential_backoff(1),
+                        backoff=_exponential_backoff(_item_attempts(ops, item["id"])),
                     )
                     logger.warning(
                         "Rate limited on %s (attempt %d) — rescheduled",
@@ -550,16 +575,20 @@ def main() -> None:
         " (quota exhausted — remaining items rescheduled)" if quota_hit else "",
     )
 
-    # Only mark batch complete if we weren't stopped by quota exhaustion
-    if not quota_hit:
+    # Mark complete only when nothing is left pending — quota exhaustion and
+    # backoff-rescheduled items both leave pending work for a later run.
+    progress = batch_progress(ops, batch["id"])
+    remaining = progress["pending"] + progress["processing"]
+    if remaining == 0:
         mark_complete(ops, batch["id"])
-    post_materialization(ops, batch["id"], result["processed"], result["failed"], dagster_url)
-    if quota_hit:
+    else:
         logger.info(
-            "Batch %d not marked complete — items remain pending. "
-            "Re-run worker after quota reset (UTC midnight).",
+            "Batch %d not marked complete — %d item(s) still pending%s.",
             batch["id"],
+            remaining,
+            " (quota exhausted)" if quota_hit else " (backoff)",
         )
+    post_materialization(ops, batch["id"], result["processed"], result["failed"], dagster_url)
 
 
 if __name__ == "__main__":
