@@ -51,6 +51,13 @@ def tmp_db(tmp_path, monkeypatch):
          NULL, NULL, NULL, NULL, TIMESTAMP '2026-01-03 00:00:00', 'sc3', 'instagram')
         """
     )
+    con.execute(
+        "CREATE TABLE silver_ig_posts (owner_username TEXT, likes_count BIGINT)"
+    )
+    con.execute(
+        "INSERT INTO silver_ig_posts VALUES "
+        "('jane', 10), ('jane', 20), ('jane', 30)"
+    )
     con.close()
     return db_path
 
@@ -75,6 +82,7 @@ def test_creator_posts_returns_instagram_posts_desc(tmp_db, jane_id):
     assert rows[0]["analysed_at"] is None
     assert rows[0]["is_educational"] is None
     assert rows[1]["likes_count"] == 10
+    assert rows[0]["relative_performance"] is None
 
 
 def test_creator_posts_without_instagram_profiles(tmp_db, tmp_path, monkeypatch):
@@ -99,3 +107,45 @@ def test_posts_endpoint_still_shapes_rows(tmp_db, jane_id):
     assert len(rows) == 3
     assert {r["post_id"] for r in rows} == {"p1", "p2", "p3"}
     assert all(r["platform"] == "instagram" for r in rows)
+
+
+def test_attach_relative_performance_classifies_tiers():
+    """Hot (>2σ), standout (>1σ), and normal posts are tagged correctly."""
+    con = duckdb.connect(":memory:")
+    con.execute(
+        "CREATE TABLE silver_ig_posts (owner_username TEXT, likes_count BIGINT)"
+    )
+    con.execute(
+        "INSERT INTO silver_ig_posts VALUES "
+        "('jane', 5), ('jane', 20), ('jane', 20), ('jane', 20)"
+    )
+    posts = [
+        {"post_id": "p1", "likes_count": 5},
+        {"post_id": "p2", "likes_count": 20},
+        {"post_id": "p3", "likes_count": 25},
+        {"post_id": "p4", "likes_count": 50},
+    ]
+    server._attach_relative_performance(con, posts, ["jane"])
+    con.close()
+    assert [p["relative_performance"] for p in posts] == [
+        None,
+        None,
+        "standout",
+        "hot",
+    ]
+
+
+def test_attach_relative_performance_insufficient_baseline():
+    """Fewer than 3 positive-likes posts → every post is untagged (None)."""
+    con = duckdb.connect(":memory:")
+    con.execute(
+        "CREATE TABLE silver_ig_posts (owner_username TEXT, likes_count BIGINT)"
+    )
+    con.execute("INSERT INTO silver_ig_posts VALUES ('jane', 5), ('jane', 20)")
+    posts = [
+        {"post_id": "p1", "likes_count": 5},
+        {"post_id": "p2", "likes_count": 20},
+    ]
+    server._attach_relative_performance(con, posts, ["jane"])
+    con.close()
+    assert [p["relative_performance"] for p in posts] == [None, None]

@@ -83,6 +83,7 @@ export interface PostRow {
   analysed_at: string | null;
   timestamp: string;
   shortcode: string;
+  relative_performance: "hot" | "standout" | null;
 }
 
 export interface StandoutRow {
