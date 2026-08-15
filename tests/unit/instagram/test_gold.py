@@ -9,7 +9,7 @@ Verifies:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
 from datalake.defs.enrichment.batch import (
@@ -219,6 +219,83 @@ def test_mark_complete(tmp_path):
     ).fetchone()
     conn.close()
     assert row[0] == "complete"
+
+
+def test_fail_item_honors_backoff(tmp_path):
+    """GIVEN a claimed item
+    WHEN fail_item is called with a positive backoff
+    THEN the item is rescheduled with a future scheduled_for and is not
+    claimable until that time passes.
+    """
+    ops = _make_ops_db(tmp_path)
+    create_batch(ops, [_pd("p1")])
+    batch = claim_batch(ops)
+    items = claim_pending_items(ops, batch["id"], limit=5)
+    assert len(items) == 1
+
+    attempts = fail_item(ops, items[0]["id"], "rate limit", backoff=30)
+    assert attempts == 1
+
+    # scheduled_for is 30s in the future — not claimable yet
+    assert claim_pending_items(ops, batch["id"], limit=5) == []
+
+    # Back-date scheduled_for so it becomes due
+    past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    conn = ops.get_connection()
+    conn.execute(
+        "UPDATE batch_items SET scheduled_for = ? WHERE id = ?",
+        [past, items[0]["id"]],
+    )
+    conn.commit()
+    conn.close()
+
+    items2 = claim_pending_items(ops, batch["id"], limit=5)
+    assert len(items2) == 1
+
+
+def test_fail_item_preserve_attempts(tmp_path):
+    """GIVEN a claimed item
+    WHEN fail_item is called with preserve_attempts=True
+    THEN attempts is unchanged and the item is rescheduled (not failed).
+    """
+    ops = _make_ops_db(tmp_path)
+    create_batch(ops, [_pd("p1")])
+    batch = claim_batch(ops)
+    items = claim_pending_items(ops, batch["id"], limit=5)
+    item_id = items[0]["id"]
+
+    attempts = fail_item(
+        ops, item_id, "quota exhausted", backoff=3600, preserve_attempts=True
+    )
+    assert attempts == 0
+
+    conn = ops.get_connection()
+    row = conn.execute(
+        "SELECT attempts, status, scheduled_for FROM batch_items WHERE id = ?",
+        [item_id],
+    ).fetchone()
+    conn.close()
+    assert row[0] == 0
+    assert row[1] == "pending"
+    assert row[2] is not None
+
+
+def test_claim_batch_reclaims_processing_with_pending(tmp_path):
+    """GIVEN a 'processing' batch that still has pending items
+    WHEN claim_batch is called
+    THEN the batch is reclaimed so retries work across worker runs.
+    """
+    ops = _make_ops_db(tmp_path)
+    create_batch(ops, [_pd("p1"), _pd("p2")])
+    batch = claim_batch(ops)
+
+    # Complete p1, leaving p2 pending in a 'processing' batch.
+    items = claim_pending_items(ops, batch["id"], limit=1)
+    complete_item(ops, items[0]["id"])
+
+    batch2 = claim_batch(ops)
+    assert batch2 is not None
+    assert batch2["id"] == batch["id"]
 
 
 # ── Enqueue asset tests ─────────────────────────────────────────────────────
