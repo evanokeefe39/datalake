@@ -852,6 +852,35 @@ def creator_detail(creator_id: int):
         db.close()
 
 
+def _attach_relative_performance(
+    db: duckdb.DuckDBPyConnection, posts: list[dict], handles: list[str]
+) -> None:
+    """Annotate each post with its tier vs. the creator's own baseline.
+
+    ``relative_performance`` is ``"hot"`` (>2σ above the creator's mean likes),
+    ``"standout"`` (>1σ), or ``None``. Every post is ``None`` when the creator
+    has fewer than 3 positive-likes posts to establish a baseline (or zero
+    variance).
+    """
+    placeholders = ",".join("?" for _ in handles)
+    row = db.execute(
+        "SELECT AVG(likes_count), STDDEV(likes_count), COUNT(*) "
+        "FROM silver_ig_posts "
+        f"WHERE owner_username IN ({placeholders}) AND likes_count > 0",
+        handles,
+    ).fetchone()
+    if not row or row[2] < 3 or row[1] is None or row[1] == 0:
+        for p in posts:
+            p["relative_performance"] = None
+        return
+    mean, std = row[0], row[1]
+    for p in posts:
+        z = (p["likes_count"] - mean) / std
+        p["relative_performance"] = (
+            "hot" if z > 2 else ("standout" if z > 1 else None)
+        )
+
+
 @app.get("/api/creators/{creator_id}/posts")
 def creator_posts(creator_id: int):
     creator = get_creator(_ops_resource(), creator_id)
@@ -870,7 +899,9 @@ def creator_posts(creator_id: int):
             "ORDER BY v.timestamp DESC",
             handles,
         ).fetchall()
-        return _rows_to_posts(rows)
+        posts = _rows_to_posts(rows)
+        _attach_relative_performance(db, posts, handles)
+        return posts
     finally:
         db.close()
 

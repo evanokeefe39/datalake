@@ -6,6 +6,7 @@ import { Thumbnail } from "@/components/ui/thumbnail";
 import { PlatformIcon } from "@/components/ui/platform-icon";
 import { DataTable } from "@/components/ui/data-table";
 import { CreatorModal } from "@/components/ui/creator-modal";
+import { Badge } from "@/components/ui/badge";
 import { Users, ArrowLeft } from "lucide-react";
 import {
   fetchCreator,
@@ -169,6 +170,21 @@ export default function CreatorPage() {
               render: (row: PostRow) => (
                 <span className="text-muted">{row.video_view_count.toLocaleString()}</span>
               ),
+            },
+            {
+              key: "relative_performance",
+              header: "Relative Performance",
+              className: "text-center",
+              sortable: false,
+              render: (row: PostRow) => {
+                if (row.relative_performance === "hot") {
+                  return <Badge variant="red">Hot</Badge>;
+                }
+                if (row.relative_performance === "standout") {
+                  return <Badge variant="yellow">Standout</Badge>;
+                }
+                return <span className="text-muted">—</span>;
+              },
             },
             {
               key: "timestamp",
