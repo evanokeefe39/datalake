@@ -8,6 +8,7 @@ Gap-fills per test-hardening plan:
 from __future__ import annotations
 
 import json
+import time
 from unittest.mock import patch
 
 import pytest
@@ -183,6 +184,56 @@ def test_incremental_new_file(tmp_path):
 
     assert len(r2) == 2
     assert set(r2["post_id"].to_list()) == {"1", "2"}
+
+
+def test_processed_on_stable_across_rescrape(tmp_path):
+    """Re-scraping the same post (new dataset, same publish timestamp) must
+    not re-stamp its original processed_on."""
+    row = make_ig_bronze_row(
+        "1", "abc", "v1", "user1", timestamp="2024-01-01T00:00:00.000Z"
+    )
+    write_ig_bronze(tmp_path / "ds_001.parquet", [row])
+    duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
+
+    def processed_on():
+        with duckdb.get_connection() as conn:
+            return conn.execute(
+                "SELECT processed_on FROM silver_ig_posts WHERE post_id = '1'"
+            ).fetchone()[0]
+
+    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+        context = build_asset_context(resources={"duckdb": duckdb})
+        ig_posts_slv(context)
+    first = processed_on()
+
+    # A new dataset re-scrapes the same post. Sleep so its mtime exceeds the
+    # watermark, guaranteeing the second run picks it up.
+    time.sleep(0.05)
+    write_ig_bronze(tmp_path / "ds_002.parquet", [row])
+    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+        context = build_asset_context(resources={"duckdb": duckdb})
+        ig_posts_slv(context)
+
+    assert processed_on() == first
+
+
+def test_silver_watermark_advances(tmp_path):
+    """After a successful run, the silver_ig watermark is set."""
+    write_ig_bronze(
+        tmp_path / "ds_001.parquet",
+        [make_ig_bronze_row("1", "abc", "Post", "user1")],
+    )
+    duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
+
+    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+        context = build_asset_context(resources={"duckdb": duckdb})
+        ig_posts_slv(context)
+
+    with duckdb.get_connection() as conn:
+        wm = conn.execute(
+            "SELECT timestamp FROM watermarks WHERE name = 'silver_ig'"
+        ).fetchone()
+    assert wm is not None and wm[0] is not None
 
 
 def test_hashtags_serialized_to_json(tmp_path):
