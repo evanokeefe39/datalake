@@ -27,6 +27,8 @@ from pathlib import Path
 
 import duckdb
 
+from datalake.defs.common.schemas import sqlite_ddl, sqlite_ddl_for
+
 logger = logging.getLogger("migrate_creators_profiles")
 
 DEFAULT_OPS = Path("data/ops.sqlite")
@@ -62,51 +64,7 @@ def _full_name_for(duckdb_con: duckdb.DuckDBPyConnection, username: str) -> str 
 def _ensure_batch_tables(con: sqlite3.Connection) -> None:
     """Recreate the batch tables lost when ops.sqlite was recreated externally."""
     con.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS batch_jobs (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            consumer        TEXT NOT NULL DEFAULT 'gemini',
-            status          TEXT NOT NULL DEFAULT 'pending',
-            created_at      TEXT NOT NULL,
-            completed_at    TEXT,
-            total_items     INTEGER NOT NULL DEFAULT 0,
-            processed_items INTEGER NOT NULL DEFAULT 0,
-            failed_items    INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS batch_items (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            job_id      INTEGER NOT NULL REFERENCES batch_jobs(id),
-            payload     TEXT NOT NULL,
-            status      TEXT NOT NULL DEFAULT 'pending',
-            attempts    INTEGER NOT NULL DEFAULT 0,
-            error       TEXT,
-            created_at  TEXT NOT NULL,
-            updated_at  TEXT NOT NULL,
-            UNIQUE(job_id, payload)
-        );
-        CREATE INDEX IF NOT EXISTS idx_batch_items_job_status
-            ON batch_items(job_id, status);
-        CREATE TABLE IF NOT EXISTS media_metadata (
-            media_url_hash         TEXT PRIMARY KEY,
-            media_url              TEXT NOT NULL,
-            file_api_uri           TEXT,
-            mime_type              TEXT,
-            file_size              INTEGER,
-            video_duration_seconds REAL,
-            upload_state           TEXT DEFAULT 'pending',
-            expires_at             TEXT,
-            created_at             TEXT NOT NULL,
-            uploaded_at            TEXT
-        );
-        CREATE TABLE IF NOT EXISTS dead_letter (
-            post_id     TEXT NOT NULL,
-            domain      TEXT NOT NULL DEFAULT 'instagram',
-            error       TEXT,
-            attempts    INTEGER NOT NULL DEFAULT 0,
-            failed_at   TEXT NOT NULL,
-            PRIMARY KEY (post_id, domain)
-        );
-        """
+        sqlite_ddl_for("batch_jobs", "batch_items", "media_metadata", "dead_letter")
     )
 
 
@@ -116,29 +74,9 @@ def migrate(ops_path: Path, duckdb_path: Path) -> None:
     try:
         _ensure_batch_tables(ops)
 
-        # creators + profiles schema (idempotent)
-        ops.execute("""
-            CREATE TABLE IF NOT EXISTS creators (
-                id         INTEGER PRIMARY KEY,
-                name       TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-        """)
-        ops.execute("""
-            CREATE TABLE IF NOT EXISTS profiles (
-                platform      TEXT NOT NULL,
-                handle        TEXT NOT NULL,
-                profile_url   TEXT NOT NULL,
-                results_type  TEXT NOT NULL DEFAULT 'details',
-                results_limit INTEGER NOT NULL DEFAULT 1,
-                enabled       INTEGER NOT NULL DEFAULT 1,
-                tier          TEXT NOT NULL DEFAULT 'tier1',
-                creator_id    INTEGER NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
-                updated_at    TEXT NOT NULL,
-                PRIMARY KEY (platform, handle)
-            )
-        """)
+        # creators + profiles schema (idempotent, derived from the catalog)
+        ops.execute(sqlite_ddl("creators"))
+        ops.execute(sqlite_ddl("profiles"))
         ops.commit()
 
         if not _table_exists(ops, "scrape_targets"):

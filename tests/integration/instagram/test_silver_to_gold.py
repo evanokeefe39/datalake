@@ -16,13 +16,13 @@ from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 
-def _run_silver(duckdb, bronze_dir):
+def _run_silver(duckdb, ops, bronze_dir):
     from unittest.mock import patch
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
         from dagster import build_asset_context
 
-        ctx = build_asset_context(resources={"duckdb": duckdb})
+        ctx = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         return ig_posts_slv(ctx)
 
 
@@ -47,7 +47,7 @@ def test_enqueue_reads_silver_output(tmp_path):
     row = make_ig_bronze_row(post_id="p1", shortcode="sc1", caption="Test caption", username="test")
     write_ig_bronze(bronze_dir / "test.parquet", [row])
 
-    result = _run_silver(duckdb, bronze_dir)
+    result = _run_silver(duckdb, ops, bronze_dir)
     assert len(result) == 1
 
     # Run enqueue

@@ -83,6 +83,7 @@ Domain-scoped, not generic. Supports multi-source expansion (TikTok, YouTube, Li
 | SQLite | `batch_jobs` | Batch coordination: job-level status (`pending`/`processing`/`complete`) |
 | SQLite | `batch_items` | Per-post items within a batch, with retry tracking (`attempts`, `scheduled_for`) |
 | SQLite | `media_metadata` | URL hash → Gemini File API URI cache |
+| SQLite | `media_cache` | Scrape-time byte cache: media URL hash → local file path (image/video bytes) |
 | SQLite | `dead_letter` | Terminal failures after `MAX_ATTEMPTS` retries exhausted |
 | SQLite | `creators` | A person/brand (`id`, `name`) — owns 1..N profiles across platforms |
 | SQLite | `profiles` | One account per platform (`platform`, `handle` PK) linked to a creator; carries scrape config (depth, enabled, tier) |
@@ -161,7 +162,7 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 Any table the pipeline reads or writes must be listed here. The readiness test
 (`test_state_compatibility.py`) asserts the catalog matches the running databases.
 **DuckDB tables:** `silver_ig_posts`, `gold_analyses`, `watermarks`, `dim_profile`, `dim_date`
-**SQLite tables:** `batch_jobs`, `batch_items`, `media_metadata`, `dead_letter`, `creators`, `profiles`
+**SQLite tables:** `batch_jobs`, `batch_items`, `media_metadata`, `media_cache`, `dead_letter`, `creators`, `profiles`
 **Views:** `v_post_detail`, `v_signal`, `v_quality_trend`, `v_profile_quality`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`
 - **Missing tables/columns** — fails with "run the pipeline or migration"
 - **Stale table names** — tables in the DB that were renamed/dropped (e.g. `gold_ig_analyses`). Fails with migration hint.
@@ -286,7 +287,7 @@ Video is token-intensive. At default ``media_resolution``:
 | Audio (32/sec) | 32 |
 | **Total** | **~290/sec** |
 
-At low resolution (``media_resolution='low'``): ~98 tokens/sec (66/frame).
+At low resolution (``media_resolution='MEDIA_RESOLUTION_LOW'``): ~98 tokens/sec (66/frame).
 
 | Video length | Default tokens | Low-res tokens |
 |---|---|---|
@@ -301,7 +302,7 @@ tier TPM (~250k). A 20-minute video exceeds it outright. To avoid this:
   ffprobe or container headers) rather than ``count_tokens()`` which
   requires an API round-trip. Formula: ``tokens ≈ duration_seconds * 290``
   (default) or ``duration_seconds * 98`` (low res).
-- **Use ``media_resolution='low'``** when fine visual detail isn't needed —
+- **Use ``media_resolution='MEDIA_RESOLUTION_LOW'``** when fine visual detail isn't needed —
   cuts token cost ~3×.
 - **Send shorter clips** — trim to the relevant segment.
 - **Use the File API** for videos >100MB or >1 minute. Free tier upload limit

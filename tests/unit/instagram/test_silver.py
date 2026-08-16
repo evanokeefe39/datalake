@@ -70,37 +70,37 @@ NO_DEDUP_SCENARIOS = [
 # ── Tests ──────────────────────────────────────────────────────────────────
 
 
-def test_no_bronze_files(tmp_path):
+def test_no_bronze_files(tmp_path, ops):
     """Edge case: zero bronze files → returns empty DataFrame."""
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
     assert result.is_empty()
 
 
-def test_empty_bronze_file(tmp_path):
+def test_empty_bronze_file(tmp_path, ops):
     """Edge case: 0-row bronze file → logged and skipped."""
     write_ig_bronze(tmp_path / "ds_empty.parquet", [])
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
     assert result.is_empty()
 
 
 @pytest.mark.parametrize("bronze_rows,expected_ids", DEDUP_SCENARIOS)
-def test_dedup(tmp_path, bronze_rows, expected_ids):
+def test_dedup(tmp_path, ops, bronze_rows, expected_ids):
     """Unique post_ids → all land in silver. Duplicates → latest wins."""
     write_ig_bronze(tmp_path / "ds_001.parquet", bronze_rows)
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
     assert set(result["post_id"].to_list()) == set(expected_ids)
@@ -109,19 +109,19 @@ def test_dedup(tmp_path, bronze_rows, expected_ids):
 
 
 @pytest.mark.parametrize("bronze_rows,expected_ids", NO_DEDUP_SCENARIOS)
-def test_dedup_edge_cases(tmp_path, bronze_rows, expected_ids):
+def test_dedup_edge_cases(tmp_path, ops, bronze_rows, expected_ids):
     """Edge cases: triplicate rows, null IDs filtered."""
     write_ig_bronze(tmp_path / "ds_001.parquet", bronze_rows)
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
     assert set(result["post_id"].to_list()) == set(expected_ids)
 
 
-def test_dedup_across_datasets(tmp_path):
+def test_dedup_across_datasets(tmp_path, ops):
     """Same post_id in multiple bronze files → latest timestamp wins."""
     ds1 = [
         make_ig_bronze_row("1", "abc", "Old caption", "user1",
@@ -136,7 +136,7 @@ def test_dedup_across_datasets(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
     assert len(result) == 1
@@ -144,14 +144,14 @@ def test_dedup_across_datasets(tmp_path):
     assert result["source_dataset"][0] == "ds_002"
 
 
-def test_idempotent_no_new_files(tmp_path):
+def test_idempotent_no_new_files(tmp_path, ops):
     """Second run with no new bronze → returns existing silver."""
     rows = [make_ig_bronze_row("1", "abc", "Post", "user1")]
     write_ig_bronze(tmp_path / "ds_001.parquet", rows)
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         r1 = ig_posts_slv(context)
         assert len(r1) == 1
 
@@ -160,7 +160,7 @@ def test_idempotent_no_new_files(tmp_path):
         assert len(r2) == 1
 
 
-def test_incremental_new_file(tmp_path):
+def test_incremental_new_file(tmp_path, ops):
     """New bronze file after first run → merged with existing silver."""
     write_ig_bronze(
         tmp_path / "ds_001.parquet",
@@ -169,7 +169,7 @@ def test_incremental_new_file(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         r1 = ig_posts_slv(context)
         assert len(r1) == 1
 
@@ -179,14 +179,14 @@ def test_incremental_new_file(tmp_path):
         [make_ig_bronze_row("2", "def", "Second", "user2")],
     )
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         r2 = ig_posts_slv(context)
 
     assert len(r2) == 2
     assert set(r2["post_id"].to_list()) == {"1", "2"}
 
 
-def test_processed_on_stable_across_rescrape(tmp_path):
+def test_processed_on_stable_across_rescrape(tmp_path, ops):
     """Re-scraping the same post (new dataset, same publish timestamp) must
     not re-stamp its original processed_on."""
     row = make_ig_bronze_row(
@@ -202,7 +202,7 @@ def test_processed_on_stable_across_rescrape(tmp_path):
             ).fetchone()[0]
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         ig_posts_slv(context)
     first = processed_on()
 
@@ -211,13 +211,13 @@ def test_processed_on_stable_across_rescrape(tmp_path):
     time.sleep(0.05)
     write_ig_bronze(tmp_path / "ds_002.parquet", [row])
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         ig_posts_slv(context)
 
     assert processed_on() == first
 
 
-def test_silver_watermark_advances(tmp_path):
+def test_silver_watermark_advances(tmp_path, ops):
     """After a successful run, the silver_ig watermark is set."""
     write_ig_bronze(
         tmp_path / "ds_001.parquet",
@@ -226,7 +226,7 @@ def test_silver_watermark_advances(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         ig_posts_slv(context)
 
     with duckdb.get_connection() as conn:
@@ -236,7 +236,7 @@ def test_silver_watermark_advances(tmp_path):
     assert wm is not None and wm[0] is not None
 
 
-def test_hashtags_serialized_to_json(tmp_path):
+def test_hashtags_serialized_to_json(tmp_path, ops):
     """hashtags List(String) → serialized to JSON string in DuckDB."""
     rows = [
         make_ig_bronze_row("1", "abc", "Post", "user1",
@@ -246,14 +246,14 @@ def test_hashtags_serialized_to_json(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
     db_val = result["hashtags"][0]
     assert json.loads(db_val) == ["ai", "startup", "marketing"]
 
 
-def test_columns_renamed_and_derived(tmp_path):
+def test_columns_renamed_and_derived(tmp_path, ops):
     """Bronze camelCase → silver snake_case with derived fields."""
     rows = [make_ig_bronze_row("1", "abc123", "Check this", "test_user",
                             owner_id="test_owner", likes=42, comments=7,
@@ -262,7 +262,7 @@ def test_columns_renamed_and_derived(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
     row = result.row(0, named=True)
@@ -277,14 +277,14 @@ def test_columns_renamed_and_derived(tmp_path):
     assert row["processed_on"] is not None
 
 
-def test_silver_ig_posts_upserted(tmp_path):
+def test_silver_ig_posts_upserted(tmp_path, ops):
     """Bronze rows end up in silver_ig_posts DuckDB table."""
     rows = [make_ig_bronze_row("1", "abc", "Post", "user1")]
     write_ig_bronze(tmp_path / "ds_001.parquet", rows)
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         ig_posts_slv(context)
 
     with duckdb.get_connection() as conn:
@@ -292,3 +292,21 @@ def test_silver_ig_posts_upserted(tmp_path):
             "SELECT post_id, caption, source_dataset FROM silver_ig_posts"
         ).fetchone()
     assert post == ("1", "Post", "ds_001")
+
+
+def test_media_files_wired_and_cached(tmp_path, ops):
+    """A video post's URL flows into media_files and is byte-cached at scrape time."""
+    row = make_ig_bronze_row("1", "abc", "Video post", "user1")
+    row["videoUrl"] = "https://cdn.example.com/v.mp4"
+    write_ig_bronze(tmp_path / "ds_001.parquet", [row])
+    duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
+
+    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path), patch(
+        "datalake.defs.instagram.assets.cache_media_bytes"
+    ) as cache_mock:
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
+        result = ig_posts_slv(context)
+
+    assert result["media_files"][0] == json.dumps(["https://cdn.example.com/v.mp4"])
+    assert result["media_count"][0] == 1
+    cache_mock.assert_called_once_with(ops, "https://cdn.example.com/v.mp4")

@@ -86,22 +86,26 @@ Plan: `tasks/plans/watermark-deadletter-refactor.md`
 ---
 
 
-## Phase 7: Queue-Based Enrichment Architecture ✅ Complete (2026-07-02)
+## Phase 7: Batch-Based Enrichment Architecture ✅ Complete (2026-07-02)
 
 Plan: `tasks/plans/enrichment-architecture-v2.md`
 
 ### What shipped
 
-- **SQLite work queue** — `enrichment_queue` table in `ops.sqlite` with `claim()` (atomic:
-  stale reaper + SELECT pending → UPDATE processing in one transaction)
-- **Worker op + sensor** — `enrichment_sensor` polls queue every 30s, claims up to 5 items,
-  `enrichment_worker` reads silver → calls Gemini → writes gold_analyses
-- **Per-item backpressure** — `scheduled_for` column; 429 items reschedule with exponential backoff
-- **Quota vs rate-limit distinction** — `reschedule()` preserves attempts (global quota exhaustion)
-  vs `fail()` increments attempts (per-item burst 429)
-- **Media cache** — URL hash → File API URI cache in `media_metadata` table
-- **Asset changes** — `ig_posts_gld` → `ig_posts_gld_enqueue` (enqueues, no Gemini call);
-  `ig_posts_gld_backfill` deleted; `gold_analyses` as AssetSpec with partial materializations
+- **SQLite batch queue** — `batch_jobs` + `batch_items` in `ops.sqlite` (generic
+  JSON payloads, consumer-tagged). `create_batch` / `claim_batch` /
+  `claim_pending_items` coordinate work.
+- **Standalone worker** — `scripts/enrichment_worker.py` claims the oldest
+  pending batch and processes items with per-item retry (no sensor).
+- **Per-item backpressure** — `scheduled_for` column; burst 429s reschedule
+  with jittered exponential backoff.
+- **Quota vs rate-limit distinction** — `insufficient_quota` halts the batch
+  and reschedules remaining items without burning attempts; a burst
+  `rate_limit_exceeded` retries per-item.
+- **Media cache** — URL hash → File API URI cache in `media_metadata` table;
+  scrape-time byte cache in `media_cache` (media end-to-end, 2026-08).
+- **Asset changes** — `ig_posts_gen_batches` enqueues (no Gemini call);
+  `gold_analyses` is an AssetSpec the standalone worker materializes.
 - **Prompt hash** — `hashlib.sha256` for deterministic staleness detection across processes
 - **Serving update** — `analytics_views` LEFT JOINs `gold_analyses` with domain filter
 - **Daily schedule** — materialization every 3am (bronze→silver→enqueue is sub-second)
@@ -109,7 +113,7 @@ Plan: `tasks/plans/enrichment-architecture-v2.md`
 ### Architecture
 
 ```
-silver_ig_posts → ig_posts_gld_enqueue → ops.sqlite queue → sensor claims → worker → gold_analyses
+silver_ig_posts → ig_posts_gen_batches → ops.sqlite batch → worker → gold_analyses
 ```
 
 Silver-to-gold materialization drops from 1+ hour to sub-second (just enqueuing work).

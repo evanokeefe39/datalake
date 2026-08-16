@@ -11,36 +11,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from datalake.defs.common.resources import SQLiteResource
+from datalake.defs.common.schemas import sqlite_ddl_for
 
 # ── Schema ───────────────────────────────────────────────────────────────────
 
-_BATCH_SCHEMA = """
-CREATE TABLE IF NOT EXISTS batch_jobs (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    consumer        TEXT NOT NULL DEFAULT 'gemini',
-    status          TEXT NOT NULL DEFAULT 'pending',
-    created_at      TEXT NOT NULL,
-    completed_at    TEXT,
-    total_items     INTEGER NOT NULL DEFAULT 0,
-    processed_items INTEGER NOT NULL DEFAULT 0,
-    failed_items    INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS batch_items (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id      INTEGER NOT NULL REFERENCES batch_jobs(id),
-    payload     TEXT NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'pending',
-    attempts    INTEGER NOT NULL DEFAULT 0,
-    error       TEXT,
-    scheduled_for TEXT,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL,
-    UNIQUE(job_id, payload)
-);
-
-CREATE INDEX IF NOT EXISTS idx_batch_items_job_status
-    ON batch_items(job_id, status);
-"""
+_BATCH_SCHEMA = sqlite_ddl_for("batch_jobs", "batch_items")
 
 # ── Constants ────────────────────────────────────────────────────────────────
 

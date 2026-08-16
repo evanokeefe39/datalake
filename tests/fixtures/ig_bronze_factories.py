@@ -65,7 +65,7 @@ def make_ig_bronze_row(
         "videoViewCount": 0,
         "videoPlayCount": 0,
         # ── Media ──
-        "displayUrl": f"https://example.com/{shortcode}.jpg",
+        "displayUrl": None,
         "dimensionsHeight": 1080,
         "dimensionsWidth": 1080,
         "images": [],

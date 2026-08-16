@@ -15,20 +15,12 @@ from dagster import (
 )
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
+from datalake.defs.common.schemas import duckdb_ddl
 from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
 
 # ── Gold analyses table DDL ─────────────────────────────────────────────────
 
-_GOLD_ANALYSES_DDL = """
-CREATE TABLE IF NOT EXISTS gold_analyses (
-    post_id         TEXT NOT NULL,
-    domain          TEXT NOT NULL DEFAULT 'instagram',
-    prompt_hash     TEXT,
-    result_json     TEXT,
-    analysed_at     TEXT NOT NULL,
-    PRIMARY KEY (post_id, domain)
-);
-"""
+_GOLD_ANALYSES_DDL = duckdb_ddl("gold_analyses")
 
 
 def ensure_gold_analyses(db: DuckDBResource) -> None:

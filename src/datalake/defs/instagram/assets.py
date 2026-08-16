@@ -23,7 +23,8 @@ from ..common.resources import (
     DuckDBResource,
     SQLiteResource,
 )
-from ..common.schemas import SILVER_COLUMNS
+from ..common.schemas import SILVER_COLUMNS, duckdb_ddl
+from ..enrichment.media_cache import cache_media_bytes
 from .config import GoldConfig, ScrapeConfig
 
 logger = logging.getLogger(__name__)
@@ -185,13 +186,52 @@ _BRONZE_TO_SILVER: dict[str, str] = {
 _LIST_COLUMNS: set[str] = {"hashtags"}
 
 
+def _derive_media(df: pl.DataFrame) -> pl.DataFrame:
+    """Derive ``media_files`` (JSON) + ``media_count`` from bronze media columns.
+
+    Per-post precedence: a ``videoUrl`` (rich media) wins; otherwise the
+    carousel ``images`` list; otherwise the single ``displayUrl`` image. The
+    result is a JSON array of URLs plus its length, so the worker can resolve
+    them against the scrape-time byte cache rather than the expiring CDN.
+    """
+    empty = pl.lit([], dtype=pl.List(pl.Utf8))
+
+    def _scalar_list(col: str) -> pl.Expr:
+        return (
+            pl.when(pl.col(col).is_not_null())
+            .then(pl.col(col).cast(pl.List(pl.Utf8)))
+            .otherwise(empty)
+        )
+
+    video = _scalar_list("videoUrl") if "videoUrl" in df.columns else empty
+    images = (
+        pl.when(pl.col("images").is_not_null())
+        .then(pl.col("images").cast(pl.List(pl.Utf8)))
+        .otherwise(empty)
+        if "images" in df.columns
+        else empty
+    )
+    display = _scalar_list("displayUrl") if "displayUrl" in df.columns else empty
+
+    media_list = pl.when(video.list.len() > 0).then(video).otherwise(
+        pl.when(images.list.len() > 0).then(images).otherwise(display)
+    )
+    return df.with_columns(
+        media_list.map_elements(
+            lambda s: json.dumps(s.to_list() if s is not None else []),
+            return_dtype=pl.Utf8,
+        ).alias("media_files"),
+        media_list.list.len().alias("media_count"),
+    )
+
+
 @asset(
     name="ig_posts_slv",
     group_name="instagram",
     description="Dedup bronze posts → silver Parquet + DuckDB state.",
     deps=["ig_posts_raw"],
 )
-def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
+def ig_posts_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
     """Read unprocessed bronze files, dedup via DuckDB DISTINCT ON, persist.
 
     Idempotent: re-running with no new bronze files is a no-op (returns
@@ -201,35 +241,8 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     # ── 1. Ensure state tables exist ──────────────────────────────────────
     db = duckdb
     with db.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS silver_ig_posts (
-                post_id        TEXT PRIMARY KEY,
-                shortcode      TEXT,
-                url            TEXT,
-                caption        TEXT,
-                owner_id       TEXT,
-                owner_username  TEXT,
-                likes_count    INTEGER,
-                comments_count INTEGER,
-                video_play_count  INTEGER,
-                video_view_count  INTEGER,
-                timestamp      TIMESTAMP,
-                hashtags       TEXT NOT NULL DEFAULT '[]',
-                meta_data      TEXT,
-                has_engagement_bait BOOLEAN NOT NULL DEFAULT FALSE,
-                media_files    TEXT NOT NULL DEFAULT '[]',
-                media_count    INTEGER NOT NULL DEFAULT 0,
-                source_dataset TEXT NOT NULL,
-                processed_on   TIMESTAMP
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS watermarks (
-                name        TEXT PRIMARY KEY,
-                timestamp   TIMESTAMP NOT NULL,
-                config_hash TEXT
-            )
-        """)
+        conn.execute(duckdb_ddl("silver_ig_posts"))
+        conn.execute(duckdb_ddl("watermarks"))
     # ── 2. Find new bronze files (mtime > last watermark) ──────────────────
     import os as _os
 
@@ -298,13 +311,25 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             ("hashtags", "[]"),
             ("meta_data", None),
             ("has_engagement_bait", False),
-            ("media_files", "[]"),
-            ("media_count", 0),
             ("processed_on", None),
             ("source_dataset", dataset_id),
         ]:
             if col not in df.columns:
                 df = df.with_columns(pl.lit(default).alias(col))
+
+        # Derive media_files/media_count from bronze media columns (video,
+        # carousel images, single display image) before dropping the extras.
+        df = _derive_media(df)
+
+        # Cache media bytes at scrape time so the enrichment worker never
+        # depends on the expiring CDN. Best-effort: failures are logged and
+        # the worker falls back to a live download on a cache miss.
+        seen_urls: set[str] = set()
+        for media_files_json in df["media_files"].to_list():
+            for url in json.loads(media_files_json or "[]"):
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    cache_media_bytes(ops, url)
 
         # Coalesce owner_username from username when ownerUsername is null or missing.
         # Profile-scraped rows have the author's handle in username, not ownerUsername
@@ -693,20 +718,32 @@ def ig_posts_gen_batches(
     db = duckdb
     _ensure_state_tables(db)
 
-    # Find pending posts via watermark, excluding already-enriched posts
+    post_ids = list(config.post_ids or [])
+
     with db.get_connection() as conn:
-        pending = conn.execute("""
-            SELECT sp.post_id, sp.caption, sp.processed_on
-            FROM silver_ig_posts sp
-            WHERE sp.processed_on > COALESCE(
-                (SELECT timestamp FROM watermarks WHERE name = 'gold_ig'),
-                '1970-01-01'::TIMESTAMP
-            )
-            AND NOT EXISTS (
-                SELECT 1 FROM gold_analyses
-                WHERE post_id = sp.post_id AND domain = 'instagram'
-            )
-        """).fetchall()
+        if post_ids:
+            # Targeted re-enrichment: ad-hoc post_ids bypass the watermark and
+            # the NOT EXISTS guard (re-process already-enriched posts).
+            pending = conn.execute(
+                """SELECT sp.post_id, sp.caption, sp.processed_on
+                   FROM silver_ig_posts sp
+                   WHERE list_contains(?, sp.post_id)""",
+                [post_ids],
+            ).fetchall()
+        else:
+            # Normal incremental path: watermark + not-yet-enriched guard.
+            pending = conn.execute("""
+                SELECT sp.post_id, sp.caption, sp.processed_on
+                FROM silver_ig_posts sp
+                WHERE sp.processed_on > COALESCE(
+                    (SELECT timestamp FROM watermarks WHERE name = 'gold_ig'),
+                    '1970-01-01'::TIMESTAMP
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM gold_analyses
+                    WHERE post_id = sp.post_id AND domain = 'instagram'
+                )
+            """).fetchall()
 
     if not pending:
         return pl.DataFrame({"enqueued": pl.Series([], dtype=pl.Int32)})
@@ -725,8 +762,9 @@ def ig_posts_gen_batches(
     if payloads:
         create_batch(ops, payloads, consumer="gemini")
 
-    # Advance watermark once after all batched
-    if max_processed is not None:
+    # Advance the watermark only on the incremental path — a targeted post_ids
+    # run must not mark other posts as processed.
+    if not post_ids and max_processed is not None:
         with db.get_connection() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO watermarks (name, timestamp) VALUES ('gold_ig', ?)",
@@ -742,52 +780,10 @@ def ig_posts_gen_batches(
 def _ensure_state_tables(db: DuckDBResource) -> None:
     """Create shared state tables if they don't exist."""
     with db.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id         TEXT NOT NULL,
-                domain          TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash     TEXT,
-                result_json     TEXT,
-                analysed_at     TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS watermarks (
-                name        TEXT PRIMARY KEY,
-                timestamp   TIMESTAMP NOT NULL,
-                config_hash TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS silver_ig_profiles (
-                owner_id        TEXT PRIMARY KEY,
-                owner_username  TEXT,
-                full_name       TEXT,
-                biography       TEXT,
-                followers_count INTEGER,
-                follows_count   INTEGER,
-                posts_count     INTEGER,
-                is_business     BOOLEAN,
-                is_verified     BOOLEAN,
-                profile_pic_url TEXT,
-                external_url    TEXT,
-                source_dataset  TEXT,
-                processed_on    TIMESTAMP
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS silver_ig_comments (
-                comment_id     TEXT PRIMARY KEY,
-                post_id        TEXT,
-                post_shortcode TEXT,
-                text           TEXT,
-                owner_username TEXT,
-                owner_id       TEXT,
-                likes_count    INTEGER,
-                timestamp      TIMESTAMP,
-                reply_to_id    TEXT,
-                source_dataset TEXT,
-                processed_on   TIMESTAMP
-            )
-        """)
+        for name in (
+            "gold_analyses",
+            "watermarks",
+            "silver_ig_profiles",
+            "silver_ig_comments",
+        ):
+            conn.execute(duckdb_ddl(name))

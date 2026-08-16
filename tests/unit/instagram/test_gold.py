@@ -385,3 +385,53 @@ def test_enqueue_no_pending_posts(tmp_path):
 
     result = ig_posts_gen_batches(duckdb=db, ops=ops)
     assert len(result) == 0
+
+
+
+def test_enqueue_post_ids_restricts_batch(tmp_path):
+    """GIVEN posts already past the gold watermark
+    WHEN ig_posts_gen_batches runs with post_ids
+    THEN only the requested posts are batched (watermark bypassed) and the
+         gold watermark is left unchanged.
+    """
+    from datalake.defs.instagram.config import GoldConfig
+
+    db = _make_duckdb(tmp_path)
+    ops = _make_ops_db(tmp_path)
+
+    now = datetime.now(timezone.utc)
+    _seed_silver(
+        db,
+        [
+            ("p1", "Caption one", now),
+            ("p2", "Caption two", now),
+            ("p3", "Caption three", now),
+        ],
+    )
+
+    # Advance the gold watermark past all three posts — the normal path skips them.
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO watermarks (name, timestamp) VALUES ('gold_ig', ?)",
+            [now + timedelta(days=1)],
+        )
+        before = conn.execute(
+            "SELECT timestamp FROM watermarks WHERE name = 'gold_ig'"
+        ).fetchone()[0]
+
+    result = ig_posts_gen_batches(
+        config=GoldConfig(post_ids=["p2", "p3"]), duckdb=db, ops=ops
+    )
+
+    assert result["enqueued"][0] == 2
+    batch = claim_batch(ops)
+    assert batch is not None
+    post_ids = {json.loads(p)["post_id"] for p in batch["payloads"]}
+    assert post_ids == {"p2", "p3"}
+
+    # A targeted run must not advance the gold watermark.
+    with db.get_connection() as conn:
+        after = conn.execute(
+            "SELECT timestamp FROM watermarks WHERE name = 'gold_ig'"
+        ).fetchone()[0]
+    assert after == before

@@ -124,9 +124,10 @@ class GeminiResource(ConfigurableResource):
         Args:
             prompt: The full prompt text to send.
             model: Model name (default ``gemini-3.5-flash-lite``).
-            media_resolution: ``"low"`` to reduce video frame token cost
-                (66 vs 258 tokens/frame). Only relevant for video media.
-                Defaults to ``"low"`` when ``media_files`` is provided.
+            media_resolution: ``"MEDIA_RESOLUTION_LOW"`` to reduce video frame
+                token cost (66 vs 258 tokens/frame). Only relevant for video
+                media. Defaults to ``"MEDIA_RESOLUTION_LOW"`` when
+                ``media_files`` is provided.
             count_tokens: If True, do a pre-flight token count and raise
                 if the prompt exceeds the safety limit before sending.
             media_files: Optional list of MediaFile dicts with ``uri`` and
@@ -171,7 +172,7 @@ class GeminiResource(ConfigurableResource):
         # Build contents: multimodal when media_files provided, text-only otherwise
         if media_files:
             if media_resolution is None:
-                media_resolution = "low"
+                media_resolution = "MEDIA_RESOLUTION_LOW"
             config_kwargs["media_resolution"] = media_resolution
 
             contents: list[Part | str] = []

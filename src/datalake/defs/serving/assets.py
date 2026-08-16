@@ -18,6 +18,7 @@ from dagster import AssetKey, asset
 from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
+from datalake.defs.common.schemas import duckdb_ddl
 
 # ── Dimensions ──────────────────────────────────────────────────────────────
 
@@ -40,20 +41,7 @@ def profile_dimension(duckdb: DuckDBResource, ops: SQLiteResource) -> None:
 
     db = duckdb
     with db.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS dim_profile (
-                profile_key      INTEGER PRIMARY KEY,
-                owner_id         TEXT NOT NULL,
-                owner_username   TEXT,
-                channel          TEXT NOT NULL DEFAULT 'instagram',
-                effective_from   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                effective_to     TIMESTAMP,
-                is_current       BOOLEAN NOT NULL DEFAULT TRUE,
-                profile_pic_path TEXT,
-                creator_id       INTEGER,
-                creator_name     TEXT
-            )
-        """)
+        conn.execute(duckdb_ddl("dim_profile"))
 
         # Migration: existing DBs predate profile_pic_path and the creator
         # columns. DuckDB ALTER has no IF NOT EXISTS, so tolerate the

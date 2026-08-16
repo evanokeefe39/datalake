@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLiteResource
+from datalake.defs.common.schemas import sqlite_ddl
 from datalake.defs.enrichment.assets import ensure_gold_analyses
 from datalake.defs.enrichment.batch import (
     MAX_ATTEMPTS,
@@ -147,18 +148,9 @@ def _dead_letter_insert(
     """Insert a failed item into dead_letter table."""
     conn = ops.get_connection()
     try:
+        conn.execute(sqlite_ddl("dead_letter"))
         conn.execute(
-            """CREATE TABLE IF NOT EXISTS dead_letter (
-                post_id TEXT NOT NULL,
-                domain TEXT NOT NULL DEFAULT 'instagram',
-                error TEXT,
-                attempts INTEGER,
-                created_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )"""
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO dead_letter (post_id, domain, error, attempts, created_at) "
+            "INSERT OR REPLACE INTO dead_letter (post_id, domain, error, attempts, failed_at) "
             "VALUES (?, ?, ?, ?, ?)",
             [post_id, domain, error, attempts, _now_iso()],
         )
