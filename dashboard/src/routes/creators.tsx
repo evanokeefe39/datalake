@@ -4,11 +4,13 @@ import { AgGridReact } from "ag-grid-react";
 import type { ColDef, GridReadyEvent, GridSizeChangedEvent } from "ag-grid-community";
 import { AllCommunityModule, ModuleRegistry } from "ag-grid-community";
 import { Avatar } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { FilterModal } from "@/components/ui/filter-modal";
 import { PlatformIcon } from "@/components/ui/platform-icon";
 import { CreatorModal } from "@/components/ui/creator-modal";
 import { Users, Search } from "lucide-react";
 import { fetchCreators, type Creator } from "@/lib/api";
+import { admiraltyTier } from "@/lib/admiralty";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -53,6 +55,68 @@ const COLUMN_DEFS: ColDef<Creator>[] = [
     headerName: "Posts",
     width: 110,
     cellClass: "font-data tabular-nums !justify-center",
+  },
+  {
+    field: "enriched_posts",
+    headerName: "Enriched",
+    width: 110,
+    cellClass: "font-data tabular-nums !justify-center",
+    cellRenderer: ({ value }: { value: number }) =>
+      value > 0 ? (
+        <span className="text-accent-green">{value}</span>
+      ) : (
+        <span className="text-muted">0</span>
+      ),
+  },
+  {
+    field: "educational_rate",
+    headerName: "EDU",
+    width: 90,
+    cellClass: "font-data tabular-nums !justify-center",
+    cellRenderer: ({ value }: { value: number }) =>
+      `${((value ?? 0) * 100).toFixed(0)}%`,
+  },
+  {
+    field: "actionable_rate",
+    headerName: "ACT",
+    width: 90,
+    cellClass: "font-data tabular-nums !justify-center",
+    cellRenderer: ({ value }: { value: number }) =>
+      `${((value ?? 0) * 100).toFixed(0)}%`,
+  },
+  {
+    field: "admiralty_score",
+    headerName: "ADMIRALTY",
+    width: 130,
+    cellClass: "!justify-center",
+    cellRenderer: ({ value }: { value: number }) => {
+      const tier = admiraltyTier(value);
+      const variant =
+        tier === "A+" || tier === "A"
+          ? "green"
+          : tier === "B"
+            ? "yellow"
+            : tier === "C"
+              ? "orange"
+              : "default";
+      return <Badge variant={variant}>{tier}</Badge>;
+    },
+  },
+  {
+    field: "avg_likes",
+    headerName: "Avg Likes",
+    width: 120,
+    cellClass: "font-data tabular-nums !justify-center",
+    cellRenderer: ({ value }: { value: number }) =>
+      (value ?? 0).toLocaleString(),
+  },
+  {
+    field: "max_likes",
+    headerName: "Max Likes",
+    width: 120,
+    cellClass: "font-data tabular-nums !justify-center",
+    cellRenderer: ({ value }: { value: number }) =>
+      (value ?? 0).toLocaleString(),
   },
   {
     field: "standout_count",

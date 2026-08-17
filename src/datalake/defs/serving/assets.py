@@ -320,37 +320,84 @@ def v_quality_trend(duckdb: DuckDBResource) -> None:
 
 
 @asset(
-    name="v_profile_quality",
+    name="v_creator_quality",
     group_name="serving",
-    description="Creator rankings: admiralty score, educational rate, outlier rate.",
+    description="Absolute creator quality: admiralty, rates, and engagement.",
     deps=[AssetKey(["v_post_detail"])],
 )
-def v_profile_quality(duckdb: DuckDBResource) -> None:
-    """Per-creator quality metrics — weighted admiralty, educational rate, engagement."""
+def v_creator_quality(duckdb: DuckDBResource) -> None:
+    """Per-creator quality and engagement metrics pooled across all profiles."""
+    with duckdb.get_connection() as conn:
+        conn.execute("DROP VIEW IF EXISTS v_profile_quality")
+        conn.execute("""
+            CREATE OR REPLACE VIEW v_creator_quality AS
+            WITH base AS (
+                SELECT
+                    creator_id,
+                    MAX(creator_name) AS creator_name,
+                    COUNT(*) AS total_posts,
+                    COUNT(result_json) AS enriched_posts,
+                    AVG(CASE WHEN admiralty LIKE 'A%' THEN 3.0
+                             WHEN admiralty LIKE 'B%' THEN 2.0
+                             WHEN admiralty LIKE 'C%' THEN 1.0
+                             WHEN admiralty LIKE 'D%' THEN 0.0 END) AS admiralty_score,
+                    AVG(CASE WHEN is_educational THEN 1.0
+                             WHEN NOT is_educational THEN 0.0 END) AS educational_rate,
+                    AVG(CASE WHEN is_actionable THEN 1.0
+                             WHEN NOT is_actionable THEN 0.0 END) AS actionable_rate,
+                    AVG(likes_count) AS avg_likes,
+                    MAX(likes_count) AS max_likes
+                FROM v_post_detail
+                WHERE creator_id IS NOT NULL
+                GROUP BY creator_id
+            )
+            SELECT b.*,
+                   ROUND(0.4 * PERCENT_RANK() OVER (ORDER BY COALESCE(b.admiralty_score, 0))
+                       + 0.4 * PERCENT_RANK() OVER (ORDER BY COALESCE(LN(1 + b.avg_likes), 0))
+                       + 0.2 * PERCENT_RANK() OVER (
+                           ORDER BY b.enriched_posts::DOUBLE / NULLIF(b.total_posts, 0))
+                       , 4) AS composite_score
+            FROM base b
+            WHERE b.enriched_posts >= 3
+        """)
+
+
+@asset(
+    name="v_rising_creators",
+    group_name="serving",
+    description="Rising creators: momentum of recent vs baseline engagement.",
+    deps=[AssetKey(["v_post_detail"])],
+)
+def v_rising_creators(duckdb: DuckDBResource) -> None:
+    """Creators whose recent engagement outpaces their baseline by >= 1.25x."""
     with duckdb.get_connection() as conn:
         conn.execute("""
-            CREATE OR REPLACE VIEW v_profile_quality AS
-            SELECT
-                COALESCE(MAX(owner_id) FILTER (WHERE owner_id IS NOT NULL), 'unknown') AS owner_id,
-                owner_username,
-                MAX(creator_id)                                              AS creator_id,
-                COUNT(*)                                                     AS total_posts,
-                COUNT(CASE WHEN result_json IS NOT NULL THEN 1 END)          AS enriched_posts,
-                AVG(CASE
-                    WHEN admiralty LIKE 'A%' THEN 3.0
-                    WHEN admiralty LIKE 'B%' THEN 2.0
-                    WHEN admiralty LIKE 'C%' THEN 1.0
-                    ELSE 0.0
-                END)                                                         AS admiralty_score,
-                AVG(CASE WHEN is_educational THEN 1.0 ELSE 0.0 END)          AS educational_rate,
-                AVG(likes_count)                                             AS avg_likes,
-                AVG(comments_count)                                          AS avg_comments,
-                AVG(video_view_count)                                        AS avg_video_views,
-                MAX(likes_count)                                             AS max_likes
-            FROM v_post_detail
-            WHERE result_json IS NOT NULL
-            GROUP BY owner_username
-            ORDER BY admiralty_score DESC
+            CREATE OR REPLACE VIEW v_rising_creators AS
+            WITH windows AS (
+                SELECT
+                    creator_id,
+                    MAX(creator_name) AS creator_name,
+                    AVG(likes_count) FILTER
+                        (WHERE timestamp >= CURRENT_DATE - INTERVAL '28' DAY) AS recent_avg,
+                    COUNT(likes_count) FILTER
+                        (WHERE timestamp >= CURRENT_DATE - INTERVAL '28' DAY) AS recent_posts,
+                    AVG(likes_count) FILTER (WHERE timestamp >= CURRENT_DATE - INTERVAL '84' DAY
+                                             AND  timestamp <  CURRENT_DATE - INTERVAL '28' DAY)
+                        AS baseline_avg,
+                    COUNT(likes_count) FILTER (WHERE timestamp >= CURRENT_DATE - INTERVAL '84' DAY
+                                               AND  timestamp <  CURRENT_DATE - INTERVAL '28' DAY)
+                        AS baseline_posts
+                FROM v_post_detail
+                WHERE creator_id IS NOT NULL
+                GROUP BY creator_id
+            )
+            SELECT *, recent_avg / NULLIF(baseline_avg, 0) AS momentum_ratio
+            FROM windows
+            WHERE recent_posts >= 3
+              AND baseline_posts >= 3
+              AND baseline_avg > 0
+              AND recent_avg >= 5.0
+              AND recent_avg / baseline_avg >= 1.25
         """)
 
 
@@ -466,7 +513,8 @@ assets: list = [
     v_post_detail,
     v_signal,
     v_quality_trend,
-    v_profile_quality,
+    v_creator_quality,
+    v_rising_creators,
     v_domain_coverage,
     v_engagement_outliers,
     v_outlier_posts,

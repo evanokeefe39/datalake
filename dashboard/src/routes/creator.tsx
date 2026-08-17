@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
+import type { ColDef } from "ag-grid-community";
 import { Card } from "@/components/ui/card";
 import { Avatar } from "@/components/ui/avatar";
-import { Thumbnail } from "@/components/ui/thumbnail";
 import { PlatformIcon } from "@/components/ui/platform-icon";
-import { DataTable } from "@/components/ui/data-table";
+import { PostsTable } from "@/components/ui/posts-table";
 import { CreatorModal } from "@/components/ui/creator-modal";
 import { Badge } from "@/components/ui/badge";
 import { Users, ArrowLeft } from "lucide-react";
@@ -123,85 +123,29 @@ export default function CreatorPage() {
         <h3 className="text-[10px] text-muted font-data uppercase tracking-widest">
           Posts
         </h3>
-        <DataTable
-          columns={[
-            {
-              key: "thumbnail",
-              header: "",
-              sortable: false,
-              render: (row: PostRow) => (
-                <Thumbnail shortcode={row.shortcode} size={80} />
-              ),
-            },
-            {
-              key: "caption",
-              header: "Caption",
-              render: (row: PostRow) => (
-                <span className="text-muted">
-                  {row.caption || <span className="italic">no caption</span>}
-                </span>
-              ),
-            },
-            {
-              key: "platform",
-              header: "Platform",
-              render: (row: PostRow) => <PlatformIcon platform={row.platform} size={16} />,
-            },
-            {
-              key: "likes_count",
-              header: "Likes",
-              className: "text-center",
-              render: (row: PostRow) => (
-                <span className="text-muted">{row.likes_count.toLocaleString()}</span>
-              ),
-            },
-            {
-              key: "comments_count",
-              header: "Comments",
-              className: "text-center",
-              render: (row: PostRow) => (
-                <span className="text-muted">{row.comments_count.toLocaleString()}</span>
-              ),
-            },
-            {
-              key: "video_view_count",
-              header: "Views",
-              className: "text-center",
-              render: (row: PostRow) => (
-                <span className="text-muted">{row.video_view_count.toLocaleString()}</span>
-              ),
-            },
-            {
-              key: "relative_performance",
-              header: "Relative Performance",
-              className: "text-center",
-              sortable: false,
-              render: (row: PostRow) => {
-                if (row.relative_performance === "hot") {
-                  return <Badge variant="red">Hot</Badge>;
-                }
-                if (row.relative_performance === "standout") {
-                  return <Badge variant="yellow">Standout</Badge>;
-                }
-                return <span className="text-muted">—</span>;
-              },
-            },
-            {
-              key: "timestamp",
-              header: "Date",
-              className: "text-right",
-              render: (row: PostRow) => (
-                <span className="text-muted">
-                  {row.timestamp ? row.timestamp.slice(0, 10) : "--"}
-                </span>
-              ),
-            },
-          ]}
-          data={posts}
-          rowKey={(r) => r.post_id}
-          loading={postsLoading}
-          emptyMessage="No posts yet."
-        />
+        {postsLoading && posts.length === 0 ? (
+          <div className="flex items-center justify-center h-64 text-muted font-data text-xs tracking-widest animate-pulse">
+            LOADING POSTS
+          </div>
+        ) : (
+          <PostsTable
+            rows={posts}
+            pagination
+            extraColumns={[
+              {
+                field: "relative_performance",
+                headerName: "Relative Performance",
+                width: 170,
+                cellClass: "flex !items-center !justify-center",
+                cellRenderer: ({ value }: { value: string | null }) => {
+                  if (value === "hot") return <Badge variant="red">Hot</Badge>;
+                  if (value === "standout") return <Badge variant="yellow">Standout</Badge>;
+                  return <span className="text-muted">—</span>;
+                },
+              } satisfies ColDef<PostRow>,
+            ]}
+          />
+        )}
       </div>
 
       <CreatorModal
