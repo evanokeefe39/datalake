@@ -41,6 +41,7 @@ def _write_meta(
     urls: list[str],
     results_limit: int,
     results_type: str,
+    estimated_cost_usd: float = 0.0,
 ) -> None:
     """Write a ``.meta`` JSON sidecar alongside the Parquet file."""
     meta = {
@@ -48,6 +49,7 @@ def _write_meta(
         "dataset_id": dataset_id,
         "actor": actor,
         "item_count": item_count,
+        "estimated_cost_usd": estimated_cost_usd,
         "input": {
             "urls": urls,
             "results_limit": results_limit,
@@ -151,6 +153,7 @@ def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource) -> pl.DataFrame:
         config.urls,
         config.results_limit,
         config.results_type,
+        run.estimated_cost_usd,
     )
 
     return df
