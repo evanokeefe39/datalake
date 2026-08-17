@@ -31,21 +31,6 @@ export interface OverviewMetrics {
   high_signal_count: number;
 }
 
-export interface ProfileRow {
-  owner_id: string;
-  owner_username: string;
-  creator_id: number | null;
-  platform: string;
-  total_posts: number;
-  enriched_posts: number;
-  admiralty_score: number;
-  educational_rate: number;
-  avg_likes: number;
-  avg_comments: number;
-  avg_video_views: number;
-  max_likes: number;
-}
-
 export interface SignalRow {
   post_id: string;
   owner_username: string;
@@ -119,6 +104,12 @@ export interface Creator {
   standout_count: number;
   hot_count: number;
   avatar_handle: string | null;
+  enriched_posts: number;
+  educational_rate: number;
+  actionable_rate: number;
+  admiralty_score: number;
+  avg_likes: number;
+  max_likes: number;
 }
 
 export interface CreatorProfile {
@@ -170,10 +161,6 @@ export async function fetchOverview(): Promise<OverviewMetrics> {
   return fetchJSON("/overview");
 }
 
-export async function fetchProfiles(): Promise<ProfileRow[]> {
-  return fetchJSON("/profiles");
-}
-
 export async function fetchSignals(): Promise<SignalRow[]> {
   return fetchJSON("/signals");
 }
@@ -206,6 +193,39 @@ export async function fetchSearchResults(q: string): Promise<PostRow[]> {
 
 export async function fetchCreators(): Promise<Creator[]> {
   return fetchJSON("/creators");
+}
+
+// ── Top / Rising Creators ─────────────────────────────────────
+
+export interface TopCreatorRow {
+  creator_id: number;
+  creator_name: string;
+  total_posts: number;
+  enriched_posts: number;
+  admiralty_score: number;
+  educational_rate: number;
+  actionable_rate: number;
+  avg_likes: number;
+  max_likes: number;
+  composite_score: number;
+}
+
+export interface RisingCreatorRow {
+  creator_id: number;
+  creator_name: string;
+  recent_avg: number;
+  recent_posts: number;
+  baseline_avg: number;
+  baseline_posts: number;
+  momentum_ratio: number;
+}
+
+export async function fetchTopCreators(): Promise<TopCreatorRow[]> {
+  return fetchJSON("/top-creators");
+}
+
+export async function fetchRisingCreators(): Promise<RisingCreatorRow[]> {
+  return fetchJSON("/rising-creators");
 }
 
 export async function fetchCreator(id: number | string): Promise<CreatorDetail> {

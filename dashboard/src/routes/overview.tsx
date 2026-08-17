@@ -10,38 +10,35 @@ import { Thumbnail } from "@/components/ui/thumbnail";
 import { PlatformIcon } from "@/components/ui/platform-icon";
 import {
   fetchOverview,
-  fetchProfiles,
+  fetchTopCreators,
+  fetchRisingCreators,
   fetchHotPosts,
   type OverviewMetrics,
-  type ProfileRow,
+  type TopCreatorRow,
+  type RisingCreatorRow,
   type StandoutRow,
 } from "@/lib/api";
-import { Zap } from "lucide-react";
-
-function admiraltyTier(score: number | undefined | null): string {
-  if (score == null) return "--";
-  if (score >= 4) return "A+";
-  if (score >= 3) return "A";
-  if (score >= 2) return "B";
-  if (score >= 1) return "C";
-  return "D";
-}
+import { admiraltyTier } from "@/lib/admiralty";
+import { TrendingUp, Trophy, Zap } from "lucide-react";
 
 export default function OverviewPage() {
   const [metrics, setMetrics] = useState<OverviewMetrics | null>(null);
-  const [profiles, setProfiles] = useState<ProfileRow[]>([]);
+  const [top, setTop] = useState<TopCreatorRow[]>([]);
+  const [rising, setRising] = useState<RisingCreatorRow[]>([]);
   const [hots, setHots] = useState<StandoutRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
       fetchOverview(),
-      fetchProfiles(),
+      fetchTopCreators(),
+      fetchRisingCreators(),
       fetchHotPosts(12),
     ])
-      .then(([m, p, s]) => {
+      .then(([m, t, r, s]) => {
         setMetrics(m);
-        setProfiles(p);
+        setTop(t);
+        setRising(r);
         setHots(s);
       })
       .catch(console.error)
@@ -167,98 +164,148 @@ export default function OverviewPage() {
         </Card>
       </div>
 
-      {/* ── Profile Quality ─────────────────────────────── */}
+      {/* ── Top Creators ─────────────────────────────────── */}
       <Card>
         <CardHeader>
-          <CardTitle>Profile Quality</CardTitle>
-          <span className="text-[10px] text-muted font-data">
-            {profiles.length} with enrichment
-          </span>
+          <div>
+            <CardTitle>Top Creators</CardTitle>
+            <span className="text-[10px] text-muted font-data">
+              {top.length} by composite quality
+            </span>
+          </div>
+          <Trophy className="w-3.5 h-3.5 text-accent-yellow" />
         </CardHeader>
         <div className="overflow-x-auto">
           <DataTable
             columns={[
               {
-                key: "owner_username",
-                header: "PROFILE",
-                sortValue: (row: ProfileRow) => row.owner_username,
-                render: (row: ProfileRow) =>
-                  row.creator_id != null ? (
-                    <Link
-                      to="/creators/$id"
-                      params={{ id: String(row.creator_id) }}
-                      className="flex items-center gap-2 hover:opacity-75 transition-opacity"
-                      title={`View @${row.owner_username}`}
-                    >
-                      <Avatar username={row.owner_username} size={24} />
-                      <span className="text-cyan-400 font-semibold text-[13px]">
-                        {row.owner_username}
-                      </span>
-                    </Link>
-                  ) : (
-                    <span className="flex items-center gap-2">
-                      <Avatar username={row.owner_username} size={24} />
-                      <span className="text-cyan-400 font-semibold text-[13px]">
-                        {row.owner_username}
-                      </span>
+                key: "rank",
+                header: "#",
+                sortable: false,
+                className: "w-8 text-center font-data tabular-nums text-muted",
+                render: (row: TopCreatorRow & { rank: number }) => row.rank,
+              },
+              {
+                key: "creator_name",
+                header: "CREATOR",
+                render: (row: TopCreatorRow & { rank: number }) => (
+                  <Link
+                    to="/creators/$id"
+                    params={{ id: String(row.creator_id) }}
+                    className="flex items-center gap-2 hover:opacity-75 transition-opacity"
+                    title={`View ${row.creator_name}`}
+                  >
+                    <Avatar username={row.creator_name} size={24} />
+                    <span className="text-cyan-400 font-semibold text-[13px]">
+                      {row.creator_name}
                     </span>
-                  ),
-              },
-              {
-                key: "total_posts",
-                header: "POSTS",
-                className: "text-right font-data tabular-nums",
-              },
-              {
-                key: "enriched_posts",
-                header: "ENRICHED",
-                sortValue: (row: ProfileRow) => row.enriched_posts,
-                className: "text-right font-data tabular-nums",
-                render: (row: ProfileRow) => (
-                  <span className={row.enriched_posts > 0 ? "text-accent-green" : "text-muted"}>
-                    {row.enriched_posts}
-                  </span>
+                  </Link>
                 ),
-              },
-              {
-                key: "educational_rate",
-                header: "EDU",
-                sortValue: (row: ProfileRow) => row.educational_rate,
-                className: "text-right font-data tabular-nums",
-                render: (row: ProfileRow) => `${(row.educational_rate * 100).toFixed(0)}%`,
               },
               {
                 key: "admiralty_score",
                 header: "ADMIRALTY",
-                sortValue: (row: ProfileRow) => row.admiralty_score,
                 className: "text-center",
-                render: (row: ProfileRow) => {
-                  const score = row.admiralty_score;
-                  let variant: "green" | "yellow" | "orange" | "default" = "default";
-                  if (score >= 3) variant = "green";
-                  else if (score >= 2) variant = "yellow";
-                  else if (score >= 1) variant = "orange";
-                  return <Badge variant={variant}>{score.toFixed(1)}</Badge>;
+                render: (row: TopCreatorRow & { rank: number }) => {
+                  const tier = admiraltyTier(row.admiralty_score);
+                  const variant =
+                    tier === "A+" || tier === "A"
+                      ? "green"
+                      : tier === "B"
+                        ? "yellow"
+                        : tier === "C"
+                          ? "orange"
+                          : "default";
+                  return <Badge variant={variant}>{tier}</Badge>;
                 },
+              },
+              {
+                key: "composite_score",
+                header: "SCORE",
+                className: "text-right font-data tabular-nums",
+                render: (row: TopCreatorRow & { rank: number }) =>
+                  row.composite_score?.toFixed(2) ?? "--",
               },
               {
                 key: "avg_likes",
                 header: "AVG LIKES",
-                sortValue: (row: ProfileRow) => row.avg_likes,
                 className: "text-right font-data tabular-nums hidden sm:table-cell",
-                render: (row: ProfileRow) => row.avg_likes?.toLocaleString() ?? "--",
-              },
-              {
-                key: "max_likes",
-                header: "MAX",
-                sortValue: (row: ProfileRow) => row.max_likes,
-                className: "text-right font-data tabular-nums hidden sm:table-cell",
-                render: (row: ProfileRow) => row.max_likes?.toLocaleString() ?? "--",
+                render: (row: TopCreatorRow & { rank: number }) =>
+                  row.avg_likes?.toLocaleString() ?? "--",
               },
             ]}
-            data={profiles}
-            rowKey={(r) => r.owner_id}
-            loading={loading}
+            data={top.map((r, i) => ({ ...r, rank: i + 1 }))}
+            rowKey={(r) => String(r.creator_id)}
+          />
+        </div>
+      </Card>
+
+      {/* ── Rising Creators ──────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <div>
+            <CardTitle>Rising Creators</CardTitle>
+            <span className="text-[10px] text-muted font-data">
+              {rising.length} accelerating vs own baseline
+            </span>
+          </div>
+          <TrendingUp className="w-3.5 h-3.5 text-accent-green" />
+        </CardHeader>
+        <div className="overflow-x-auto">
+          <DataTable
+            columns={[
+              {
+                key: "rank",
+                header: "#",
+                sortable: false,
+                className: "w-8 text-center font-data tabular-nums text-muted",
+                render: (row: RisingCreatorRow & { rank: number }) => row.rank,
+              },
+              {
+                key: "creator_name",
+                header: "CREATOR",
+                render: (row: RisingCreatorRow & { rank: number }) => (
+                  <Link
+                    to="/creators/$id"
+                    params={{ id: String(row.creator_id) }}
+                    className="flex items-center gap-2 hover:opacity-75 transition-opacity"
+                    title={`View ${row.creator_name}`}
+                  >
+                    <Avatar username={row.creator_name} size={24} />
+                    <span className="text-cyan-400 font-semibold text-[13px]">
+                      {row.creator_name}
+                    </span>
+                  </Link>
+                ),
+              },
+              {
+                key: "momentum_ratio",
+                header: "MOMENTUM",
+                className: "text-center",
+                render: (row: RisingCreatorRow & { rank: number }) => (
+                  <Badge variant="green">
+                    +{Math.round((row.momentum_ratio - 1) * 100)}%
+                  </Badge>
+                ),
+              },
+              {
+                key: "recent_avg",
+                header: "RECENT",
+                className: "text-right font-data tabular-nums",
+                render: (row: RisingCreatorRow & { rank: number }) =>
+                  row.recent_avg?.toLocaleString() ?? "--",
+              },
+              {
+                key: "baseline_avg",
+                header: "BASELINE",
+                className: "text-right font-data tabular-nums",
+                render: (row: RisingCreatorRow & { rank: number }) =>
+                  row.baseline_avg?.toLocaleString() ?? "--",
+              },
+            ]}
+            data={rising.map((r, i) => ({ ...r, rank: i + 1 }))}
+            rowKey={(r) => String(r.creator_id)}
+            emptyMessage="No creator has >=3 posts in both the recent 4w and prior 8w windows yet."
           />
         </div>
       </Card>

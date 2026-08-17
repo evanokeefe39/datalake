@@ -108,7 +108,8 @@ Pipes ties enrichment to a Dagster run lifecycle — the run blocks until the su
 ```
 ig_posts_slv ─┬─→ gold_analyses ─┬─→ v_post_detail ─┬─→ v_signal
                │                   │                   ├─→ v_quality_trend
-               ├─→ dim_profile ────┤                   ├─→ v_profile_quality
+               ├─→ dim_profile ────┤                   ├─→ v_creator_quality
+               │                   │                   ├─→ v_rising_creators
                │                   │                   ├─→ v_domain_coverage
                └───────────────────┤                   ├─→ v_engagement_outliers
                                    │                   ├─→ v_outlier_posts

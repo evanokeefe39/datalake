@@ -236,7 +236,7 @@ def overview():
 
         admiralty = (
             db.execute(
-                "SELECT ROUND(AVG(admiralty_score), 2) FROM v_profile_quality "
+                "SELECT ROUND(AVG(admiralty_score), 2) FROM v_creator_quality "
                 "WHERE enriched_posts > 0"
             ).fetchone()[0]
             or 0
@@ -252,43 +252,6 @@ def overview():
             "avg_admiralty_score": float(admiralty),
             "high_signal_count": high_signal,
         }
-    finally:
-        db.close()
-
-
-# ── Profiles ────────────────────────────────────────────────────
-
-
-@app.get("/api/profiles")
-def profiles():
-    db = _connect()
-    try:
-        rows = db.execute("""
-            SELECT owner_id, owner_username, creator_id, total_posts, enriched_posts,
-                   admiralty_score, educational_rate,
-                   avg_likes, avg_comments, avg_video_views, max_likes
-            FROM v_profile_quality
-            WHERE total_posts > 0
-            ORDER BY admiralty_score DESC
-        """).fetchall()
-
-        return [
-            {
-                "owner_id": r[0],
-                "platform": "instagram",
-                "owner_username": r[1],
-                "creator_id": r[2],
-                "total_posts": r[3],
-                "enriched_posts": r[4],
-                "admiralty_score": float(r[5]) if r[5] else 0,
-                "educational_rate": float(r[6]) if r[6] else 0,
-                "avg_likes": float(r[7]) if r[7] else 0,
-                "avg_comments": float(r[8]) if r[8] else 0,
-                "avg_video_views": float(r[9]) if r[9] else 0,
-                "max_likes": r[10] or 0,
-            }
-            for r in rows
-        ]
     finally:
         db.close()
 
@@ -784,6 +747,21 @@ def creators():
         post_counts = _post_counts(db)
         standout_counts = _sigma_counts_by_owner(db, 1.0)
         hot_counts = _sigma_counts_by_owner(db, 2.0)
+        quality_rows = db.execute(
+            "SELECT creator_id, enriched_posts, educational_rate, actionable_rate, "
+            "admiralty_score, avg_likes, max_likes FROM v_creator_quality"
+        ).fetchall()
+        quality = {
+            r[0]: {
+                "enriched_posts": int(r[1]) if r[1] is not None else 0,
+                "educational_rate": float(r[2]) if r[2] is not None else 0,
+                "actionable_rate": float(r[3]) if r[3] is not None else 0,
+                "admiralty_score": float(r[4]) if r[4] is not None else 0,
+                "avg_likes": float(r[5]) if r[5] is not None else 0,
+                "max_likes": int(r[6]) if r[6] is not None else 0,
+            }
+            for r in quality_rows
+        }
         result = []
         for c in rows:
             profiles = grouped.get(c["id"], [])
@@ -792,6 +770,7 @@ def creators():
             total_posts = sum(post_counts.get(h, 0) for h in handles)
             standout_count = sum(standout_counts.get(h, 0) for h in handles)
             hot_count = sum(hot_counts.get(h, 0) for h in handles)
+            q = quality.get(c["id"], {})
             result.append(
                 {
                     "id": c["id"],
@@ -804,9 +783,74 @@ def creators():
                     "standout_count": standout_count,
                     "hot_count": hot_count,
                     "avatar_handle": handles[0] if handles else None,
+                    "enriched_posts": q.get("enriched_posts", 0),
+                    "educational_rate": q.get("educational_rate", 0),
+                    "actionable_rate": q.get("actionable_rate", 0),
+                    "admiralty_score": q.get("admiralty_score", 0),
+                    "avg_likes": q.get("avg_likes", 0),
+                    "max_likes": q.get("max_likes", 0),
                 }
             )
         return result
+    finally:
+        db.close()
+
+
+# ── Top / Rising Creators ──────────────────────────────────────
+
+
+@app.get("/api/top-creators")
+def top_creators():
+    """Top 10 creators by composite quality score."""
+    db = _connect()
+    try:
+        rows = db.execute(
+            "SELECT creator_id, creator_name, total_posts, enriched_posts, "
+            "admiralty_score, educational_rate, actionable_rate, avg_likes, "
+            "max_likes, composite_score FROM v_creator_quality "
+            "ORDER BY composite_score DESC LIMIT 10"
+        ).fetchall()
+        return [
+            {
+                "creator_id": int(r[0]),
+                "creator_name": str(r[1]),
+                "total_posts": int(r[2]),
+                "enriched_posts": int(r[3]),
+                "admiralty_score": float(r[4]),
+                "educational_rate": float(r[5]),
+                "actionable_rate": float(r[6]),
+                "avg_likes": float(r[7]),
+                "max_likes": int(r[8]),
+                "composite_score": float(r[9]),
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+@app.get("/api/rising-creators")
+def rising_creators():
+    """Top 10 creators by momentum (recent vs. baseline average likes)."""
+    db = _connect()
+    try:
+        rows = db.execute(
+            "SELECT creator_id, creator_name, recent_avg, recent_posts, "
+            "baseline_avg, baseline_posts, momentum_ratio FROM v_rising_creators "
+            "ORDER BY momentum_ratio DESC, recent_avg DESC, creator_id ASC LIMIT 10"
+        ).fetchall()
+        return [
+            {
+                "creator_id": int(r[0]),
+                "creator_name": str(r[1]),
+                "recent_avg": float(r[2]),
+                "recent_posts": int(r[3]),
+                "baseline_avg": float(r[4]),
+                "baseline_posts": int(r[5]),
+                "momentum_ratio": float(r[6]),
+            }
+            for r in rows
+        ]
     finally:
         db.close()
 
