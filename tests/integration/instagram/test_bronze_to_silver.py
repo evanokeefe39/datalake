@@ -24,7 +24,7 @@ from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bron
 # ── Test: full schema round-trip ──────────────────────────────────────────
 
 
-def test_full_schema_round_trip(tmp_path):
+def test_full_schema_round_trip(tmp_path, ops):
     """GIVEN a bronze file with all Apify columns populated
     WHEN silver is processed
     THEN every silver column exists and has correct types.
@@ -44,7 +44,7 @@ def test_full_schema_round_trip(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
     assert len(result) == 1
@@ -68,7 +68,7 @@ def test_full_schema_round_trip(tmp_path):
 # ── Test: corrupt bronze file is skipped ──────────────────────────────────
 
 
-def test_corrupt_file_skipped(tmp_path, caplog):
+def test_corrupt_file_skipped(tmp_path, ops, caplog):
     """GIVEN one corrupt bronze Parquet and one valid file
     WHEN silver is processed
     THEN corrupt file is logged and skipped; valid data still lands in silver.
@@ -89,7 +89,7 @@ def test_corrupt_file_skipped(tmp_path, caplog):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
     # Only the valid post landed in silver
@@ -104,7 +104,7 @@ def test_corrupt_file_skipped(tmp_path, caplog):
 # ── Test: extra Apify fields are silently dropped ─────────────────────────
 
 
-def test_extra_bronze_columns_dropped(tmp_path):
+def test_extra_bronze_columns_dropped(tmp_path, ops):
     """GIVEN a bronze file with extra Apify columns not in the silver schema
     WHEN silver is processed
     THEN the extra columns are silently dropped — only silver columns survive.
@@ -122,7 +122,7 @@ def test_extra_bronze_columns_dropped(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
     assert len(result) == 1
@@ -138,7 +138,7 @@ def test_extra_bronze_columns_dropped(tmp_path):
 # ── Test: row count invariant ─────────────────────────────────────────────
 
 
-def test_silver_rows_leq_bronze_rows(tmp_path):
+def test_silver_rows_leq_bronze_rows(tmp_path, ops):
     """GIVEN multiple bronze files with overlapping post_ids
     WHEN silver is processed
     THEN silver row count ≤ total bronze row count (dedup guarantee).
@@ -168,7 +168,7 @@ def test_silver_rows_leq_bronze_rows(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
     assert len(result) <= total_bronze

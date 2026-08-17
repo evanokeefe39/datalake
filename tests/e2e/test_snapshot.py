@@ -38,13 +38,13 @@ def bronze_dir(tmp_path) -> Path:
     return tmp_path
 
 
-def test_silver_deduplication_preserves_all_posts(db, bronze_dir):
+def test_silver_deduplication_preserves_all_posts(db, ops_db, bronze_dir):
     """GIVEN the committed bronze Parquet
     WHEN silver runs
     THEN all posts appear in silver with expected columns.
     """
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
-        ctx = build_asset_context(resources={"duckdb": db})
+        ctx = build_asset_context(resources={"duckdb": db, "ops": ops_db})
         result = ig_posts_slv(ctx)
 
     assert len(result) >= 1
@@ -70,7 +70,7 @@ def test_enqueue_enqueues_silver_posts(db, ops_db, bronze_dir):
 
     # Run silver
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
-        ctx = build_asset_context(resources={"duckdb": db})
+        ctx = build_asset_context(resources={"duckdb": db, "ops": ops_db})
         ig_posts_slv(ctx)
 
     # Run enqueue
@@ -100,7 +100,7 @@ def test_serving_runs_on_empty_gold(db, ops_db, bronze_dir):
         """)
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
-        ctx = build_asset_context(resources={"duckdb": db})
+        ctx = build_asset_context(resources={"duckdb": db, "ops": ops_db})
         ig_posts_slv(ctx)
 
     ctx = build_asset_context(resources={"duckdb": db, "ops": ops_db})

@@ -17,9 +17,9 @@ from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_det
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 
-def _run_silver(duckdb, bronze_dir):
+def _run_silver(duckdb, ops, bronze_dir):
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
-        ctx = build_asset_context(resources={"duckdb": duckdb})
+        ctx = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         return ig_posts_slv(ctx)
 
 
@@ -66,7 +66,7 @@ def test_full_pipeline_happy_path(tmp_path):
     write_ig_bronze(bronze_dir / "test.parquet", rows)
 
     # Silver
-    silver_result = _run_silver(duckdb, bronze_dir)
+    silver_result = _run_silver(duckdb, ops, bronze_dir)
     assert len(silver_result) == 3
 
     # Enqueue

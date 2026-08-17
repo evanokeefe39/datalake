@@ -65,7 +65,8 @@ def migrate(db_path: Path) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS watermarks (
             name        TEXT PRIMARY KEY,
-            timestamp   TIMESTAMP NOT NULL
+            timestamp   TIMESTAMP NOT NULL,
+            config_hash TEXT
         )
     """)
     logger.info("Ensured watermarks table exists")

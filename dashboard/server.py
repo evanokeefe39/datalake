@@ -27,6 +27,7 @@ from datalake.defs.common.lake import (
     thumbnail_path,
 )
 from datalake.defs.common.resources import SQLiteResource
+from datalake.defs.common.schemas import sqlite_ddl
 from datalake.defs.instagram.creators import (
     add_profile,
     batch_add_profiles,
@@ -92,16 +93,7 @@ def _ensure_media_cache_table() -> None:
     """Idempotent schema creation for the dashboard media cache."""
     con = _ops_connect()
     try:
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS media_cache (
-                cache_key    TEXT PRIMARY KEY,
-                local_path   TEXT NOT NULL,
-                content_type TEXT,
-                size_bytes   INTEGER,
-                fetched_at   TEXT NOT NULL,
-                source_url   TEXT
-            )
-        """)
+        con.execute(sqlite_ddl("media_cache"))
         con.commit()
     finally:
         con.close()

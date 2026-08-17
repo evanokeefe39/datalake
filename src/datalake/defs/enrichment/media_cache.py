@@ -8,8 +8,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
+import sqlite3
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
 
+from datalake.defs.common.lake import POST_MEDIA_DIR
 from datalake.defs.common.resources import GeminiResource, SQLiteResource
+from datalake.defs.common.schemas import sqlite_ddl
+
+logger = logging.getLogger("media_cache")
 
 
 def _ensure_schema(ops: SQLiteResource) -> None:
@@ -20,20 +30,7 @@ def _ensure_schema(ops: SQLiteResource) -> None:
     """
     conn = ops.get_connection()
     try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS media_metadata (
-                media_url_hash         TEXT PRIMARY KEY,
-                media_url              TEXT NOT NULL,
-                file_api_uri           TEXT,
-                mime_type              TEXT,
-                file_size              INTEGER,
-                video_duration_seconds REAL,
-                upload_state           TEXT DEFAULT 'pending',
-                expires_at             TEXT,
-                created_at             TEXT NOT NULL,
-                uploaded_at            TEXT
-            )
-        """)
+        conn.execute(sqlite_ddl("media_metadata"))
         # Migrations: add columns that may not exist in pre-existing DBs
         for col in ("expires_at", "video_duration_seconds"):
             try:
@@ -53,6 +50,129 @@ def url_hash(media_url: str) -> str:
     return hashlib.sha256(media_url.encode()).hexdigest()
 
 
+# ── Scrape-time byte cache ─────────────────────────────────────────────────
+#
+# Instagram CDN URLs expire in ~4-5 days. The enrichment worker can run days
+# after a post is scraped (quota backoff, backlog), so it must not depend on
+# those URLs. This byte cache downloads media at scrape time (silver write)
+# and records a ``media_cache`` row (URL hash → local path). The worker uploads
+# from the local bytes, falling back to the live CDN only on a cache miss.
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+_EXT_BY_MIME = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "video/quicktime": ".mov",
+}
+
+
+def _ensure_media_cache_table(ops: SQLiteResource) -> None:
+    """Create ``media_cache`` if it doesn't exist (idempotent)."""
+    conn = ops.get_connection()
+    try:
+        conn.execute(sqlite_ddl("media_cache"))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _download_bytes(url: str) -> tuple[bytes, str] | None:
+    """Download ``url``; return ``(bytes, content_type)`` or None on failure."""
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            return resp.read(), content_type
+    except Exception as exc:  # network errors are non-fatal — cache is best-effort
+        logger.warning("media download failed for %s: %s", url[:80], exc)
+        return None
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write bytes atomically (temp file + rename) to avoid partial reads."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
+def cached_local_path(ops: SQLiteResource, media_url: str) -> str | None:
+    """Return the local byte path for a URL if cached and the file exists."""
+    conn = ops.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT local_path FROM media_cache WHERE cache_key = ?",
+            [url_hash(media_url)],
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # media_cache table not yet created — nothing can be cached.
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    path = row["local_path"]
+    return path if path and os.path.exists(path) else None
+
+
+def cache_media_bytes(
+    ops: SQLiteResource,
+    media_url: str,
+    *,
+    media_dir: Path | None = None,
+) -> str | None:
+    """Download media bytes and record them in ``media_cache`` (best-effort).
+
+    Returns the local file path, or None if the download failed or the URL was
+    already cached. Failure is non-fatal — the worker falls back to the CDN.
+    """
+    _ensure_media_cache_table(ops)
+    existing = cached_local_path(ops, media_url)
+    if existing:
+        return existing
+
+    downloaded = _download_bytes(media_url)
+    if downloaded is None:
+        return None
+    data, content_type = downloaded
+    base_type = content_type.split(";")[0].strip().lower()
+    ext = _EXT_BY_MIME.get(base_type, ".bin")
+
+    cache_key = url_hash(media_url)
+    dest = (media_dir or POST_MEDIA_DIR) / f"{cache_key}{ext}"
+    _atomic_write(dest, data)
+
+    conn = ops.get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO media_cache "
+            "(cache_key, local_path, content_type, size_bytes, fetched_at, source_url) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                cache_key,
+                str(dest),
+                content_type,
+                dest.stat().st_size,
+                datetime.now(timezone.utc).isoformat(),
+                media_url,
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    logger.info("cached %s → %s", media_url[:80], dest.name)
+    return str(dest)
+
+
 def lookup_or_upload_all(
     ops: SQLiteResource,
     gemini: GeminiResource,
@@ -69,17 +189,12 @@ def lookup_or_upload_all(
         List of MediaFile dicts (``{"uri": …, "mime_type": …}``).
         Empty list if no media URLs or all are invalid.
     """
-    import logging
-    import os as _os
     import tempfile
     import time
-    import urllib.request
-    from datetime import datetime, timedelta, timezone
+    from datetime import timedelta
 
     from google.genai import Client as GeminiClient
     from google.genai.types import File
-
-    logger = logging.getLogger("media_cache")
 
     if not media_files_json:
         return []
@@ -101,6 +216,7 @@ def lookup_or_upload_all(
             unique_urls.append(u)
 
     _ensure_schema(ops)
+    _ensure_media_cache_table(ops)
     now = datetime.now(timezone.utc)
     expires_at = (now + timedelta(hours=24)).isoformat()
     now_iso = now.isoformat()
@@ -156,14 +272,22 @@ def lookup_or_upload_all(
 
             logger.info("Uploading %s to Gemini File API...", url[:80])
 
-            # Download URL to temp file (SDK requires local path, not URL)
+            # Resolve bytes: prefer the scrape-time byte cache (CDN URLs die in
+            # ~4-5 days); fall back to a live download only on a cache miss.
             tmp_path = None
             try:
-                tmp_fd, tmp_path = tempfile.mkstemp(suffix=".media")
-                _os.close(tmp_fd)
-                urllib.request.urlretrieve(url, tmp_path)
+                cached = conn.execute(
+                    "SELECT local_path FROM media_cache WHERE cache_key = ?", [h]
+                ).fetchone()
+                if cached and cached["local_path"] and os.path.exists(cached["local_path"]):
+                    upload_path = cached["local_path"]
+                else:
+                    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".media")
+                    os.close(tmp_fd)
+                    urllib.request.urlretrieve(url, tmp_path)
+                    upload_path = tmp_path
 
-                uploaded: File = client.files.upload(file=tmp_path)
+                uploaded: File = client.files.upload(file=upload_path)
 
                 # Poll until ACTIVE or timeout
                 deadline = time.monotonic() + 30
@@ -224,8 +348,8 @@ def lookup_or_upload_all(
                 logger.info("Upload complete: %s → %s", url[:80], uri[:80])
 
             finally:
-                if tmp_path and _os.path.exists(tmp_path):
-                    _os.unlink(tmp_path)
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
 
         return result
     finally:

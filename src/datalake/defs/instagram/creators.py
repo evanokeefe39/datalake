@@ -21,6 +21,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from ..common.resources import SQLiteResource
+from ..common.schemas import sqlite_ddl
 
 # Default depth for a newly added profile (one post's worth of detail).
 DEFAULT_DEPTH = 1
@@ -50,28 +51,8 @@ def ensure_schema(ops: SQLiteResource) -> None:
     """Create ``creators`` and ``profiles`` if absent (idempotent)."""
     conn = ops.get_connection()
     try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS creators (
-                id         INTEGER PRIMARY KEY,
-                name       TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS profiles (
-                platform      TEXT NOT NULL,
-                handle        TEXT NOT NULL,
-                profile_url   TEXT NOT NULL,
-                results_type  TEXT NOT NULL DEFAULT 'details',
-                results_limit INTEGER NOT NULL DEFAULT 1,
-                enabled       INTEGER NOT NULL DEFAULT 1,
-                tier          TEXT NOT NULL DEFAULT 'tier1',
-                creator_id    INTEGER NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
-                updated_at    TEXT NOT NULL,
-                PRIMARY KEY (platform, handle)
-            )
-        """)
+        conn.execute(sqlite_ddl("creators"))
+        conn.execute(sqlite_ddl("profiles"))
         conn.commit()
     finally:
         conn.close()

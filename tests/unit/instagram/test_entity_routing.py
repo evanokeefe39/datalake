@@ -114,19 +114,19 @@ def test_scrape_config_invalid_type_rejected():
 # ── Silver guard: skip non-post bronze (US-02) ───────────────────────────
 
 
-def test_slv_skips_profile_bronze(tmp_path):
+def test_slv_skips_profile_bronze(tmp_path, ops):
     """Details-shaped bronze (the o44 failure mode) is skipped, not loaded."""
     _details_df(rows=3).write_parquet(tmp_path / "ds_profile.parquet")
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
     assert result.is_empty()
 
 
-def test_slv_skips_comment_bronze(tmp_path):
+def test_slv_skips_comment_bronze(tmp_path, ops):
     """Comment-shaped bronze is skipped."""
     _df(["commentId", "text", "ownerUsername"], rows=2).write_parquet(
         tmp_path / "ds_comments.parquet"
@@ -134,7 +134,7 @@ def test_slv_skips_comment_bronze(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        context = build_asset_context(resources={"duckdb": duckdb})
+        context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
     assert result.is_empty()
