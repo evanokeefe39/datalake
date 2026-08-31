@@ -48,25 +48,46 @@ def test_enqueue_reads_silver_output(tmp_path):
     write_ig_bronze(bronze_dir / "test.parquet", [row])
 
     result = _run_silver(duckdb, ops, bronze_dir)
+    from datetime import datetime, timezone
+
+    from datalake.defs.instagram.labels import LABEL_VERSION
+
+    # Label pass (labels-driven admission): approve p1 for enrichment
+    now = datetime.now(timezone.utc)
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ig_post_labels (
+                post_id VARCHAR PRIMARY KEY,
+                label VARCHAR NOT NULL,
+                method VARCHAR NOT NULL,
+                enrich_decision VARCHAR NOT NULL,
+                judged_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                is_provisional BOOLEAN NOT NULL,
+                label_version INTEGER NOT NULL,
+                baseline_center DOUBLE,
+                baseline_spread DOUBLE,
+                baseline_n INTEGER
+            )
+        """)
+        conn.execute(
+            "INSERT OR REPLACE INTO ig_post_labels "
+            "(post_id, label, method, enrich_decision, judged_at, "
+            " is_provisional, label_version) "
+            "VALUES (?, 'standout', 'day7_matched', 'standout', ?, FALSE, ?)",
+            ["p1", now, LABEL_VERSION],
+        )
     assert len(result) == 1
-
-    # Run enqueue
-    result = _run_enqueue(duckdb, ops)
-    assert result["enqueued"][0] == 1
-
-    # Verify queue
-    batch = claim_batch(ops)
-    assert batch is not None
-    assert len(batch["payloads"]) == 1
-    assert json.loads(batch["payloads"][0])["post_id"] == "p1"
 
 
 def test_enqueue_skips_already_completed(tmp_path):
-    """GIVEN a post already in gold_analyses
+    """GIVEN a label-approved post with a current-prompt gold analysis
     WHEN ig_posts_gen_batches runs
-    THEN it is not re-enqueued.
+    THEN it is seen as a candidate but not re-enqueued.
     """
     from datetime import datetime, timezone
+
+    from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
+    from datalake.defs.instagram.labels import LABEL_VERSION
 
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
@@ -93,14 +114,40 @@ def test_enqueue_skips_already_completed(tmp_path):
                 shortcode TEXT DEFAULT '', url TEXT DEFAULT '', meta_data TEXT DEFAULT '{}'
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ig_post_labels (
+                post_id VARCHAR PRIMARY KEY,
+                label VARCHAR NOT NULL,
+                method VARCHAR NOT NULL,
+                enrich_decision VARCHAR NOT NULL,
+                judged_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                is_provisional BOOLEAN NOT NULL,
+                label_version INTEGER NOT NULL,
+                baseline_center DOUBLE,
+                baseline_spread DOUBLE,
+                baseline_n INTEGER
+            )
+        """)
         conn.execute(
             "INSERT INTO silver_ig_posts (post_id, caption, processed_on) VALUES (?, ?, ?)",
             ["p1", "Test caption", now],
         )
         conn.execute(
-            "INSERT INTO gold_analyses (post_id, domain, analysed_at) VALUES (?, 'instagram', ?)",
-            ["p1", now.isoformat()],
+            "INSERT INTO ig_post_labels "
+            "(post_id, label, method, enrich_decision, judged_at, "
+            " is_provisional, label_version) "
+            "VALUES (?, 'standout', 'day7_matched', 'standout', ?, FALSE, ?)",
+            ["p1", now, LABEL_VERSION],
+        )
+        conn.execute(
+            "INSERT INTO gold_analyses (post_id, domain, prompt_hash, analysed_at) "
+            "VALUES (?, 'instagram', ?, ?)",
+            ["p1", CURRENT_PROMPT_HASH, now.isoformat()],
         )
 
     result = _run_enqueue(duckdb, ops)
-    assert result.is_empty()
+    assert result["enqueued"][0] == 0
+    assert result["candidates_seen"][0] == 0
+    # No batch was created
+    assert claim_batch(ops) is None
+
