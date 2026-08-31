@@ -27,6 +27,37 @@ def _run_enqueue(duckdb, ops):
     return ig_posts_gen_batches(duckdb=duckdb, ops=ops)
 
 
+def _seed_labels(duckdb, post_ids):
+    """Seed ig_post_labels with approved enrich_decisions for the given posts."""
+    from datetime import datetime, timezone
+
+    from datalake.defs.instagram.labels import LABEL_VERSION
+
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ig_post_labels (
+                post_id VARCHAR PRIMARY KEY,
+                label VARCHAR NOT NULL,
+                method VARCHAR NOT NULL,
+                enrich_decision VARCHAR NOT NULL,
+                judged_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                is_provisional BOOLEAN NOT NULL,
+                label_version INTEGER NOT NULL,
+                baseline_center DOUBLE,
+                baseline_spread DOUBLE,
+                baseline_n INTEGER
+            )
+        """)
+        for pid in post_ids:
+            conn.execute(
+                "INSERT OR REPLACE INTO ig_post_labels "
+                "(post_id, label, method, enrich_decision, judged_at, "
+                " is_provisional, label_version) "
+                "VALUES (?, 'standout', 'day7_matched', 'standout', ?, FALSE, ?)",
+                [pid, datetime.now(timezone.utc), LABEL_VERSION],
+            )
+
+
 def _run_serving(duckdb, ops):
     ctx = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
     dim_date(ctx)
@@ -70,6 +101,8 @@ def test_full_pipeline_happy_path(tmp_path):
     assert len(silver_result) == 3
 
     # Enqueue
+    # Label pass (labels-driven admission): approve the silver posts
+    _seed_labels(duckdb, ["p1", "p2", "p3"])
     enqueue_result = _run_enqueue(duckdb, ops)
     assert enqueue_result["enqueued"][0] == 3
 

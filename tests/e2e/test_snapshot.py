@@ -73,6 +73,36 @@ def test_enqueue_enqueues_silver_posts(db, ops_db, bronze_dir):
         ctx = build_asset_context(resources={"duckdb": db, "ops": ops_db})
         ig_posts_slv(ctx)
 
+    # Label pass (labels-driven admission): approve every silver post
+    from datetime import datetime, timezone
+
+    from datalake.defs.instagram.labels import LABEL_VERSION
+
+    now = datetime.now(timezone.utc)
+    with db.get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ig_post_labels (
+                post_id VARCHAR PRIMARY KEY,
+                label VARCHAR NOT NULL,
+                method VARCHAR NOT NULL,
+                enrich_decision VARCHAR NOT NULL,
+                judged_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                is_provisional BOOLEAN NOT NULL,
+                label_version INTEGER NOT NULL,
+                baseline_center DOUBLE,
+                baseline_spread DOUBLE,
+                baseline_n INTEGER
+            )
+        """)
+        conn.execute(
+            "INSERT OR REPLACE INTO ig_post_labels "
+            "(post_id, label, method, enrich_decision, judged_at, "
+            " is_provisional, label_version) "
+            "SELECT post_id, 'standout', 'day7_matched', 'standout', ?, FALSE, ? "
+            "FROM silver_ig_posts",
+            [now, LABEL_VERSION],
+        )
+
     # Run enqueue
     result = ig_posts_gen_batches(duckdb=db, ops=ops_db)
 
