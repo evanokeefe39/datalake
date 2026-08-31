@@ -431,43 +431,58 @@ def v_domain_coverage(duckdb: DuckDBResource) -> None:
 @asset(
     name="v_engagement_outliers",
     group_name="serving",
-    description="Per-creator z-scores for likes with sigma-tier flags.",
-    deps=[AssetKey(["v_post_detail"])],
+    description="Label-backed outlier tiers from ig_post_labels (no lifetime z-score).",
+    deps=[AssetKey(["v_post_detail"]), AssetKey(["ig_post_labels"])],
 )
 def v_engagement_outliers(duckdb: DuckDBResource) -> None:
-    """Compute per-creator z-scores on likes_count, flagging sigma tiers."""
+    """Per-post outlier tiers from ``ig_post_labels`` — no future-leak.
+
+    The lifetime z-score computation was retired (US-D2): a post's tier now
+    comes from its materialized Tukey-fence label. ``likes_zscore`` is the
+    post's likes against its own trailing baseline (center/spread from the
+    label pass), so outstanding posts are ranked without leaking future data.
+    Posts without a label row (pending / not yet judged) fall to 'normal'.
+    """
     with duckdb.get_connection() as conn:
         conn.execute("""
             CREATE OR REPLACE VIEW v_engagement_outliers AS
-            WITH zscored AS (
+            WITH labeled AS (
                 SELECT
-                    *,
-                    (likes_count - AVG(likes_count) OVER (PARTITION BY owner_id))
-                        / NULLIF(STDDEV(likes_count) OVER (PARTITION BY owner_id), 0)
-                        AS likes_zscore
-                FROM v_post_detail
+                    p.*,
+                    l.label,
+                    l.method,
+                    l.is_provisional,
+                    CASE WHEN l.baseline_spread > 0
+                         THEN ROUND(
+                             (p.likes_count - l.baseline_center)
+                             / l.baseline_spread,
+                             2
+                         )
+                    END AS likes_zscore
+                FROM v_post_detail p
+                LEFT JOIN ig_post_labels l ON p.post_id = l.post_id
             )
             SELECT
                 *,
                 CASE
-                    WHEN likes_zscore >= 3 THEN '3σ+'
-                    WHEN likes_zscore >= 2 THEN '2σ'
-                    WHEN likes_zscore >= 1 THEN '1σ'
+                    WHEN label = 'standout' AND likes_zscore >= 3 THEN '3σ+'
+                    WHEN label = 'standout' AND likes_zscore >= 2 THEN '2σ'
+                    WHEN label = 'standout' THEN '1σ'
                     WHEN likes_zscore <= -1 THEN '-1σ'
                     ELSE 'normal'
                 END AS sigma_tier
-            FROM zscored
+            FROM labeled
         """)
 
 
 @asset(
     name="v_outlier_posts",
     group_name="serving",
-    description="Posts 1σ+ above their creator's mean likes.",
+    description="Posts 1σ+ outliers per their ``ig_post_labels`` tier.",
     deps=[AssetKey(["v_post_detail"]), AssetKey(["v_engagement_outliers"])],
 )
 def v_outlier_posts(duckdb: DuckDBResource) -> None:
-    """Filter to outlier posts only — positive z-score of 1σ or more."""
+    """Filter to outlier posts only — label-backed tier of 1σ or more."""
     with duckdb.get_connection() as conn:
         conn.execute("""
             CREATE OR REPLACE VIEW v_outlier_posts AS
@@ -480,11 +495,11 @@ def v_outlier_posts(duckdb: DuckDBResource) -> None:
 @asset(
     name="v_creator_outlier_rate",
     group_name="serving",
-    description="Which creators produce the most engagement outliers.",
+    description="Which creators produce the most label-backed outliers.",
     deps=[AssetKey(["v_post_detail"]), AssetKey(["v_engagement_outliers"])],
 )
 def v_creator_outlier_rate(duckdb: DuckDBResource) -> None:
-    """Per-creator outlier stats — rate, avg z-score, max z-score."""
+    """Per-creator outlier stats from ``ig_post_labels`` — rate, avg z, max z."""
     with duckdb.get_connection() as conn:
         conn.execute("""
             CREATE OR REPLACE VIEW v_creator_outlier_rate AS
