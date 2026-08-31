@@ -52,11 +52,19 @@ def tmp_db(tmp_path, monkeypatch):
         """
     )
     con.execute(
-        "CREATE TABLE silver_ig_posts (owner_username TEXT, likes_count BIGINT)"
+        "CREATE TABLE silver_ig_posts (post_id TEXT, owner_username TEXT, likes_count BIGINT)"
     )
     con.execute(
         "INSERT INTO silver_ig_posts VALUES "
-        "('jane', 10), ('jane', 20), ('jane', 30)"
+        "('p1', 'jane', 10), ('p2', 'jane', 20), ('p3', 'other', 5)"
+    )
+    con.execute(
+        """
+        CREATE TABLE ig_post_labels (
+            post_id TEXT, label TEXT, method TEXT, is_provisional BOOLEAN,
+            baseline_center DOUBLE, baseline_spread DOUBLE
+        )
+        """
     )
     con.close()
     return db_path
@@ -109,20 +117,29 @@ def test_posts_endpoint_still_shapes_rows(tmp_db, jane_id):
     assert all(r["platform"] == "instagram" for r in rows)
 
 
-def test_attach_relative_performance_classifies_tiers():
-    """Hot (>2σ), standout (>1σ), and normal posts are tagged correctly."""
+def test_attach_relative_performance_label_backed():
+    """Standout labels tag tiers; hot = standout with likes > center + 2*spread."""
     con = duckdb.connect(":memory:")
     con.execute(
-        "CREATE TABLE silver_ig_posts (owner_username TEXT, likes_count BIGINT)"
+        "CREATE TABLE silver_ig_posts (post_id TEXT, owner_username TEXT, likes_count BIGINT)"
+    )
+    con.execute(
+        "CREATE TABLE ig_post_labels (post_id TEXT, label TEXT, "
+        "baseline_center DOUBLE, baseline_spread DOUBLE)"
     )
     con.execute(
         "INSERT INTO silver_ig_posts VALUES "
-        "('jane', 5), ('jane', 20), ('jane', 20), ('jane', 20)"
+        "('p1', 'jane', 5), ('p2', 'jane', 20), ('p3', 'jane', 20), ('p4', 'jane', 50)"
+    )
+    con.execute(
+        "INSERT INTO ig_post_labels VALUES "
+        "('p1', 'average', 10, 5), ('p2', 'pending', 10, 5), "
+        "('p3', 'standout', 10, 5), ('p4', 'standout', 10, 5)"
     )
     posts = [
         {"post_id": "p1", "likes_count": 5},
         {"post_id": "p2", "likes_count": 20},
-        {"post_id": "p3", "likes_count": 25},
+        {"post_id": "p3", "likes_count": 20},
         {"post_id": "p4", "likes_count": 50},
     ]
     server._attach_relative_performance(con, posts, ["jane"])
@@ -135,13 +152,19 @@ def test_attach_relative_performance_classifies_tiers():
     ]
 
 
-def test_attach_relative_performance_insufficient_baseline():
-    """Fewer than 3 positive-likes posts → every post is untagged (None)."""
+def test_attach_relative_performance_unlabeled_posts_are_none():
+    """Posts without a standout label (or no labels at all) are untagged."""
     con = duckdb.connect(":memory:")
     con.execute(
-        "CREATE TABLE silver_ig_posts (owner_username TEXT, likes_count BIGINT)"
+        "CREATE TABLE silver_ig_posts (post_id TEXT, owner_username TEXT, likes_count BIGINT)"
     )
-    con.execute("INSERT INTO silver_ig_posts VALUES ('jane', 5), ('jane', 20)")
+    con.execute(
+        "CREATE TABLE ig_post_labels (post_id TEXT, label TEXT, "
+        "baseline_center DOUBLE, baseline_spread DOUBLE)"
+    )
+    con.execute(
+        "INSERT INTO silver_ig_posts VALUES ('p1', 'jane', 5), ('p2', 'jane', 20)"
+    )
     posts = [
         {"post_id": "p1", "likes_count": 5},
         {"post_id": "p2", "likes_count": 20},
@@ -149,3 +172,5 @@ def test_attach_relative_performance_insufficient_baseline():
     server._attach_relative_performance(con, posts, ["jane"])
     con.close()
     assert [p["relative_performance"] for p in posts] == [None, None]
+
+
