@@ -154,6 +154,7 @@ _DUCKDB_SPECS: dict[str, Table] = {
         columns={
             "post_id": Column("VARCHAR", not_null=True),
             "observed_at": Column("TIMESTAMP WITH TIME ZONE", not_null=True),
+            "likes_count": Column("INTEGER"),
             "comments_count": Column("INTEGER"),
             "video_view_count": Column("INTEGER"),
             "video_play_count": Column("INTEGER"),
@@ -168,6 +169,7 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "method": Column("VARCHAR", not_null=True),
             "enrich_decision": Column("VARCHAR", not_null=True),
             "judged_at": Column("TIMESTAMP WITH TIME ZONE", not_null=True),
+            "maturity_days": Column("INTEGER"),  # age at day7 judgment; NULL for day0/pending
             "is_provisional": Column("BOOLEAN", not_null=True),
             "label_version": Column("INTEGER", not_null=True),
             "baseline_center": Column("DOUBLE"),

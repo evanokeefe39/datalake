@@ -329,6 +329,101 @@ def _ig_posts_gld_valid_json(context) -> AssetCheckResult:
         passed=True,
         metadata={"total_checked": len(rows)},
     )
+
+
+# ── Label checks (Epic 3, US-L7) ──────────────────────────────────────────
+
+
+@asset_check(
+    asset="ig_post_labels",
+    name="ig_labels_current_version",
+    required_resource_keys={"duckdb"},
+    description="No labels computed under an older LABEL_VERSION.",
+)
+def _ig_labels_current_version(context) -> AssetCheckResult:
+    from datalake.defs.instagram.labels import LABEL_VERSION
+
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        stale = conn.execute(
+            "SELECT COUNT(*) FROM ig_post_labels WHERE label_version != ?",
+            [LABEL_VERSION],
+        ).fetchone()[0]
+    if stale > 0:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=(
+                f"{stale} labels stamped under an old label_version — "
+                "re-run the ig_post_labels pass to re-judge."
+            ),
+            metadata={"stale_rows": stale, "current_version": LABEL_VERSION},
+        )
+    return AssetCheckResult(
+        passed=True,
+        metadata={"stale_rows": 0, "current_version": LABEL_VERSION},
+    )
+
+
+@asset_check(
+    asset="ig_post_labels",
+    name="ig_labels_coverage",
+    required_resource_keys={"duckdb"},
+    description="Silver posts older than 24h all carry a label.",
+)
+def _ig_labels_coverage(context) -> AssetCheckResult:
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        unlabeled = conn.execute("""
+            SELECT COUNT(*) FROM silver_ig_posts sp
+            WHERE sp.processed_on < now() - INTERVAL 24 HOUR
+              AND NOT EXISTS (
+                  SELECT 1 FROM ig_post_labels l WHERE l.post_id = sp.post_id
+              )
+        """).fetchone()[0]
+    if unlabeled > 0:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=(
+                f"{unlabeled} silver posts older than 24h have no label — "
+                "run the ig_post_labels pass."
+            ),
+            metadata={"unlabeled": unlabeled},
+        )
+    return AssetCheckResult(passed=True, metadata={"unlabeled": 0})
+
+
+@asset_check(
+    asset="ig_posts_slv",
+    name="ig_observations_parity",
+    required_resource_keys={"duckdb"},
+    description="Observations exist for every distinct silver post_id.",
+)
+def _ig_observations_parity(context) -> AssetCheckResult:
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        posts = conn.execute("SELECT COUNT(*) FROM silver_ig_posts").fetchone()[0]
+        obs_posts = conn.execute(
+            "SELECT COUNT(DISTINCT post_id) FROM silver_ig_post_observations"
+        ).fetchone()[0]
+    missing = posts - obs_posts
+    if missing > 0:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=(
+                f"{missing} silver posts have no observation row — "
+                "re-run migrate_backfill_observations.py."
+            ),
+            metadata={"silver_posts": posts, "observed_posts": obs_posts},
+        )
+    return AssetCheckResult(
+        passed=True,
+        metadata={"silver_posts": posts, "observed_posts": obs_posts},
+    )
+
+
 ig_checks = [
     _ig_posts_raw_has_rows,
     _ig_posts_raw_has_meta,
@@ -338,4 +433,8 @@ ig_checks = [
     _ig_posts_slv_owner_not_null,
     _ig_posts_gld_valid_admiralty,
     _ig_posts_gld_valid_json,
+    _ig_labels_current_version,
+    _ig_labels_coverage,
+    _ig_observations_parity,
 ]
+

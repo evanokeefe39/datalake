@@ -127,8 +127,19 @@ A separate scheduled asset (`retry_dead_letter`, deferred) reads `WHERE status =
 `processed_on` in `silver_ig_posts` is set **only when a post first appears in silver**. It never changes on subsequent runs, even when engagement metrics update. This enables gold to do true incremental processing:
 
 ```sql
-SELECT ... FROM silver_ig_posts WHERE processed_on > (SELECT timestamp FROM watermarks WHERE name = 'gold_ig')
+SELECT ... FROM ig_post_labels
+WHERE enrich_decision IN ('standout', 'control', 'floor_filler')
+  AND NOT EXISTS (SELECT 1 FROM gold_analyses g
+                  WHERE g.post_id = ig_post_labels.post_id
+                    AND g.prompt_hash = :current_prompt_hash)
+  AND NOT EXISTS (SELECT 1 FROM batch_items b
+                  WHERE json_extract(b.payload, '$.post_id') = ig_post_labels.post_id
+                    AND b.status IN ('pending', 'processing'))
 ```
+
+The old `gold_ig` watermark is RETIRED (Epic 3): `ig_post_labels` is the
+discovery source; only a current-prompt gold analysis blocks re-enrichment
+(stale-prompt rows re-enqueue, US-L5).
 
 If a post appears in a new bronze scrape with updated likes_count but the same caption, `processed_on` stays unchanged because the caption didn't change — re-enrichment would be wasteful.
 
@@ -206,12 +217,14 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
 
 ### ig_posts_gen_batches (batch creation, no Gemini)
 
-- **Trigger:** downstream of silver (`deps=["ig_posts_slv"]`), plus daily schedule
-- **Discovery:** `WHERE processed_on > watermark('gold_ig')` with `NOT EXISTS in gold_analyses` guard
+- **Trigger:** downstream of the label pass (`deps=["ig_post_labels"]`), plus daily schedule
+- **Discovery:** dumb drain over `ig_post_labels` (see processed_on semantics above for the query):
+  `enrich_decision IN ('standout','control','floor_filler')` AND `label_version` current
+  AND no current-prompt `gold_analyses` row AND no open `batch_items` row
 - **Action:** creates a `batch_jobs` row and `batch_items` in ops.sqlite (sub-millisecond, no API calls)
-- **Watermark:** advances to `MAX(processed_on)` after batch creation
-- **Empty captions:** skipped (worker handles them — completes without Gemini call)
-- **Re-enrichment:** bypasses watermark; posts with stale `prompt_hash` re-batched directly
+- **Watermark:** none — the `gold_ig` watermark is retired; the drain is stateless over labels
+- **Empty captions:** skipped at the label pass (`enrich_decision='skip'`, US-L6)
+- **Re-enrichment:** explicit `post_ids` bypasses all guards; stale-prompt gold rows re-enqueue automatically
 
 ### enrichment_worker (standalone CLI)
 

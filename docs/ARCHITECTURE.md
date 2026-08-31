@@ -129,13 +129,16 @@ CREATE TABLE watermarks (name TEXT PRIMARY KEY, timestamp TIMESTAMP NOT NULL);
 | Pipeline | Watermark name | What it tracks |
 |---|---|---|
 | Silver | `silver_ig` | Last `processed_on` processed |
-| Enqueue | `gold_ig` | Last `processed_on` enqueued |
 
-Reset a watermark by deleting its row: `DELETE FROM watermarks WHERE name = 'gold_ig'`. The next run reprocesses everything.
+The enqueue (`gold_ig`) watermark is RETIRED (Epic 3): `ig_posts_gen_batches`
+is a stateless drain over the `ig_post_labels` table (triage-approved labels
+without a current-prompt gold analysis or an open batch item). `ig_post_labels`
+is produced daily by the `ig_post_labels` asset (Tukey-fence standout labels,
+self-versioned via `LABEL_VERSION`).
 
 ## `processed_on` semantics
 
-Set only when a post first appears in silver. Never updated on subsequent runs, even when engagement metrics change. This enables true incremental gold processing — only new posts are enqueued each run.
+Set only when a post first appears in silver. Never updated on subsequent runs, even when engagement metrics change.
 
 ## Dead letter
 

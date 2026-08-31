@@ -17,6 +17,7 @@ from dagster import (
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
 from datalake.defs.common.schemas import duckdb_ddl
 from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
+from datalake.defs.instagram.labels import LABEL_VERSION
 
 # ── Gold analyses table DDL ─────────────────────────────────────────────────
 
@@ -73,6 +74,16 @@ def check_enrichment_health(
         enriched = db_conn.execute(
             "SELECT COUNT(*) FROM gold_analyses"
         ).fetchone()[0]
+        approved_unenriched = db_conn.execute("""
+            SELECT COUNT(*) FROM ig_post_labels l
+            WHERE l.enrich_decision IN ('standout', 'control', 'floor_filler')
+              AND l.label_version = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM gold_analyses g
+                  WHERE g.post_id = l.post_id AND g.domain = 'instagram'
+                    AND g.prompt_hash = ?
+              )
+        """, [LABEL_VERSION, CURRENT_PROMPT_HASH]).fetchone()[0]
 
     metadata = {
         "batch_pending": pending,
@@ -80,8 +91,8 @@ def check_enrichment_health(
         "batch_failed": failed,
         "dead_letter_count": dead,
         "gold_analyses_count": enriched,
+        "approved_unenriched": approved_unenriched,
     }
-
     if processing > 20:
         return AssetCheckResult(
             passed=False,
@@ -94,6 +105,16 @@ def check_enrichment_health(
             passed=False,
             metadata=metadata,
             description=f"{dead} items in dead_letter — manual triage needed.",
+        )
+
+    if approved_unenriched > 20:
+        return AssetCheckResult(
+            passed=False,
+            metadata=metadata,
+            description=(
+                f"{approved_unenriched} triage-approved posts are unenriched — "
+                "run ig_posts_gen_batches to drain the admission gate."
+            ),
         )
 
     return AssetCheckResult(passed=True, metadata=metadata)
