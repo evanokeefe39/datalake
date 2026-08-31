@@ -225,7 +225,7 @@ and the schema drift detector catches table mismatches.
 
 Goal: answer research questions about how successful creators start and grow
 (Q1-Q11 in the ref doc), and ultimately produce per-creator channel audits
-benchmarked against their niche. This is a data-acquisition + analysis-design
+benchmarked against their domain. This is a data-acquisition + analysis-design
 issue, not code yet.
 
 **Reference:** `docs/creator-growth-analysis.md` (full design context).
@@ -235,10 +235,10 @@ issue, not code yet.
   profile re-scrape) — the #1 gap; unblocks Q5 and most of Q11.
 - **Wayback CDX smoke test** — confirm/deny Wayback as the free past-backfill
   source for follower history (sparse coverage + UI drift are the risks).
-- **Niche taxonomy** — consistent creator-level labels derived from per-post
+- **Domain / sub-domain taxonomy** — consistent creator-level labels derived from per-post
   gold classifications (Q10/Q11 bucketing key).
 - **Baseline cohort** — matched case-control "ladder" (fail/flat/slow/medium)
-  per niche-platform-era cell; hundreds total, not thousands; outcome spread;
+  per domain-platform-era cell; hundreds total, not thousands; outcome spread;
   controls selected by a principled frame, not opportunism. 20 IG-only beats 20
   split across platforms for IG questions.
 - **Success metric + failure definition** — pin down before building (followers
@@ -250,7 +250,7 @@ issue, not code yet.
 - **6 enabling changes, in leverage order:** GAP-1 `profile_observations` +
   scheduled re-scrape (highest leverage, unblocks Q5/8/9/10/11), GAP-2
   early-history backfill, GAP-3 cohort_labels + baseline recruitment, GAP-4
-  `gold_creator_niche`, GAP-5 structured CTA fields in result_json, GAP-6
+  `gold_creator_domain`, GAP-5 structured CTA fields in result_json, GAP-6
   second-platform sources (deferred).
 - **Merge clusters:** Q5+Q11-velocity; Q9+Q10; Q1+Q4+Q6 (one early_history
   build serves all three); Q2+Q7 (same format/CTA assets).
@@ -391,6 +391,21 @@ add a ``dim_date`` setup in the snapshot test. This predates
   and ``gemini-3.6-flash``. Verify before the next enrichment run.
 - ``GoldConfig`` docstring references ``gold_ig_analyses`` (renamed ``gold_analyses``).
 - ``defs/serving/asset_checks.py`` docstring references ``analytics_views returns rows``.
+
+### 15. Full test suite runtime is long
+
+**Status:** Tracked (2026-08-31) — not a priority, just tracking.
+
+The full suite (`uv run pytest tests/ -q`) now takes **~15-20 minutes**
+(measured 450s / 7.5 min on a clean run, plus warmup; it has exceeded a 600s
+command timeout). Slowest areas are the migrated labels-driven admission tests
+and the enrichment/media-cache tests. Root causes are not yet investigated;
+candidate levers: pytest-xdist parallelization, marking slow E2E tests, or
+splitting unit vs integration/e2e into separate CI jobs.
+
+This is a tracking note only — no action planned until runtime becomes a
+bottleneck. If optimizing, verify that assertion coverage is preserved (do not
+cut tests to save time).
 
 ## Resolved
 

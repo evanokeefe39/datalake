@@ -424,6 +424,7 @@ Set in `.env`:
 - Parquet tests use `tmp_path`
 - One test per behavioral contract, one per edge case
 - **Before writing any asset that reads from disk, read ONE real input file and display its schema.** Don't model against test data. Lesson from Phase 2 false start (2026-06-30).
+- **Full suite is slow (~15-20 min; exceeds a 600s timeout).** Use scoped runs (`uv run pytest <path>`) during work; run the full suite only as a final gate. Tracked as ISSUES.md #15 — not yet prioritized.
 
 ## Decision log
 
