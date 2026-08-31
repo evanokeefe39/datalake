@@ -150,6 +150,33 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "creator_name": Column("VARCHAR"),
         },
     ),
+    "silver_ig_post_observations": Table(
+        columns={
+            "post_id": Column("VARCHAR", not_null=True),
+            "observed_at": Column("TIMESTAMP WITH TIME ZONE", not_null=True),
+            "likes_count": Column("INTEGER"),
+            "comments_count": Column("INTEGER"),
+            "video_view_count": Column("INTEGER"),
+            "video_play_count": Column("INTEGER"),
+            "source_dataset": Column("VARCHAR", not_null=True),
+        },
+        primary_key=("post_id", "source_dataset"),
+    ),
+    "ig_post_labels": Table(
+        columns={
+            "post_id": Column("VARCHAR", primary_key=True),
+            "label": Column("VARCHAR", not_null=True),
+            "method": Column("VARCHAR", not_null=True),
+            "enrich_decision": Column("VARCHAR", not_null=True),
+            "judged_at": Column("TIMESTAMP WITH TIME ZONE", not_null=True),
+            "maturity_days": Column("INTEGER"),  # age at day7 judgment; NULL for day0/pending
+            "is_provisional": Column("BOOLEAN", not_null=True),
+            "label_version": Column("INTEGER", not_null=True),
+            "baseline_center": Column("DOUBLE"),
+            "baseline_spread": Column("DOUBLE"),
+            "baseline_n": Column("INTEGER"),
+        },
+    ),
 }
 
 DUCKDB_VIEWS: list[str] = [

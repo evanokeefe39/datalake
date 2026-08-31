@@ -216,10 +216,52 @@ and the schema drift detector catches table mismatches.
 - [ ] `dim_profile` gains `profile_pic_path TEXT` in `DUCKDB_TABLES`
 - [ ] State readiness test updated and passing
 
-*Tests:* `test_media_cache_schema`, `test_profiles_slv_schema`,
-`test_comments_slv_schema`, `test_dim_profile_schema`
-
 ## Active
+
+### 14. Creator growth analysis — baseline cohort + follower history (Q9-Q11)
+
+**Status:** Proposed (2026-08-31) — design discussion in
+`docs/creator-growth-analysis.md`
+
+Goal: answer research questions about how successful creators start and grow
+(Q1-Q11 in the ref doc), and ultimately produce per-creator channel audits
+benchmarked against their niche. This is a data-acquisition + analysis-design
+issue, not code yet.
+
+**Reference:** `docs/creator-growth-analysis.md` (full design context).
+
+#### What's needed
+- **Follower-count time series** (`profile_observations` table + scheduled
+  profile re-scrape) — the #1 gap; unblocks Q5 and most of Q11.
+- **Wayback CDX smoke test** — confirm/deny Wayback as the free past-backfill
+  source for follower history (sparse coverage + UI drift are the risks).
+- **Niche taxonomy** — consistent creator-level labels derived from per-post
+  gold classifications (Q10/Q11 bucketing key).
+- **Baseline cohort** — matched case-control "ladder" (fail/flat/slow/medium)
+  per niche-platform-era cell; hundreds total, not thousands; outcome spread;
+  controls selected by a principled frame, not opportunism. 20 IG-only beats 20
+  split across platforms for IG questions.
+- **Success metric + failure definition** — pin down before building (followers
+  vs engagement rate vs growth velocity; persisted-but-stalled vs abandoned).
+- **Multi-platform coverage** — TikTok/YouTube sources + cross-platform identity
+  for Q3 (separate creator cohort design).
+
+#### Expert panel gap analysis (2026-08-31) — see ref doc §7-8
+- **6 enabling changes, in leverage order:** GAP-1 `profile_observations` +
+  scheduled re-scrape (highest leverage, unblocks Q5/8/9/10/11), GAP-2
+  early-history backfill, GAP-3 cohort_labels + baseline recruitment, GAP-4
+  `gold_creator_niche`, GAP-5 structured CTA fields in result_json, GAP-6
+  second-platform sources (deferred).
+- **Merge clusters:** Q5+Q11-velocity; Q9+Q10; Q1+Q4+Q6 (one early_history
+  build serves all three); Q2+Q7 (same format/CTA assets).
+- **Drop/deprioritize:** Q3 (blocked on unbuilt sources, near-dup of Q1),
+  Q11 as independent effort (re-scope as a view over Q5+Q10), Q9 standalone
+  recruitment (the matched-ladder embeds it).
+- **Cost verdict:** all questions CHEAP except Q3 (new connectors) and
+  retrospective Q5 (feasibility-limited, NOT dollar-limited — historical
+  0→100→1k curves for small accounts are largely unbuyable). One-time
+  ~$40-160 + steady-state ~$5-10/mo; Gemini video is the dominant cost
+  driver (subsample it); Gemini text on free tier.
 
 ### 4. S3 / R2 storage backend for GitHub Actions
 

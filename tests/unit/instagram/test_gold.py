@@ -61,6 +61,20 @@ def _seed_silver(db, rows):
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS ig_post_labels (
+                post_id VARCHAR PRIMARY KEY,
+                label VARCHAR NOT NULL,
+                method VARCHAR NOT NULL,
+                enrich_decision VARCHAR NOT NULL,
+                judged_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                is_provisional BOOLEAN NOT NULL,
+                label_version INTEGER NOT NULL,
+                baseline_center DOUBLE,
+                baseline_spread DOUBLE,
+                baseline_n INTEGER
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS watermarks (
                 name TEXT PRIMARY KEY, timestamp TIMESTAMP NOT NULL, config_hash TEXT
             )
@@ -72,6 +86,28 @@ def _seed_silver(db, rows):
                 "(post_id, caption, processed_on, timestamp, source_dataset) "
                 "VALUES (?, ?, ?, ?, 'test')",
                 [post_id, caption, ts, ts],
+            )
+
+
+def _seed_labels(db, rows):
+    """Seed ig_post_labels with (post_id, decision, method, version) tuples."""
+    from datetime import datetime as _dt, timezone as _tz
+
+    from datalake.defs.instagram.labels import LABEL_VERSION
+
+    with db.get_connection() as conn:
+        for post_id, decision, method, version in rows:
+            conn.execute(
+                "INSERT OR REPLACE INTO ig_post_labels "
+                "(post_id, label, method, enrich_decision, judged_at, "
+                " is_provisional, label_version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    post_id, "standout" if decision == "standout" else "average",
+                    method, decision,
+                    datetime.now(_tz.utc), method != "day7_matched",
+                    version if version is not None else LABEL_VERSION,
+                ],
             )
 
 
@@ -302,21 +338,23 @@ def test_claim_batch_reclaims_processing_with_pending(tmp_path):
 
 
 def test_enqueue_asset_writes_batch(tmp_path):
-    """GIVEN silver has unenriched posts
+    """GIVEN label-approved posts in silver
     WHEN ig_posts_gen_batches runs
-    THEN a batch is created and watermark advances.
+    THEN a batch is created for the approved posts.
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
 
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "Test caption", now), ("p2", "Another caption", now)])
+    _seed_labels(db, [("p1", "standout", "day7_matched", None),
+                      ("p2", "control", "day0_heuristic", None)])
 
     result = ig_posts_gen_batches(duckdb=db, ops=ops)
 
     assert result["enqueued"][0] == 2
+    assert result["candidates_seen"][0] == 2
 
-    # Verify batch has the items
     batch = claim_batch(ops)
     assert batch is not None
     assert len(batch["payloads"]) == 2
@@ -324,100 +362,138 @@ def test_enqueue_asset_writes_batch(tmp_path):
     assert post_ids == {"p1", "p2"}
 
 
-def test_enqueue_skips_already_enriched(tmp_path):
-    """GIVEN silver has posts that already exist in gold_analyses
+def test_enqueue_skips_current_prompt_enriched(tmp_path):
+    """GIVEN a label-approved post with a CURRENT-prompt gold analysis
     WHEN ig_posts_gen_batches runs
-    THEN those posts are not batched.
+    THEN that post is not re-batched (only stale-prompt rows re-enqueue, US-L5).
     """
+    from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
+
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
 
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "Test caption", now), ("p2", "Already done", now)])
+    _seed_labels(db, [("p1", "standout", "day7_matched", None),
+                      ("p2", "standout", "day7_matched", None)])
 
-    # Mark p2 as already enriched
     with db.get_connection() as conn:
         conn.execute(
-            "INSERT INTO gold_analyses (post_id, domain, analysed_at) "
-            "VALUES (?, 'instagram', ?)",
-            ["p2", now.isoformat()],
+            "INSERT INTO gold_analyses (post_id, domain, prompt_hash, analysed_at) "
+            "VALUES (?, 'instagram', ?, ?)",
+            ["p2", CURRENT_PROMPT_HASH, now.isoformat()],
         )
 
     result = ig_posts_gen_batches(duckdb=db, ops=ops)
 
     assert result["enqueued"][0] == 1
-
     batch = claim_batch(ops)
     assert batch is not None
     post_ids = [json.loads(p)["post_id"] for p in batch["payloads"]]
     assert post_ids == ["p1"]
 
 
-def test_enqueue_skips_empty_caption(tmp_path):
-    """GIVEN silver has posts with empty captions
+def test_enqueue_reenqueues_stale_prompt_gold(tmp_path):
+    """GIVEN a label-approved post whose gold row was written pre-multimodal
+    (stale prompt_hash)
     WHEN ig_posts_gen_batches runs
-    THEN empty-caption posts are not batched.
+    THEN the post IS re-enqueued — no permanent orphaning (US-L5).
+    """
+    db = _make_duckdb(tmp_path)
+    ops = _make_ops_db(tmp_path)
+
+    now = datetime.now(timezone.utc)
+    _seed_silver(db, [("p1", "Test caption", now)])
+    _seed_labels(db, [("p1", "standout", "day7_matched", None)])
+
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO gold_analyses (post_id, domain, prompt_hash, analysed_at) "
+            "VALUES (?, 'instagram', ?, ?)",
+            ["p1", "stale-pre-multimodal-hash", now.isoformat()],
+        )
+
+    result = ig_posts_gen_batches(duckdb=db, ops=ops)
+    assert result["enqueued"][0] == 1
+
+
+def test_enqueue_skips_skip_decision(tmp_path):
+    """GIVEN a post whose label decision is 'skip' (e.g. empty caption —
+    the label pass owns the skip, US-L6)
+    WHEN ig_posts_gen_batches runs
+    THEN the post is not batched.
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
 
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "   ", now)])
+    _seed_labels(db, [("p1", "skip", "day0_heuristic", None)])
 
     result = ig_posts_gen_batches(duckdb=db, ops=ops)
-
     assert result["enqueued"][0] == 0
 
     batch = claim_batch(ops)
     assert batch is None
 
 
-def test_enqueue_no_pending_posts(tmp_path):
-    """GIVEN no unenriched silver posts
+def test_enqueue_skips_open_batch_items(tmp_path):
+    """GIVEN a label-approved post already queued (pending batch item)
     WHEN ig_posts_gen_batches runs
-    THEN it returns an empty DataFrame.
+    THEN the post is not re-enqueued while its item is open.
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
 
-    # Seed schema so the SELECT doesn't fail on missing table
+    now = datetime.now(timezone.utc)
+    _seed_silver(db, [("p1", "Caption", now)])
+    _seed_labels(db, [("p1", "standout", "day7_matched", None)])
+    create_batch(ops, [_pd("p1")])  # stays pending
+
+    result = ig_posts_gen_batches(duckdb=db, ops=ops)
+    assert result["enqueued"][0] == 0
+
+
+def test_enqueue_no_pending_posts(tmp_path):
+    """GIVEN no label-approved posts
+    WHEN ig_posts_gen_batches runs
+    THEN it enqueues nothing.
+    """
+    db = _make_duckdb(tmp_path)
+    ops = _make_ops_db(tmp_path)
+
     _seed_silver(db, [])
 
     result = ig_posts_gen_batches(duckdb=db, ops=ops)
-    assert len(result) == 0
+    assert result["enqueued"][0] == 0
+    assert result["candidates_seen"][0] == 0
 
 
-
-def test_enqueue_post_ids_restricts_batch(tmp_path):
-    """GIVEN posts already past the gold watermark
+def test_enqueue_post_ids_bypasses_guards(tmp_path):
+    """GIVEN posts with current-prompt gold analyses and no labels
     WHEN ig_posts_gen_batches runs with post_ids
-    THEN only the requested posts are batched (watermark bypassed) and the
-         gold watermark is left unchanged.
+    THEN the requested posts are batched regardless (explicit bypass).
     """
+    from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
     from datalake.defs.instagram.config import GoldConfig
 
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
 
     now = datetime.now(timezone.utc)
-    _seed_silver(
-        db,
-        [
-            ("p1", "Caption one", now),
-            ("p2", "Caption two", now),
-            ("p3", "Caption three", now),
-        ],
-    )
+    _seed_silver(db, [
+        ("p1", "Caption one", now),
+        ("p2", "Caption two", now),
+        ("p3", "Caption three", now),
+    ])
 
-    # Advance the gold watermark past all three posts — the normal path skips them.
     with db.get_connection() as conn:
-        conn.execute(
-            "INSERT INTO watermarks (name, timestamp) VALUES ('gold_ig', ?)",
-            [now + timedelta(days=1)],
-        )
-        before = conn.execute(
-            "SELECT timestamp FROM watermarks WHERE name = 'gold_ig'"
-        ).fetchone()[0]
+        for pid in ("p2", "p3"):
+            conn.execute(
+                "INSERT INTO gold_analyses (post_id, domain, prompt_hash, analysed_at) "
+                "VALUES (?, 'instagram', ?, ?)",
+                [pid, CURRENT_PROMPT_HASH, now.isoformat()],
+            )
 
     result = ig_posts_gen_batches(
         config=GoldConfig(post_ids=["p2", "p3"]), duckdb=db, ops=ops
@@ -428,10 +504,3 @@ def test_enqueue_post_ids_restricts_batch(tmp_path):
     assert batch is not None
     post_ids = {json.loads(p)["post_id"] for p in batch["payloads"]}
     assert post_ids == {"p2", "p3"}
-
-    # A targeted run must not advance the gold watermark.
-    with db.get_connection() as conn:
-        after = conn.execute(
-            "SELECT timestamp FROM watermarks WHERE name = 'gold_ig'"
-        ).fetchone()[0]
-    assert after == before

@@ -15,6 +15,7 @@ from .defs.common import (
     PolarsIOManager,
     SQLiteResource,
     daily_medallion,
+    core_refresh,
 )
 from .defs.enrichment import (
     ENRICHMENT_CHECKS,
@@ -24,6 +25,7 @@ from .defs.instagram import (
     ig_checks,
     ig_comments_slv,
     ig_posts_gen_batches,
+    ig_post_labels,
     ig_posts_raw,
     ig_posts_slv,
     ig_profiles_slv,
@@ -50,6 +52,7 @@ all_resources = {
 all_assets = [
     ig_posts_raw,
     ig_posts_slv,
+    ig_post_labels,
     ig_profiles_slv,
     ig_comments_slv,
     ig_posts_gen_batches,
@@ -63,5 +66,5 @@ defs = Definitions(
     assets=all_assets,
     asset_checks=[*ig_checks, *ENRICHMENT_CHECKS, *serving_checks],
     resources=all_resources,
-    schedules=[daily_medallion],
+    schedules=[daily_medallion, core_refresh],
 )

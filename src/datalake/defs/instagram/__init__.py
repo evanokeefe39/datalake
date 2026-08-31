@@ -8,6 +8,7 @@ from .assets import (
     ig_posts_gen_batches,
     ig_posts_raw,
     ig_posts_slv,
+    ig_post_labels,
     ig_profiles_slv,
 )
 from .config import GeminiTier, GeminiTierConfig, GoldConfig, ScrapeConfig
@@ -22,5 +23,6 @@ __all__ = [
     "ig_posts_gen_batches",
     "ig_posts_raw",
     "ig_posts_slv",
+    "ig_post_labels",
     "ig_profiles_slv",
 ]

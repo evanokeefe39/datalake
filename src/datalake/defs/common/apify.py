@@ -101,6 +101,7 @@ def trigger_run(
     token: str,
     results_limit: int = 1,
     results_type: str = "posts",
+    max_charge_usd: float | None = None,
 ) -> RunInfo:
     """Start an actor run. Returns immediately with run_id and dataset_id.
 
@@ -113,7 +114,10 @@ def trigger_run(
         "resultsLimit": results_limit,
         "proxy": {"useApifyProxy": True},
     }
-    result = _post(f"acts/{actor}/runs", token, body=body)
+    query: dict[str, Any] = {}
+    if max_charge_usd is not None:
+        query["maxTotalChargeUsd"] = max_charge_usd
+    result = _post(f"acts/{actor}/runs", token, body=body, **query)
     run_id = result["id"]
     dataset_id = result.get("defaultDatasetId")
     cost = result.get("stats", {}).get("estimatedTotalPriceUsd", 0.0)

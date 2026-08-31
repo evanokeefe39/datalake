@@ -10,6 +10,7 @@ data/media/
 data/*_bak_*
 data/lake/bronze/*.jsonl
 data/lake/bronze/*.meta
+data/investigation/
 __pycache__/
 *.pyc
 .venv/

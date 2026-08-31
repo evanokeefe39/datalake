@@ -18,7 +18,7 @@ from .resources import (
     PolarsIOManager,
     SQLiteResource,
 )
-from .schedules import daily_medallion
+from .schedules import core_refresh, daily_medallion
 
 __all__ = [
     # Resources
@@ -39,4 +39,5 @@ __all__ = [
     "gold_glob",
     # Schedules
     "daily_medallion",
+    "core_refresh",
 ]

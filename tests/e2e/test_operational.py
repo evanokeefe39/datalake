@@ -7,12 +7,14 @@ Per test-hardening plan Phase 3:
 """
 
 from __future__ import annotations
-
 import json
+
+
 from unittest.mock import patch
 
 from dagster import build_asset_context, build_schedule_context
 
+from datalake.defs.common.schemas import duckdb_ddl
 from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.common.schedules import daily_medallion
 from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
@@ -93,18 +95,11 @@ def test_ad_hoc_run_sequence(tmp_path):
 
     db_path = tmp_path / "test.duckdb"
     duckdb_res = DuckDBResource(database=str(db_path))
-    # Create gold_analyses table for the enqueue NOT EXISTS guard
+    # Create state tables for the enqueue drain (labels + gold guard)
     with duckdb_res.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id TEXT NOT NULL,
-                domain TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash TEXT,
-                result_json TEXT,
-                analysed_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
+        for t in ("gold_analyses", "ig_post_labels",
+                  "silver_ig_post_observations"):
+            conn.execute(duckdb_ddl(t))
 
     # Step 1: Write bronze Parquet
     bronze_dir = tmp_path / "bronze"
@@ -114,6 +109,12 @@ def test_ad_hoc_run_sequence(tmp_path):
     # Step 2: Silver deduplication
     result = _run_silver(duckdb_res, ops_db, bronze_dir)
     assert len(result) == 1
+
+    # Step 2b: Label pass — approve p1 for enrichment.
+    from datalake.defs.instagram.labels import run_label_pass
+
+    with duckdb_res.get_connection() as conn:
+        run_label_pass(conn, core_handles={"test"}, bootstrap=True)
 
     # Step 3: Enqueue
     result = _run_enqueue(duckdb_res, ops_db)

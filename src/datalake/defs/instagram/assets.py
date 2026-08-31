@@ -26,6 +26,9 @@ from ..common.resources import (
 from ..common.schemas import SILVER_COLUMNS, duckdb_ddl
 from ..enrichment.media_cache import cache_media_bytes
 from .config import GoldConfig, ScrapeConfig
+from ..enrichment.prompts import CURRENT_PROMPT_HASH
+from .creators import enabled_profiles
+from .labels import APPROVED_DECISIONS, LABEL_VERSION, run_label_pass
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,7 @@ def _write_meta(
     urls: list[str],
     results_limit: int,
     results_type: str,
+    estimated_cost_usd: float = 0.0,
 ) -> None:
     """Write a ``.meta`` JSON sidecar alongside the Parquet file."""
     meta = {
@@ -48,6 +52,7 @@ def _write_meta(
         "dataset_id": dataset_id,
         "actor": actor,
         "item_count": item_count,
+        "estimated_cost_usd": estimated_cost_usd,
         "input": {
             "urls": urls,
             "results_limit": results_limit,
@@ -95,6 +100,27 @@ def _classify_bronze(df: pl.DataFrame, meta_path: Path | None) -> str:
     return "unknown"
 
 
+def _read_downloaded_at(meta_path: Path | None) -> datetime | None:
+    """Read the scrape time from a bronze ``.meta`` sidecar, if present.
+
+    Returns an aware UTC datetime or None when the sidecar is missing or
+    carries no parseable ``downloaded_at``.
+    """
+    if not meta_path or not meta_path.exists():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        raw = meta.get("downloaded_at")
+        if not raw:
+            return None
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (json.JSONDecodeError, ValueError, OSError):
+        return None
+
+
 # ── Asset ─────────────────────────────────────────────────────────────────
 
 
@@ -119,6 +145,7 @@ def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource) -> pl.DataFrame:
         token=apify.token,
         results_limit=config.results_limit,
         results_type=config.results_type,
+        max_charge_usd=config.max_charge_usd,
     )
     dataset_id = poll_run(run.run_id, token=apify.token)
 
@@ -151,6 +178,7 @@ def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource) -> pl.DataFrame:
         config.urls,
         config.results_limit,
         config.results_type,
+        run.estimated_cost_usd,
     )
 
     return df
@@ -243,6 +271,7 @@ def ig_posts_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
     with db.get_connection() as conn:
         conn.execute(duckdb_ddl("silver_ig_posts"))
         conn.execute(duckdb_ddl("watermarks"))
+        conn.execute(duckdb_ddl("silver_ig_post_observations"))
     # ── 2. Find new bronze files (mtime > last watermark) ──────────────────
     import os as _os
 
@@ -382,6 +411,48 @@ def ig_posts_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
         # Drop rows without a valid post_id (failed Apify requests)
         df = df.filter(pl.col("post_id").is_not_null())
 
+        # ── Transient per-file scrape time (US-S1/S2) ─────────────────────
+        # meta.downloaded_at → bronze file mtime. Drives dedup ordering
+        # ("newest scrape wins") and the observations fallback chain; it is
+        # stamped before the union and dropped after dedup so it never
+        # becomes a silver_ig_posts column.
+        scraped_at = _read_downloaded_at(meta_path) or datetime.fromtimestamp(
+            mtime, tz=timezone.utc
+        )
+        df = df.with_columns(pl.lit(scraped_at).alias("scraped_at"))
+
+        # ── Observations append (US-S2) ───────────────────────────────────
+        # One row per post per bronze file, before dedup. observed_at
+        # fallback: meta.downloaded_at → file mtime → processed_on (last
+        # resort, logged). INSERT OR IGNORE on PK (post_id, source_dataset)
+        if "processed_on" in df.columns:
+            obs_at_expr = pl.coalesce(
+                pl.lit(scraped_at),
+                pl.col("processed_on").cast(pl.Datetime("us", "UTC"), strict=False),
+            )
+        else:
+            obs_at_expr = pl.lit(scraped_at)
+        obs = df.select(
+            "post_id",
+            obs_at_expr.alias("observed_at"),
+            *(pl.col(c) if c in df.columns else pl.lit(None).alias(c) for c in
+              ("likes_count", "comments_count", "video_view_count", "video_play_count")),
+            pl.lit(dataset_id).alias("source_dataset"),
+        )
+        obs_arrow = obs.to_arrow()
+        with db.get_connection() as conn:
+            conn.register("obs_new", obs_arrow)
+            conn.execute(
+                "INSERT OR IGNORE INTO silver_ig_post_observations "
+                "SELECT post_id, observed_at, likes_count, comments_count, "
+                "video_view_count, video_play_count, source_dataset FROM obs_new"
+            )
+            appended = conn.execute("SELECT COUNT(*) FROM obs_new").fetchone()[0]
+        logger.info(
+            "Observation candidates from %s: %d rows (scraped_at=%s)",
+            f.name, appended, scraped_at,
+        )
+
         frames.append(df)
     # ── 4. Load existing silver from DuckDB ───────────────────────────────
     existing_count = 0
@@ -420,10 +491,14 @@ def ig_posts_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
         deduped_arrow = conn.execute("""
             SELECT DISTINCT ON(post_id) *
             FROM unified
-            ORDER BY post_id, timestamp DESC NULLS LAST, source_dataset DESC
+            ORDER BY post_id, scraped_at DESC NULLS LAST, source_dataset DESC
         """).arrow()
 
     deduped = pl.from_arrow(deduped_arrow)
+
+    # scraped_at is transient — it drives dedup ordering and observation
+    # provenance but must never become a silver_ig_posts column.
+    deduped = deduped.drop("scraped_at")
 
     # Only stamp processed_on on genuinely new posts (existing keep their value)
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -453,6 +528,38 @@ def ig_posts_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
 
 
 # ── Entity-specific assets ────────────────────────────────────────────────
+
+
+@asset(
+    name="ig_post_labels",
+    group_name="instagram",
+    description=(
+        "Tukey-fence standout labels + triage decisions per post "
+        "(daily; self-versioned via LABEL_VERSION)."
+    ),
+    deps=["ig_posts_slv"],
+)
+def ig_post_labels(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
+    """Stamp ``ig_post_labels`` for every silver post (plan §4 rule table).
+
+    Reads the latest non-sentinel observation per post, judges against the
+    trailing Tukey baseline, and upserts labels. Provisional day0 labels
+    upgrade exactly once to day7 when a core post matures; day7 labels are
+    immutable. Idempotent — re-running with no new data is a no-op.
+    """
+    _ensure_state_tables(duckdb)
+    core_handles = {
+        (p["handle"] or "").lower().lstrip("@")
+        for p in enabled_profiles(ops)
+        if p["platform"] == "instagram" and p["tier"] == "tier1"
+    }
+    with duckdb.get_connection() as conn:
+        stats = run_label_pass(conn, core_handles=core_handles)
+        labels = pl.from_arrow(
+            conn.execute("SELECT * FROM ig_post_labels").arrow().read_all()
+        )
+    logger.info("ig_post_labels pass: %s", stats)
+    return labels
 
 
 @asset(
@@ -697,23 +804,30 @@ def ig_comments_slv(duckdb: DuckDBResource) -> pl.DataFrame:
 @asset(
     name="ig_posts_gen_batches",
     group_name="instagram",
-    description="Enqueue unenriched silver posts for async Gemini enrichment.",
-    deps=["ig_posts_slv"],
+    description="Drain triage-approved labels into Gemini enrichment batches.",
+    deps=["ig_post_labels"],
 )
 def ig_posts_gen_batches(
     config: GoldConfig,
     duckdb: DuckDBResource,
     ops: SQLiteResource,
 ) -> pl.DataFrame:
-    """Read unenriched silver posts, create a batch, advance watermark.
+    """Drain label-approved posts into a Gemini batch.
 
-    Builds Gemini-consumer payloads: ``{"post_id": ..., "domain": "instagram"}``.
-    Does NOT call Gemini — the enrichment worker handles that async.
-    Watermark advances once after all posts are batched.
+    Dumb drain over ``ig_post_labels`` (US-L4): any post whose label pass
+    approved it for enrichment (standout / control / floor_filler) that has
+    no current-prompt gold analysis and no open batch item is enqueued.
+    The ``gold_ig`` watermark is retired — the labels table is the discovery
+    source. Explicit ``post_ids`` re-enrichment bypasses all guards.
+
+    Stale gold rows (prompt_hash != CURRENT_PROMPT_HASH, e.g. pre-multimodal
+    text-only analyses) are re-enqueue-eligible (US-L5) — only a current
+    prompt_hash blocks. Empty-caption posts never reach this asset: the
+    label pass sets enrich_decision='skip' for them (US-L6).
     """
     import json
 
-    from datalake.defs.enrichment.batch import create_batch
+    from datalake.defs.enrichment.batch import _ensure_schema, create_batch
 
     db = duckdb
     _ensure_state_tables(db)
@@ -722,56 +836,65 @@ def ig_posts_gen_batches(
 
     with db.get_connection() as conn:
         if post_ids:
-            # Targeted re-enrichment: ad-hoc post_ids bypass the watermark and
-            # the NOT EXISTS guard (re-process already-enriched posts).
+            # Targeted re-enrichment: ad-hoc post_ids bypass labels, the
+            # gold guard, and open-batch guards (re-process at will).
             pending = conn.execute(
-                """SELECT sp.post_id, sp.caption, sp.processed_on
+                """SELECT sp.post_id
                    FROM silver_ig_posts sp
                    WHERE list_contains(?, sp.post_id)""",
                 [post_ids],
             ).fetchall()
+            candidates = [r[0] for r in pending]
+            candidates_seen = len(candidates)
         else:
-            # Normal incremental path: watermark + not-yet-enriched guard.
-            pending = conn.execute("""
-                SELECT sp.post_id, sp.caption, sp.processed_on
-                FROM silver_ig_posts sp
-                WHERE sp.processed_on > COALESCE(
-                    (SELECT timestamp FROM watermarks WHERE name = 'gold_ig'),
-                    '1970-01-01'::TIMESTAMP
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM gold_analyses
-                    WHERE post_id = sp.post_id AND domain = 'instagram'
-                )
-            """).fetchall()
+            candidates = [
+                r[0]
+                for r in conn.execute(
+                    """
+                    SELECT l.post_id
+                    FROM ig_post_labels l
+                    WHERE l.enrich_decision IN ('standout', 'control', 'floor_filler')
+                      AND l.label_version = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM gold_analyses g
+                          WHERE g.post_id = l.post_id
+                            AND g.domain = 'instagram'
+                            AND g.prompt_hash = ?
+                      )
+                    """,
+                    [LABEL_VERSION, CURRENT_PROMPT_HASH],
+                ).fetchall()
+            ]
+            candidates_seen = len(candidates)
 
-    if not pending:
-        return pl.DataFrame({"enqueued": pl.Series([], dtype=pl.Int32)})
+    _ensure_schema(ops)
+    if candidates:
+        ops_conn = ops.get_connection()
+        try:
+            open_ids = {
+                (json.loads(r[0]) or {}).get("post_id")
+                for r in ops_conn.execute(
+                    "SELECT payload FROM batch_items "
+                    "WHERE status IN ('pending', 'processing')"
+                ).fetchall()
+            }
+        finally:
+            ops_conn.close()
+        candidates = [pid for pid in candidates if pid not in open_ids]
 
-    # Collect post_ids with non-empty captions, build Gemini payloads
-    payloads = []
-    max_processed = None
-    for post_id, caption, processed_on in pending:
-        if not (caption or "").strip():
-            continue
-        payloads.append(json.dumps({"post_id": post_id, "domain": "instagram"}))
-        if max_processed is None or processed_on > max_processed:
-            max_processed = processed_on
+    payloads = [
+        json.dumps({"post_id": pid, "domain": "instagram"}) for pid in candidates
+    ]
 
-    # Create single batch for all posts
     if payloads:
         create_batch(ops, payloads, consumer="gemini")
 
-    # Advance the watermark only on the incremental path — a targeted post_ids
-    # run must not mark other posts as processed.
-    if not post_ids and max_processed is not None:
-        with db.get_connection() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO watermarks (name, timestamp) VALUES ('gold_ig', ?)",
-                [max_processed],
-            )
-
-    return pl.DataFrame({"enqueued": pl.Series([len(payloads)], dtype=pl.Int32)})
+    return pl.DataFrame(
+        {
+            "enqueued": pl.Series([len(payloads)], dtype=pl.Int32),
+            "candidates_seen": pl.Series([candidates_seen], dtype=pl.Int32),
+        }
+    )
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────
@@ -782,6 +905,8 @@ def _ensure_state_tables(db: DuckDBResource) -> None:
     with db.get_connection() as conn:
         for name in (
             "gold_analyses",
+            "ig_post_labels",
+            "silver_ig_post_observations",
             "watermarks",
             "silver_ig_profiles",
             "silver_ig_comments",

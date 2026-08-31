@@ -22,6 +22,7 @@ class ScrapeConfig(Config):
     urls: list[str]
     results_limit: int = 12
     results_type: ResultsType = ResultsType.POSTS
+    max_charge_usd: float | None = None
 
 
 class GoldConfig(Config):
