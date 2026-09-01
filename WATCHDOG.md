@@ -64,3 +64,36 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
 - `tests/unit/enrichment/test_media_cache.py` mocks `google.genai.Client`; keep
   the File API upload path exercised there so the CDN-vs-cache branch stays
   covered.
+
+## Second bronze producers (local/ad-hoc ingestion)
+
+- **New scrape source = candidate second bronze producer, never a bootstrap
+  script.** A one-off "import this data" script duplicates the producer and
+  bypasses the watermark + dedup path — the duplicate codepath rots and the
+  data sits outside incremental discovery. If the target layer has a producer
+  contract (bronze does: Parquet + `.parquet.meta`), add a producer to it.
+  See `docs/BRONZE_SCHEMA.md` (Bronze Layer Contract) and ISSUES.md #16.
+- **Write-once is load-bearing for bronze discovery.** Silver globs all
+  `*.parquet` and filters on `mtime > watermarks['silver_ig']`. Rewriting an
+  existing bronze file (fixing rows, recompressing, re-running a producer)
+  bumps mtime and re-triggers full silver processing of that file. New data =
+  new file; never rewrite.
+- **Local producer files are `local_<dataset_id>`-prefixed.** 3 local dataset
+  ids collide with existing Apify ids; the prefix preserves provenance. Silver
+  dedup (`DISTINCT ON(post_id) ... ORDER BY scraped_at DESC, source_dataset
+  DESC`) makes the overlap harmless — do not "fix" it by renaming or deleting
+  either side.
+- **Media seeding must not re-download.** Instagram CDN URLs for the ad-hoc
+  posts are expired. Seed `media_cache` by copying existing local bytes into
+  `POST_MEDIA_DIR` keyed `sha256(url)`. `media_cache` is URL-keyed, not
+  content-keyed — a regenerated CDN URL is a cache miss by design; do not
+  "fix" expiry by re-fetching at pipeline time.
+- **`results_limit = -1` is the ad-hoc sentinel.** It means "already
+  ingested, not continuously scraped": `creators.py` validation must accept
+  it and `enabled_profiles` must treat it as don't-schedule. Rejecting it as
+  invalid — or "helpfully" scheduling a -1 profile — resubmits the entire
+  ad-hoc corpus to Apify.
+- **DuckDB is single-writer.** The enrichment worker POSTs materializations
+  rather than writing `state.duckdb` directly, and silver writes are
+  serialized through Dagster. A new producer must not open its own write
+  connection to state — bronze stays Parquet-only (Polars).

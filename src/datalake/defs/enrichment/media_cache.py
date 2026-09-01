@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import urllib.request
 from datetime import datetime, timezone
@@ -170,6 +171,67 @@ def cache_media_bytes(
         conn.close()
 
     logger.info("cached %s → %s", media_url[:80], dest.name)
+    return str(dest)
+
+
+_CONTENT_TYPE_BY_EXT = {v: k for k, v in _EXT_BY_MIME.items()}
+
+
+def seed_media_from_file(
+    ops: SQLiteResource,
+    media_url: str,
+    src_path: Path,
+    *,
+    media_dir: Path | None = None,
+) -> str | None:
+    """Seed ``media_cache`` from an existing local file — no download.
+
+    A SEED, not a fetch: copies already-downloaded bytes into the
+    ``POST_MEDIA_DIR`` cache keyed by sha256(url) so the cache is
+    self-contained (the source checkout may move or disappear). Use for
+    local-disk ingestion where the CDN URLs in the metadata are already
+    stale/expiring and re-downloading is both wasteful and lossy.
+
+    Idempotent: returns the cached path when the URL is already cached.
+    Returns None when the source file is missing (caller decides severity).
+    """
+    _ensure_media_cache_table(ops)
+    existing = cached_local_path(ops, media_url)
+    if existing:
+        return existing
+    if not src_path.exists():
+        logger.warning("seed: source missing for %s: %s", media_url[:80], src_path)
+        return None
+
+    cache_key = url_hash(media_url)
+    ext = src_path.suffix.lower()
+    content_type = _CONTENT_TYPE_BY_EXT.get(ext, "application/octet-stream")
+    dest = (media_dir or POST_MEDIA_DIR) / f"{cache_key}{ext}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    shutil.copyfile(src_path, tmp)
+    os.replace(tmp, dest)
+
+    conn = ops.get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO media_cache "
+            "(cache_key, local_path, content_type, size_bytes, fetched_at, source_url) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                cache_key,
+                str(dest),
+                content_type,
+                dest.stat().st_size,
+                datetime.now(timezone.utc).isoformat(),
+                media_url,
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    logger.info("seeded %s → %s", media_url[:80], dest.name)
     return str(dest)
 
 
