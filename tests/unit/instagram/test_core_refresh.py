@@ -86,6 +86,7 @@ def _invoke_bronze(tmp_path, config) -> None:
             build_asset_context(),
             config=config,
             apify=_FakeApifyResource(),
+            ops=SQLiteResource(database=str(tmp_path / "ops.sqlite")),
         )
     assert trigger.call_args.kwargs["max_charge_usd"] == config.max_charge_usd
 

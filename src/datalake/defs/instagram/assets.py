@@ -129,11 +129,14 @@ def _read_downloaded_at(meta_path: Path | None) -> datetime | None:
     group_name="instagram",
     description="Apify Instagram scrape → typed Parquet in bronze lake.",
 )
-def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource) -> pl.DataFrame:
+def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource, ops: SQLiteResource) -> pl.DataFrame:
     """Scrape Instagram profiles via Apify, store as typed Parquet.
 
-    Idempotent: if the Parquet file already exists for the dataset_id,
-    re-reads and returns it without re-downloading.
+    Media bytes are cached into ``media_cache`` at scrape time (ingestion),
+    while the CDN URLs are still fresh — the enrichment worker later uploads
+    from those local bytes. Silver never caches; producers own ingestion-time
+    caching. Idempotent: if the Parquet file already exists for the dataset_id,
+    re-reads and returns it without re-downloading or re-caching.
     """
     if not apify.token:
         raise RuntimeError("Apify API token is empty — set APIFY_API_TOKEN")
@@ -166,7 +169,18 @@ def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource) -> pl.DataFrame:
         df = pl.read_ndjson(ndjson_path)
         df.write_parquet(dest)
 
-    # 4. Cleanup + metadata
+    # 4. Cache media bytes at ingestion while the CDN URLs are fresh.
+    #    Silver is a pure transform (no network); producers own caching.
+    if len(df) > 0:
+        media_df = _derive_media(df)
+        seen_urls: set[str] = set()
+        for media_files_json in media_df["media_files"].to_list():
+            for url in json.loads(media_files_json or "[]"):
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    cache_media_bytes(ops, url)
+
+    # 5. Cleanup + metadata
     if ndjson_path.exists():
         ndjson_path.unlink()
     _write_meta(
@@ -379,11 +393,13 @@ def _derive_media(df: pl.DataFrame) -> pl.DataFrame:
     description="Dedup bronze posts → silver Parquet + DuckDB state.",
     deps=["ig_posts_raw", "ig_posts_local_raw"],
 )
-def ig_posts_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
+def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     """Read unprocessed bronze files, dedup via DuckDB DISTINCT ON, persist.
 
-    Idempotent: re-running with no new bronze files is a no-op (returns
-    the existing silver DataFrame).
+    PURE TRANSFORM — no network I/O and no media caching. Producers
+    (``ig_posts_raw``, ``ig_posts_local_raw``) cache media bytes at ingestion
+    while CDN URLs are fresh. Idempotent: re-running with no new bronze files
+    is a no-op (returns the existing silver DataFrame).
     """
 
     # ── 1. Ensure state tables exist ──────────────────────────────────────
@@ -469,16 +485,6 @@ def ig_posts_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
         # Derive media_files/media_count from bronze media columns (video,
         # carousel images, single display image) before dropping the extras.
         df = _derive_media(df)
-
-        # Cache media bytes at scrape time so the enrichment worker never
-        # depends on the expiring CDN. Best-effort: failures are logged and
-        # the worker falls back to a live download on a cache miss.
-        seen_urls: set[str] = set()
-        for media_files_json in df["media_files"].to_list():
-            for url in json.loads(media_files_json or "[]"):
-                if url not in seen_urls:
-                    seen_urls.add(url)
-                    cache_media_bytes(ops, url)
 
         # Coalesce owner_username from username when ownerUsername is null or missing.
         # Profile-scraped rows have the author's handle in username, not ownerUsername
