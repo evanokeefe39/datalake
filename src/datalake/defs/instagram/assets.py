@@ -24,10 +24,10 @@ from ..common.resources import (
     SQLiteResource,
 )
 from ..common.schemas import SILVER_COLUMNS, duckdb_ddl
-from ..enrichment.media_cache import cache_media_bytes
-from .config import GoldConfig, ScrapeConfig
+from ..enrichment.media_cache import cache_media_bytes, seed_media_from_file
+from .config import LOCAL_INGEST_DIR, GoldConfig, ScrapeConfig
 from ..enrichment.prompts import CURRENT_PROMPT_HASH
-from .creators import enabled_profiles
+from .creators import AD_HOC_LIMIT, enabled_profiles
 from .labels import APPROVED_DECISIONS, LABEL_VERSION, run_label_pass
 
 logger = logging.getLogger(__name__)
@@ -129,11 +129,14 @@ def _read_downloaded_at(meta_path: Path | None) -> datetime | None:
     group_name="instagram",
     description="Apify Instagram scrape → typed Parquet in bronze lake.",
 )
-def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource) -> pl.DataFrame:
+def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource, ops: SQLiteResource) -> pl.DataFrame:
     """Scrape Instagram profiles via Apify, store as typed Parquet.
 
-    Idempotent: if the Parquet file already exists for the dataset_id,
-    re-reads and returns it without re-downloading.
+    Media bytes are cached into ``media_cache`` at scrape time (ingestion),
+    while the CDN URLs are still fresh — the enrichment worker later uploads
+    from those local bytes. Silver never caches; producers own ingestion-time
+    caching. Idempotent: if the Parquet file already exists for the dataset_id,
+    re-reads and returns it without re-downloading or re-caching.
     """
     if not apify.token:
         raise RuntimeError("Apify API token is empty — set APIFY_API_TOKEN")
@@ -166,7 +169,18 @@ def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource) -> pl.DataFrame:
         df = pl.read_ndjson(ndjson_path)
         df.write_parquet(dest)
 
-    # 4. Cleanup + metadata
+    # 4. Cache media bytes at ingestion while the CDN URLs are fresh.
+    #    Silver is a pure transform (no network); producers own caching.
+    if len(df) > 0:
+        media_df = _derive_media(df)
+        seen_urls: set[str] = set()
+        for media_files_json in media_df["media_files"].to_list():
+            for url in json.loads(media_files_json or "[]"):
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    cache_media_bytes(ops, url)
+
+    # 5. Cleanup + metadata
     if ndjson_path.exists():
         ndjson_path.unlink()
     _write_meta(
@@ -182,6 +196,126 @@ def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource) -> pl.DataFrame:
     )
 
     return df
+
+
+# ── Local ad-hoc bronze producer ───────────────────────────────────────────
+
+
+def _local_post_media_pairs(post: dict, post_dir: Path) -> list[tuple[str, Path]]:
+    """Map a post's media URLs to the local files the scrape saved.
+
+    Position/type mapping of the scrape-ig-saved-list layout:
+    ``videoUrl`` → ``video.mp4``; ``images[i]`` → ``media_{i:02d}.jpg``;
+    ``displayUrl`` → ``media_00.jpg`` when there is no images list.
+    Posts without media yield an empty list (null-skip — never an error).
+
+    A video post (``videoUrl`` present, ``images`` empty) maps ONLY to its
+    ``video.mp4`` — its ``displayUrl`` is the poster frame, not a separate
+    file the scrape downloaded. Mapping it to ``media_00.jpg`` would log a
+    spurious "source missing" on every run.
+    """
+    if post.get("videoUrl"):
+        return [(post["videoUrl"], post_dir / "video.mp4")]
+    pairs: list[tuple[str, Path]] = []
+    images = post.get("images") or []
+    if images:
+        for i, url in enumerate(images):
+            if url:
+                pairs.append((url, post_dir / f"media_{i:02d}.jpg"))
+    elif post.get("displayUrl"):
+        pairs.append((post["displayUrl"], post_dir / "media_00.jpg"))
+    return pairs
+
+
+@asset(
+    name="ig_posts_local_raw",
+    group_name="instagram",
+    description="Local ad-hoc scrape dumps → bronze Parquet (write-once) + media seeding.",
+)
+def ig_posts_local_raw(ops: SQLiteResource) -> pl.DataFrame:
+    """Ingest local ad-hoc scrape dumps as a second bronze producer.
+
+    Reads ``<LOCAL_INGEST_DIR>/<dataset_id>/<post_id>/post_metadata.json``
+    (raw Apify camelCase wire format) and writes one bronze Parquet per
+    dataset as ``local_<dataset_id>`` — the ``local_`` prefix namespaces
+    dataset_ids that overlap with existing Apify bronze files, while
+    silver's post_id dedup makes the redundancy harmless.
+
+    WRITE-ONCE: a dataset whose ``local_<id>.parquet`` already exists is
+    never rewritten — silver's mtime watermark treats a rewrite as new
+    data and would re-ingest stale rows. Re-runs with no new datasets are
+    a no-op for bronze.
+
+    Media seeding: a separate idempotent pass (sha256(url)-keyed cache rows)
+    copies the already-downloaded media files into the scrape-time byte
+    cache instead of re-downloading expiring CDN URLs. It runs over ALL
+    datasets every materialization so an interrupted run self-heals; posts
+    without media (or with missing local files) are skipped silently.
+    """
+    frames: list[pl.DataFrame] = []
+    if not LOCAL_INGEST_DIR.exists():
+        logger.warning("Local ingest dir missing: %s", LOCAL_INGEST_DIR)
+        return pl.DataFrame()
+
+    for dataset_dir in sorted(p for p in LOCAL_INGEST_DIR.iterdir() if p.is_dir()):
+        dataset_id = f"local_{dataset_dir.name}"
+        dest = bronze_path(dataset_id)
+        if dest.exists():
+            # Write-once: never touch an existing bronze file — silver's
+            # mtime watermark would re-ingest it with stale data.
+            frames.append(pl.read_parquet(dest))
+        else:
+            post_files = sorted(dataset_dir.glob("*/post_metadata.json"))
+            rows = [json.loads(p.read_text(encoding="utf-8")) for p in post_files]
+            if not rows:
+                logger.warning("Skipping %s — no post_metadata.json found", dataset_dir.name)
+                continue
+
+            # NDJSON roundtrip mirrors ig_posts_raw's proven read path for
+            # the same wire format. infer_schema_length=None scans ALL rows:
+            # sparse fields (e.g. a caption-like column null for the first
+            # N posts) otherwise infer as NULL and a later non-null row
+            # raises ComputeError.
+            ndjson_path = BRONZE_LAKE / f"{dataset_id}.jsonl"
+            ndjson_path.write_text(
+                "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+            )
+            try:
+                df = pl.read_ndjson(ndjson_path, infer_schema_length=None)
+                df.write_parquet(dest)
+            finally:
+                if ndjson_path.exists():
+                    ndjson_path.unlink()
+
+            profile_urls = sorted(
+                {
+                    f"https://www.instagram.com/{row.get('ownerUsername')}/"
+                    for row in rows
+                    if row.get("ownerUsername")
+                }
+            ) or [f"file://{dataset_dir.as_posix()}"]
+            _write_meta(
+                dest,
+                run_id="local-adhoc",
+                dataset_id=dataset_id,
+                actor="local-disk",
+                item_count=len(df),
+                urls=profile_urls,
+                results_limit=AD_HOC_LIMIT,
+                results_type="posts",
+            )
+            logger.info("Ingested local dataset %s: %d posts", dataset_id, len(df))
+            frames.append(df)
+
+        # Media seeding pass — idempotent per URL, self-healing on re-runs.
+        for post_file in sorted(dataset_dir.glob("*/post_metadata.json")):
+            row = json.loads(post_file.read_text(encoding="utf-8"))
+            for url, src in _local_post_media_pairs(row, post_file.parent):
+                seed_media_from_file(ops, url, src)
+
+    if not frames:
+        return pl.DataFrame()
+    return pl.concat(frames, how="diagonal_relaxed")
 
 
 # ── Silver asset ──────────────────────────────────────────────────────────
@@ -257,13 +391,15 @@ def _derive_media(df: pl.DataFrame) -> pl.DataFrame:
     name="ig_posts_slv",
     group_name="instagram",
     description="Dedup bronze posts → silver Parquet + DuckDB state.",
-    deps=["ig_posts_raw"],
+    deps=["ig_posts_raw", "ig_posts_local_raw"],
 )
-def ig_posts_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
+def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     """Read unprocessed bronze files, dedup via DuckDB DISTINCT ON, persist.
 
-    Idempotent: re-running with no new bronze files is a no-op (returns
-    the existing silver DataFrame).
+    PURE TRANSFORM — no network I/O and no media caching. Producers
+    (``ig_posts_raw``, ``ig_posts_local_raw``) cache media bytes at ingestion
+    while CDN URLs are fresh. Idempotent: re-running with no new bronze files
+    is a no-op (returns the existing silver DataFrame).
     """
 
     # ── 1. Ensure state tables exist ──────────────────────────────────────
@@ -349,16 +485,6 @@ def ig_posts_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
         # Derive media_files/media_count from bronze media columns (video,
         # carousel images, single display image) before dropping the extras.
         df = _derive_media(df)
-
-        # Cache media bytes at scrape time so the enrichment worker never
-        # depends on the expiring CDN. Best-effort: failures are logged and
-        # the worker falls back to a live download on a cache miss.
-        seen_urls: set[str] = set()
-        for media_files_json in df["media_files"].to_list():
-            for url in json.loads(media_files_json or "[]"):
-                if url not in seen_urls:
-                    seen_urls.add(url)
-                    cache_media_bytes(ops, url)
 
         # Coalesce owner_username from username when ownerUsername is null or missing.
         # Profile-scraped rows have the author's handle in username, not ownerUsername

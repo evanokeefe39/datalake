@@ -23,6 +23,16 @@ from datetime import datetime, timezone
 from ..common.resources import SQLiteResource
 from ..common.schemas import sqlite_ddl
 
+# Depth sentinel for ad-hoc (non-continuous) local ingestion: the profile's
+# posts were ingested once from disk; never schedule a continuous scrape.
+AD_HOC_LIMIT = -1
+
+
+def is_ad_hoc(results_limit: int) -> bool:
+    """True when ``results_limit`` marks an ad-hoc (non-continuous) profile."""
+    return results_limit == AD_HOC_LIMIT
+
+
 # Default depth for a newly added profile (one post's worth of detail).
 DEFAULT_DEPTH = 1
 
@@ -189,8 +199,8 @@ def add_profile(
     profile_url: str | None = None,
 ) -> dict:
     """Insert or replace a profile for a creator (upsert on platform+handle)."""
-    if results_limit < 1:
-        raise ValueError("depth must be ≥ 1")
+    if results_limit != AD_HOC_LIMIT and results_limit < 1:
+        raise ValueError("depth must be ≥ 1, or -1 (AD_HOC_LIMIT) for ad-hoc ingestion")
     ensure_schema(ops)
     handle = handle.strip().lstrip("@")
     if not handle:
@@ -264,8 +274,8 @@ def edit_depth(
     ops: SQLiteResource, *, platform: str, handle: str, results_limit: int
 ) -> dict | None:
     """Change a profile's depth. Returns the updated row, or ``None`` if absent."""
-    if results_limit < 1:
-        raise ValueError("depth must be ≥ 1")
+    if results_limit != AD_HOC_LIMIT and results_limit < 1:
+        raise ValueError("depth must be ≥ 1, or -1 (AD_HOC_LIMIT) for ad-hoc ingestion")
     ensure_schema(ops)
     conn = ops.get_connection()
     try:
@@ -321,15 +331,27 @@ def remove_profile(ops: SQLiteResource, *, platform: str, handle: str) -> None:
         conn.close()
 
 
-def enabled_profiles(ops: SQLiteResource) -> list[dict]:
-    """Return enabled profiles for datalake ingestion."""
+def enabled_profiles(ops: SQLiteResource, *, include_ad_hoc: bool = False) -> list[dict]:
+    """Return enabled profiles for datalake ingestion.
+
+    Ad-hoc profiles (``results_limit = AD_HOC_LIMIT``) are excluded by
+    default: they were already ingested from local disk and must never be
+    scheduled for a continuous Apify scrape. Pass ``include_ad_hoc=True``
+    when the caller needs the full roster regardless of scrape mode.
+    """
     ensure_schema(ops)
     conn = ops.get_connection()
     try:
-        rows = conn.execute(
+        sql = (
             "SELECT platform, handle, profile_url, results_type, results_limit, tier "
-            "FROM profiles WHERE enabled = 1 ORDER BY handle"
-        ).fetchall()
+            "FROM profiles WHERE enabled = 1"
+        )
+        params: list = []
+        if not include_ad_hoc:
+            sql += " AND results_limit != ?"
+            params.append(AD_HOC_LIMIT)
+        sql += " ORDER BY handle"
+        rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()

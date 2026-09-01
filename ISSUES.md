@@ -407,6 +407,76 @@ This is a tracking note only — no action planned until runtime becomes a
 bottleneck. If optimizing, verify that assertion coverage is preserved (do not
 cut tests to save time).
 
+
+### 16. Local-disk ad-hoc ingestion as first-class bronze source
+
+**Status:** Current actionable workstream (2026-09-01).
+**Branch:** `feat/ig-local-ingestion`
+**Plan:** `tasks/plans/ig-local-ingestion.md`
+**Origin:** #14 — the creator-growth baseline cohort needs the ad-hoc
+saved-list posts; this issue makes them a first-class bronze producer instead
+of a one-off import.
+
+#### Intent
+
+The repo has 10 local dataset ids (9,465 posts; 9,413 with media, 52 without)
+on local disk at
+`C:/Users/evano/repos/scrape-ig-saved-list/data/ingest/<dataset_id>/<post_id>/post_metadata.json`.
+Make local-disk ingestion a **second bronze producer** under the existing
+producer-agnostic bronze contract (`docs/BRONZE_SCHEMA.md`) — not a bootstrap
+or one-off migration script. Silver already classifies by
+`input.results_type`, globs all `*.parquet` against the `silver_ig` watermark,
+and dedups via `DISTINCT ON(post_id) ... ORDER BY scraped_at DESC,
+source_dataset DESC`, so a `local_`-prefixed Parquet with
+`results_type="posts"` is picked up with **zero silver changes**.
+
+This is a NEW SOURCE RULE case: a new scrape source is a candidate second
+bronze producer on the existing contract. A bootstrap script would duplicate
+the producer and bypass watermark/dedup.
+
+#### Locked design decisions
+
+1. **`local_<dataset_id>` file naming.** The local producer namespaces every
+   file `local_<dataset_id>` (e.g. `local_abc123.parquet`). This preserves
+   provenance for the 3 dataset ids that overlap existing Apify ids; silver
+   dedup makes the redundancy harmless. Used consistently for ALL local
+   files.
+2. **Media seeding, not re-downloading.** Seed `media_cache` rows pointing at
+   the EXISTING local media files (copy bytes into `POST_MEDIA_DIR`, keyed
+   `sha256(url)`), never re-download from the Instagram CDN (those URLs are
+   expired). The 52 no-media posts land with nullable media fields and skip
+   seeding cleanly.
+3. **`results_limit = -1` ad-hoc sentinel.** `profiles.results_limit = -1`
+   means "ad hoc" — data already ingested, not a continuous scrape target.
+   `creators.py` currently rejects limits < 1 (relaxed to accept -1);
+   `enabled_profiles` treats -1 as don't-schedule.
+
+#### Acceptance criteria
+
+- [ ] Local producer writes `local_<dataset_id>.parquet` + `.parquet.meta`
+      sidecar with `input.results_type="posts"` for all 10 dataset ids
+- [ ] Silver `ig_posts_slv` picks up local files with no code change (mtime >
+      watermark `silver_ig`)
+- [ ] Dedup keeps one row per `post_id`; `source_dataset = local_<dataset_id>`
+      preserved; the 3 overlapping Apify ids resolve deterministically
+- [ ] `media_cache` seeded from local bytes for the 9,413 posts with media;
+      the 52 no-media posts handled without error
+- [ ] `profiles.results_limit = -1` accepted by `creators.py` and never
+      scheduled by `enabled_profiles`
+- [ ] Producer is write-once and idempotent: a re-run on unchanged data adds
+      no new bronze files and does not re-trigger silver
+- [ ] `ig_posts_raw` (Apify producer) untouched
+
+#### Non-goals
+
+- **No change to `ig_posts_raw`** — its config, code, and file naming stay
+  untouched.
+- No new silver/gold tables — the local source flows through the existing
+  medallion path.
+- No re-download of Instagram media (URLs expired; local bytes are canonical).
+- No parallel pipeline or migration script (NEW SOURCE RULE: producer on the
+  existing contract, not a one-off bootstrap).
+
 ## Resolved
 
 ### 1. Comprehensive medallion testing strategy ✅ (2026-07-01)

@@ -15,6 +15,13 @@ from dagster import build_asset_context
 
 from datalake.defs.instagram.assets import ig_posts_raw
 from datalake.defs.instagram.config import ScrapeConfig
+from datalake.defs.common.resources import SQLiteResource
+
+
+def _ops_resource(tmp_path: "object") -> SQLiteResource:
+    """Standalone ``ops`` resource passed as a kwarg (Dagster forbids mixing
+    context-resources with kwargs in one invocation)."""
+    return SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
 
 class _FakeRunInfo:
@@ -124,6 +131,7 @@ def test_successful_scrape(mock_apify_success, tmp_path):
             )
             result = ig_posts_raw(
                 context, config=config, apify=_FakeApifyResource(),
+                ops=_ops_resource(tmp_path),
             )
 
             assert isinstance(result, pl.DataFrame)
@@ -165,6 +173,7 @@ def test_idempotent_rerun(mock_apify_success, tmp_path):
             )
             result = ig_posts_raw(
                 context, config=config, apify=_FakeApifyResource(),
+                ops=_ops_resource(tmp_path),
             )
 
             assert result["shortCode"].to_list() == ["pre_existing"]
@@ -187,6 +196,7 @@ def test_empty_dataset(mock_apify_empty, tmp_path):
             )
             result = ig_posts_raw(
                 context, config=config, apify=_FakeApifyResource(),
+                ops=_ops_resource(tmp_path),
             )
 
             assert isinstance(result, pl.DataFrame)
@@ -213,6 +223,7 @@ def test_apify_failure_raises(mock_apify_failed, tmp_path):
                 ig_posts_raw(
                     context, config=config,
                     apify=_FakeApifyResource(),
+                    ops=_ops_resource(tmp_path),
                 )
 
 
@@ -234,6 +245,7 @@ def test_apify_timeout_raises(mock_apify_timeout, tmp_path):
                 ig_posts_raw(
                     context, config=config,
                     apify=_FakeApifyResource(),
+                    ops=_ops_resource(tmp_path),
                 )
 
 
@@ -251,4 +263,5 @@ def test_missing_token_raises(tmp_path):
         ig_posts_raw(
             context, config=config,
             apify=_FakeApifyResource(token=""),
+            ops=_ops_resource(tmp_path),
         )

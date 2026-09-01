@@ -1,8 +1,8 @@
 """Dagster Config schemas — typed, validated, surfaced in the launchpad."""
 
 from __future__ import annotations
-
 import os
+from pathlib import Path
 from enum import Enum
 
 from dagster import Config
@@ -113,3 +113,20 @@ class GeminiTierConfig:
         if self.tier == GeminiTier.TIER_1:
             return 30
         return 60
+
+
+# ── Local ad-hoc ingestion ─────────────────────────────────────────────────
+
+LOCAL_INGEST_DIR = Path(
+    os.environ.get(
+        "IG_LOCAL_INGEST_DIR",
+        r"C:\Users\evano\repos\scrape-ig-saved-list\data\ingest",
+    )
+)
+"""Root of local ad-hoc scrape dumps: ``<dataset_id>/<post_id>/post_metadata.json``.
+
+Override with ``IG_LOCAL_INGEST_DIR``. Each ``<dataset_id>`` subdirectory is one
+ad-hoc (non-continuous) scrape and becomes one bronze ``local_<dataset_id>``
+file; media files (``video.mp4``, ``media_NN.jpg``) sit beside each
+``post_metadata.json``.
+"""
