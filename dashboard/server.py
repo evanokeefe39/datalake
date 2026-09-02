@@ -460,24 +460,35 @@ def standout_posts(limit: int = Query(20, ge=1, le=100)):
     try:
         rows = db.execute(
             """
-            SELECT sp.post_id, sp.owner_username, sp.shortcode,
-                   sp.caption, sp.likes_count, sp.comments_count,
-                   sp.video_view_count, sp.timestamp,
-                   l.baseline_center, l.baseline_spread,
-                   ROUND(
-                       (sp.likes_count - l.baseline_center)
-                       / NULLIF(l.baseline_spread, 0),
-                       2
-                   ) AS z_score,
-                   l.method, l.is_provisional,
-                   dp.creator_id, dp.channel
-            FROM silver_ig_posts sp
-            JOIN ig_post_labels l ON sp.post_id = l.post_id
-            LEFT JOIN dim_profile dp
-                ON sp.owner_id = dp.owner_id AND dp.is_current = TRUE
-            WHERE l.label = 'standout'
-            ORDER BY CASE WHEN l.method = 'day7_matched' THEN 0 ELSE 1 END,
-                     z_score DESC
+            WITH standout AS (
+                SELECT sp.post_id, sp.owner_username, sp.shortcode,
+                       sp.caption, sp.likes_count, sp.comments_count,
+                       sp.video_view_count, sp.timestamp,
+                       l.baseline_center, l.baseline_spread,
+                       ROUND(
+                           (sp.likes_count - l.baseline_center)
+                           / NULLIF(l.baseline_spread, 0),
+                           2
+                       ) AS z_score,
+                       l.method, l.is_provisional,
+                       dp.creator_id, dp.channel
+                FROM silver_ig_posts sp
+                JOIN ig_post_labels l ON sp.post_id = l.post_id
+                LEFT JOIN dim_profile dp
+                    ON sp.owner_id = dp.owner_id AND dp.is_current = TRUE
+                WHERE l.label = 'standout'
+            ),
+            creator_avg AS (
+                SELECT owner_username, AVG(likes_count) AS creator_avg_likes
+                FROM silver_ig_posts
+                WHERE likes_count IS NOT NULL
+                GROUP BY owner_username
+            )
+            SELECT s.*, ca.creator_avg_likes
+            FROM standout s
+            LEFT JOIN creator_avg ca ON ca.owner_username = s.owner_username
+            ORDER BY CASE WHEN s.method = 'day7_matched' THEN 0 ELSE 1 END,
+                     s.z_score DESC
             LIMIT ?
         """,
             [limit],
@@ -493,13 +504,16 @@ def standout_posts(limit: int = Query(20, ge=1, le=100)):
                 "comments_count": r[5] or 0,
                 "video_view_count": r[6] or 0,
                 "timestamp": str(r[7]) if r[7] else None,
-                "mean_likes": round(r[8], 0) if r[8] else 0,
-                "std_likes": round(r[9], 0) if r[9] else 0,
+                # Per-post TRAILING Tukey baseline from the label pass — NOT a
+                # mean; exposed with honest names.
+                "baseline_q3": round(r[8], 0) if r[8] else 0,
+                "baseline_iqr": round(r[9], 0) if r[9] else 0,
                 "z_score": float(r[10]) if r[10] else 0,
                 "method": r[11],
                 "provisional": bool(r[12]),
                 "creator_id": r[13],
                 "platform": r[14] or "instagram",
+                "creator_avg_likes": round(r[15], 0) if r[15] is not None else None,
             }
             for r in rows
         ]
@@ -561,13 +575,23 @@ def hot_posts(limit: int = Query(10, ge=1, le=50)):
                 LEFT JOIN dim_profile dp
                     ON sp.owner_id = dp.owner_id AND dp.is_current = TRUE
                 WHERE l.label = 'standout'
+            ),
+            creator_avg AS (
+                -- All-time mean likes per creator, same definition as
+                -- v_creator_quality.avg_likes (cross-surface consistent).
+                SELECT owner_username, AVG(likes_count) AS creator_avg_likes
+                FROM silver_ig_posts
+                WHERE likes_count IS NOT NULL
+                GROUP BY owner_username
             )
-            SELECT post_id, owner_username, shortcode, caption,
-                   likes_count, comments_count, timestamp,
-                   baseline_center, baseline_spread, z_score, creator_id, channel
-            FROM hots
-            WHERE rn <= 3
-            ORDER BY z_score DESC
+            SELECT h.post_id, h.owner_username, h.shortcode, h.caption,
+                   h.likes_count, h.comments_count, h.timestamp,
+                   h.baseline_center, h.baseline_spread, h.z_score,
+                   h.creator_id, h.channel, ca.creator_avg_likes
+            FROM hots h
+            LEFT JOIN creator_avg ca ON ca.owner_username = h.owner_username
+            WHERE h.rn <= 3
+            ORDER BY h.z_score DESC
             LIMIT ?
         """,
             [limit],
@@ -582,11 +606,14 @@ def hot_posts(limit: int = Query(10, ge=1, le=50)):
                 "likes_count": r[4] or 0,
                 "comments_count": r[5] or 0,
                 "timestamp": str(r[6]) if r[6] else None,
-                "mean_likes": round(r[7], 0) if r[7] else 0,
-                "std_likes": round(r[8], 0) if r[8] else 0,
+                # Per-post TRAILING Tukey baseline from the label pass — NOT a
+                # mean. Exposed honestly; UI renders creator_avg_likes as "avg".
+                "baseline_q3": round(r[7], 0) if r[7] else 0,
+                "baseline_iqr": round(r[8], 0) if r[8] else 0,
                 "z_score": float(r[9]) if r[9] else 0,
                 "creator_id": r[10],
                 "platform": r[11] or "instagram",
+                "creator_avg_likes": round(r[12], 0) if r[12] is not None else None,
             }
             for r in rows
         ]

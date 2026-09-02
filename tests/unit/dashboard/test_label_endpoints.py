@@ -87,9 +87,12 @@ def test_standout_posts_returns_label_backed_posts(label_db):
     assert [r["post_id"] for r in rows] == ["s7", "s0"]
     assert rows[0]["method"] == "day7_matched"
     assert rows[1]["provisional"] is True
-    # Baseline stats come from the label pass, not a lifetime aggregate.
-    assert rows[0]["mean_likes"] == 100
-    assert rows[0]["std_likes"] == 50
+    # Baseline stats come from the label pass, not a lifetime aggregate —
+    # exposed with honest names (they are per-post trailing Tukey stats).
+    assert rows[0]["baseline_q3"] == 100
+    assert rows[0]["baseline_iqr"] == 50
+    # Creator average is a true mean: (900+800+100)/3.
+    assert rows[0]["creator_avg_likes"] == 600
 
 
 def test_standout_posts_excludes_non_standout_labels(label_db):
@@ -103,7 +106,11 @@ def test_hot_posts_ranks_per_creator_from_labels(label_db):
     assert resp.status_code == 200
     rows = resp.json()
     assert [r["post_id"] for r in rows] == ["s7", "s0"]
-    assert rows[0]["mean_likes"] == 100
+    # Baseline fields are the trailing Tukey stats, not a mean; the "avg"
+    # rendered by the UI comes from creator_avg_likes.
+    assert rows[0]["baseline_q3"] == 100
+    assert rows[0]["creator_avg_likes"] == 600
+    assert "mean_likes" not in rows[0]
 
 
 def test_weekly_summary_counts_standout_labels_by_day(label_db):

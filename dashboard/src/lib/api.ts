@@ -82,9 +82,13 @@ export interface StandoutRow {
   comments_count: number;
   video_view_count: number;
   timestamp: string | null;
-  mean_likes: number;
-  std_likes: number;
+  /** Per-post TRAILING Tukey Q3 from the label pass — not a mean. */
+  baseline_q3: number;
+  /** Trailing Tukey IQR (baseline spread) for the same post. */
+  baseline_iqr: number;
   z_score: number;
+  /** Creator's all-time mean likes (matches the creators surface). */
+  creator_avg_likes?: number | null;
 }
 
 

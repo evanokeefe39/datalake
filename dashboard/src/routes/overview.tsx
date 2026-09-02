@@ -93,7 +93,7 @@ export default function OverviewPage() {
             <div>
               <CardTitle>Hot Posts</CardTitle>
               <span className="text-[10px] text-muted font-data">
-                {hots.length} posts &gt;2&sigma; above creator mean
+                {hots.length} standout posts ranked by trailing-baseline z-score
               </span>
             </div>
             <Zap className="w-3.5 h-3.5 text-accent-yellow" />
@@ -154,7 +154,13 @@ export default function OverviewPage() {
                       <span className="text-accent-green">
                         {s.likes_count?.toLocaleString()} likes
                       </span>
-                      <span>vs {Math.round(s.mean_likes).toLocaleString()} avg</span>
+                      <span>
+                        vs{" "}
+                        {s.creator_avg_likes != null
+                          ? Math.round(s.creator_avg_likes).toLocaleString()
+                          : "--"}{" "}
+                        creator avg
+                      </span>
                     </div>
                   </a>
                 </div>
