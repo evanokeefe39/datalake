@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
-import type { ColDef } from "ag-grid-community";
 import { Card } from "@/components/ui/card";
 import { Avatar } from "@/components/ui/avatar";
 import { PlatformIcon } from "@/components/ui/platform-icon";
 import { PostsTable } from "@/components/ui/posts-table";
 import { CreatorModal } from "@/components/ui/creator-modal";
-import { Badge } from "@/components/ui/badge";
 import { Users, ArrowLeft } from "lucide-react";
 import {
   fetchCreator,
@@ -131,19 +129,7 @@ export default function CreatorPage() {
           <PostsTable
             rows={posts}
             pagination
-            extraColumns={[
-              {
-                field: "relative_performance",
-                headerName: "Relative Performance",
-                width: 170,
-                cellClass: "flex !items-center !justify-center",
-                cellRenderer: ({ value }: { value: string | null }) => {
-                  if (value === "hot") return <Badge variant="red">Hot</Badge>;
-                  if (value === "standout") return <Badge variant="yellow">Standout</Badge>;
-                  return <span className="text-muted">—</span>;
-                },
-              } satisfies ColDef<PostRow>,
-            ]}
+            hideProfileColumn
           />
         )}
       </div>

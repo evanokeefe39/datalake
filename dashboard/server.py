@@ -290,8 +290,11 @@ _POST_SELECT = """
            v.is_educational, v.is_actionable,
            v.admiralty, v.gold_domain, v.gold_topic, v.gold_subtopic,
            v.content_type, v.style, v.format,
-           v.gold_analysed_at, v.timestamp, v.shortcode, v.channel
+           v.gold_analysed_at, v.timestamp, v.shortcode, v.channel,
+           pm.relative_performance, pm.baseline_q3 AS baseline_likes,
+           pm.likes_zscore
     FROM v_post_detail v
+    LEFT JOIN v_post_metrics pm ON pm.post_id = v.post_id
 """
 
 
@@ -319,6 +322,8 @@ def _rows_to_posts(rows) -> list[dict]:
             "timestamp": str(r[17]) if r[17] else None,
             "shortcode": r[18] or "",
             "platform": r[19] or "instagram",
+            "relative_performance": r[20],
+            "baseline_likes": round(r[21], 0) if r[21] is not None else None,
         }
         for r in rows
     ]
@@ -501,15 +506,15 @@ def weekly_summary():
         db.close()
 
 
-# ── Hot Posts ( label-backed standouts, ranked per creator ) ────
+# ── Hot Posts ( Recent Hot Posts: 2σ+ standouts, last 28 days ) ──
 
 
 @app.get("/api/hot-posts")
 def hot_posts(limit: int = Query(10, ge=1, le=50)):
-    """Top hot posts (2σ+ standouts), top-3 per owner, ranked by z-score.
+    """Recent Hot Posts — 2σ+ standouts from the last 28 days, top-3 per owner.
 
-    Thin projector over ``v_post_metrics`` — point-in-time context only; no
-    creator all-time average on post rows.
+    Thin projector over ``v_recent_hot_posts`` (recency-weighted in the
+    warehouse) — point-in-time context only; no creator all-time average.
     """
     db = _connect()
     try:
@@ -517,10 +522,9 @@ def hot_posts(limit: int = Query(10, ge=1, le=50)):
             """
             SELECT post_id, owner_username, shortcode, caption,
                    likes_count, comments_count, timestamp,
-                   baseline_q3, baseline_iqr, likes_zscore,
+                   baseline_q3, baseline_iqr, likes_zscore, breakout_multiple,
                    creator_id, channel
-            FROM v_post_metrics
-            WHERE is_hot = 1 AND is_top3_in_owner = 1
+            FROM v_recent_hot_posts
             ORDER BY likes_zscore DESC
             LIMIT ?
         """,
@@ -541,8 +545,9 @@ def hot_posts(limit: int = Query(10, ge=1, le=50)):
                 "baseline_q3": round(r[7], 0) if r[7] else 0,
                 "baseline_iqr": round(r[8], 0) if r[8] else 0,
                 "z_score": float(r[9]) if r[9] else 0,
-                "creator_id": r[10],
-                "platform": r[11] or "instagram",
+                "breakout_multiple": round(r[10], 1) if r[10] else None,
+                "creator_id": r[11],
+                "platform": r[12] or "instagram",
             }
             for r in rows
         ]
@@ -817,17 +822,6 @@ def creator_posts(creator_id: int):
             handles,
         ).fetchall()
         posts = _rows_to_posts(rows)
-        # Point-in-time tier lookup from ``v_post_metrics`` (projection only).
-        tiers = {
-            r[0]: r[1]
-            for r in db.execute(
-                f"SELECT post_id, relative_performance FROM v_post_metrics "
-                f"WHERE owner_username IN ({placeholders})",
-                handles,
-            ).fetchall()
-        }
-        for p in posts:
-            p["relative_performance"] = tiers.get(p["post_id"])
         return posts
     finally:
         db.close()

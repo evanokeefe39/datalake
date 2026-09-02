@@ -46,7 +46,6 @@ export interface SignalRow {
   comments_count: number;
   video_view_count: number;
 }
-
 export interface PostRow {
   post_id: string;
   owner_username: string;
@@ -56,6 +55,9 @@ export interface PostRow {
   likes_count: number;
   comments_count: number;
   video_view_count: number;
+  relative_performance: "hot" | "standout" | null;
+  /** Creator's typical likes when this post was published (trailing point-in-time baseline). */
+  baseline_likes: number | null;
   is_educational: boolean | null;
   is_actionable: boolean | null;
   admiralty: string | null;
@@ -68,7 +70,6 @@ export interface PostRow {
   analysed_at: string | null;
   timestamp: string;
   shortcode: string;
-  relative_performance: "hot" | "standout" | null;
 }
 
 export interface StandoutRow {
@@ -87,6 +88,8 @@ export interface StandoutRow {
   /** Trailing Tukey IQR (baseline spread) for the same post. */
   baseline_iqr: number;
   z_score: number;
+  /** How many times the post's likes exceed its point-in-time baseline. */
+  breakout_multiple: number | null;
 }
 
 
