@@ -394,6 +394,33 @@ Tier 2's 500M batch capacity and 20GB File API limit remove the practical
 ceilings for video enrichment.
 
 
+### Batch caps are model-specific (embedding ≠ generation) — addendum 2026-09-02
+
+The 10M/500M batch-token figures above are **Flash-Lite (generation) caps**.
+Embedding models carry **separate, much lower** enqueued-token caps. From the
+KB embedding spikes (see `agent-knowledgebase/docs/research/spike-lessons.md`,
+same Google Cloud billing account):
+
+| Model family | Tier 1 | Tier 2 | Tier 3 |
+|---|---|---|---|
+| Flash-Lite (generation) | 10M | 500M | — |
+| Embedding 2 | 500k | 5M | 10M |
+
+Two facts govern whether these caps constrain you:
+
+1. **The cap is IN-FLIGHT**, not cumulative lifetime volume. It bounds tokens
+   enqueued across *active* batch jobs at once. **No corpus size ever hard-blocks
+   a tier** — you chunk into sequential batch jobs and each wave fits the cap.
+   Tiers select concurrency/embed speed, never feasibility.
+2. **Batch API is paid-tier only** — the 50% embedding discount requires Tier 1
+   (linked billing). Free-tier embeddings cost $0 but are quota-limited (~1000
+   embed/day + RPM/RPD).
+
+So for datalake: if you embed video/image at scale, size each batch job to the
+model's in-flight cap and run sequential waves; upgrade a tier to get *fewer,
+faster* waves, not because a corpus "won't fit." Cost stays cheap at corpus
+scale (~$81 Gemini / ~$31 Voyage for ~25.9K media); quotas, not dollars, gate.
+
 ## Smoke testing
 
 Each implementation phase includes a targeted smoke test using a **temporary DuckDB database** (`data/smoke_test.duckdb`) with 2-3 test posts. Zero interference with production state. Smoke DB is deleted after verification.
