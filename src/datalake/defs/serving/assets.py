@@ -584,11 +584,16 @@ def v_post_baselines(duckdb: DuckDBResource) -> None:
                 SELECT
                     post_id,
                     COUNT(*)                  AS comments_baseline_n,
-                    quantile_cont(val, 0.25)  AS q1,
-                    quantile_cont(val, 0.75)  AS q3
+                    -- min n=5 (_BASELINE_MIN_N): below it the baseline is NULL
+                    CASE WHEN COUNT(*) >= 5
+                         THEN quantile_cont(val, 0.25) END AS q1,
+                    CASE WHEN COUNT(*) >= 5
+                         THEN quantile_cont(val, 0.75) END AS q3
                 FROM comment_pairs
-                WHERE (n_priors < 20 AND prior_ts >= post_ts - INTERVAL 90 DAY)
-                   OR recency <= 20
+                -- Estimator rule: >= 20 priors → the 20 most recent;
+                -- < 20 priors → only priors within the 90-day lookback.
+                WHERE CASE WHEN n_priors >= 20 THEN recency <= 20
+                           ELSE prior_ts >= post_ts - INTERVAL 90 DAY END
                 GROUP BY post_id
             ),
             view_pairs AS (
@@ -608,16 +613,21 @@ def v_post_baselines(duckdb: DuckDBResource) -> None:
                   AND q.timestamp      < p.timestamp
                   AND q.video_view_count > 0
                 WHERE p.timestamp IS NOT NULL
+                  AND p.video_view_count > 0
+                    -- image/carousel posts get NULL views_* columns
             ),
             view_windows AS (
                 SELECT
                     post_id,
                     COUNT(*)                  AS views_baseline_n,
-                    quantile_cont(val, 0.25)  AS q1,
-                    quantile_cont(val, 0.75)  AS q3
+                    -- min n=5 (_BASELINE_MIN_N): below it the baseline is NULL
+                    CASE WHEN COUNT(*) >= 5
+                         THEN quantile_cont(val, 0.25) END AS q1,
+                    CASE WHEN COUNT(*) >= 5
+                         THEN quantile_cont(val, 0.75) END AS q3
                 FROM view_pairs
-                WHERE (n_priors < 20 AND prior_ts >= post_ts - INTERVAL 90 DAY)
-                   OR recency <= 20
+                WHERE CASE WHEN n_priors >= 20 THEN recency <= 20
+                           ELSE prior_ts >= post_ts - INTERVAL 90 DAY END
                 GROUP BY post_id
             )
             SELECT
@@ -669,6 +679,7 @@ def v_post_metrics(duckdb: DuckDBResource) -> None:
             WITH ranked AS (
                 SELECT
                     eo.post_id, eo.owner_username, eo.creator_id, eo.channel,
+                    eo.creator_name,
                     eo.likes_count, eo.comments_count, eo.video_view_count,
                     eo.timestamp, eo.shortcode, eo.caption,
                     eo.label, eo.method, eo.is_provisional,
