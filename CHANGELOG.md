@@ -1,3 +1,18 @@
+## Unreleased (2026-09-02) — Creator Consolidation + Metrics Centralization
+
+### Creator consolidation (PR #26)
+- Curated creators own their IG profiles: WAVIBOY | AI Creative Direction (21) → `bywaviboy`, Nick Vinny · Brand Designer (147) → `vinny_creative`
+- Duplicate auto-creators 243/610 retired via `scripts/migrate_curated_creator_merge.py` (idempotent, `--undo`); `scripts/migrate_owner_profiles.py` obsolete
+- New SQLite `creator_merges` table — audit + reversal ledger for creator merges (cataloged in `schemas.py`)
+- Honest hot-posts baseline: posts judged against their own trailing point-in-time label-pass baseline, never a creator all-time average
+
+### Metrics centralization (PR #27)
+- All metric/aggregation logic moved to canonical DuckDB serving views materialized as Dagster assets in `defs/serving/assets.py`, registered in `DUCKDB_VIEWS` (`schemas.py`): `v_post_metrics`, `v_creator_metrics`, `v_profile_metrics`, `v_overview`, `v_standout_calendar`
+- `v_post_metrics`: one row per post — label, point-in-time `baseline_q3`/`baseline_iqr`, `likes_zscore`, `is_standout` (Tukey z > 1.5), `is_hot` (standout AND z >= 2, 2σ+), `relative_performance`, `is_top3_in_owner`; no creator-avg column on post rows
+- `v_creator_metrics` (gate-free per-creator counts/avg/max), `v_profile_metrics` (per-owner_username), `v_overview` (single row), `v_standout_calendar` (standouts per day-of-month)
+- `dashboard/server.py` is a thin projector: view SELECT + WHERE/ORDER/LIMIT + row→JSON; no aggregation in the server
+- Guard tests: `tests/unit/dashboard/test_no_aggregation_in_server.py`, `tests/unit/dashboard/test_hot_posts_semantics.py`
+
 ## 0.3.0 (2026-07-02) — Queue-Based Enrichment Architecture
 
 ### Architecture

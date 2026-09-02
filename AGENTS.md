@@ -46,7 +46,7 @@ tier skips video in the worker gate). Tier choice is a cost call, not infra.
 | Silver | Parquet (`data/lake/silver/`) | PolarsIOManager | DuckDB `silver_ig_posts` + watermarks |
 | Batches | SQLite (`data/ops.sqlite`) | `ig_posts_gen_batches` | `batch_jobs` + `batch_items` |
 | Gold | DuckDB table | `enrichment_worker` (standalone) | `gold_analyses` (AssetSpec, externally materialized) |
-| Serving | DuckDB views + tables | DuckDB | `dim_profile` (SCD2), `dim_date`, 8 analytics views |
+| Serving | DuckDB views + tables | DuckDB | `dim_profile` (SCD2), `dim_date`, 14 analytics views (incl. 5 canonical metric views) |
 
 **SQLite for operational state, DuckDB for analytical state:**
 - `ops.sqlite` — batch coordination, media cache, dead_letter (OLTP: point lookups, frequent updates)
@@ -58,7 +58,7 @@ src/datalake/defs/
 ├── common/          # PolarsIOManager, ApifyResource, GeminiResource, SQLiteResource, lake.py, schedules.py
 ├── enrichment/      # batch.py, assets.py, prompts.py
 ├── instagram/       # ig_posts_raw, ig_posts_slv, ig_posts_gen_batches, config
-└── serving/         # dim_profile, dim_date, v_post_detail + 7 downstream analytics views
+└── serving/         # dim_profile, dim_date, v_post_detail + 13 downstream views (incl. 5 canonical metric views)
 
 **Storage split:**
 - **Parquet lake** — bulk data, lock-free parallel writes
@@ -87,6 +87,7 @@ Domain-scoped, not generic. Supports multi-source expansion (TikTok, YouTube, Li
 | SQLite | `dead_letter` | Terminal failures after `MAX_ATTEMPTS` retries exhausted |
 | SQLite | `creators` | A person/brand (`id`, `name`) — owns 1..N profiles across platforms |
 | SQLite | `profiles` | One account per platform (`platform`, `handle` PK) linked to a creator; carries scrape config (depth, enabled, tier) |
+| SQLite | `creator_merges` | Merge ledger for retired duplicate auto-creators (`merged_creator_id` PK → `surviving_creator_id`, `handle`, `merged_at`/`reversed_at` for `--undo`) |
 
 **DuckDB views:** `v_post_detail` (foundational), `v_signal`, `v_quality_trend`, `v_creator_quality`, `v_rising_creators`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`, `v_post_metrics` (canonical per-post metrics), `v_creator_metrics` (gate-free per-creator activity), `v_profile_metrics` (per-profile counts), `v_overview` (single-row), `v_standout_calendar` (day-of-month standouts)
 
@@ -173,7 +174,7 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 Any table the pipeline reads or writes must be listed here. The readiness test
 (`test_state_compatibility.py`) asserts the catalog matches the running databases.
 **DuckDB tables:** `silver_ig_posts`, `gold_analyses`, `watermarks`, `dim_profile`, `dim_date`
-**SQLite tables:** `batch_jobs`, `batch_items`, `media_metadata`, `media_cache`, `dead_letter`, `creators`, `profiles`
+**SQLite tables:** `batch_jobs`, `batch_items`, `media_metadata`, `media_cache`, `dead_letter`, `creators`, `profiles`, `creator_merges`
 **Views:** `v_post_detail`, `v_signal`, `v_quality_trend`, `v_creator_quality`, `v_rising_creators`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`, `v_post_metrics`, `v_creator_metrics`, `v_profile_metrics`, `v_overview`, `v_standout_calendar`
 - **Missing tables/columns** — fails with "run the pipeline or migration"
 - **Stale table names** — tables in the DB that were renamed/dropped (e.g. `gold_ig_analyses`). Fails with migration hint.
@@ -189,6 +190,7 @@ Any table the pipeline reads or writes must be listed here. The readiness test
 | `scripts/migrate_from_ig_pipeline.py` | Import bronze Parquet from legacy ig-pipeline repo. |
 | `scripts/migrate_owner_username.py` | Backfill null ``owner_username`` in silver from bronze ``username`` fallback. Idempotent. |
 | `scripts/migrate_creators_profiles.py` | Split `scrape_targets` → `creators` + `profiles` (1:1 backfill), recreate lost batch tables, drop `scrape_targets`. Idempotent. |
+| `scripts/migrate_curated_creator_merge.py` | Consolidate duplicate auto-creators into curated identities (21→`bywaviboy`, 147→`vinny_creative`; 243/610 retired). Reassigns profiles, records `creator_merges`, refreshes `dim_profile`. Idempotent, `--undo` reverses. Replaces `migrate_owner_profiles.py`. |
 ## Stale analysis update
 
 When the enrichment prompt or model changes, existing `gold_analyses` rows have stale `prompt_hash`.
@@ -246,7 +248,7 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
 
 - `dim_profile`: SCD2 profile dimension. Reads DISTINCT profiles from `silver_ig_posts`. Closes old rows on username change, inserts new rows. `channel = 'instagram'`. Carries `creator_id`/`creator_name` linked from `profiles`/`creators` in ops.
 - `v_post_detail`: Foundational flat view joining silver + gold (JSON-extracted) + dim_profile + dim_date. LEFT JOINs throughout — posts without enrichment or profiles still appear.
-- Eleven downstream views: `v_signal` (high-value filter), `v_quality_trend` (weekly aggregates), `v_creator_quality` (creator rankings, gated), `v_rising_creators` (momentum), `v_domain_coverage` (heatmap), `v_engagement_outliers` (label-backed per-post z-scores), `v_outlier_posts` (1σ+ outliers), `v_creator_outlier_rate` (outlier production rate), plus the canonical metric views: `v_post_metrics` (per-post label + point-in-time baseline + `is_standout`/`is_hot` (2σ+)/`is_top3_in_owner`; NO creator-avg column), `v_creator_metrics` (gate-free per-creator counts/avg/max), `v_profile_metrics` (per-owner_username counts), `v_overview` (single-row totals), `v_standout_calendar` (standouts per day-of-month).
+- Thirteen downstream views: `v_signal` (high-value filter), `v_quality_trend` (weekly aggregates), `v_creator_quality` (creator rankings, gated), `v_rising_creators` (momentum), `v_domain_coverage` (heatmap), `v_engagement_outliers` (label-backed per-post z-scores), `v_outlier_posts` (1σ+ outliers), `v_creator_outlier_rate` (outlier production rate), plus the canonical metric views: `v_post_metrics` (per-post label + point-in-time baseline + `is_standout`/`is_hot` (2σ+)/`is_top3_in_owner`; NO creator-avg column), `v_creator_metrics` (gate-free per-creator counts/avg/max), `v_profile_metrics` (per-owner_username counts), `v_overview` (single-row totals), `v_standout_calendar` (standouts per day-of-month).
 - All in `defs/serving/assets.py`, group_name="serving". Dashboard analytics endpoints are thin projectors over these views — no aggregation in `dashboard/server.py` (guard: `tests/unit/dashboard/test_no_aggregation_in_server.py`).
 
 
