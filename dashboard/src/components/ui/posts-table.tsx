@@ -1,5 +1,5 @@
 import { useCallback, useMemo, type Ref } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { AgGridReact } from "ag-grid-react";
 import type { CustomHeaderProps } from "ag-grid-react";
 import type {
@@ -54,16 +54,6 @@ function InfoHeader(props: CustomHeaderProps & { tooltip?: string }) {
   );
 }
 
-/** Open the post's Instagram page in a new tab. */
-export function openPostInNewTab(row: PostRow): void {
-  if (row.shortcode) {
-    window.open(
-      `https://www.instagram.com/p/${row.shortcode}/`,
-      "_blank",
-      "noopener,noreferrer",
-    );
-  }
-}
 
 export const POST_ROW_CLASS = "cursor-pointer";
 
@@ -315,9 +305,15 @@ export function PostsTable({
     params.api.sizeColumnsToFit();
   }, []);
 
-  const onRowClicked = useCallback((event: RowClickedEvent<PostRow>) => {
-    if (event.data) openPostInNewTab(event.data);
-  }, []);
+  const navigate = useNavigate();
+  const onRowClicked = useCallback(
+    (event: RowClickedEvent<PostRow>) => {
+      if (event.data) {
+        navigate({ to: "/posts/$postId", params: { postId: event.data.post_id } });
+      }
+    },
+    [navigate],
+  );
 
   return (
     <div className="ag-theme-alpine-dark h-[calc(100vh-200px)] w-full border border-border">

@@ -140,11 +140,10 @@ export default function OverviewPage() {
                       {s.z_score.toFixed(1)}&sigma;
                     </Badge>
                   </div>
-                  <a
-                    href={`https://www.instagram.com/p/${s.shortcode}/`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Open post on Instagram"
+                  <Link
+                    to="/posts/$postId"
+                    params={{ postId: s.post_id }}
+                    title="View post detail"
                     className="block group/post"
                   >
                     <p className="text-[11px] text-muted leading-tight line-clamp-2 mb-1.5 group-hover/post:text-[#C9D4D4] transition-colors">
@@ -167,7 +166,7 @@ export default function OverviewPage() {
                           : "--"}
                       </span>
                     </div>
-                  </a>
+                  </Link>
                 </div>
               </div>
             ))}

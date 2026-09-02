@@ -190,6 +190,68 @@ export async function fetchHotPosts(limit = 10): Promise<StandoutRow[]> {
   return fetchJSON(`/hot-posts?limit=${limit}`);
 }
 
+
+// ── Post detail ────────────────────────────────────────────────
+
+export interface PostEnrichment {
+  admiralty: string | null;
+  gold_domain: string | null;
+  gold_subdomain: string | null;
+  gold_topic: string | null;
+  gold_subtopic: string | null;
+  content_type: string | null;
+  style: string | null;
+  format: string | null;
+  is_educational: boolean | null;
+  is_actionable: boolean | null;
+  analysed_at: string | null;
+}
+
+export interface PostPointInTime {
+  label: string | null;
+  is_provisional: boolean | null;
+  likes_zscore: number | null;
+  baseline_q3: number | null;
+  baseline_iqr: number | null;
+  breakout_multiple: number | null;
+  sigma_tier: string | null;
+  is_standout: boolean | null;
+  is_hot: boolean | null;
+  relative_performance: string | null;
+  owner_rank: number | null;
+  is_top3_in_owner: boolean | null;
+}
+
+export interface PostDetail {
+  post_id: string;
+  shortcode: string;
+  url: string | null;
+  owner_username: string | null;
+  creator_id: number | null;
+  creator_name: string | null;
+  caption: string;
+  /** Transcript not yet available in the warehouse — always null for now. */
+  transcript: string | null;
+  timestamp: string | null;
+  likes_count: number;
+  comments_count: number;
+  video_view_count: number;
+  media_count: number;
+  hashtags: string;
+  enrichment: PostEnrichment;
+  platform: string;
+  point_in_time: PostPointInTime;
+}
+
+/** Fetch a single post's full context. Returns null on 404 (unknown post). */
+export async function fetchPostDetail(postId: string): Promise<PostDetail | null> {
+  const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(postId)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`API error: ${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
 export async function fetchSearchResults(q: string): Promise<PostRow[]> {
   return fetchJSON(`/search?q=${encodeURIComponent(q)}&limit=500`);
 }

@@ -377,6 +377,94 @@ def posts(
         db.close()
 
 
+
+
+@app.get("/api/posts/{post_id}")
+def post_detail(post_id: str):
+    """Full post context for the detail page — thin projector over the
+    canonical views (v_post_detail + v_post_metrics).
+
+    Point-in-time engagement context only: likes_zscore is judged against the
+    post's own trailing label-pass baseline (baseline_q3/baseline_iqr), never a
+    creator all-time average. Transcript data is not yet available in the
+    warehouse (gold result_json / silver meta_data carry no transcript), so
+    ``transcript`` is always null for now.
+    """
+    db = _connect()
+    try:
+        row = db.execute(
+            """
+            SELECT v.post_id, v.shortcode, v.url, v.owner_username,
+                   v.creator_id, v.creator_name, v.caption, v.timestamp,
+                   v.likes_count, v.comments_count, v.video_view_count,
+                   v.media_count, v.hashtags,
+                   v.admiralty, v.gold_domain, v.gold_subdomain, v.gold_topic,
+                   v.gold_subtopic, v.content_type, v.style, v.format,
+                   v.is_educational, v.is_actionable, v.gold_analysed_at,
+                   v.channel,
+                   pm.label, pm.is_provisional, pm.likes_zscore,
+                   pm.baseline_q3, pm.baseline_iqr, pm.breakout_multiple,
+                   pm.sigma_tier, pm.is_standout, pm.is_hot,
+                   pm.relative_performance, pm.owner_rank, pm.is_top3_in_owner
+            FROM v_post_detail v
+            LEFT JOIN v_post_metrics pm ON pm.post_id = v.post_id
+            WHERE v.post_id = ?
+            """,
+            [post_id],
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="post not found")
+        return {
+            "post_id": row[0],
+            "shortcode": row[1] or "",
+            "url": row[2],
+            "owner_username": row[3],
+            "creator_id": row[4],
+            "creator_name": row[5],
+            "caption": row[6] or "",
+            # Transcript not yet available in the warehouse (no transcript
+            # columns in gold result_json / silver meta_data).
+            "transcript": None,
+            "timestamp": str(row[7]) if row[7] else None,
+            "likes_count": row[8] or 0,
+            "comments_count": row[9] or 0,
+            "video_view_count": row[10] or 0,
+            "media_count": row[11] or 0,
+            "hashtags": row[12] or "",
+            "enrichment": {
+                "admiralty": row[13],
+                "gold_domain": row[14],
+                "gold_subdomain": row[15],
+                "gold_topic": row[16],
+                "gold_subtopic": row[17],
+                "content_type": row[18],
+                "style": row[19],
+                "format": row[20],
+                "is_educational": bool(row[21]) if row[21] is not None else None,
+                "is_actionable": bool(row[22]) if row[22] is not None else None,
+                "analysed_at": row[23],
+            },
+            "platform": row[24] or "instagram",
+            # Point-in-time engagement context — z-score vs the post's OWN
+            # trailing Tukey baseline, not a creator average.
+            "point_in_time": {
+                "label": row[25],
+                "is_provisional": bool(row[26]) if row[26] is not None else None,
+                "likes_zscore": float(row[27]) if row[27] is not None else None,
+                "baseline_q3": round(row[28], 0) if row[28] is not None else None,
+                "baseline_iqr": round(row[29], 0) if row[29] is not None else None,
+                "breakout_multiple": round(row[30], 1) if row[30] is not None else None,
+                "sigma_tier": row[31],
+                "is_standout": bool(row[32]) if row[32] is not None else None,
+                "is_hot": bool(row[33]) if row[33] is not None else None,
+                "relative_performance": row[34],
+                "owner_rank": row[35],
+                "is_top3_in_owner": bool(row[36]) if row[36] is not None else None,
+            },
+        }
+    finally:
+        db.close()
+
 # ── Full-text Search ────────────────────────────────────────────
 
 
