@@ -45,6 +45,11 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
   without burning attempts; `rate_limit_exceeded` (RPM/TPM) retries per-item
   with jittered exponential backoff. Quota reschedules must **never** increment
   `batch_items.attempts`.
+- **Batch caps are model-specific.** The 10M/500M enqueued-token figures in
+  AGENTS.md are Flash-Lite (generation). Embedding 2 is 500k/5M/10M — applying
+  the generation cap to an embedding job overestimates headroom ~20x. Cap is
+  IN-FLIGHT (across active jobs), not cumulative — chunk to run at any scale.
+  Batch API is paid-tier only. (Source: KB spike-lessons memo, same billing acct.)
 
 ## Operational state
 
