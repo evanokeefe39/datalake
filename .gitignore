@@ -29,3 +29,6 @@ dagster_home/
 *~
 *.db
 tasks/
+data/backups/
+data/_tmp_*/
+scripts/_diag_*

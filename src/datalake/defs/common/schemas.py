@@ -279,6 +279,16 @@ _SQLITE_SPECS: dict[str, Table] = {
         },
         primary_key=("platform", "handle"),
     ),
+    "creator_merges": Table(
+        columns={
+            "merged_creator_id": Column("INTEGER", primary_key=True),
+            "merged_creator_name": Column("TEXT", not_null=True),
+            "surviving_creator_id": Column("INTEGER", not_null=True),
+            "handle": Column("TEXT", not_null=True),
+            "merged_at": Column("TEXT", not_null=True),
+            "reversed_at": Column("TEXT"),
+        },
+    ),
 }
 
 # ── Derived type-only maps (backward-compatible shape) ──────────────────────

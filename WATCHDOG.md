@@ -97,3 +97,20 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
   rather than writing `state.duckdb` directly, and silver writes are
   serialized through Dagster. A new producer must not open its own write
   connection to state — bronze stays Parquet-only (Polars).
+
+## Semantic contracts of dashboard surfaces (added 2026-09-02)
+
+- **A field rendered as "avg" must be a true mean.** Do not expose per-post
+  trailing-baseline statistics (`ig_post_labels.baseline_center/spread` —
+  Tukey Q3/IQR) under avg-implying keys (`mean_likes`). They are exposed as
+  `baseline_q3`/`baseline_iqr`; any "average" shown to a user comes from
+  `creator_avg_likes` / `v_creator_quality.avg_likes` (all-time mean).
+  Regression guards: `tests/unit/dashboard/test_hot_posts_semantics.py`.
+- **Creator identity is a human decision.** Auto-creating creators from
+  silver owners (owner_username keying) duplicates curated `creators` rows.
+  Any merge must go through `scripts/migrate_curated_creator_merge.py`
+  (ledgered in `creator_merges`, reversible with `--undo`, idempotent) and the
+  handle attribution surfaced for sign-off — the profile handle drives future
+  scrapes. Guard: `tests/unit/instagram/test_curated_creator_merge.py`.
+- `creator_merges` is cataloged in `schemas.py`; the schema-catalog rules
+  above apply to it too.
