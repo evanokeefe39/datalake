@@ -87,8 +87,6 @@ export interface StandoutRow {
   /** Trailing Tukey IQR (baseline spread) for the same post. */
   baseline_iqr: number;
   z_score: number;
-  /** Creator's all-time mean likes (matches the creators surface). */
-  creator_avg_likes?: number | null;
 }
 
 

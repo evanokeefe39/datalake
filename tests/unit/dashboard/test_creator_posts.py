@@ -61,10 +61,29 @@ def tmp_db(tmp_path, monkeypatch):
     con.execute(
         """
         CREATE TABLE ig_post_labels (
-            post_id TEXT, label TEXT, method TEXT, is_provisional BOOLEAN,
-            baseline_center DOUBLE, baseline_spread DOUBLE
+            post_id TEXT, label TEXT, method TEXT, enrich_decision TEXT,
+            is_provisional BOOLEAN, baseline_center DOUBLE, baseline_spread DOUBLE
         )
         """
+    )
+    con.execute(
+        """
+        INSERT INTO ig_post_labels VALUES
+        ('p1', 'standout', 'day7_matched', 'standout', FALSE, 10, 5)
+        """
+    )
+    # Minimal mirror of v_post_metrics (canonical view in serving assets).
+    con.execute(
+        """
+        CREATE TABLE v_post_metrics (
+            post_id TEXT, owner_username TEXT, relative_performance TEXT
+        )
+        """
+    )
+    con.execute(
+        "INSERT INTO v_post_metrics VALUES "
+        "('p1', 'jane', 'standout'), ('p2', 'jane', NULL), "
+        "('p3', 'other', 'hot')"
     )
     con.close()
     return db_path
@@ -90,7 +109,7 @@ def test_creator_posts_returns_instagram_posts_desc(tmp_db, jane_id):
     assert rows[0]["analysed_at"] is None
     assert rows[0]["is_educational"] is None
     assert rows[1]["likes_count"] == 10
-    assert rows[0]["relative_performance"] is None
+    assert rows[1]["relative_performance"] == "standout"
 
 
 def test_creator_posts_without_instagram_profiles(tmp_db, tmp_path, monkeypatch):
@@ -114,63 +133,3 @@ def test_posts_endpoint_still_shapes_rows(tmp_db, jane_id):
     rows = resp.json()
     assert len(rows) == 3
     assert {r["post_id"] for r in rows} == {"p1", "p2", "p3"}
-    assert all(r["platform"] == "instagram" for r in rows)
-
-
-def test_attach_relative_performance_label_backed():
-    """Standout labels tag tiers; hot = standout with likes > center + 2*spread."""
-    con = duckdb.connect(":memory:")
-    con.execute(
-        "CREATE TABLE silver_ig_posts (post_id TEXT, owner_username TEXT, likes_count BIGINT)"
-    )
-    con.execute(
-        "CREATE TABLE ig_post_labels (post_id TEXT, label TEXT, "
-        "baseline_center DOUBLE, baseline_spread DOUBLE)"
-    )
-    con.execute(
-        "INSERT INTO silver_ig_posts VALUES "
-        "('p1', 'jane', 5), ('p2', 'jane', 20), ('p3', 'jane', 20), ('p4', 'jane', 50)"
-    )
-    con.execute(
-        "INSERT INTO ig_post_labels VALUES "
-        "('p1', 'average', 10, 5), ('p2', 'pending', 10, 5), "
-        "('p3', 'standout', 10, 5), ('p4', 'standout', 10, 5)"
-    )
-    posts = [
-        {"post_id": "p1", "likes_count": 5},
-        {"post_id": "p2", "likes_count": 20},
-        {"post_id": "p3", "likes_count": 20},
-        {"post_id": "p4", "likes_count": 50},
-    ]
-    server._attach_relative_performance(con, posts, ["jane"])
-    con.close()
-    assert [p["relative_performance"] for p in posts] == [
-        None,
-        None,
-        "standout",
-        "hot",
-    ]
-
-
-def test_attach_relative_performance_unlabeled_posts_are_none():
-    """Posts without a standout label (or no labels at all) are untagged."""
-    con = duckdb.connect(":memory:")
-    con.execute(
-        "CREATE TABLE silver_ig_posts (post_id TEXT, owner_username TEXT, likes_count BIGINT)"
-    )
-    con.execute(
-        "CREATE TABLE ig_post_labels (post_id TEXT, label TEXT, "
-        "baseline_center DOUBLE, baseline_spread DOUBLE)"
-    )
-    con.execute(
-        "INSERT INTO silver_ig_posts VALUES ('p1', 'jane', 5), ('p2', 'jane', 20)"
-    )
-    posts = [
-        {"post_id": "p1", "likes_count": 5},
-        {"post_id": "p2", "likes_count": 20},
-    ]
-    server._attach_relative_performance(con, posts, ["jane"])
-    con.close()
-    assert [p["relative_performance"] for p in posts] == [None, None]
-
-

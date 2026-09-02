@@ -519,6 +519,175 @@ def v_creator_outlier_rate(duckdb: DuckDBResource) -> None:
             ORDER BY outlier_rate DESC
         """)
 
+# ── Canonical metric views (metrics centralization) ─────────────────────────
+
+
+@asset(
+    name="v_post_metrics",
+    group_name="serving",
+    description=(
+        "Canonical per-post metrics: Tukey label + point-in-time baseline, "
+        "is_standout/is_hot/relative_performance, top-3-per-owner flag."
+    ),
+    deps=[AssetKey(["v_engagement_outliers"])],
+)
+def v_post_metrics(duckdb: DuckDBResource) -> None:
+    """Single source for every per-post hot/standout/z-score/baseline field.
+
+    Consumes ``v_engagement_outliers`` (z-score NOT re-derived) and
+    ``ig_post_labels`` for the trailing Tukey baseline. Point-in-time
+    contract: a post is judged against its OWN label-pass baseline
+    (``baseline_q3``/``baseline_iqr``), never a creator all-time average.
+    ``is_hot`` = standout AND ``likes_zscore >= 2`` (2σ+).
+    ``is_top3_in_owner`` ranks standout posts per owner by ``likes_zscore``.
+    No creator-avg column on post rows — creator averages live only on
+    ``v_creator_metrics`` (activity, gate-free) / ``v_creator_quality``
+    (quality, gated).
+    """
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE OR REPLACE VIEW v_post_metrics AS
+            WITH ranked AS (
+                SELECT
+                    eo.post_id, eo.owner_username, eo.creator_id, eo.channel,
+                    eo.likes_count, eo.comments_count, eo.video_view_count,
+                    eo.timestamp, eo.shortcode, eo.caption,
+                    eo.label, eo.method, eo.is_provisional,
+                    eo.likes_zscore,
+                    l.baseline_center AS baseline_q3,
+                    l.baseline_spread AS baseline_iqr,
+                    eo.sigma_tier,
+                    CASE WHEN eo.label = 'standout' THEN 1 ELSE 0 END
+                        AS is_standout,
+                    CASE WHEN eo.label = 'standout'
+                          AND eo.likes_zscore >= 2 THEN 1 ELSE 0 END
+                        AS is_hot,
+                    CASE WHEN eo.label = 'standout'
+                          AND eo.likes_zscore >= 2 THEN 'hot'
+                         WHEN eo.label = 'standout' THEN 'standout'
+                    END AS relative_performance,
+                    eo.likes_count / NULLIF(l.baseline_center, 0)
+                        AS breakout_multiple,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY eo.owner_username, eo.label
+                        ORDER BY eo.likes_zscore DESC NULLS LAST,
+                                 eo.likes_count DESC NULLS LAST
+                    ) AS owner_rank
+                FROM v_engagement_outliers eo
+                LEFT JOIN ig_post_labels l ON eo.post_id = l.post_id
+            )
+            SELECT
+                *,
+                CASE WHEN is_standout = 1 AND owner_rank <= 3
+                     THEN 1 ELSE 0 END AS is_top3_in_owner
+            FROM ranked
+        """)
+
+
+@asset(
+    name="v_creator_metrics",
+    group_name="serving",
+    description="Gate-free per-creator activity metrics: counts, true avg, max.",
+    deps=[AssetKey(["v_post_metrics"])],
+)
+def v_creator_metrics(duckdb: DuckDBResource) -> None:
+    """Per-creator ACTIVITY metrics — deliberately gate-free.
+
+    Unlike ``v_creator_quality`` (enriched_posts >= 3, quality rankings),
+    every curated creator appears here with real counts and a true mean
+    ``avg_likes`` over all their scraped posts. Consumers: /api/creators.
+    """
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE OR REPLACE VIEW v_creator_metrics AS
+            SELECT
+                creator_id,
+                COUNT(*)            AS total_posts,
+                SUM(is_standout)    AS standout_count,
+                SUM(is_hot)         AS hot_count,
+                AVG(likes_count)    AS avg_likes,
+                MAX(likes_count)    AS max_likes
+            FROM v_post_metrics
+            WHERE creator_id IS NOT NULL
+            GROUP BY creator_id
+        """)
+
+
+@asset(
+    name="v_profile_metrics",
+    group_name="serving",
+    description="Per-owner_username activity counts: post/standout/hot.",
+    deps=[AssetKey(["v_post_metrics"])],
+)
+def v_profile_metrics(duckdb: DuckDBResource) -> None:
+    """Per-PROFILE activity counts for creator-detail per-profile post_count."""
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE OR REPLACE VIEW v_profile_metrics AS
+            SELECT
+                owner_username,
+                COUNT(*)         AS post_count,
+                SUM(is_standout) AS standout_count,
+                SUM(is_hot)      AS hot_count
+            FROM v_post_metrics
+            WHERE owner_username IS NOT NULL
+            GROUP BY owner_username
+        """)
+
+
+@asset(
+    name="v_overview",
+    group_name="serving",
+    description="Single-row overview: totals, enrichment pct, avg admiralty, signal count.",
+    deps=[
+        AssetKey(["v_post_detail"]),
+        AssetKey(["v_creator_quality"]),
+        AssetKey(["v_signal"]),
+    ],
+)
+def v_overview(duckdb: DuckDBResource) -> None:
+    """Exactly one row — moves /api/overview aggregation into the warehouse."""
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE OR REPLACE VIEW v_overview AS
+            SELECT
+                (SELECT COUNT(*) FROM silver_ig_posts) AS total_posts,
+                (SELECT COUNT(*) FROM gold_analyses
+                 WHERE domain = 'instagram')           AS total_enriched,
+                (SELECT COUNT(DISTINCT owner_username)
+                 FROM silver_ig_posts)                 AS total_profiles,
+                ROUND(
+                    (SELECT COUNT(*) FROM gold_analyses WHERE domain = 'instagram')
+                    / NULLIF((SELECT COUNT(*) FROM silver_ig_posts), 0) * 100,
+                    1
+                )                                      AS enrichment_pct,
+                (SELECT COALESCE(ROUND(AVG(admiralty_score), 2), 0)
+                 FROM v_creator_quality
+                 WHERE enriched_posts > 0)             AS avg_admiralty_score,
+                (SELECT COUNT(*) FROM v_signal)        AS high_signal_count
+        """)
+
+
+@asset(
+    name="v_standout_calendar",
+    group_name="serving",
+    description="Standout posts per day-of-month for the weekly-summary chart.",
+    deps=[AssetKey(["v_post_metrics"])],
+)
+def v_standout_calendar(duckdb: DuckDBResource) -> None:
+    """Day-of-month standout counts — moves the /api/weekly-summary GROUP BY
+    out of the server."""
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE OR REPLACE VIEW v_standout_calendar AS
+            SELECT
+                EXTRACT(DAY FROM timestamp) AS day_of_month,
+                SUM(is_standout)            AS standout_count
+            FROM v_post_metrics
+            WHERE is_standout = 1
+            GROUP BY day_of_month
+        """)
+
 
 # ── Exported for definitions.py ─────────────────────────────────────────────
 
@@ -534,4 +703,9 @@ assets: list = [
     v_engagement_outliers,
     v_outlier_posts,
     v_creator_outlier_rate,
+    v_post_metrics,
+    v_creator_metrics,
+    v_profile_metrics,
+    v_overview,
+    v_standout_calendar,
 ]

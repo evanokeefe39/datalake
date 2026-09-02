@@ -155,11 +155,17 @@ export default function OverviewPage() {
                         {s.likes_count?.toLocaleString()} likes
                       </span>
                       <span>
-                        vs{" "}
-                        {s.creator_avg_likes != null
-                          ? Math.round(s.creator_avg_likes).toLocaleString()
+                        ~
+                        {s.baseline_q3 != null
+                          ? Math.round(s.baseline_q3).toLocaleString()
                           : "--"}{" "}
-                        creator avg
+                        baseline ·{" "}
+                        {s.timestamp
+                          ? new Date(s.timestamp).toLocaleDateString("en-US", {
+                              month: "short",
+                              year: "numeric",
+                            })
+                          : "--"}
                       </span>
                     </div>
                   </a>

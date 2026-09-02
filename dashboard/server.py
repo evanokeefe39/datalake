@@ -220,37 +220,17 @@ def health():
 
 @app.get("/api/overview")
 def overview():
+    """Thin projector over the canonical single-row ``v_overview`` view."""
     db = _connect()
     try:
-        total_posts = db.execute("SELECT COUNT(*) FROM silver_ig_posts").fetchone()[0]
-
-        total_enriched = db.execute(
-            "SELECT COUNT(*) FROM gold_analyses WHERE domain = 'instagram'"
-        ).fetchone()[0]
-
-        total_profiles = db.execute(
-            "SELECT COUNT(DISTINCT owner_username) FROM silver_ig_posts"
-        ).fetchone()[0]
-
-        enrichment_pct = round((total_enriched / total_posts * 100), 1) if total_posts else 0
-
-        admiralty = (
-            db.execute(
-                "SELECT ROUND(AVG(admiralty_score), 2) FROM v_creator_quality "
-                "WHERE enriched_posts > 0"
-            ).fetchone()[0]
-            or 0
-        )
-
-        high_signal = db.execute("SELECT COUNT(*) FROM v_signal").fetchone()[0]
-
+        r = db.execute("SELECT * FROM v_overview").fetchone()
         return {
-            "total_posts": total_posts,
-            "total_enriched": total_enriched,
-            "total_profiles": total_profiles,
-            "enrichment_pct": enrichment_pct,
-            "avg_admiralty_score": float(admiralty),
-            "high_signal_count": high_signal,
+            "total_posts": r[0],
+            "total_enriched": r[1],
+            "total_profiles": r[2],
+            "enrichment_pct": r[3] if r[3] is not None else 0,
+            "avg_admiralty_score": float(r[4] or 0),
+            "high_signal_count": r[5],
         }
     finally:
         db.close()
@@ -455,40 +435,23 @@ def search_posts(
 
 @app.get("/api/standout-posts")
 def standout_posts(limit: int = Query(20, ge=1, le=100)):
-    """Posts labeled standout by the Tukey-fence label pass (ig_post_labels)."""
+    """Posts labeled standout by the Tukey-fence label pass (ig_post_labels).
+
+    Thin projector over ``v_post_metrics`` — point-in-time context only: each
+    post is compared to its own trailing baseline, never a creator average.
+    """
     db = _connect()
     try:
         rows = db.execute(
             """
-            WITH standout AS (
-                SELECT sp.post_id, sp.owner_username, sp.shortcode,
-                       sp.caption, sp.likes_count, sp.comments_count,
-                       sp.video_view_count, sp.timestamp,
-                       l.baseline_center, l.baseline_spread,
-                       ROUND(
-                           (sp.likes_count - l.baseline_center)
-                           / NULLIF(l.baseline_spread, 0),
-                           2
-                       ) AS z_score,
-                       l.method, l.is_provisional,
-                       dp.creator_id, dp.channel
-                FROM silver_ig_posts sp
-                JOIN ig_post_labels l ON sp.post_id = l.post_id
-                LEFT JOIN dim_profile dp
-                    ON sp.owner_id = dp.owner_id AND dp.is_current = TRUE
-                WHERE l.label = 'standout'
-            ),
-            creator_avg AS (
-                SELECT owner_username, AVG(likes_count) AS creator_avg_likes
-                FROM silver_ig_posts
-                WHERE likes_count IS NOT NULL
-                GROUP BY owner_username
-            )
-            SELECT s.*, ca.creator_avg_likes
-            FROM standout s
-            LEFT JOIN creator_avg ca ON ca.owner_username = s.owner_username
-            ORDER BY CASE WHEN s.method = 'day7_matched' THEN 0 ELSE 1 END,
-                     s.z_score DESC
+            SELECT post_id, owner_username, shortcode, caption,
+                   likes_count, comments_count, video_view_count,
+                   timestamp, baseline_q3, baseline_iqr, likes_zscore,
+                   method, is_provisional, creator_id, channel
+            FROM v_post_metrics
+            WHERE is_standout = 1
+            ORDER BY CASE WHEN method = 'day7_matched' THEN 0 ELSE 1 END,
+                     likes_zscore DESC
             LIMIT ?
         """,
             [limit],
@@ -505,7 +468,7 @@ def standout_posts(limit: int = Query(20, ge=1, le=100)):
                 "video_view_count": r[6] or 0,
                 "timestamp": str(r[7]) if r[7] else None,
                 # Per-post TRAILING Tukey baseline from the label pass — NOT a
-                # mean; exposed with honest names.
+                # mean; exposed with honest names. Point-in-time only.
                 "baseline_q3": round(r[8], 0) if r[8] else 0,
                 "baseline_iqr": round(r[9], 0) if r[9] else 0,
                 "z_score": float(r[10]) if r[10] else 0,
@@ -513,7 +476,6 @@ def standout_posts(limit: int = Query(20, ge=1, le=100)):
                 "provisional": bool(r[12]),
                 "creator_id": r[13],
                 "platform": r[14] or "instagram",
-                "creator_avg_likes": round(r[15], 0) if r[15] is not None else None,
             }
             for r in rows
         ]
@@ -526,19 +488,14 @@ def standout_posts(limit: int = Query(20, ge=1, le=100)):
 
 @app.get("/api/weekly-summary")
 def weekly_summary():
-    """Standout posts grouped by day of month for the current month."""
+    """Standout posts per day of month — thin projector over
+    ``v_standout_calendar``."""
     db = _connect()
     try:
-        rows = db.execute("""
-            SELECT EXTRACT(DAY FROM sp.timestamp) AS day_of_month,
-                   COUNT(*) AS standout_count
-            FROM silver_ig_posts sp
-            JOIN ig_post_labels l ON sp.post_id = l.post_id
-            WHERE l.label = 'standout'
-            GROUP BY day_of_month
-            ORDER BY day_of_month
-        """).fetchall()
-
+        rows = db.execute(
+            "SELECT day_of_month, standout_count FROM v_standout_calendar "
+            "ORDER BY day_of_month"
+        ).fetchall()
         return [{"day": int(r[0]), "standout_count": r[1]} for r in rows]
     finally:
         db.close()
@@ -549,49 +506,22 @@ def weekly_summary():
 
 @app.get("/api/hot-posts")
 def hot_posts(limit: int = Query(10, ge=1, le=50)):
-    """Top standout-labeled posts per creator, ranked against their baseline."""
+    """Top hot posts (2σ+ standouts), top-3 per owner, ranked by z-score.
+
+    Thin projector over ``v_post_metrics`` — point-in-time context only; no
+    creator all-time average on post rows.
+    """
     db = _connect()
     try:
         rows = db.execute(
             """
-            WITH hots AS (
-                SELECT sp.post_id, sp.owner_username, sp.shortcode,
-                       sp.caption, sp.likes_count, sp.comments_count,
-                       sp.timestamp,
-                       l.baseline_center, l.baseline_spread,
-                       ROUND(
-                           (sp.likes_count - l.baseline_center)
-                           / NULLIF(l.baseline_spread, 0),
-                           2
-                       ) AS z_score,
-                       dp.creator_id, dp.channel,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY sp.owner_username
-                           ORDER BY (sp.likes_count - l.baseline_center)
-                                    / NULLIF(l.baseline_spread, 0) DESC
-                       ) AS rn
-                FROM silver_ig_posts sp
-                JOIN ig_post_labels l ON sp.post_id = l.post_id
-                LEFT JOIN dim_profile dp
-                    ON sp.owner_id = dp.owner_id AND dp.is_current = TRUE
-                WHERE l.label = 'standout'
-            ),
-            creator_avg AS (
-                -- All-time mean likes per creator, same definition as
-                -- v_creator_quality.avg_likes (cross-surface consistent).
-                SELECT owner_username, AVG(likes_count) AS creator_avg_likes
-                FROM silver_ig_posts
-                WHERE likes_count IS NOT NULL
-                GROUP BY owner_username
-            )
-            SELECT h.post_id, h.owner_username, h.shortcode, h.caption,
-                   h.likes_count, h.comments_count, h.timestamp,
-                   h.baseline_center, h.baseline_spread, h.z_score,
-                   h.creator_id, h.channel, ca.creator_avg_likes
-            FROM hots h
-            LEFT JOIN creator_avg ca ON ca.owner_username = h.owner_username
-            WHERE h.rn <= 3
-            ORDER BY h.z_score DESC
+            SELECT post_id, owner_username, shortcode, caption,
+                   likes_count, comments_count, timestamp,
+                   baseline_q3, baseline_iqr, likes_zscore,
+                   creator_id, channel
+            FROM v_post_metrics
+            WHERE is_hot = 1 AND is_top3_in_owner = 1
+            ORDER BY likes_zscore DESC
             LIMIT ?
         """,
             [limit],
@@ -607,13 +537,12 @@ def hot_posts(limit: int = Query(10, ge=1, le=50)):
                 "comments_count": r[5] or 0,
                 "timestamp": str(r[6]) if r[6] else None,
                 # Per-post TRAILING Tukey baseline from the label pass — NOT a
-                # mean. Exposed honestly; UI renders creator_avg_likes as "avg".
+                # mean. Point-in-time context; no creator-avg key on posts.
                 "baseline_q3": round(r[7], 0) if r[7] else 0,
                 "baseline_iqr": round(r[8], 0) if r[8] else 0,
                 "z_score": float(r[9]) if r[9] else 0,
                 "creator_id": r[10],
                 "platform": r[11] or "instagram",
-                "creator_avg_likes": round(r[12], 0) if r[12] is not None else None,
             }
             for r in rows
         ]
@@ -684,39 +613,6 @@ def _extract_handle(value: str) -> str:
     return h
 
 
-def _post_counts(db: duckdb.DuckDBPyConnection) -> dict[str, int]:
-    """Map owner_username → post count from silver."""
-    rows = db.execute(
-        "SELECT owner_username, COUNT(*) FROM silver_ig_posts "
-        "WHERE owner_username IS NOT NULL GROUP BY owner_username"
-    ).fetchall()
-    return {r[0]: r[1] for r in rows}
-
-
-def _standout_and_hot_counts(db: duckdb.DuckDBPyConnection) -> tuple[dict[str, int], dict[str, int]]:
-    """Per-owner standout counts from ``ig_post_labels``, plus a hot subset.
-
-    ``standout`` is the materialized label; ``hot`` are standout posts whose
-    likes also exceed baseline_center + 2 * baseline_spread.
-    """
-    rows = db.execute(
-        """
-        SELECT sp.owner_username,
-               l.baseline_center, l.baseline_spread, sp.likes_count
-        FROM silver_ig_posts sp
-        JOIN ig_post_labels l ON sp.post_id = l.post_id
-        WHERE l.label = 'standout'
-        """
-    ).fetchall()
-    standout: dict[str, int] = {}
-    hot: dict[str, int] = {}
-    for owner, center, spread, likes in rows:
-        standout[owner] = standout.get(owner, 0) + 1
-        if center is not None and spread and likes > center + 2 * spread:
-            hot[owner] = hot.get(owner, 0) + 1
-    return standout, hot
-
-
 def _profiles_by_creator(ops: SQLiteResource) -> dict[int, list[dict]]:
     """Map creator_id → list of {platform, handle}."""
     conn = ops.get_connection()
@@ -736,35 +632,47 @@ def _profiles_by_creator(ops: SQLiteResource) -> dict[int, list[dict]]:
 
 @app.get("/api/creators")
 def creators():
+    """Ops registry (identity) joined to canonical views (metrics).
+
+    Activity metrics (counts, avg_likes, max_likes) come gate-free from
+    ``v_creator_metrics``; enrichment-quality columns from ``v_creator_quality``.
+    The Python joins below are keyed registry merges, not aggregation.
+    """
     db = _connect()
     try:
         rows = list_creators(_ops_resource())
         grouped = _profiles_by_creator(_ops_resource())
-        post_counts = _post_counts(db)
-        standout_counts, hot_counts = _standout_and_hot_counts(db)
-        quality_rows = db.execute(
-            "SELECT creator_id, enriched_posts, educational_rate, actionable_rate, "
-            "admiralty_score, avg_likes, max_likes FROM v_creator_quality"
-        ).fetchall()
+        metrics = {
+            r[0]: {
+                "total_posts": int(r[1] or 0),
+                "standout_count": int(r[2] or 0),
+                "hot_count": int(r[3] or 0),
+                "avg_likes": float(r[4]) if r[4] is not None else 0,
+                "max_likes": int(r[5] or 0),
+            }
+            for r in db.execute(
+                "SELECT creator_id, total_posts, standout_count, hot_count, "
+                "avg_likes, max_likes FROM v_creator_metrics"
+            ).fetchall()
+        }
         quality = {
             r[0]: {
                 "enriched_posts": int(r[1]) if r[1] is not None else 0,
                 "educational_rate": float(r[2]) if r[2] is not None else 0,
                 "actionable_rate": float(r[3]) if r[3] is not None else 0,
                 "admiralty_score": float(r[4]) if r[4] is not None else 0,
-                "avg_likes": float(r[5]) if r[5] is not None else 0,
-                "max_likes": int(r[6]) if r[6] is not None else 0,
             }
-            for r in quality_rows
+            for r in db.execute(
+                "SELECT creator_id, enriched_posts, educational_rate, "
+                "actionable_rate, admiralty_score FROM v_creator_quality"
+            ).fetchall()
         }
         result = []
         for c in rows:
             profiles = grouped.get(c["id"], [])
             platforms = sorted({p["platform"] for p in profiles})
             handles = [p["handle"] for p in profiles]
-            total_posts = sum(post_counts.get(h, 0) for h in handles)
-            standout_count = sum(standout_counts.get(h, 0) for h in handles)
-            hot_count = sum(hot_counts.get(h, 0) for h in handles)
+            m = metrics.get(c["id"], {})
             q = quality.get(c["id"], {})
             result.append(
                 {
@@ -774,16 +682,16 @@ def creators():
                     "updated_at": c["updated_at"],
                     "profile_count": c["profile_count"],
                     "platforms": platforms,
-                    "total_posts": total_posts,
-                    "standout_count": standout_count,
-                    "hot_count": hot_count,
+                    "total_posts": m.get("total_posts", 0),
+                    "standout_count": m.get("standout_count", 0),
+                    "hot_count": m.get("hot_count", 0),
                     "avatar_handle": handles[0] if handles else None,
                     "enriched_posts": q.get("enriched_posts", 0),
                     "educational_rate": q.get("educational_rate", 0),
                     "actionable_rate": q.get("actionable_rate", 0),
                     "admiralty_score": q.get("admiralty_score", 0),
-                    "avg_likes": q.get("avg_likes", 0),
-                    "max_likes": q.get("max_likes", 0),
+                    "avg_likes": m.get("avg_likes", 0),
+                    "max_likes": m.get("max_likes", 0),
                 }
             )
         return result
@@ -858,12 +766,19 @@ def creator_detail(creator_id: int):
 
     db = _connect()
     try:
-        post_counts = _post_counts(db)
+        profile_metrics = {
+            r[0]: r[1]
+            for r in db.execute(
+                "SELECT owner_username, post_count FROM v_profile_metrics"
+            ).fetchall()
+        }
         profiles_out = []
         for p in creator["profiles"]:
             profile = dict(p)
             profile["post_count"] = (
-                post_counts.get(p["handle"], 0) if p["platform"] == "instagram" else 0
+                profile_metrics.get(p["handle"], 0)
+                if p["platform"] == "instagram"
+                else 0
             )
             if p["platform"] == "instagram":
                 meta = db.execute(
@@ -881,36 +796,6 @@ def creator_detail(creator_id: int):
         return creator
     finally:
         db.close()
-
-
-def _attach_relative_performance(
-    db: duckdb.DuckDBPyConnection, posts: list[dict], handles: list[str]
-) -> None:
-    """Annotate each post with its tier from ``ig_post_labels``.
-
-    ``relative_performance`` is ``"hot"`` for standout-labeled posts whose
-    likes also exceed ``baseline_center + 2 * baseline_spread``, ``"standout"``
-    for standout-labeled posts, or ``None`` (including unlabeled/pending
-    posts). The lifetime z-score computation is retired (US-D1).
-    """
-    placeholders = ",".join("?" for _ in handles)
-    rows = db.execute(
-        "SELECT sp.post_id, sp.likes_count, l.baseline_center, l.baseline_spread "
-        "FROM silver_ig_posts sp "
-        "JOIN ig_post_labels l ON sp.post_id = l.post_id "
-        f"WHERE sp.owner_username IN ({placeholders}) AND l.label = 'standout'",
-        handles,
-    ).fetchall()
-    tiers = {
-        pid: (
-            "hot"
-            if center is not None and spread and likes > center + 2 * spread
-            else "standout"
-        )
-        for pid, likes, center, spread in rows
-    }
-    for p in posts:
-        p["relative_performance"] = tiers.get(p["post_id"])
 
 
 @app.get("/api/creators/{creator_id}/posts")
@@ -932,10 +817,21 @@ def creator_posts(creator_id: int):
             handles,
         ).fetchall()
         posts = _rows_to_posts(rows)
-        _attach_relative_performance(db, posts, handles)
+        # Point-in-time tier lookup from ``v_post_metrics`` (projection only).
+        tiers = {
+            r[0]: r[1]
+            for r in db.execute(
+                f"SELECT post_id, relative_performance FROM v_post_metrics "
+                f"WHERE owner_username IN ({placeholders})",
+                handles,
+            ).fetchall()
+        }
+        for p in posts:
+            p["relative_performance"] = tiers.get(p["post_id"])
         return posts
     finally:
         db.close()
+
 
 
 @app.post("/api/creators", status_code=201)
