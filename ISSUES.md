@@ -467,6 +467,16 @@ the producer and bypass watermark/dedup.
       no new bronze files and does not re-trigger silver
 - [ ] `ig_posts_raw` (Apify producer) untouched
 
+#### Non-goals
+
+- **No change to `ig_posts_raw`** — its config, code, and file naming stay
+  untouched.
+- No new silver/gold tables — the local source flows through the existing
+  medallion path.
+- No re-download of Instagram media (URLs expired; local bytes are canonical).
+- No parallel pipeline or migration script (NEW SOURCE RULE: producer on the
+  existing contract, not a one-off bootstrap).
+
 ### 18. Post detail page — first-party view of full post context + source links
 
 **Status:** Proposed idea (2026-09-02) — awaiting full Epic: user stories,
