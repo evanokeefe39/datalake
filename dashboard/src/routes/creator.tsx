@@ -9,9 +9,12 @@ import { Users, ArrowLeft } from "lucide-react";
 import {
   fetchCreator,
   fetchCreatorPosts,
+  fetchCreatorTopics,
   type CreatorDetail,
+  type CreatorTopicRow,
   type PostRow,
 } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
 
 export default function CreatorPage() {
   const { id } = useParams({ from: "/creators/$id" });
@@ -20,6 +23,7 @@ export default function CreatorPage() {
   const [creator, setCreator] = useState<CreatorDetail | null>(null);
   const [posts, setPosts] = useState<PostRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [topics, setTopics] = useState<CreatorTopicRow[]>([]);
   const [postsLoading, setPostsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -41,8 +45,14 @@ export default function CreatorPage() {
       .catch((e: unknown) => setError(String(e)))
       .finally(() => setPostsLoading(false));
   };
+  const loadTopics = () => {
+    fetchCreatorTopics(creatorId)
+      .then(setTopics)
+      .catch(() => setTopics([]));
+  };
 
   useEffect(loadCreator, [creatorId]);
+  useEffect(loadTopics, [creatorId]);
   useEffect(loadPosts, [creatorId]);
 
   const refreshAll = () => {
@@ -76,6 +86,13 @@ export default function CreatorPage() {
 
   const avatarHandle = creator.profiles[0]?.handle;
   const platforms = [...new Set(creator.profiles.map((p) => p.platform))];
+  const m = creator.metrics;
+  const byCount = topics.filter((t) => t.count_rank <= 5);
+  const byPerf = topics.filter((t) => t.perf_rank <= 5);
+  const momentumPct =
+    m?.momentum_ratio != null
+      ? Math.round((m.momentum_ratio - 1) * 100)
+      : null;
 
   return (
     <div className="space-y-6">
@@ -113,6 +130,118 @@ export default function CreatorPage() {
         >
           Edit creator
         </button>
+      </div>
+
+      {m && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+          <div className="bg-surface border border-border p-3">
+            <div className="text-[9px] text-muted font-data uppercase tracking-widest">
+              Posts
+            </div>
+            <div className="text-lg font-data tabular-nums">
+              {m.total_posts.toLocaleString()}
+            </div>
+          </div>
+          <div className="bg-surface border border-border p-3">
+            <div className="text-[9px] text-muted font-data uppercase tracking-widest">
+              Momentum
+            </div>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              {m.is_rising ? (
+                <Badge variant="green">Rising</Badge>
+              ) : momentumPct != null ? (
+                <span className="text-lg font-data tabular-nums">
+                  {momentumPct > 0 ? "+" : ""}
+                  {momentumPct}%
+                </span>
+              ) : (
+                <span className="text-muted">—</span>
+              )}
+            </div>
+            <div className="text-[9px] text-muted font-data mt-1">
+              recent vs own prior-window baseline
+            </div>
+          </div>
+          <div className="bg-surface border border-border p-3">
+            <div className="text-[9px] text-muted font-data uppercase tracking-widest">
+              Dominant Domain
+            </div>
+            {m.dominant_domain ? (
+              <div className="mt-0.5">
+                <div className="text-sm">{m.dominant_domain}</div>
+                <div className="text-[9px] text-muted font-data mt-1">
+                  {m.dominant_domain_posts} post
+                  {m.dominant_domain_posts === 1 ? "" : "s"}
+                </div>
+              </div>
+            ) : (
+              <div className="text-muted mt-0.5">—</div>
+            )}
+          </div>
+          <div className="bg-surface border border-border p-3">
+            <div className="text-[9px] text-muted font-data uppercase tracking-widest">
+              Avg Engagement
+            </div>
+            {m.avg_engagement_score != null ? (
+              <div className="text-lg font-data tabular-nums">
+                {m.avg_engagement_score.toFixed(2)}
+              </div>
+            ) : (
+              <div className="text-muted mt-0.5">—</div>
+            )}
+            <div className="text-[9px] text-muted font-data mt-1">
+              baseline-normalized, scored posts
+            </div>
+          </div>
+          <div className="bg-surface border border-border p-3">
+            <div className="text-[9px] text-muted font-data uppercase tracking-widest">
+              Standouts
+            </div>
+            <div className="text-lg font-data tabular-nums text-accent-yellow">
+              {m.standout_count}
+            </div>
+          </div>
+          <div className="bg-surface border border-border p-3">
+            <div className="text-[9px] text-muted font-data uppercase tracking-widest">
+              Hot
+            </div>
+            <div className="text-lg font-data tabular-nums text-accent-red">
+              {m.hot_count}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {(
+          [
+            ["Top Topics by Post Count", byCount, (t: CreatorTopicRow) => `${t.post_count} post${t.post_count === 1 ? "" : "s"}`],
+            ["Top Topics by Engagement Performance", byPerf, (t: CreatorTopicRow) => t.perf_score != null ? `score ${t.perf_score.toFixed(2)}` : "unscored"],
+          ] as const
+        ).map(([title, rows, detail]) => (
+          <div key={title} className="bg-surface border border-border p-4">
+            <h3 className="text-[10px] text-muted font-data uppercase tracking-widest mb-2">
+              {title}
+            </h3>
+            {rows.length === 0 ? (
+              <p className="text-muted text-xs">No topic data yet.</p>
+            ) : (
+              <ol className="space-y-1.5">
+                {rows.map((t) => (
+                  <li
+                    key={t.topic}
+                    className="flex items-center justify-between text-xs"
+                  >
+                    <span>{t.topic}</span>
+                    <span className="font-data tabular-nums text-muted">
+                      {detail(t)}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        ))}
       </div>
 
       {error && <p className="text-red-400 text-xs">{error}</p>}

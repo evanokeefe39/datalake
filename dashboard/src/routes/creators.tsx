@@ -142,6 +142,39 @@ const COLUMN_DEFS: ColDef<Creator>[] = [
         <span className="text-muted">0</span>
       ),
   },
+  {
+    field: "momentum_ratio",
+    headerName: "Momentum",
+    width: 130,
+    cellClass: "!justify-center flex !items-center gap-1",
+    cellRenderer: ({ data }: { data: Creator }) =>
+      data.is_rising ? (
+        <Badge variant="green">Rising</Badge>
+      ) : data.momentum_ratio != null ? (
+        <span className="font-data tabular-nums text-xs">
+          +{Math.round((data.momentum_ratio - 1) * 100)}%
+        </span>
+      ) : (
+        <span className="text-muted text-xs">—</span>
+      ),
+  },
+  {
+    field: "dominant_domain",
+    headerName: "Dominant Domain",
+    width: 170,
+    cellClass: "!justify-center",
+    cellRenderer: ({ data }: { data: Creator }) =>
+      data.dominant_domain ? (
+        <span className="text-xs">
+          {data.dominant_domain}{" "}
+          <span className="text-muted font-data">
+            ({data.dominant_domain_posts})
+          </span>
+        </span>
+      ) : (
+        <span className="text-muted text-xs">—</span>
+      ),
+  },
 ];
 
 export default function CreatorsPage() {

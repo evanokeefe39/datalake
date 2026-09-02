@@ -299,6 +299,51 @@ export default function OverviewPage() {
                 ),
               },
               {
+                key: "dominant_domain",
+                header: "DOMAIN",
+                className: "text-center hidden md:table-cell",
+                render: (row: RisingCreatorRow & { rank: number }) =>
+                  row.dominant_domain ? (
+                    <span className="text-xs">
+                      {row.dominant_domain}{" "}
+                      <span className="text-muted font-data">
+                        ({row.dominant_domain_posts})
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="text-muted text-xs">—</span>
+                  ),
+              },
+              {
+                key: "topics",
+                header: "TOPICS",
+                sortable: false,
+                className: "hidden lg:table-cell",
+                render: (row: RisingCreatorRow & { rank: number }) => {
+                  const byCount = row.topics_by_count.slice(0, 3);
+                  const byPerf = row.topics_by_perf.slice(0, 3);
+                  if (byCount.length === 0 && byPerf.length === 0) {
+                    return <span className="text-muted text-xs">—</span>;
+                  }
+                  return (
+                    <div className="text-[10px] font-data leading-snug">
+                      {byCount.length > 0 && (
+                        <div>
+                          <span className="text-muted">by posts:</span>{" "}
+                          {byCount.map((t) => t.topic).join(", ")}
+                        </div>
+                      )}
+                      {byPerf.length > 0 && (
+                        <div>
+                          <span className="text-muted">by engagement:</span>{" "}
+                          {byPerf.map((t) => t.topic).join(", ")}
+                        </div>
+                      )}
+                    </div>
+                  );
+                },
+              },
+              {
                 key: "recent_avg",
                 header: "RECENT",
                 className: "text-right font-data tabular-nums",

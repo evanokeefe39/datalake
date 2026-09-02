@@ -735,17 +735,26 @@ def creators():
     try:
         rows = list_creators(_ops_resource())
         grouped = _profiles_by_creator(_ops_resource())
-        metrics = {
+        profile = {
             r[0]: {
                 "total_posts": int(r[1] or 0),
                 "standout_count": int(r[2] or 0),
                 "hot_count": int(r[3] or 0),
                 "avg_likes": float(r[4]) if r[4] is not None else 0,
                 "max_likes": int(r[5] or 0),
+                "avg_engagement_score": (
+                    float(r[6]) if r[6] is not None else None
+                ),
+                "dominant_domain": r[7],
+                "dominant_domain_posts": int(r[8] or 0),
+                "momentum_ratio": float(r[9]) if r[9] is not None else None,
+                "is_rising": bool(r[10]),
             }
             for r in db.execute(
                 "SELECT creator_id, total_posts, standout_count, hot_count, "
-                "avg_likes, max_likes FROM v_creator_metrics"
+                "avg_likes, max_likes, avg_engagement_score, dominant_domain, "
+                "dominant_domain_posts, momentum_ratio, is_rising "
+                "FROM v_creator_profile"
             ).fetchall()
         }
         quality = {
@@ -765,7 +774,7 @@ def creators():
             profiles = grouped.get(c["id"], [])
             platforms = sorted({p["platform"] for p in profiles})
             handles = [p["handle"] for p in profiles]
-            m = metrics.get(c["id"], {})
+            m = profile.get(c["id"], {})
             q = quality.get(c["id"], {})
             result.append(
                 {
@@ -785,6 +794,11 @@ def creators():
                     "admiralty_score": q.get("admiralty_score", 0),
                     "avg_likes": m.get("avg_likes", 0),
                     "max_likes": m.get("max_likes", 0),
+                    "avg_engagement_score": m.get("avg_engagement_score"),
+                    "dominant_domain": m.get("dominant_domain"),
+                    "dominant_domain_posts": m.get("dominant_domain_posts", 0),
+                    "momentum_ratio": m.get("momentum_ratio"),
+                    "is_rising": m.get("is_rising", False),
                 }
             )
         return result
@@ -835,7 +849,7 @@ def rising_creators():
             "baseline_avg, baseline_posts, momentum_ratio FROM v_rising_creators "
             "ORDER BY momentum_ratio DESC, recent_avg DESC, creator_id ASC LIMIT 10"
         ).fetchall()
-        return [
+        result = [
             {
                 "creator_id": int(r[0]),
                 "creator_name": str(r[1]),
@@ -847,6 +861,45 @@ def rising_creators():
             }
             for r in rows
         ]
+        profile = {
+            r[0]: {
+                "dominant_domain": r[1],
+                "dominant_domain_posts": int(r[2] or 0),
+                "avg_engagement_score": (
+                    float(r[3]) if r[3] is not None else None
+                ),
+            }
+            for r in db.execute(
+                "SELECT creator_id, dominant_domain, dominant_domain_posts, "
+                "avg_engagement_score FROM v_creator_profile"
+            ).fetchall()
+        }
+        topics: dict[int, list[dict]] = {}
+        for r in db.execute(
+            "SELECT creator_id, topic, post_count, perf_score, perf_rank, "
+            "count_rank FROM v_creator_topics"
+        ).fetchall():
+            topics.setdefault(int(r[0]), []).append(
+                {
+                    "topic": str(r[1]),
+                    "post_count": int(r[2] or 0),
+                    "perf_score": float(r[3]) if r[3] is not None else None,
+                    "perf_rank": int(r[4]),
+                    "count_rank": int(r[5]),
+                }
+            )
+        for row in result:
+            p = profile.get(row["creator_id"], {})
+            row["dominant_domain"] = p.get("dominant_domain")
+            row["dominant_domain_posts"] = p.get("dominant_domain_posts", 0)
+            creator_topics = topics.get(row["creator_id"], [])
+            row["topics_by_count"] = [
+                t for t in creator_topics if t["count_rank"] <= 5
+            ]
+            row["topics_by_perf"] = [
+                t for t in creator_topics if t["perf_rank"] <= 5
+            ]
+        return result
     finally:
         db.close()
 
@@ -859,6 +912,32 @@ def creator_detail(creator_id: int):
 
     db = _connect()
     try:
+        metrics_row = db.execute(
+            "SELECT total_posts, avg_likes, avg_engagement_score, "
+            "dominant_domain, dominant_domain_posts, momentum_ratio, "
+            "is_rising, standout_count, hot_count FROM v_creator_profile "
+            "WHERE creator_id = ?",
+            [creator_id],
+        ).fetchone()
+        creator["metrics"] = (
+            {
+                "total_posts": int(metrics_row[0] or 0),
+                "avg_likes": float(metrics_row[1]) if metrics_row[1] is not None else None,
+                "avg_engagement_score": (
+                    float(metrics_row[2]) if metrics_row[2] is not None else None
+                ),
+                "dominant_domain": metrics_row[3],
+                "dominant_domain_posts": int(metrics_row[4] or 0),
+                "momentum_ratio": (
+                    float(metrics_row[5]) if metrics_row[5] is not None else None
+                ),
+                "is_rising": bool(metrics_row[6]),
+                "standout_count": int(metrics_row[7] or 0),
+                "hot_count": int(metrics_row[8] or 0),
+            }
+            if metrics_row
+            else None
+        )
         profile_metrics = {
             r[0]: r[1]
             for r in db.execute(
@@ -887,6 +966,36 @@ def creator_detail(creator_id: int):
             profiles_out.append(profile)
         creator["profiles"] = profiles_out
         return creator
+    finally:
+        db.close()
+
+
+
+@app.get("/api/creators/{creator_id}/topics")
+def creator_topics(creator_id: int):
+    """Per-creator topics — thin projector over ``v_creator_topics``.
+
+    Returns every view row for the creator (≤10); clients slice
+    ``count_rank <= 5`` / ``perf_rank <= 5``. No aggregation here.
+    """
+    db = _connect()
+    try:
+        rows = db.execute(
+            "SELECT topic, post_count, perf_score, perf_rank, count_rank "
+            "FROM v_creator_topics WHERE creator_id = ? "
+            "ORDER BY count_rank ASC, perf_rank ASC",
+            [creator_id],
+        ).fetchall()
+        return [
+            {
+                "topic": str(r[0]),
+                "post_count": int(r[1] or 0),
+                "perf_score": float(r[2]) if r[2] is not None else None,
+                "perf_rank": int(r[3]),
+                "count_rank": int(r[4]),
+            }
+            for r in rows
+        ]
     finally:
         db.close()
 
