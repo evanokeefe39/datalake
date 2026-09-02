@@ -88,7 +88,7 @@ Domain-scoped, not generic. Supports multi-source expansion (TikTok, YouTube, Li
 | SQLite | `creators` | A person/brand (`id`, `name`) — owns 1..N profiles across platforms |
 | SQLite | `profiles` | One account per platform (`platform`, `handle` PK) linked to a creator; carries scrape config (depth, enabled, tier) |
 
-**DuckDB views:** `v_post_detail` (foundational), `v_signal`, `v_quality_trend`, `v_creator_quality`, `v_rising_creators`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`
+**DuckDB views:** `v_post_detail` (foundational), `v_signal`, `v_quality_trend`, `v_creator_quality`, `v_rising_creators`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`, `v_post_metrics` (canonical per-post metrics), `v_creator_metrics` (gate-free per-creator activity), `v_profile_metrics` (per-profile counts), `v_overview` (single-row), `v_standout_calendar` (day-of-month standouts)
 
 
 ## Watermarks pattern
@@ -174,7 +174,7 @@ Any table the pipeline reads or writes must be listed here. The readiness test
 (`test_state_compatibility.py`) asserts the catalog matches the running databases.
 **DuckDB tables:** `silver_ig_posts`, `gold_analyses`, `watermarks`, `dim_profile`, `dim_date`
 **SQLite tables:** `batch_jobs`, `batch_items`, `media_metadata`, `media_cache`, `dead_letter`, `creators`, `profiles`
-**Views:** `v_post_detail`, `v_signal`, `v_quality_trend`, `v_creator_quality`, `v_rising_creators`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`
+**Views:** `v_post_detail`, `v_signal`, `v_quality_trend`, `v_creator_quality`, `v_rising_creators`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`, `v_post_metrics`, `v_creator_metrics`, `v_profile_metrics`, `v_overview`, `v_standout_calendar`
 - **Missing tables/columns** — fails with "run the pipeline or migration"
 - **Stale table names** — tables in the DB that were renamed/dropped (e.g. `gold_ig_analyses`). Fails with migration hint.
 - **Extra tables** — tables in the DB not in the catalog. Warns, doesn't fail (may be legitimate).
@@ -245,10 +245,9 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
 ## Serving layer
 
 - `dim_profile`: SCD2 profile dimension. Reads DISTINCT profiles from `silver_ig_posts`. Closes old rows on username change, inserts new rows. `channel = 'instagram'`. Carries `creator_id`/`creator_name` linked from `profiles`/`creators` in ops.
-- `dim_date`: Generated date table — 1 year back from today, with fiscal year (Jul–Jun).
 - `v_post_detail`: Foundational flat view joining silver + gold (JSON-extracted) + dim_profile + dim_date. LEFT JOINs throughout — posts without enrichment or profiles still appear.
-- Eight downstream views: `v_signal` (high-value filter), `v_quality_trend` (weekly aggregates), `v_creator_quality` (creator rankings), `v_rising_creators` (momentum), `v_domain_coverage` (heatmap), `v_engagement_outliers` (per-creator z-scores), `v_outlier_posts` (1σ+ outliers), `v_creator_outlier_rate` (outlier production rate).
-- All in `defs/serving/assets.py`, group_name="serving"
+- Eleven downstream views: `v_signal` (high-value filter), `v_quality_trend` (weekly aggregates), `v_creator_quality` (creator rankings, gated), `v_rising_creators` (momentum), `v_domain_coverage` (heatmap), `v_engagement_outliers` (label-backed per-post z-scores), `v_outlier_posts` (1σ+ outliers), `v_creator_outlier_rate` (outlier production rate), plus the canonical metric views: `v_post_metrics` (per-post label + point-in-time baseline + `is_standout`/`is_hot` (2σ+)/`is_top3_in_owner`; NO creator-avg column), `v_creator_metrics` (gate-free per-creator counts/avg/max), `v_profile_metrics` (per-owner_username counts), `v_overview` (single-row totals), `v_standout_calendar` (standouts per day-of-month).
+- All in `defs/serving/assets.py`, group_name="serving". Dashboard analytics endpoints are thin projectors over these views — no aggregation in `dashboard/server.py` (guard: `tests/unit/dashboard/test_no_aggregation_in_server.py`).
 
 
 

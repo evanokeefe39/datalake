@@ -75,6 +75,49 @@ def label_db(tmp_path, monkeypatch):
         """
     )
     con.execute("INSERT INTO dim_profile VALUES ('o1', TRUE, 7, 'instagram')")
+    # Minimal mirror of v_post_metrics + v_standout_calendar (canonical views
+    # live in defs/serving/assets.py; real-DB coherence is covered elsewhere).
+    con.execute("""
+        CREATE VIEW v_post_metrics_base AS
+        SELECT
+            sp.post_id, sp.owner_username, dp.creator_id, dp.channel,
+            sp.likes_count, sp.comments_count, sp.video_view_count,
+            sp.timestamp, sp.shortcode, sp.caption,
+            l.label, l.method, l.is_provisional,
+            ROUND((sp.likes_count - l.baseline_center)
+                  / NULLIF(l.baseline_spread, 0), 2)         AS likes_zscore,
+            l.baseline_center                               AS baseline_q3,
+            l.baseline_spread                               AS baseline_iqr,
+            CASE WHEN l.label = 'standout' THEN 1 ELSE 0 END AS is_standout,
+            CASE WHEN l.label = 'standout'
+                  AND (sp.likes_count - l.baseline_center)
+                      / NULLIF(l.baseline_spread, 0) >= 2
+                 THEN 1 ELSE 0 END                          AS is_hot,
+            ROW_NUMBER() OVER (
+                PARTITION BY sp.owner_username
+                ORDER BY (sp.likes_count - l.baseline_center)
+                         / NULLIF(l.baseline_spread, 0) DESC
+            )                                               AS owner_rank
+        FROM silver_ig_posts sp
+        JOIN ig_post_labels l ON sp.post_id = l.post_id
+        LEFT JOIN dim_profile dp
+            ON sp.owner_id = dp.owner_id AND dp.is_current = TRUE
+    """)
+    con.execute("""
+        CREATE VIEW v_post_metrics AS
+        SELECT base.*,
+               CASE WHEN base.is_standout = 1 AND base.owner_rank <= 3
+                    THEN 1 ELSE 0 END AS is_top3_in_owner
+        FROM v_post_metrics_base base
+    """)
+    con.execute("""
+        CREATE VIEW v_standout_calendar AS
+        SELECT EXTRACT(DAY FROM timestamp) AS day_of_month,
+               SUM(is_standout)            AS standout_count
+        FROM v_post_metrics
+        WHERE is_standout = 1
+        GROUP BY day_of_month
+    """)
     con.close()
     return db_path
 
@@ -91,8 +134,9 @@ def test_standout_posts_returns_label_backed_posts(label_db):
     # exposed with honest names (they are per-post trailing Tukey stats).
     assert rows[0]["baseline_q3"] == 100
     assert rows[0]["baseline_iqr"] == 50
-    # Creator average is a true mean: (900+800+100)/3.
-    assert rows[0]["creator_avg_likes"] == 600
+    # Point-in-time: NO all-time creator-avg key on post rows (PR #26 defect
+    # removed); context is the trailing baseline only.
+    assert "creator_avg_likes" not in rows[0]
 
 
 def test_standout_posts_excludes_non_standout_labels(label_db):
@@ -106,10 +150,11 @@ def test_hot_posts_ranks_per_creator_from_labels(label_db):
     assert resp.status_code == 200
     rows = resp.json()
     assert [r["post_id"] for r in rows] == ["s7", "s0"]
-    # Baseline fields are the trailing Tukey stats, not a mean; the "avg"
-    # rendered by the UI comes from creator_avg_likes.
+    # Trailing Tukey stats with honest names; NO all-time creator-avg key on
+    # post rows (point-in-time contract, PR #26 defect removed).
     assert rows[0]["baseline_q3"] == 100
-    assert rows[0]["creator_avg_likes"] == 600
+    assert rows[0]["baseline_iqr"] == 50
+    assert "creator_avg_likes" not in rows[0]
     assert "mean_likes" not in rows[0]
 
 

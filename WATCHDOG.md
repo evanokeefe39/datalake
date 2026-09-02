@@ -98,14 +98,28 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
   serialized through Dagster. A new producer must not open its own write
   connection to state — bronze stays Parquet-only (Polars).
 
-## Semantic contracts of dashboard surfaces (added 2026-09-02)
+## Semantic contracts of dashboard surfaces (added 2026-09-02, revised post metrics-centralization)
 
-- **A field rendered as "avg" must be a true mean.** Do not expose per-post
-  trailing-baseline statistics (`ig_post_labels.baseline_center/spread` —
-  Tukey Q3/IQR) under avg-implying keys (`mean_likes`). They are exposed as
-  `baseline_q3`/`baseline_iqr`; any "average" shown to a user comes from
-  `creator_avg_likes` / `v_creator_quality.avg_likes` (all-time mean).
-  Regression guards: `tests/unit/dashboard/test_hot_posts_semantics.py`.
+- **A field rendered as "avg" must be a true mean.** Per-post trailing-baseline
+  statistics (`ig_post_labels.baseline_center/spread` — Tukey Q3/IQR) are
+  exposed only under `baseline_q3`/`baseline_iqr`, never avg-implying keys.
+- **Posts are point-in-time.** A post is judged against its OWN trailing
+  label-pass baseline (`v_post_metrics.baseline_q3/baseline_iqr`,
+  `likes_zscore`), NEVER against a creator all-time/current average. The
+  all-time `creator_avg_likes` key that PR #26 added to hot/standout-post rows
+  is REMOVED — do not reintroduce it.
+- **Creator averages live only on creator-level surfaces.**
+  `v_creator_metrics.avg_likes` is the gate-free activity mean (creators
+  cards); `v_creator_quality.avg_likes` is the gated quality mean (rankings).
+  Equal when the `enriched_posts >= 3` gate passes.
+- **hot = 2σ+.** `is_hot` = standout label AND `likes_zscore >= 2`
+  (`likes > Q3 + 2·IQR`); `standout` = base Tukey label (z > 1.5). Do not
+  loosen hot to 1σ+.
+- **Metrics centralization.** All aggregation lives in canonical serving views
+  (`v_post_metrics`, `v_creator_metrics`, `v_profile_metrics`, `v_overview`,
+  `v_standout_calendar`); `dashboard/server.py` is a thin projector — guard:
+  `tests/unit/dashboard/test_no_aggregation_in_server.py`. Post rows carry no
+  creator-avg: `tests/unit/dashboard/test_hot_posts_semantics.py`.
 - **Creator identity is a human decision.** Auto-creating creators from
   silver owners (owner_username keying) duplicates curated `creators` rows.
   Any merge must go through `scripts/migrate_curated_creator_merge.py`

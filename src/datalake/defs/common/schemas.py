@@ -189,6 +189,11 @@ DUCKDB_VIEWS: list[str] = [
     "v_engagement_outliers",
     "v_outlier_posts",
     "v_creator_outlier_rate",
+    "v_post_metrics",
+    "v_creator_metrics",
+    "v_profile_metrics",
+    "v_overview",
+    "v_standout_calendar",
 ]
 
 # ── SQLite (data/ops.sqlite) ────────────────────────────────────────────────
