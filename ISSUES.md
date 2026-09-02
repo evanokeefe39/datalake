@@ -467,15 +467,46 @@ the producer and bypass watermark/dedup.
       no new bronze files and does not re-trigger silver
 - [ ] `ig_posts_raw` (Apify producer) untouched
 
-#### Non-goals
+### 18. Post detail page — first-party view of full post context + source links
 
-- **No change to `ig_posts_raw`** — its config, code, and file naming stay
-  untouched.
-- No new silver/gold tables — the local source flows through the existing
-  medallion path.
-- No re-download of Instagram media (URLs expired; local bytes are canonical).
-- No parallel pipeline or migration script (NEW SOURCE RULE: producer on the
-  existing contract, not a one-off bootstrap).
+**Status:** Proposed idea (2026-09-02) — awaiting full Epic: user stories,
+validation, discussion, analysis, plan. Queued as the next orchestration after
+the metrics-centralization refactor (PR #27).
+**Origin:** Dashboard UX gap. Hot-posts cards link out directly to the source
+Instagram post with nothing identifying the post in-platform besides the
+thumbnail, so a post is hard to trace back to a creator's post list. There is no
+first-party "post detail" surface.
+
+#### Intent
+
+Give any post (from hot-posts cards, standout feeds, or a creator-detail post
+list) a first-party **post detail page** in this platform that aggregates
+everything we hold about it — post metadata, caption/transcript, gold
+enrichment (domain/topic/educational/actionable/admiralty), engagement metrics
+(now warehouse-canonical per the metrics-centralization refactor) — and links
+back to the original source post (Instagram/other platform). Hot-posts cards and
+creator-detail post rows link into these detail pages.
+
+#### Sketch (for discussion — NOT a locked design)
+
+- **Route** e.g. `/posts/{post_id}` backed by a read-only endpoint selecting
+  from canonical views (`v_post_detail`/`v_post_metrics` + enrichment) — thin
+  projector only, consistent with the metrics-centralization rule.
+- **Fields:** full metadata, media/thumbnail, caption, transcript where present,
+  enrichment summary, point-in-time breakout context (hot/standout, z vs the
+  post's own trailing baseline), and a **link to the original source post**.
+- **Entry points:** hot-posts card → detail; standout feeds → detail;
+  creator-detail post list → detail. Keep the existing direct outbound
+  source link too.
+
+#### Open (validation needed — surface in the Epic process)
+
+- Scope: is "post detail" read-only analytics surface, or does it need write/
+  re-enrich actions? (Lean read-only first.)
+- Transcript source/availability (video transcripts, caption text) and where it
+  is stored.
+- Which enrichment fields are meaningful at post grain vs already on the card.
+- Navigation/back behavior; whether creator pages deep-link into it.
 
 ## Resolved
 
