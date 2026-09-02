@@ -133,3 +133,21 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
   scrapes. Guard: `tests/unit/instagram/test_curated_creator_merge.py`.
 - `creator_merges` is cataloged in `schemas.py`; the schema-catalog rules
   above apply to it too.
+- **engagement_score is a baseline-normalized blend, not an absolute metric.**
+  `v_post_metrics.engagement_score` = 0.5·`likes_zscore` + 0.3·`comments_zscore`
+  + 0.2·`views_zscore`, each z point-in-time against its OWN trailing baseline.
+  A NULL component z contributes 0 (missing baseline ≠ mediocre post); the score
+  is NULL only when all three z-scores are NULL. Do not render it as an "average".
+- **Serving-layer baselines mirror the label-pass estimator, but live elsewhere.**
+  `v_post_baselines` (comments + video views) reuses the N=20/90-day/min-n=5
+  Tukey semantics WITHOUT touching `ig_post_labels`/`LABEL_VERSION`. Baseline key
+  is `COALESCE(creator_id, owner_username)`; comments window drops NULL
+  comments (0 stays in); views baseline applies only where `video_view_count`
+  is non-NULL and > 0 — image posts must render NULL `views_zscore`, not 0.
+- **Momentum has exactly one definition** — the windows + gates live in
+  `v_creator_profile` (`is_rising`); `v_rising_creators` is a gated projection.
+  Do not re-derive momentum constants (28d/84d, ≥3 posts, ≥1.25, ≥5.0) elsewhere.
+- **Topic rollups are enriched-posts-only.** `v_creator_topics` joins
+  `v_post_detail` for `gold_topic`; `perf_score` = mean member-post
+  `engagement_score` (unscored posts drop out of the mean). Top-5 by EITHER rank;
+  `RANK` ties share a rank, so a creator can expose up to 10 rows.

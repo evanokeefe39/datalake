@@ -181,6 +181,7 @@ _DUCKDB_SPECS: dict[str, Table] = {
 
 DUCKDB_VIEWS: list[str] = [
     "v_post_detail",
+    "v_post_baselines",
     "v_signal",
     "v_quality_trend",
     "v_creator_quality",
@@ -191,6 +192,8 @@ DUCKDB_VIEWS: list[str] = [
     "v_creator_outlier_rate",
     "v_post_metrics",
     "v_creator_metrics",
+    "v_creator_profile",
+    "v_creator_topics",
     "v_profile_metrics",
     "v_overview",
     "v_standout_calendar",
