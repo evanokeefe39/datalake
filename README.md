@@ -28,7 +28,7 @@ src/datalake/defs/
 ├── common/       # Resources, schedules, path helpers, lake paths
 ├── enrichment/   # batch, assets, prompts (standalone worker: scripts/enrichment_worker.py)
 ├── instagram/    # ig_posts_raw, ig_posts_slv, ig_posts_gen_batches, config
-└── serving/      # dim_profile, dim_date, v_post_detail + 7 downstream views
+└── serving/      # dim_profile, dim_date, v_post_detail + 13 downstream views (incl. 5 canonical metric views)
 ```
 
 **Storage split:**

@@ -158,16 +158,18 @@ profiles on a single platform.
   list; promote to a first-class DW metric).
 - **Posting frequency** — posts/week and posts/month, plus cadence (median gap
   between posts and recent trend). Drives "is this creator active/consistent?"
-- **Standout vs Hot (standardized thresholds)** — a post is a *standout* when
-  its likes exceed the creator's own mean by **1σ**; a post is *Hot* when it
-  exceeds **2σ**. Both counts are materialized per creator (all
-  profiles/platforms aggregated) and refreshed on each ingest. The σ threshold
-  is a tunable constant (1σ / 2σ today, may become 1σ / 1.5σ later). Frontend:
-  the creators-list "Standouts" column = 1σ, "Hot" column = 2σ, and the
-  overview "Hot Posts" feed = 2σ.
-- **Engagement trend (σ)** — time series of each post's z-score (likes, views)
-  relative to the creator's rolling mean. Powers a line chart showing whether
-  the creator is trending above or below their own baseline lately.
+- **Standout vs Hot (decided 2026-09-02, shipped via PR #27)** — each post is
+  judged against its OWN trailing point-in-time baseline (label-pass Tukey
+  Q3/IQR at publish), never against the creator's all-time or rolling mean.
+  A post is *standout* when `likes_zscore > 1.5` (Tukey fence); it is *Hot*
+  when standout AND `likes_zscore >= 2` (2σ+). Canonical flags live in
+  `v_post_metrics` (`is_standout`, `is_hot`); counts materialize per creator
+  in `v_creator_metrics` and per profile in `v_profile_metrics`. Creator
+  averages live only on creator-level surfaces (`v_creator_metrics`
+  gate-free, `v_creator_quality` gated) — never on post rows.
+- **Engagement trend (σ)** — time series of each post's `likes_zscore`
+  relative to its own point-in-time baseline. Powers a line chart showing
+  whether a creator is producing standouts lately.
 
 **Content metrics:**
 

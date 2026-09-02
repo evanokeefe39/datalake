@@ -14,7 +14,7 @@ Bronze ──→ Silver ──→ Gold ──→ Serving
 | Silver | Parquet (`data/lake/silver/`) | PolarsIOManager | DuckDB `silver_ig_posts` + watermarks |
 | Enqueue | SQLite (`data/ops.sqlite`) | `ig_posts_gen_batches` | `batch_jobs` + `batch_items` |
 | Gold | DuckDB table | Standalone worker | `gold_analyses` (AssetSpec, externally materialized) |
-| Serving | DuckDB views + tables | DuckDB | `dim_profile` (SCD2), `dim_date`, analytics views |
+| Serving | DuckDB views + tables | DuckDB | `dim_profile` (SCD2), `dim_date`, 14 analytics views (incl. 5 canonical metric views) |
 
 ## Storage split
 
@@ -112,11 +112,25 @@ ig_posts_slv ─┬─→ gold_analyses ─┬─→ v_post_detail ─┬─→ 
                │                   │                   ├─→ v_rising_creators
                │                   │                   ├─→ v_domain_coverage
                └───────────────────┤                   ├─→ v_engagement_outliers
-                                   │                   ├─→ v_outlier_posts
-                     dim_date ─────┘                   └─→ v_creator_outlier_rate
+                                   │                   │     └─→ v_post_metrics ─┬─→ v_creator_metrics
+                                   │                   │                          ├─→ v_profile_metrics
+                                   │                   │                          └─→ v_standout_calendar
+                     dim_date ─────┘                   ├─→ v_outlier_posts
+                                                       ├─→ v_creator_outlier_rate
+                                                       └─→ v_overview
 ```
 
 `ig_posts_gen_batches` is a coordination asset — it creates batches in SQLite. There is no formal Dagster data dependency from `gold_analyses` to `ig_posts_gen_batches` because the worker reads from SQLite (not from Dagster IOManager output). Both depend on `ig_posts_slv`.
+
+The five **canonical metric views** (`v_post_metrics`, `v_creator_metrics`,
+`v_profile_metrics`, `v_overview`, `v_standout_calendar`) are the single
+source for every per-post/per-creator metric. `v_post_metrics` builds on
+`v_engagement_outliers` (label pass + point-in-time Tukey baseline); the
+others aggregate over it. `dashboard/server.py` is a **thin projector**:
+view SELECT + WHERE/ORDER/LIMIT + row→JSON — no `AVG`/`SUM`/`GROUP BY`
+aggregation in the server (guard:
+`tests/unit/dashboard/test_no_aggregation_in_server.py`).
+
 
 ## Watermarks
 
