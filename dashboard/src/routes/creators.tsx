@@ -152,7 +152,8 @@ const COLUMN_DEFS: ColDef<Creator>[] = [
         <Badge variant="green">Rising</Badge>
       ) : data.momentum_ratio != null ? (
         <span className="font-data tabular-nums text-xs">
-          +{Math.round((data.momentum_ratio - 1) * 100)}%
+          {data.momentum_ratio >= 1 ? "+" : ""}
+          {Math.round((data.momentum_ratio - 1) * 100)}%
         </span>
       ) : (
         <span className="text-muted text-xs">—</span>
