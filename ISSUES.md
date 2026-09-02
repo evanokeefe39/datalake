@@ -477,6 +477,60 @@ the producer and bypass watermark/dedup.
 - No parallel pipeline or migration script (NEW SOURCE RULE: producer on the
   existing contract, not a one-off bootstrap).
 
+### 17. Upgrade to Gemini Tier 2 for batch enrichment (+ cost estimates)
+
+**Status:** Proposed (2026-09-01).
+**Origin:** #16 — the local-ad-hoc ingestion backlog (1,016 posts) is pending
+enrichment; Tier 1 interactive processing is the bottleneck and video is
+gated behind Tier 2.
+
+#### Intent
+
+Enrich the 1,016-post backlog (652 image, 364 text-only, 0 video — video is
+Tier-2 gated and skipped on free/Tier 1) via Gemini **batch API**. Tier 2
+lifts the 10M batch-token cap (→ 500M), raises RPD, and is required for video
+enrichment at any scale. This issue tracks the upgrade decision + the batch
+cost/feasibility estimate.
+
+#### Cost estimate (measured backlog)
+
+Model: `gemini-3.5-flash-lite` (`_DEFAULT_GEMINI_MODEL`). Measured 1,016
+pending posts → 1,704 media items, 0 video.
+
+| Line | Value |
+|---|---|
+| Input tokens | ~1.05M (images 0.44M @ ~258/img + text 0.61M) |
+| Output tokens | ~0.81M |
+| Est. cost, standard rates ($0.30 in / $2.50 out per M) | **~$2.35** |
+| Est. cost, batch (50% discount) | **~$1.17** |
+
+The current **image/text backlog is trivially cheap (~$1-3)**. The dominant
+cost driver is **video** (10-100× all scraping; a 10-min reel ≈ 174K tokens).
+If video enrichment is added, the one-off full-reel estimate from
+`docs/creator-growth-analysis.md` is **$50-300+** — mitigate via stratified
+subsampling (top/bottom ~10 posts/creator, $10-60).
+
+#### Tier 1 → Tier 2 escalation triggers (numeric, from AGENTS.md)
+
+- [ ] Weekly post volume ≥ 1,000/week for 2 consecutive weeks
+- [ ] Any batch job projected > 10M tokens (Tier 1 flash-lite batch cap)
+- [ ] Adding video enrichment (immediate Tier 2 trigger regardless of metrics)
+- [ ] Rolling 30-day Gemini spend ≥ $200 (80% of Tier 1 $250/mo cap)
+
+#### Acceptance criteria
+
+- [ ] Confirm live Tier 1/2 rates at `https://aistudio.google.com/rate-limit`
+      and update the estimates above
+- [ ] Decide: batch-enrich current backlog on Tier 1 (interactive, ~$1-3) vs
+      upgrade to Tier 2 first (required for batch API + video)
+- [ ] Once decided, re-introduce the batch-API worker variant (Tier 2)
+- [ ] Clear the 1,016 pending `batch_items`
+
+#### Non-goals
+
+- No video enrichment at scale until Tier 2 (cost + upload-time bottleneck).
+- No change to the local-ingestion producer; this is an enrichment-tier decision.
+
 ### 18. Post detail page — first-party view of full post context + source links
 
 **Status:** Proposed idea (2026-09-02) — awaiting full Epic: user stories,
