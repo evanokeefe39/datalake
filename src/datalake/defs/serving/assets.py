@@ -542,10 +542,10 @@ def v_post_baselines(duckdb: DuckDBResource) -> None:
       with NULL timestamps are excluded from windows entirely.
     - comments: window posts are priors with non-NULL ``comments_count``
       (0 stays in; absent is NULL and drops out).
-    - views: meaningful only where the post's own ``video_view_count`` is
-      non-NULL and > 0; window posts are priors with ``video_view_count > 0``.
-      Image/carousel posts get NULL views_* columns.
-    - Below min n=5 the baseline is NULL → z-score NULL (not 0).
+    - Strict priors: ``q.timestamp < p.timestamp`` — no future leak. Posts
+      with NULL timestamps are excluded from windows entirely. Timestamp
+      ties are broken by ``post_id DESC`` so the N=20 window is
+      deterministic (the label pass relies on stable-sort order instead).
     """
     with duckdb.get_connection() as conn:
         conn.execute("""
@@ -570,7 +570,7 @@ def v_post_baselines(duckdb: DuckDBResource) -> None:
                     q.timestamp                                    AS prior_ts,
                     ROW_NUMBER() OVER (
                         PARTITION BY p.post_id
-                        ORDER BY q.timestamp DESC
+                        ORDER BY q.timestamp DESC, q.post_id DESC
                     )                                              AS recency,
                     COUNT(*) OVER (PARTITION BY p.post_id)         AS n_priors
                 FROM posts p
@@ -604,7 +604,7 @@ def v_post_baselines(duckdb: DuckDBResource) -> None:
                     q.timestamp                                    AS prior_ts,
                     ROW_NUMBER() OVER (
                         PARTITION BY p.post_id
-                        ORDER BY q.timestamp DESC
+                        ORDER BY q.timestamp DESC, q.post_id DESC
                     )                                              AS recency,
                     COUNT(*) OVER (PARTITION BY p.post_id)         AS n_priors
                 FROM posts p

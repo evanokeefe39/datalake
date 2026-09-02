@@ -349,6 +349,34 @@ def test_null_timestamp_posts_are_excluded_from_windows(db):
         assert q3 == pytest.approx(40.0)
 
 
+def test_window_tie_broken_deterministically_by_post_id(db):
+    """Timestamp ties must not make the N=20 window nondeterministic:
+    the greater post_id wins the last window slot (post_id DESC)."""
+    with db.get_connection() as con:
+        posts = [
+            # 19 distinct priors, comments 1..19 (oldest = 19)
+            *(_post(f"d{j:02d}", 1, comments=j, days_ago=21 - j)
+              for j in range(1, 20)),
+            # tied timestamps at the window boundary (recency 20 vs 21):
+            # 'b-tie' (greater post_id) must win the last slot with value 15
+            _post("a-tie", 1, comments=999, days_ago=21),
+            _post("b-tie", 1, comments=15, days_ago=21),
+            _post("target", 1, comments=10, days_ago=1),
+        ]
+        _seed(con, posts, [_label(p[0]) for p in posts])
+    _run_metrics_chain(db)
+
+    with db.get_connection() as con:
+        n, q3 = con.execute(
+            "SELECT comments_baseline_n, comments_baseline_q3"
+            " FROM v_post_baselines WHERE post_id = 'target'"
+        ).fetchone()
+        assert n == 20
+        # window = [1..19, 15] → sorted idx 14.25 lands on the duplicated 15.
+        # 'a-tie' (999) winning instead would give 15.25.
+        assert q3 == pytest.approx(15.0)
+
+
 # ── z-scores + engagement_score ──────────────────────────────────────────────
 
 
