@@ -115,6 +115,14 @@ export interface Creator {
   admiralty_score: number;
   avg_likes: number;
   max_likes: number;
+  /** Mean member-post engagement score (baseline-normalized); null when no scored posts. */
+  avg_engagement_score: number | null;
+  /** Most frequent gold domain across the creator's posts; null when no topic data. */
+  dominant_domain: string | null;
+  dominant_domain_posts: number;
+  /** Recent-window avg likes divided by prior-window baseline avg (point-in-time, not all-time). */
+  momentum_ratio: number | null;
+  is_rising: boolean;
 }
 
 export interface CreatorProfile {
@@ -134,12 +142,25 @@ export interface CreatorProfile {
   posts_count?: number;
 }
 
+export interface CreatorMetrics {
+  total_posts: number;
+  avg_likes: number | null;
+  avg_engagement_score: number | null;
+  dominant_domain: string | null;
+  dominant_domain_posts: number;
+  momentum_ratio: number | null;
+  is_rising: boolean;
+  standout_count: number;
+  hot_count: number;
+}
+
 export interface CreatorDetail {
   id: number;
   name: string;
   created_at: string;
   updated_at: string;
   profiles: CreatorProfile[];
+  metrics: CreatorMetrics | null;
 }
 
 export interface ProfileInput {
@@ -160,8 +181,8 @@ export interface BatchProfilesInput {
   tier?: string;
 }
 
-// ── Analytics API ──────────────────────────────────────────────
 
+// ── Analytics API ──────────────────────────────────────────────
 export async function fetchOverview(): Promise<OverviewMetrics> {
   return fetchJSON("/overview");
 }
@@ -285,6 +306,21 @@ export interface RisingCreatorRow {
   baseline_avg: number;
   baseline_posts: number;
   momentum_ratio: number;
+  dominant_domain: string | null;
+  dominant_domain_posts: number;
+  /** Topic rows with count_rank <= 5 (from v_creator_topics). */
+  topics_by_count: CreatorTopicRow[];
+  /** Topic rows with perf_rank <= 5 (baseline-normalized weighted engagement). */
+  topics_by_perf: CreatorTopicRow[];
+}
+
+export interface CreatorTopicRow {
+  topic: string;
+  post_count: number;
+  /** Mean member-post engagement score; null when no scored posts. */
+  perf_score: number | null;
+  perf_rank: number;
+  count_rank: number;
 }
 
 export async function fetchTopCreators(): Promise<TopCreatorRow[]> {
@@ -301,6 +337,11 @@ export async function fetchCreator(id: number | string): Promise<CreatorDetail> 
 
 export async function fetchCreatorPosts(id: number | string): Promise<PostRow[]> {
   return fetchJSON(`/creators/${id}/posts`);
+}
+export async function fetchCreatorTopics(
+  id: number | string,
+): Promise<CreatorTopicRow[]> {
+  return fetchJSON(`/creators/${id}/topics`);
 }
 
 export async function addCreator(name: string): Promise<{ id: number; name: string }> {
