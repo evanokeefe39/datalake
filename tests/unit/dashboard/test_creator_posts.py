@@ -72,18 +72,26 @@ def tmp_db(tmp_path, monkeypatch):
         ('p1', 'standout', 'day7_matched', 'standout', FALSE, 10, 5)
         """
     )
-    # Minimal mirror of v_post_metrics (canonical view in serving assets).
+    # Minimal mirror of v_post_metrics (canonical view in serving assets):
+    # exposes the point-in-time metric columns the dashboard's _POST_SELECT
+    # joins against (relative_performance / baseline_q3 / likes_zscore) plus
+    # the tier flags and breakout_multiple the canonical view carries.
     con.execute(
         """
         CREATE TABLE v_post_metrics (
-            post_id TEXT, owner_username TEXT, relative_performance TEXT
+            post_id TEXT, owner_username TEXT, relative_performance TEXT,
+            baseline_q3 DOUBLE, baseline_iqr DOUBLE, likes_zscore DOUBLE,
+            is_standout BOOLEAN, is_hot BOOLEAN, breakout_multiple DOUBLE
         )
         """
     )
     con.execute(
-        "INSERT INTO v_post_metrics VALUES "
-        "('p1', 'jane', 'standout'), ('p2', 'jane', NULL), "
-        "('p3', 'other', 'hot')"
+        """
+        INSERT INTO v_post_metrics VALUES
+        ('p1', 'jane', 'standout', 10, 5, 0.0, TRUE, FALSE, 1.0),
+        ('p2', 'jane', NULL, NULL, NULL, NULL, FALSE, FALSE, NULL),
+        ('p3', 'other', 'hot', 1, 2, 2.0, TRUE, TRUE, 5.0)
+        """
     )
     con.close()
     return db_path
