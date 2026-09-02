@@ -1,3 +1,4 @@
+import { cn } from "@/lib/utils";
 import { useState } from "react";
 import {
   createRootRoute,
@@ -13,7 +14,7 @@ import SignalsPage from "@/routes/signals";
 import PostsPage from "@/routes/posts";
 import CreatorsPage from "@/routes/creators";
 import CreatorPage from "@/routes/creator";
-import { cn } from "@/lib/utils";
+import PostDetailPage from "@/routes/post-detail";
 
 function RootLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -136,8 +137,8 @@ const signalsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/sign
 const postsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/posts", component: PostsPage });
 const creatorsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/creators", component: CreatorsPage });
 const creatorRoute = createRoute({ getParentRoute: () => rootRoute, path: "/creators/$id", component: CreatorPage });
-
-const routeTree = rootRoute.addChildren([indexRoute, signalsRoute, postsRoute, creatorsRoute, creatorRoute]);
+const postDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/posts/$postId", component: PostDetailPage });
+const routeTree = rootRoute.addChildren([indexRoute, signalsRoute, postsRoute, creatorsRoute, creatorRoute, postDetailRoute]);
 const router = createRouter({ routeTree });
 
 declare module "@tanstack/react-router" {
