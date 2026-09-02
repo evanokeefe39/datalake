@@ -194,6 +194,7 @@ DUCKDB_VIEWS: list[str] = [
     "v_profile_metrics",
     "v_overview",
     "v_standout_calendar",
+    "v_recent_hot_posts",
 ]
 
 # ── SQLite (data/ops.sqlite) ────────────────────────────────────────────────

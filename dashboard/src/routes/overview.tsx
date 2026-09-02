@@ -91,9 +91,9 @@ export default function OverviewPage() {
         <Card>
           <CardHeader>
             <div>
-              <CardTitle>Hot Posts</CardTitle>
+              <CardTitle>Recent Hot Posts</CardTitle>
               <span className="text-[10px] text-muted font-data">
-                {hots.length} standout posts ranked by trailing-baseline z-score
+                {hots.length} hot posts (≥2σ above the creator's baseline) · last 28 days
               </span>
             </div>
             <Zap className="w-3.5 h-3.5 text-accent-yellow" />
@@ -155,11 +155,10 @@ export default function OverviewPage() {
                         {s.likes_count?.toLocaleString()} likes
                       </span>
                       <span>
-                        ~
-                        {s.baseline_q3 != null
-                          ? Math.round(s.baseline_q3).toLocaleString()
+                        {s.breakout_multiple != null
+                          ? `~${Math.round(s.breakout_multiple).toLocaleString()}× baseline`
                           : "--"}{" "}
-                        baseline ·{" "}
+                        ·{" "}
                         {s.timestamp
                           ? new Date(s.timestamp).toLocaleDateString("en-US", {
                               month: "short",

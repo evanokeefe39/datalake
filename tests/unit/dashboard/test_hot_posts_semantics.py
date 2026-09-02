@@ -57,6 +57,7 @@ SELECT
               / NULLIF(l.baseline_spread, 0) >= 2 THEN 'hot'
          WHEN l.label = 'standout' THEN 'standout'
     END                                                    AS relative_performance,
+    ROUND(sp.likes_count / NULLIF(l.baseline_center, 0), 1) AS breakout_multiple,
     ROW_NUMBER() OVER (
         PARTITION BY sp.owner_username
         ORDER BY (sp.likes_count - l.baseline_center)
@@ -97,6 +98,27 @@ FROM v_post_metrics
 WHERE is_standout = 1
 GROUP BY day_of_month
 """
+_V_RECENT_HOT_POSTS = """
+CREATE VIEW v_recent_hot_posts AS
+WITH recent AS (
+    SELECT *
+    FROM v_post_metrics
+    WHERE is_hot = 1
+      AND timestamp >= CURRENT_DATE - INTERVAL '28' DAY
+),
+ranked AS (
+    SELECT *,
+           ROW_NUMBER() OVER (
+               PARTITION BY owner_username
+               ORDER BY likes_zscore DESC NULLS LAST,
+                        likes_count DESC NULLS LAST
+           ) AS recent_rank
+    FROM recent
+)
+SELECT * FROM ranked WHERE recent_rank <= 3
+"""
+
+
 
 
 def _seed_label_db(db_path, monkeypatch):
@@ -134,7 +156,9 @@ def _seed_label_db(db_path, monkeypatch):
         )
         """
     )
-    # Early breakout (trailing Q3=40) + later posts that set the real mean.
+    # Early breakout (trailing Q3=40, kept OLD deliberately: it must stay out
+    # of the recent hot feed) + later posts that set the real mean + a RECENT
+    # 2σ+ breakout that the 28-day v_recent_hot_posts window picks up.
     con.execute(
         """
         INSERT INTO silver_ig_posts VALUES
@@ -143,7 +167,9 @@ def _seed_label_db(db_path, monkeypatch):
         ('late1', 'o1', 'jane', 'scl1', 'later', 900, 4, 0,
          TIMESTAMP '2026-01-01 10:00:00'),
         ('late2', 'o1', 'jane', 'scl2', 'later', 1100, 4, 0,
-         TIMESTAMP '2026-01-02 10:00:00')
+        TIMESTAMP '2026-01-02 10:00:00'),
+        ('recent', 'o1', 'jane', 'scr', 'recent breakout', 2080, 6, 0,
+         CURRENT_DATE - INTERVAL '3' DAY)
         """
     )
     con.execute(
@@ -151,7 +177,8 @@ def _seed_label_db(db_path, monkeypatch):
         INSERT INTO ig_post_labels VALUES
         ('early', 'standout', 'day7_matched', 'standout', FALSE, 40, 10),
         ('late1', 'average', 'day7_matched', 'control', FALSE, 90, 30),
-        ('late2', 'average', 'day7_matched', 'control', FALSE, 90, 30)
+        ('late2', 'average', 'day7_matched', 'control', FALSE, 90, 30),
+        ('recent', 'standout', 'day7_matched', 'standout', FALSE, 80, 40)
         """
     )
     con.execute("INSERT INTO dim_profile VALUES ('o1', TRUE, 7, 'instagram')")
@@ -160,6 +187,7 @@ def _seed_label_db(db_path, monkeypatch):
     con.execute(_V_POST_METRICS_FINAL)
     con.execute(_V_CREATOR_METRICS)
     con.execute(_V_STANDOUT_CALENDAR)
+    con.execute(_V_RECENT_HOT_POSTS)
     con.close()
     return db_path
 
@@ -217,22 +245,27 @@ def test_cross_surface_creator_avg_is_true_mean(label_db):
         "SELECT avg_likes, total_posts FROM v_creator_metrics WHERE creator_id = 7"
     ).fetchone()
     con.close()
-    assert n == 3
-    assert avg == pytest.approx((10844 + 900 + 1100) / 3, abs=1e-6)
+    assert n == 4
+    assert avg == pytest.approx((10844 + 900 + 1100 + 2080) / 4, abs=1e-6)
 
 
 def test_hot_posts_ranks_by_zscore_within_top3(label_db):
+    """Recent Hot Posts: 28-day window, 2σ+ only, ranked by z-score."""
     resp = TestClient(server.app).get("/api/hot-posts")
     rows = resp.json()
     assert resp.status_code == 200
     assert rows, "expected at least one hot post"
+    # The old Nov-2025 breakout is excluded by the 28-day recency window;
+    # only the recent 2σ+ post surfaces here.
+    assert [r["post_id"] for r in rows] == ["recent"]
     zs = [r["z_score"] for r in rows]
     assert zs == sorted(zs, reverse=True)
-    assert rows[0]["baseline_q3"] == 40  # trailing Tukey Q3, labeled as such
+    assert rows[0]["baseline_q3"] == 80  # its OWN trailing Tukey Q3
 
 
 def test_standout_posts_expose_point_in_time_baseline(label_db):
     rows = TestClient(server.app).get("/api/standout-posts").json()
     assert rows
     for row in rows:
-        assert row["baseline_q3"] == 40 and row["baseline_iqr"] == 10
+        if row["post_id"] == "early":
+            assert row["baseline_q3"] == 40 and row["baseline_iqr"] == 10

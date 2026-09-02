@@ -149,6 +149,31 @@ export const POST_COLUMN_DEFS: ColDef<PostRow>[] = [
     cellClass: "font-data tabular-nums !justify-end",
     valueFormatter: ({ value }: { value: number }) => formatNumber(value),
   },
+
+  {
+    field: "relative_performance",
+    headerName: "Perf",
+    width: 100,
+    cellClass: "flex !items-center !justify-center",
+    cellRenderer: ({ value }: { value: string | null }) => {
+      if (value === "hot") return <Badge variant="red">Hot</Badge>;
+      if (value === "standout") return <Badge variant="yellow">Standout</Badge>;
+      return <span className="text-muted">—</span>;
+    },
+  },
+  {
+    field: "baseline_likes",
+    headerName: "Baseline",
+    width: 92,
+    headerComponent: InfoHeader,
+    cellClass: "font-data tabular-nums !justify-end",
+    headerComponentParams: {
+      tooltip:
+        "Creator's typical likes when this post was published (trailing point-in-time baseline).",
+    },
+    valueFormatter: ({ value }: { value: number | null }) =>
+      value != null ? formatNumber(value) : "—",
+  },
   {
     field: "admiralty",
     headerName: "Rank",
@@ -241,6 +266,8 @@ interface PostsTableProps {
   rows: PostRow[];
   /** Extra columns appended after the canonical set (e.g. creator-page relative performance). */
   extraColumns?: ColDef<PostRow>[];
+  /** Hide the Profile (owner_username) column — for a single-creator context. */
+  hideProfileColumn?: boolean;
   quickFilterText?: string;
   pagination?: boolean;
   gridRef?: Ref<AgGridReact<PostRow>>;
@@ -256,6 +283,7 @@ interface PostsTableProps {
 export function PostsTable({
   rows,
   extraColumns,
+  hideProfileColumn = false,
   quickFilterText,
   pagination = false,
   gridRef,
@@ -263,13 +291,12 @@ export function PostsTable({
   doesExternalFilterPass,
   onFilterChanged,
 }: PostsTableProps) {
-  const columnDefs = useMemo(
-    () =>
-      extraColumns?.length
-        ? [...POST_COLUMN_DEFS, ...extraColumns]
-        : POST_COLUMN_DEFS,
-    [extraColumns],
-  );
+  const columnDefs = useMemo(() => {
+    const base = hideProfileColumn
+      ? POST_COLUMN_DEFS.filter((c) => c.field !== "owner_username")
+      : POST_COLUMN_DEFS;
+    return extraColumns?.length ? [...base, ...extraColumns] : base;
+  }, [extraColumns, hideProfileColumn]);
 
   const defaultColDef = useMemo(
     () => ({

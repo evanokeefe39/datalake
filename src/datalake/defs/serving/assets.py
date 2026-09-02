@@ -689,6 +689,48 @@ def v_standout_calendar(duckdb: DuckDBResource) -> None:
         """)
 
 
+@asset(
+    name="v_recent_hot_posts",
+    group_name="serving",
+    description=(
+        "Recent (28-day) hot posts — 2σ+ standouts from the last 28 days, "
+        "top-3 per owner. The Overview 'Recent Hot Posts' feed."
+    ),
+    deps=[AssetKey(["v_post_metrics"])],
+)
+def v_recent_hot_posts(duckdb: DuckDBResource) -> None:
+    """Recency-weighted view of the ``hot`` (2σ+) metric for the Overview card.
+
+    Distinct from the all-time 2σ 'hot' counts (``v_creator_metrics.hot_count``
+    / a creator's relative_performance): restricts to posts published in the
+    last 28 days so an old breakout does not dominate a 'recent' feed.
+    Ranking (top-3 per owner, by ``likes_zscore``) is computed here so the
+    dashboard stays a thin projector. Recency is evaluated at query time
+    (views are live), so the window is always 'as of now'.
+    """
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE OR REPLACE VIEW v_recent_hot_posts AS
+            WITH recent AS (
+                SELECT *
+                FROM v_post_metrics
+                WHERE is_hot = 1
+                  AND timestamp >= CURRENT_DATE - INTERVAL '28' DAY
+            ),
+            ranked AS (
+                SELECT
+                    *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY owner_username
+                        ORDER BY likes_zscore DESC NULLS LAST,
+                                 likes_count DESC NULLS LAST
+                    ) AS recent_rank
+                FROM recent
+            )
+            SELECT * FROM ranked WHERE recent_rank <= 3
+        """)
+
+
 # ── Exported for definitions.py ─────────────────────────────────────────────
 
 assets: list = [
@@ -708,4 +750,5 @@ assets: list = [
     v_profile_metrics,
     v_overview,
     v_standout_calendar,
+    v_recent_hot_posts,
 ]

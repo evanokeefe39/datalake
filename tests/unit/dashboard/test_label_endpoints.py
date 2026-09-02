@@ -59,11 +59,11 @@ def label_db(tmp_path, monkeypatch):
         """
         INSERT INTO silver_ig_posts VALUES
         ('s7', 'o1', 'jane', 'sc7', 'day7 hit', 900, 5, 0,
-         TIMESTAMP '2026-03-07 10:00:00'),
+         CURRENT_DATE - INTERVAL '26' DAY),
         ('s0', 'o1', 'jane', 'sc0', 'day0 hit', 800, 4, 0,
-         TIMESTAMP '2026-03-08 10:00:00'),
+         CURRENT_DATE - INTERVAL '25' DAY),
         ('avg', 'o1', 'jane', 'sca', 'normal', 100, 1, 0,
-         TIMESTAMP '2026-03-09 10:00:00')
+         CURRENT_DATE - INTERVAL '24' DAY)
         """
     )
     con.execute(
@@ -93,6 +93,13 @@ def label_db(tmp_path, monkeypatch):
                   AND (sp.likes_count - l.baseline_center)
                       / NULLIF(l.baseline_spread, 0) >= 2
                  THEN 1 ELSE 0 END                          AS is_hot,
+            CASE WHEN l.label = 'standout'
+                  AND (sp.likes_count - l.baseline_center)
+                      / NULLIF(l.baseline_spread, 0) >= 2 THEN 'hot'
+                 WHEN l.label = 'standout' THEN 'standout'
+            END                                             AS relative_performance,
+            ROUND(sp.likes_count / NULLIF(l.baseline_center, 0), 1)
+                                                            AS breakout_multiple,
             ROW_NUMBER() OVER (
                 PARTITION BY sp.owner_username
                 ORDER BY (sp.likes_count - l.baseline_center)
@@ -109,6 +116,25 @@ def label_db(tmp_path, monkeypatch):
                CASE WHEN base.is_standout = 1 AND base.owner_rank <= 3
                     THEN 1 ELSE 0 END AS is_top3_in_owner
         FROM v_post_metrics_base base
+    """)
+    con.execute("""
+        CREATE VIEW v_recent_hot_posts AS
+        WITH recent AS (
+            SELECT *
+            FROM v_post_metrics
+            WHERE is_hot = 1
+              AND timestamp >= CURRENT_DATE - INTERVAL '28' DAY
+        ),
+        ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY owner_username
+                       ORDER BY likes_zscore DESC NULLS LAST,
+                                likes_count DESC NULLS LAST
+                   ) AS recent_rank
+            FROM recent
+        )
+        SELECT * FROM ranked WHERE recent_rank <= 3
     """)
     con.execute("""
         CREATE VIEW v_standout_calendar AS
