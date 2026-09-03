@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Datalake — data flow: enrichment vs non-enrichment</title>
+<style>
+  :root {
+    --ink: #1c2430;
+    --muted: #5a6675;
+    --asset-bg: #eaf3ff;  --asset-bd: #5c9fe0;
+    --ext-bg: #e8f5e9;    --ext-bd: #58a86a;
+    --api-bg: #fff3e3;    --api-bd: #e08c33;
+    --state-bg: #f3ebfd;  --state-bd: #9a63d9;
+    --cache-bg: #fdecec;  --cache-bd: #d96a6a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0; padding: 28px 32px 48px;
+    color: var(--ink); background: #f7f8f9;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 0 0 18px; font-size: 12.5px; color: #333; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .sw { display: inline-block; width: 14px; height: 14px; border-radius: 4px; border: 1.5px solid; }
+
+  .diagram {
+    max-width: 1240px;
+    background: #fff;
+    border: 1px solid #e2e6ea;
+    border-radius: 12px;
+    padding: 18px 20px;
+    overflow-x: auto;
+  }
+  .diagram .mermaid { display: flex; justify-content: center; min-height: 200px; }
+
+  /* Mermaid node styling */
+  .asset  rect, .asset  .basic.label-container { fill: var(--asset-bg) !important;  stroke: var(--asset-bd) !important;  stroke-width: 1.5px; }
+  .ext    rect, .ext    .basic.label-container { fill: var(--ext-bg) !important;    stroke: var(--ext-bd) !important;    stroke-width: 1.5px; }
+  .api    rect, .api    .basic.label-container { fill: var(--api-bg) !important;    stroke: var(--api-bd) !important;    stroke-width: 2px; }
+  .state  rect, .state  .basic.label-container { fill: var(--state-bg) !important;  stroke: var(--state-bd) !important;  stroke-width: 1.5px; }
+  .cache  rect, .cache  .basic.label-container { fill: var(--cache-bg) !important;  stroke: var(--cache-bd) !important;  stroke-width: 1.5px; }
+  .gold   rect, .gold   .basic.label-container { stroke-width: 2.5px !important; }
+
+  .dagzone  rect { fill: #fbfcfe !important; stroke: #a8b4c2 !important; stroke-width: 2px !important; stroke-dasharray: 7 5 !important; }
+  .outzone  rect { fill: #fdfbff !important; stroke: #cdb5ea !important; stroke-width: 2px !important; }
+  .dagzone  .cluster-label, .outzone .cluster-label { font-size: 14px !important; font-weight: 600 !important; }
+  .dagzone .cluster-label .nodeLabel, .outzone .cluster-label .nodeLabel { max-width: 640px; white-space: normal !important; }
+  .dagzone  .cluster-label text, .outzone .cluster-label text { fill: #3a4654 !important; }
+  .dagzone  .cluster-label .nodeLabel p { margin: 0; font-size: 11.5px !important; font-weight: 400 !important; color: #8490a0; }
+  .outzone .cluster-label .nodeLabel p { margin: 0; font-size: 11.5px !important; font-weight: 400 !important; color: #9b8bb5; }
+
+  .edgeLabel { font-size: 11px !important; background: #fff !important; }
+  .edgeLabel .edgeLabel rect { fill: #fff !important; }
+  .flowchart-edgePath .path { stroke-width: 1.8px; }
+
+  h2 { font-size: 15px; margin: 28px 0 8px; }
+  .note { font-size: 13px; line-height: 1.55; color: #37414d; max-width: 1050px; }
+  .note code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .note li { margin: 5px 0; }
+  ul { padding-left: 20px; }
+  .err { color: #a33; font-size: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <h1>How data flows through the warehouse</h1>
+  <div class="sub">High-level view — enrichment (Gemini) path vs non-enrichment (pure DAG) path.</div>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--asset-bg);border-color:var(--asset-bd)"></i>Dagster asset (transform / scheduling)</span>
+    <span><i class="sw" style="background:var(--ext-bg);border-color:var(--ext-bd)"></i>External source / sink</span>
+    <span><i class="sw" style="background:var(--api-bg);border-color:var(--api-bd)"></i>External API call (Gemini / scrape)</span>
+    <span><i class="sw" style="background:var(--state-bg);border-color:var(--state-bd)"></i>Operational state (SQLite ops)</span>
+    <span><i class="sw" style="background:var(--cache-bg);border-color:var(--cache-bd)"></i>Byte-cache / File-API seam</span>
+    <span><i class="sw" style="background:#fff;border-color:#b05050"></i>⇠ thick dashed red = external write (worker → graph)</span>
+  </div>
+
+  <div class="diagram">
+    <pre class="mermaid">
+flowchart TB
+  subgraph DAG["<b>Dagster definition graph — “transformation layer”</b><br/><span style='font-weight:400;font-size:11.5px;color:#8490a0'>No Gemini/API calls here · network I/O only at bronze ingest · silver onward pure transform</span>"]
+    direction TB
+    IG["<b>Instagram / Apify</b><br/>external source · manual scrape · HTTP"]
+    BR["<b>bronze</b><br/>ig_posts_raw · Parquet<br/><b>caches media bytes at ingest</b>"]
+    MC["<b>media_cache</b> (ops.sqlite)<br/>bytes cached at INGEST (bronze)<br/><b>survives CDN expiry (~4–5 d)</b>"]
+    SV["<b>silver_ig_posts</b><br/>DuckDB · dedup / normalize<br/><b>PURE transform · no network I/O</b>"]
+    LB["<b>ig_post_labels</b><br/>Tukey baseline pass<br/>standout / control / skip<br/><b>pure compute · no API</b>"]
+    GB["<b>ig_posts_gen_batches</b><br/>admission gate (standout/control only)<br/><b>enqueue → queue · no API</b>"]
+    GA["<b>gold_analyses</b><br/>DuckDB · AssetSpec<br/><b>external writer — see ⇠</b><br/>per post: domain / topic / admiralty"]
+    SL["<b>serving layer</b><br/>v_post_detail · v_creator_* · dims (SCD2) · hot/rising<br/>SQL transforms over silver + gold"]
+    DA["<b>Dashboard / API</b><br/>thin projector · read-only views"]
+  end
+
+  subgraph OUT["<b>Outside the graph</b><br/><span style='font-weight:400;font-size:11.5px;color:#9b8bb5'>API calls + async queueing · decoupled from the DAG in time</span>"]
+    direction TB
+    OP["<b>ops.sqlite</b><br/>batch_jobs / batch_items · media_metadata (File-API URIs)<br/>media_cache · dead_letter · creators/profiles<br/><b>async queue = the decoupling buffer between DAG and worker</b>"]
+    WK["<b>enrichment_worker</b><br/>standalone CLI — OUTSIDE the graph<br/>claims pending items · per-item retry<br/><b>writes gold + POSTs AssetMaterialization</b>"]
+    GM["<b>Gemini API</b><br/>generate_content (text-only today)<br/>File API upload (image / video later)<br/><b>async · cost · rate-limited · stochastic</b>"]
+  end
+
+  IG -- "scrape (external call, at ingest)" --> BR
+  BR -. "download bytes @ scrape" .-> MC
+  BR -- "silver write" --> SV
+  SV --> LB
+  LB --> GB
+  GB -- "enqueued (candidates)" --> GA
+  GA -. "reads gold + silver" .-> SL
+  SL -- "serving read" --> DA
+  GB -- "enqueue batch items" --> OP
+  OP -- "claim pending items" --> WK
+  WK -- "analyze / upload" --> GM
+  MC -. "upload cached bytes" .-> WK
+  WK == "external write → gold_analyses (+ AssetMaterialization event)" ==> GA
+
+  classDef asset fill:#eaf3ff,stroke:#5c9fe0,color:#22405e
+  classDef ext fill:#e8f5e9,stroke:#58a86a,color:#2c5238
+  classDef api fill:#fff3e3,stroke:#e08c33,color:#6e4514,stroke-width:2px
+  classDef state fill:#f3ebfd,stroke:#9a63d9,color:#4a3468
+  classDef cache fill:#fdecec,stroke:#d96a6a,color:#7c2f2f
+  classDef dagz fill:#fbfcfe,stroke:#a8b4c2,stroke-width:2px,stroke-dasharray:7 5
+  classDef outz fill:#fdfbff,stroke:#cdb5ea,stroke-width:2px
+  class IG,DA ext
+  class BR,SV,LB,GB,SL asset
+  class GA goldext
+  class OP state
+  class MC cache
+  class WK,GM api
+  class DAG dagz
+  class OUT outz
+  style GA fill:#eaf3ff,stroke:#5c9fe0,stroke-width:2.5px
+    </pre>
+  </div>
+
+  <h2>Reading it</h2>
+  <div class="note">
+    <ul>
+      <li><strong>Everything inside the dashed box is the Dagster asset graph.</strong> It performs no Gemini calls. Network I/O is confined to the <em>bronze ingestion</em> assets (a download of media bytes into <code>media_cache</code> at scrape); <code>silver</code> onward is a pure transform.</li>
+      <li><strong>The enrichment API calls live OUTSIDE the graph</strong>, in the standalone <code>enrichment_worker</code>: it claims queued items from <code>ops.sqlite</code>, uploads cached media to the Gemini File API, calls <code>generate_content</code>, writes <code>gold_analyses</code>, and posts an AssetMaterialization event. The DAG only ever <em>enqueues</em> and <em>consumes</em> gold — it never blocks on Gemini.</li>
+      <li><code>gold_analyses</code> is an <strong>AssetSpec, externally materialized</strong> — it sits in the graph (so downstream serving views depend on it) but its writer is the worker, decoupled in time.</li>
+      <li><strong>The async SQLite queue is the decoupling buffer</strong> between the transform graph and the stochastic, costly, rate-limited external producer.</li>
+    </ul>
+  </div>
+
+  <h2>Why this matters for what we discussed</h2>
+  <div class="note">
+    <ul>
+      <li>Enrichment is already treated as <em>an async external ingestion</em>, not a transform — this is the seam that keeps Gemini calls out of the transformation layer.</li>
+      <li>Whole-corpus enrichment and Gemini <em>batch API</em> are execution-mode / discovery changes on the worker + enqueue side — they don’t move API calls back into the DAG.</li>
+      <li>Open questions under review: does the seam need to become a proper <em>media-as-source</em> + feature-store-style boundary as volume grows, or is the current worker + queue + AssetSpec the right shape?</li>
+    </ul>
+  </div>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({
+    startOnLoad: true,
+    securityLevel: "loose",
+    theme: "base",
+    themeVariables: {
+      fontFamily: 'system-ui, "Segoe UI", Roboto, sans-serif',
+      fontSize: "13px",
+      primaryColor: "#eaf3ff",
+      primaryBorderColor: "#5c9fe0",
+      primaryTextColor: "#22405e",
+      lineColor: "#64748b",
+      edgeLabelBackground: "#ffffff",
+      clusterBkg: "#fbfcfe",
+      clusterBorder: "#a8b4c2"
+    },
+    flowchart: { curve: "basis", padding: 14, nodeSpacing: 34, rankSpacing: 42, subGraphTitleMargin: { top: 4, bottom: 24 }, htmlLabels: true }
+  });
+</script>
+</body>
+</html>

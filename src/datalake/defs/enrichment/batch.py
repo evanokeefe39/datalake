@@ -11,11 +11,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.common.schemas import sqlite_ddl_for
+from datalake.defs.common.schemas import sqlite_ddl, sqlite_ddl_for
 
 # ── Schema ───────────────────────────────────────────────────────────────────
 
 _BATCH_SCHEMA = sqlite_ddl_for("batch_jobs", "batch_items")
+
+_PROMPT_REGISTRY_SCHEMA = sqlite_ddl("prompt_registry")
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -34,15 +36,46 @@ def _now_plus_seconds(seconds: float) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
 
+def _add_missing_columns(conn, table: str) -> None:
+    """Align a live table with the catalog (idempotent).
+
+    ALTER TABLE ADD COLUMN for catalog columns missing on the live table,
+    plus a committed backfill of NULL values in defaulted columns (covers
+    rows that predate the column — the ALTER-time UPDATE only helps if it
+    runs in the same statement session as the ALTER).
+    """
+    from datalake.defs.common.schemas import _SQLITE_SPECS
+
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, col in _SQLITE_SPECS[table].columns.items():
+        if col.primary_key:
+            continue
+        if name not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col.sql_type}")
+        if col.default:
+            # Idempotent NULL backfill for pre-existing rows.
+            conn.execute(
+                f"UPDATE {table} SET {name} = {col.default} WHERE {name} IS NULL"
+            )
+    # sqlite3 legacy mode: DDL autocommits but DML opens an implicit
+    # transaction — without an explicit commit the backfill rolls back on
+    # close and legacy rows keep NULL for the new column.
+    conn.commit()
+
+
 def _ensure_schema(ops: SQLiteResource) -> None:
-    """Create batch tables if they don't exist (idempotent)."""
+    """Create batch tables if they don't exist (idempotent).
+
+    Also applies additive migrations to pre-existing tables (ALTER ADD
+    COLUMN for columns added to the catalog after a table was created).
+    """
     conn = ops.get_connection()
     try:
         conn.executescript(_BATCH_SCHEMA)
-        # Migration: add scheduled_for to pre-existing DBs (idempotent).
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(batch_items)")}
-        if "scheduled_for" not in cols:
-            conn.execute("ALTER TABLE batch_items ADD COLUMN scheduled_for TEXT")
+        conn.executescript(_PROMPT_REGISTRY_SCHEMA)
+        # Additive migrations: align live tables with the catalog (idempotent).
+        for table in ("batch_jobs", "batch_items"):
+            _add_missing_columns(conn, table)
     finally:
         conn.close()
 
@@ -54,11 +87,14 @@ def create_batch(
     ops: SQLiteResource,
     payloads: list[str],
     consumer: str = "gemini",
+    mode: str = "interactive",
 ) -> int:
     """Create a new batch job with payload items. Returns the new job_id.
 
     Each payload is a JSON string the consumer knows how to interpret.
     ``consumer`` tags the batch so workers only claim their own.
+    ``mode`` records the intended worker execution mode
+    (``interactive`` | ``gemini-batch``).
 
     Raises ValueError if payloads is empty.
     """
@@ -70,9 +106,9 @@ def create_batch(
     conn = ops.get_connection()
     try:
         cur = conn.execute(
-            "INSERT INTO batch_jobs (consumer, status, created_at, total_items) "
-            "VALUES (?, 'pending', ?, ?)",
-            [consumer, now, len(payloads)],
+            "INSERT INTO batch_jobs (consumer, mode, status, created_at, total_items) "
+            "VALUES (?, ?, 'pending', ?, ?)",
+            [consumer, mode, now, len(payloads)],
         )
         job_id = cur.lastrowid
 
@@ -88,23 +124,31 @@ def create_batch(
         conn.close()
 
 
-def claim_batch(ops: SQLiteResource, consumer: str = "gemini") -> dict | None:
+def claim_batch(
+    ops: SQLiteResource,
+    consumer: str = "gemini",
+    mode: str | None = None,
+) -> dict | None:
     """Claim the oldest batch with pending items for the given consumer.
 
     Reclaims 'processing' batches that still have pending items (e.g. a
     previous run stopped early on quota/backoff), so retries across worker
-    runs work. Returns None if no such batch exists.
+    runs work. ``mode`` optionally restricts the claim to batches created
+    with that execution mode (``interactive`` | ``gemini-batch``).
+    Returns None if no such batch exists.
     """
     _ensure_schema(ops)
     conn = ops.get_connection()
     try:
+        params = [consumer, mode, mode] if mode else [consumer]
         row = conn.execute(
-            "SELECT id FROM batch_jobs "
+            "SELECT id, mode, gemini_batch_name, gemini_batch_status FROM batch_jobs "
             "WHERE consumer = ? AND status IN ('pending', 'processing') "
-            "AND EXISTS (SELECT 1 FROM batch_items i "
+            + ("AND (mode = ? OR (mode IS NULL AND ? = 'interactive')) " if mode else "")
+            + "AND EXISTS (SELECT 1 FROM batch_items i "
             "            WHERE i.job_id = batch_jobs.id AND i.status = 'pending') "
             "ORDER BY created_at ASC LIMIT 1",
-            [consumer],
+            params,
         ).fetchone()
 
         if not row:
@@ -125,8 +169,86 @@ def claim_batch(ops: SQLiteResource, consumer: str = "gemini") -> dict | None:
         return {
             "id": job_id,
             "consumer": consumer,
+            "mode": row[1],
+            "gemini_batch_name": row[2],
+            "gemini_batch_status": row[3],
             "payloads": [r[0] for r in items],
         }
+    finally:
+        conn.close()
+
+
+def set_gemini_batch_name(
+    ops: SQLiteResource, job_id: int, gemini_batch_name: str
+) -> None:
+    """Record (or extend) the Gemini batch API job names on a queue batch job.
+
+    ``gemini_batch_name`` is a '|'-joined list of chunk names;
+    ``gemini_batch_status`` stays aligned to it (one status per name).
+    Extending an existing name list appends SUBMITTED entries (incremental
+    resubmission); replacing it resets all statuses to SUBMITTED.
+    """
+    conn = ops.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT gemini_batch_name, gemini_batch_status FROM batch_jobs "
+            "WHERE id = ?",
+            [job_id],
+        ).fetchone()
+        old_names = (row[0] or "").split("|") if row and row[0] else []
+        new_names = gemini_batch_name.split("|")
+        old_status = (row[1] or "").split("|") if row and row[1] else []
+        if len(old_status) != len(old_names):
+            old_status = ["SUBMITTED"] * len(old_names)
+        if new_names[: len(old_names)] == old_names and old_names:
+            statuses = old_status + ["SUBMITTED"] * (len(new_names) - len(old_names))
+        else:
+            statuses = ["SUBMITTED"] * len(new_names)
+        conn.execute(
+            "UPDATE batch_jobs SET gemini_batch_name = ?, gemini_batch_status = ? "
+            "WHERE id = ?",
+            [gemini_batch_name, "|".join(statuses), job_id],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_gemini_batch_status(
+    ops: SQLiteResource,
+    job_id: int,
+    status: str,
+    error: str | None = None,
+    name_index: int | None = None,
+) -> None:
+    """Update the Gemini batch API job status for a queue batch job.
+
+    ``name_index`` updates one entry of the per-chunk status list (aligned
+    to the '|'-joined gemini_batch_name); ``None`` writes ``status``
+    verbatim (single-chunk batches and explicit resets).
+    """
+    conn = ops.get_connection()
+    try:
+        if name_index is None:
+            # Caller-provided blob written verbatim: either a single status
+            # (single-chunk batches / explicit resets) or an aligned
+            # '|'-joined per-chunk list.
+            blob = status
+        else:
+            row = conn.execute(
+                "SELECT gemini_batch_status FROM batch_jobs WHERE id = ?", [job_id]
+            ).fetchone()
+            entries = (row[0] or "").split("|") if row and row[0] else []
+            while len(entries) <= name_index:
+                entries.append("SUBMITTED")
+            entries[name_index] = status
+            blob = "|".join(entries)
+        conn.execute(
+            "UPDATE batch_jobs SET gemini_batch_status = ?, gemini_batch_error = ? "
+            "WHERE id = ?",
+            [blob, error, job_id],
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -198,15 +320,13 @@ def fail_item(
     *,
     preserve_attempts: bool = False,
 ) -> int:
-    """Mark an item as failed/rescheduled. Returns the (possibly unchanged)
-    attempt count.
+    """Mark an item as failed/rescheduled. Returns the attempt count.
 
-    Default (``preserve_attempts=False``): attempts is incremented; at
+    Default (preserve_attempts=False): attempts is incremented; at
     MAX_ATTEMPTS the item becomes terminal ('failed'), otherwise it is
-    rescheduled as 'pending' and claimable again once ``scheduled_for``
-    passes.
+    rescheduled as 'pending' and claimable again once scheduled_for passes.
 
-    ``preserve_attempts=True``: attempts is left untouched — used for global
+    preserve_attempts=True: attempts is left untouched; used for global
     conditions (quota exhaustion) that are not the item's fault, so innocent
     items never burn an attempt or dead-letter.
     """
@@ -265,33 +385,32 @@ def mark_complete(ops: SQLiteResource, job_id: int) -> None:
 
 def batch_progress(ops: SQLiteResource, job_id: int) -> dict:
     """Return batch progress summary: total, processed, failed, pending, processing."""
+    _ensure_schema(ops)
     conn = ops.get_connection()
     try:
-        job = conn.execute(
-            "SELECT total_items, processed_items, failed_items "
-            "FROM batch_jobs WHERE id = ?",
+        total = conn.execute(
+            "SELECT COUNT(*) FROM batch_items WHERE job_id = ?", [job_id]
+        ).fetchone()[0]
+        processed = conn.execute(
+            "SELECT COUNT(*) FROM batch_items WHERE job_id = ? AND status = 'complete'",
             [job_id],
-        ).fetchone()
-
-        if not job:
-            return {"total": 0, "processed": 0, "failed": 0, "pending": 0, "processing": 0}
-
+        ).fetchone()[0]
+        failed = conn.execute(
+            "SELECT COUNT(*) FROM batch_items WHERE job_id = ? AND status = 'failed'",
+            [job_id],
+        ).fetchone()[0]
         pending = conn.execute(
-            "SELECT COUNT(*) FROM batch_items "
-            "WHERE job_id = ? AND status = 'pending'",
+            "SELECT COUNT(*) FROM batch_items WHERE job_id = ? AND status = 'pending'",
             [job_id],
         ).fetchone()[0]
-
         processing = conn.execute(
-            "SELECT COUNT(*) FROM batch_items "
-            "WHERE job_id = ? AND status = 'processing'",
+            "SELECT COUNT(*) FROM batch_items WHERE job_id = ? AND status = 'processing'",
             [job_id],
         ).fetchone()[0]
-
         return {
-            "total": job[0],
-            "processed": job[1],
-            "failed": job[2],
+            "total": total,
+            "processed": processed,
+            "failed": failed,
             "pending": pending,
             "processing": processing,
         }

@@ -30,9 +30,14 @@ class GoldConfig(Config):
 
     ``post_ids`` (optional) restricts enrichment to specific posts.
     Default (empty) = all pending posts.
+    ``whole_corpus`` opts into corpus-wide admission: ALL silver posts with
+    non-empty captions (including label-pass ``skip`` posts) are enqueued for
+    a text-only enrichment pass (ADR-0001). Default OFF — the standard path
+    stays admission-gated over ``ig_post_labels``.
     """
 
     post_ids: list[str] = []
+    whole_corpus: bool = False
 
 
 # ── Gemini Tier Configuration ──────────────────────────────────────────────

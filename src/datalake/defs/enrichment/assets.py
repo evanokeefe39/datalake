@@ -7,10 +7,13 @@ asset.
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 from dagster import (
     AssetCheckResult,
     AssetKey,
     AssetSpec,
+    FreshnessPolicy,
     asset_check,
 )
 
@@ -25,9 +28,23 @@ _GOLD_ANALYSES_DDL = duckdb_ddl("gold_analyses")
 
 
 def ensure_gold_analyses(db: DuckDBResource) -> None:
-    """Create gold_analyses table if it doesn't exist (idempotent)."""
+    """Create gold_analyses table if it doesn't exist (idempotent).
+
+    Applies additive migrations to pre-existing tables (ALTER ADD COLUMN
+    for columns added to the catalog after a table was created).
+    """
     with db.get_connection() as conn:
         conn.execute(_GOLD_ANALYSES_DDL)
+        cols = {
+            row[0]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'gold_analyses'"
+            ).fetchall()
+        }
+        if "model" not in cols:
+            # Additive migration (ADR-0001): reproducibility version column.
+            conn.execute("ALTER TABLE gold_analyses ADD COLUMN model VARCHAR")
 
 
 # ── AssetSpec ───────────────────────────────────────────────────────────────
@@ -37,6 +54,17 @@ gold_analyses = AssetSpec(
     group_name="enrichment",
     description="Enriched social media posts — multi-domain gold layer.",
     deps=[AssetKey("ig_posts_slv")],
+    # Freshness SLO (ADR-0001): gold is written by the external worker, which
+    # POSTs AssetMaterialization events to the REST endpoint. The OSS
+    # FreshnessDaemon (dagster 1.13.11) reads asset_entry.last_materialization
+    # from the event log, so worker-POSTed events ARE consumed. OSS runs the
+    # FreshnessDaemon when `freshness.enabled` is set in dagster.yaml — it
+    # defaults to True in 1.13.11, so the setting is only needed on older
+    # versions or to opt out.
+    freshness_policy=FreshnessPolicy.time_window(
+        fail_window=timedelta(hours=48),
+        warn_window=timedelta(hours=24),
+    ),
 )
 
 
@@ -121,10 +149,13 @@ def check_enrichment_health(
 
 
 @asset_check(asset=gold_analyses.key)
-def check_prompt_currency(duckdb: DuckDBResource) -> AssetCheckResult:
+def check_prompt_currency(duckdb: DuckDBResource, ops: SQLiteResource) -> AssetCheckResult:
     """Detect rows where prompt_hash is stale (prompt or model changed).
 
     Does NOT trigger re-enrichment (prompt changes cost money — human gate).
+    Also verifies the current prompt is registered in the prompt/version
+    registry (ADR-0001): an unresolvable current prompt means gold rows are
+    being produced without a recoverable prompt definition.
     """
     ensure_gold_analyses(duckdb)
 
@@ -137,12 +168,20 @@ def check_prompt_currency(duckdb: DuckDBResource) -> AssetCheckResult:
 
     stale = row[0] if row else 0
 
-    if stale > 0:
+    from datalake.defs.enrichment.registry import is_current_prompt_registered
+
+    registered = is_current_prompt_registered(ops)
+
+    if stale > 0 or not registered:
         return AssetCheckResult(
             passed=False,
-            metadata={"stale_rows": stale, "current_prompt_hash": CURRENT_PROMPT_HASH},
+            metadata={
+                "stale_rows": stale,
+                "current_prompt_hash": CURRENT_PROMPT_HASH,
+                "current_prompt_registered": registered,
+            },
         )
-    return AssetCheckResult(passed=True, metadata={"stale_rows": 0})
+    return AssetCheckResult(passed=True, metadata={"stale_rows": 0, "current_prompt_registered": True})
 
 
 ENRICHMENT_CHECKS = [check_enrichment_health, check_prompt_currency]
