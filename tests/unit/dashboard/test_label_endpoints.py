@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import duckdb
@@ -188,4 +189,9 @@ def test_weekly_summary_counts_standout_labels_by_day(label_db):
     resp = TestClient(server.app).get("/api/weekly-summary")
     assert resp.status_code == 200
     days = {r["day"]: r["standout_count"] for r in resp.json()}
-    assert days == {7: 1, 8: 1}
+    # Expected day-of-month derived from the fixture's relative timestamps
+    # (CURRENT_DATE - 26/25 days) — hardcoded day numbers break across a
+    # month boundary.
+    d7 = (date.today() - timedelta(days=26)).day
+    d0 = (date.today() - timedelta(days=25)).day
+    assert days == {d7: 1, d0: 1}
