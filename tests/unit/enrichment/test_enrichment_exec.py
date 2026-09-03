@@ -264,11 +264,44 @@ class TestJobState:
                 self.value = v
 
         class FakeJob:
-            state = FakeState("JOB_STATE_SUCCEEDED")
+            def __init__(self, v):
+                self.state = FakeState(v)
 
-        # state values from the API are enum values like JOB_STATE_SUCCEEDED;
-        # is_terminal treats the returned string.
-        assert gemini_batch.is_terminal("JOB_STATE_SUCCEEDED") or True
+        # The proto enum strings carry the JOB_STATE_ prefix; job_state must
+        # strip it so terminal checks match _TERMINAL_OK ({"SUCCEEDED"}) etc.
+        assert gemini_batch.job_state(FakeJob("JOB_STATE_SUCCEEDED")) == "SUCCEEDED"
+        assert gemini_batch.is_terminal("SUCCEEDED") is True
+        assert gemini_batch.is_terminal(
+            gemini_batch.job_state(FakeJob("JOB_STATE_RUNNING"))
+        ) is False
+        assert gemini_batch.job_state(FakeJob("JOB_STATE_FAILED")) == "FAILED"
+        assert gemini_batch.is_terminal("FAILED") is True
+
+    def test_retrieve_returns_inline_results_on_terminal(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_TIER", "tier1")
+        from datalake.defs.common.resources import GeminiResource
+
+        class FakeState:
+            def __init__(self, v):
+                self.value = v
+
+        class FakeResp:
+            metadata = {"custom_key": "k1"}
+            error = None
+            response = type("R", (), {"text": '{"domain": "Business"}'})()
+
+        class FakeDest:
+            inlined_responses = [FakeResp()]
+            file_name = None
+
+        class FakeJob:
+            state = FakeState("JOB_STATE_SUCCEEDED")
+            dest = FakeDest()
+
+        monkeypatch.setattr(gemini_batch, "poll", lambda g, n: FakeJob())
+        gemini = GeminiResource(api_key="fake")
+        out = gemini_batch.retrieve(gemini, "batches/x")
+        assert out == {"k1": {"ok": True, "text": '{"domain": "Business"}', "error": None}}
 
     def test_retrieve_raises_on_non_terminal(self, monkeypatch):
         monkeypatch.setenv("GEMINI_TIER", "tier1")

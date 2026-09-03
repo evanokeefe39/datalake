@@ -162,8 +162,14 @@ def poll(gemini: GeminiResource, job_name: str):
 
 
 def job_state(job) -> str:
-    """Normalize a BatchJob.state into our status string."""
-    return str(job.state.value) if getattr(job, "state", None) else "UNKNOWN"
+    """Normalize a BatchJob.state into our status string.
+
+    The proto enum string is ``JOB_STATE_SUCCEEDED`` etc.; strip the
+    ``JOB_STATE_`` prefix so terminal checks (``_TERMINAL_OK``/``_TERMINAL_FAIL``,
+    ``is_terminal``, ``retrieve``'s guard) match the bare tokens they expect.
+    """
+    raw = str(job.state.value) if getattr(job, "state", None) else "UNKNOWN"
+    return raw[10:] if raw.startswith("JOB_STATE_") else raw
 
 
 def is_terminal(state: str) -> bool:
