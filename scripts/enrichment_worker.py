@@ -4,12 +4,22 @@ Runs outside Dagster. Reads pending batches from ops.sqlite, calls Gemini
 for each item, writes gold_analyses to DuckDB, and POSTs materialization
 events to Dagster when batches complete.
 
+Two execution modes (ADR-0001):
+
+- ``interactive`` (default): per-item synchronous Gemini calls with retry,
+  backoff, and dead-letter routing. Unchanged behavior.
+- ``gemini-batch``: submits items to the Gemini BATCH API (~50% cheaper,
+  paid tier only) and polls/retrieves results, reusing the SAME queue,
+  retry, dead-letter, and materialization POST. Submission + polling live
+  here in the worker only — never in the Dagster graph (ADR-0003).
+
 Usage::
 
-    uv run python scripts/enrichment_worker.py                # Process next pending batch
+    uv run python scripts/enrichment_worker.py                # Process next pending batch (interactive)
     uv run python scripts/enrichment_worker.py --dry-run      # Show state, don't process
     uv run python scripts/enrichment_worker.py --batch-id 3   # Process specific batch
     uv run python scripts/enrichment_worker.py --limit 10     # Process at most 10 items
+    uv run python scripts/enrichment_worker.py --mode gemini-batch   # Gemini BATCH API cycle
 """
 
 from __future__ import annotations
@@ -26,9 +36,11 @@ from dotenv import load_dotenv
 
 from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLiteResource
 from datalake.defs.common.schemas import sqlite_ddl
+from datalake.defs.enrichment import gemini_batch
 from datalake.defs.enrichment.assets import ensure_gold_analyses
 from datalake.defs.enrichment.batch import (
     MAX_ATTEMPTS,
+    _ensure_schema,
     _now_iso,
     batch_progress,
     claim_batch,
@@ -36,9 +48,16 @@ from datalake.defs.enrichment.batch import (
     complete_item,
     fail_item,
     mark_complete,
+    set_gemini_batch_name,
+    set_gemini_batch_status,
 )
 from datalake.defs.enrichment.media_cache import lookup_or_upload_all
-from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH, IG_GOLD_PROMPT
+from datalake.defs.enrichment.prompts import (
+    _DEFAULT_GEMINI_MODEL,
+    CURRENT_PROMPT_HASH,
+    IG_GOLD_PROMPT,
+)
+from datalake.defs.enrichment.registry import register_current_prompt
 from datalake.defs.instagram.config import GeminiTierConfig
 
 load_dotenv()
@@ -122,7 +141,6 @@ def _item_attempts(ops: SQLiteResource, item_id: int) -> int:
         conn.close()
 
 
-
 # ── File API error classification ────────────────────────────────────────────
 
 _FILE_API_KEYWORDS = {
@@ -160,6 +178,31 @@ def _dead_letter_insert(
 
 
 # ── Item processing ──────────────────────────────────────────────────────────
+
+
+def _write_gold(
+    duckdb: DuckDBResource,
+    post_id: str,
+    domain: str,
+    result: str,
+    model: str = _DEFAULT_GEMINI_MODEL,
+) -> None:
+    """Upsert a validated analysis into gold_analyses (ordering guard)."""
+    now = _now_iso()
+    with duckdb.get_connection() as conn:
+        conn.execute(
+            """INSERT INTO gold_analyses
+               (post_id, domain, prompt_hash, model, result_json, analysed_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT (post_id, domain) DO UPDATE SET
+                   prompt_hash = excluded.prompt_hash,
+                   model = excluded.model,
+                   result_json = excluded.result_json,
+                   analysed_at = excluded.analysed_at
+               WHERE gold_analyses.analysed_at IS NULL
+                  OR excluded.analysed_at > gold_analyses.analysed_at""",
+            [post_id, domain, CURRENT_PROMPT_HASH, model, result, now],
+        )
 
 
 def process_item(
@@ -250,26 +293,13 @@ def process_item(
         raise ValueError(f"Gemini returned invalid JSON for post {post_id}")
 
     # Write gold_analyses with ordering guard
-    now = _now_iso()
-    with duckdb.get_connection() as conn:
-        conn.execute(
-            """INSERT INTO gold_analyses
-               (post_id, domain, prompt_hash, result_json, analysed_at)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT (post_id, domain) DO UPDATE SET
-                   prompt_hash = excluded.prompt_hash,
-                   result_json = excluded.result_json,
-                   analysed_at = excluded.analysed_at
-               WHERE gold_analyses.analysed_at IS NULL
-                  OR excluded.analysed_at > gold_analyses.analysed_at""",
-            [post_id, domain, CURRENT_PROMPT_HASH, result, now],
-        )
+    _write_gold(duckdb, post_id, domain, result)
 
     complete_item(ops, item_id)
     return True
 
 
-# ── Batch processing ─────────────────────────────────────────────────────────
+# ── Batch processing (interactive) ───────────────────────────────────────────
 
 
 def process_batch(
@@ -405,6 +435,273 @@ def process_batch(
     return {"processed": total_processed, "failed": total_failed}
 
 
+# ── Gemini BATCH API mode ────────────────────────────────────────────────────
+
+
+def build_requests_for_items(
+    ops: SQLiteResource,
+    duckdb: DuckDBResource,
+    items: list[dict],
+    model: str = _DEFAULT_GEMINI_MODEL,
+) -> list[dict]:
+    """Build text-only batch API requests for claimed items.
+
+    Returns ``{"custom_key": <batch_items.id>, "prompt": <prompt+caption>}``
+    dicts. Items without silver rows or with empty captions complete
+    immediately (no API call) — mirrors interactive edge-case handling.
+    Media/multimodal is intentionally NOT wired here (text-only corpus pass;
+    media is a later concern per the ratified scope).
+    """
+    requests: list[dict] = []
+    for item in items:
+        payload = json.loads(item["payload"])
+        post_id = payload["post_id"]
+        domain = payload["domain"]
+        prompt_template = _PROMPTS.get(domain, IG_GOLD_PROMPT)
+        table = _SILVER_TABLES.get(domain)
+        if not table:
+            complete_item(ops, item["id"])
+            continue
+        with duckdb.get_connection() as conn:
+            row = conn.execute(
+                f"SELECT caption FROM {table} WHERE post_id = ?",
+                [post_id],
+            ).fetchone()
+        caption = (row[0] if row else "") or ""
+        if not caption.strip():
+            complete_item(ops, item["id"])
+            logger.info("Post %s has empty caption — completed", post_id)
+            continue
+        requests.append({
+            "custom_key": str(item["id"]),
+            "prompt": f"{prompt_template}\n{caption}",
+            "post_id": post_id,
+            "domain": domain,
+        })
+    return requests
+
+
+def submit_gemini_batches(
+    ops: SQLiteResource,
+    duckdb: DuckDBResource,
+    gemini: GeminiResource,
+    batch: dict,
+) -> dict:
+    """Submit a queue batch's pending items to the Gemini batch API.
+
+    Claims ALL pending items (they are in-flight from this moment), submits
+    them (chunked under the tier's in-flight token cap), and records the
+    returned job names on the batch job row.
+    """
+    job_id = batch["id"]
+    tier_cfg = GeminiTierConfig.detect()
+    if not tier_cfg.supports_batch:
+        raise RuntimeError(
+            f"Gemini batch API requires Tier 1+ (active tier: {tier_cfg.tier.value}). "
+            "Set GEMINI_TIER=tier1 with a paid key."
+        )
+
+    ensure_gold_analyses(duckdb)
+
+    # Claim every claimable pending item for this batch.
+    items: list[dict] = []
+    while True:
+        chunk = claim_pending_items(ops, job_id, limit=1000)
+        if not chunk:
+            break
+        items.extend(chunk)
+
+    requests = build_requests_for_items(ops, duckdb, items)
+    if not requests:
+        logger.info("Batch %d: nothing to submit (all items completed inline)", job_id)
+        return {"submitted": 0}
+
+    names = gemini_batch.submit(
+        gemini,
+        _DEFAULT_GEMINI_MODEL,
+        requests,
+        display_name=f"enrich-job{job_id}",
+    )
+    set_gemini_batch_name(ops, job_id, "|".join(names))
+    logger.info(
+        "Batch %d: submitted %d item(s) in %d Gemini batch job(s)",
+        job_id, len(requests), len(names),
+    )
+    return {"submitted": len(names)}
+
+
+
+
+def retrieve_gemini_batches(
+    ops: SQLiteResource,
+    duckdb: DuckDBResource,
+    gemini: GeminiResource,
+    dagster_url: str = _DAGSTER_URL,
+) -> dict:
+    """Poll + retrieve all submitted Gemini batch jobs that reached a terminal state.
+
+    On success: match responses back to items via custom_key (batch_items.id),
+    validate JSON, write gold_analyses, complete_item. Per-item errors route
+    through fail_item (retry) and dead_letter at MAX_ATTEMPTS. Job-level
+    FAILED/CANCELLED reschedules items for resubmission without burning
+    attempts.
+    """
+    _ensure_schema(ops)
+    conn = ops.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, gemini_batch_name FROM batch_jobs "
+            "WHERE gemini_batch_name IS NOT NULL "
+            "AND (gemini_batch_status IS NULL OR gemini_batch_status NOT IN "
+            "     ('RETRIEVED', 'JOB_FAILED')) "
+            "ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    total_completed = 0
+    total_failed = 0
+    for job_id, names_blob in rows:
+        names = [n for n in names_blob.split("|") if n]
+        job_done = True
+        for name in names:
+            try:
+                job = gemini_batch.poll(gemini, name)
+            except Exception as exc:
+                logger.warning("Poll failed for %s: %s", name, exc)
+                job_done = False
+                continue
+            state = gemini_batch.job_state(job)
+            set_gemini_batch_status(ops, job_id, state)
+
+            if not gemini_batch.is_terminal(state):
+                job_done = False
+                continue
+
+            if state not in {"SUCCEEDED"}:
+                error = str(getattr(job, "error", "") or "")
+                logger.error("Gemini batch job %s %s: %s", name, state, error[:200])
+                set_gemini_batch_status(ops, job_id, "JOB_FAILED", error[:500])
+                _resubmit_items_preserve_attempts(ops, job_id, error)
+                continue
+
+            # SUCCEEDED — retrieve responses.
+            try:
+                results = gemini_batch.retrieve(gemini, name)
+            except Exception as exc:
+                logger.warning("Retrieve failed for %s: %s", name, exc)
+                job_done = False
+                continue
+
+            processed, failed = _apply_retrieved(ops, duckdb, results)
+            total_completed += processed
+            total_failed += failed
+            set_gemini_batch_status(ops, job_id, "RETRIEVED")
+
+        if job_done:
+            progress = batch_progress(ops, job_id)
+            remaining = progress["pending"] + progress["processing"]
+            if remaining == 0:
+                mark_complete(ops, job_id)
+            post_materialization(
+                ops, job_id, progress["processed"], progress["failed"], dagster_url
+            )
+    return {"completed": total_completed, "failed": total_failed}
+
+
+def _apply_retrieved(
+    ops: SQLiteResource,
+    duckdb: DuckDBResource,
+    results: dict[str, dict],
+) -> tuple[int, int]:
+    """Write retrieved responses to gold and close their batch items."""
+    ensure_gold_analyses(duckdb)
+    processed = failed = 0
+    for custom_key, res in results.items():
+        conn = ops.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT payload FROM batch_items WHERE id = ?", [custom_key]
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            logger.warning("Response for unknown item %s — skipped", custom_key)
+            continue
+        payload = json.loads(row[0])
+        post_id = payload["post_id"]
+        domain = payload["domain"]
+        if not res.get("ok"):
+            attempts = fail_item(ops, custom_key, res.get("error") or "unknown error")
+            if attempts >= MAX_ATTEMPTS:
+                _dead_letter_insert(
+                    ops, post_id, domain, res.get("error") or "", attempts
+                )
+            failed += 1
+            continue
+        text = res["text"]
+        try:
+            json.loads(text)
+        except json.JSONDecodeError:
+            attempts = fail_item(ops, custom_key, "Gemini batch returned invalid JSON")
+            if attempts >= MAX_ATTEMPTS:
+                _dead_letter_insert(ops, post_id, domain, "invalid JSON", attempts)
+            failed += 1
+            continue
+        _write_gold(duckdb, post_id, domain, text)
+        complete_item(ops, custom_key)
+        processed += 1
+    return processed, failed
+
+
+def _resubmit_items_preserve_attempts(ops: SQLiteResource, job_id: int, error: str) -> None:
+    """Return a job's processing items to pending (attempts preserved)."""
+    conn = ops.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM batch_items WHERE job_id = ? AND status = 'processing'",
+            [job_id],
+        ).fetchall()
+    finally:
+        conn.close()
+    for (item_id,) in rows:
+        fail_item(ops, item_id, f"job failed: {error}", backoff=0, preserve_attempts=True)
+
+
+def run_gemini_batch_mode(
+    ops: SQLiteResource,
+    duckdb: DuckDBResource,
+    gemini: GeminiResource,
+    dagster_url: str = _DAGSTER_URL,
+    batch_id: int | None = None,
+) -> dict:
+    """One gemini-batch worker cycle: submit any pending batches, then
+    poll/retrieve terminal Gemini jobs."""
+    ensure_gold_analyses(duckdb)
+
+    # 1. Submit pending gemini-batch-mode batches.
+    submitted_jobs: list[int] = []
+    while True:
+        batch = claim_batch(ops, consumer="gemini", mode="gemini-batch")
+        if not batch or batch.get("gemini_batch_name"):
+            if batch:
+                logger.info(
+                    "Batch %d already submitted (%s) — skipping re-submit",
+                    batch["id"], batch["gemini_batch_name"],
+                )
+            break
+        if batch_id is not None and batch["id"] != batch_id:
+            break
+        result = submit_gemini_batches(ops, duckdb, gemini, batch)
+        submitted_jobs.append(batch["id"])
+        break  # one submit per cycle keeps job bookkeeping simple
+
+    # 2. Poll + retrieve terminal jobs.
+    result = retrieve_gemini_batches(ops, duckdb, gemini, dagster_url)
+    result["submitted_jobs"] = submitted_jobs
+    return result
+
+
 def post_materialization(
     ops: SQLiteResource,
     job_id: int,
@@ -428,6 +725,8 @@ def post_materialization(
             "batch_processed": progress["processed"],
             "batch_failed": progress["failed"],
             "batch_pending": progress["pending"],
+            "model": _DEFAULT_GEMINI_MODEL,
+            "prompt_hash": CURRENT_PROMPT_HASH,
         },
     }).encode("utf-8")
 
@@ -468,6 +767,13 @@ def main() -> None:
         description="Standalone enrichment worker — processes batch items via Gemini."
     )
     parser.add_argument(
+        "--mode",
+        choices=["interactive", "gemini-batch"],
+        default="interactive",
+        help="Execution mode (default: interactive). gemini-batch uses the "
+             "Gemini BATCH API (paid tier only, ~50%% cheaper).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show batch state without processing",
@@ -492,20 +798,21 @@ def main() -> None:
     args = parser.parse_args()
     dagster_url = args.dagster_url
 
-
     ops = SQLiteResource()
     duckdb = DuckDBResource(database="data/state.duckdb")
     gemini = GeminiResource()
 
+    # Idempotent additive schema migration + prompt registry (ADR-0001).
+    _ensure_schema(ops)
+    register_current_prompt(ops)
+
     if args.dry_run:
         # Show all pending batches
-        from datalake.defs.enrichment.batch import _ensure_schema
-
-        _ensure_schema(ops)
         conn = ops.get_connection()
         try:
             batches = conn.execute(
-                "SELECT id, status, total_items, processed_items, failed_items "
+                "SELECT id, mode, status, total_items, processed_items, failed_items, "
+                "gemini_batch_name, gemini_batch_status "
                 "FROM batch_jobs WHERE status != 'complete' ORDER BY id"
             ).fetchall()
 
@@ -515,20 +822,28 @@ def main() -> None:
 
             for b in batches:
                 logger.info(
-                    "Batch %d: status=%s total=%d processed=%d failed=%d",
-                    b[0], b[1], b[2], b[3], b[4],
+                    "Batch %d: mode=%s status=%s total=%d processed=%d failed=%d "
+                    "gemini=%s/%s",
+                    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
                 )
         finally:
             conn.close()
         return
 
-    # Claim or use specified batch
+    if args.mode == "gemini-batch":
+        result = run_gemini_batch_mode(
+            ops, duckdb, gemini, dagster_url, batch_id=args.batch_id
+        )
+        logger.info(
+            "gemini-batch cycle done: submitted_jobs=%s completed=%d failed=%d",
+            result.get("submitted_jobs"), result.get("completed", 0),
+            result.get("failed", 0),
+        )
+        return
+
+    # ── Interactive mode (default) ──
     if args.batch_id:
         batch = {"id": args.batch_id, "payloads": [], "consumer": "gemini"}
-        # Load items for the specified batch
-        from datalake.defs.enrichment.batch import _ensure_schema
-
-        _ensure_schema(ops)
         conn = ops.get_connection()
         try:
             items = conn.execute(
@@ -549,8 +864,8 @@ def main() -> None:
             return
 
         logger.info(
-            "Claimed batch %d with %d items",
-            batch["id"], len(batch["payloads"]),
+            "Claimed batch %d (mode=%s) with %d items",
+            batch["id"], batch.get("mode"), len(batch["payloads"]),
         )
 
     # Process

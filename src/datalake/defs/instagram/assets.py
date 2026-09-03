@@ -950,6 +950,11 @@ def ig_posts_gen_batches(
     text-only analyses) are re-enqueue-eligible (US-L5) — only a current
     prompt_hash blocks. Empty-caption posts never reach this asset: the
     label pass sets enrich_decision='skip' for them (US-L6).
+
+    ``whole_corpus`` (GoldConfig) opts into corpus-wide admission: ALL silver
+    posts with non-empty captions (including the label pass's ``skip``
+    posts) are enqueued for a text-only pass (ADR-0001). Still excludes
+    current-prompt gold rows + open batch items so a re-run never re-pays.
     """
     import json
 
@@ -971,6 +976,26 @@ def ig_posts_gen_batches(
                 [post_ids],
             ).fetchall()
             candidates = [r[0] for r in pending]
+            candidates_seen = len(candidates)
+        elif config.whole_corpus:
+            # Corpus-wide admission (opt-in): bypass the label gate entirely.
+            candidates = [
+                r[0]
+                for r in conn.execute(
+                    """
+                    SELECT sp.post_id
+                    FROM silver_ig_posts sp
+                    WHERE sp.caption IS NOT NULL AND trim(sp.caption) <> ''
+                      AND NOT EXISTS (
+                          SELECT 1 FROM gold_analyses g
+                          WHERE g.post_id = sp.post_id
+                            AND g.domain = 'instagram'
+                            AND g.prompt_hash = ?
+                      )
+                    """,
+                    [CURRENT_PROMPT_HASH],
+                ).fetchall()
+            ]
             candidates_seen = len(candidates)
         else:
             candidates = [
@@ -1013,7 +1038,12 @@ def ig_posts_gen_batches(
     ]
 
     if payloads:
-        create_batch(ops, payloads, consumer="gemini")
+        # Whole-corpus passes run on the Gemini BATCH API (paid tier, ~50%
+        # cheaper); tag them so the gemini-batch worker claims them.
+        create_batch(
+            ops, payloads, consumer="gemini",
+            mode="gemini-batch" if config.whole_corpus else "interactive",
+        )
 
     return pl.DataFrame(
         {

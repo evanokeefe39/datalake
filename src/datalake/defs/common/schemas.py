@@ -92,6 +92,7 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "post_id": Column("VARCHAR", not_null=True),
             "domain": Column("VARCHAR", not_null=True, default="'instagram'"),
             "prompt_hash": Column("VARCHAR"),
+            "model": Column("VARCHAR"),
             "result_json": Column("VARCHAR"),
             "analysed_at": Column("VARCHAR", not_null=True),
         },
@@ -207,6 +208,10 @@ _SQLITE_SPECS: dict[str, Table] = {
         columns={
             "id": Column("INTEGER", primary_key=True, autoincrement=True),
             "consumer": Column("TEXT", not_null=True, default="'gemini'"),
+            "mode": Column("TEXT", not_null=True, default="'interactive'"),
+            "gemini_batch_name": Column("TEXT"),
+            "gemini_batch_status": Column("TEXT"),
+            "gemini_batch_error": Column("TEXT"),
             "status": Column("TEXT", not_null=True, default="'pending'"),
             "created_at": Column("TEXT", not_null=True),
             "completed_at": Column("TEXT"),
@@ -296,6 +301,14 @@ _SQLITE_SPECS: dict[str, Table] = {
             "handle": Column("TEXT", not_null=True),
             "merged_at": Column("TEXT", not_null=True),
             "reversed_at": Column("TEXT"),
+        },
+    ),
+    "prompt_registry": Table(
+        columns={
+            "prompt_hash": Column("TEXT", primary_key=True),
+            "prompt": Column("TEXT", not_null=True),
+            "model": Column("TEXT", not_null=True),
+            "recorded_at": Column("TEXT", not_null=True),
         },
     ),
 }
