@@ -489,9 +489,13 @@ def submit_gemini_batches(
 ) -> dict:
     """Submit a queue batch's pending items to the Gemini batch API.
 
-    Claims ALL pending items (they are in-flight from this moment), submits
-    them (chunked under the tier's in-flight token cap), and records the
-    returned job names on the batch job row.
+    Claims ALL claimable pending items (they are in-flight from this
+    moment), submits them (chunked under the tier's in-flight token cap),
+    and records the returned job names on the batch job row. Called again
+    on a batch that already has Gemini job names (per-item retry after a
+    retrieved job, or resubmission after a job-level failure), it submits
+    a NEW chunk and appends the names — existing names/statuses are
+    preserved, so in-flight chunks keep being polled.
     """
     job_id = batch["id"]
     tier_cfg = GeminiTierConfig.detect()
@@ -513,15 +517,27 @@ def submit_gemini_batches(
 
     requests = build_requests_for_items(ops, duckdb, items)
     if not requests:
-        logger.info("Batch %d: nothing to submit (all items completed inline)", job_id)
+        logger.info("Batch %d: nothing claimable to submit this cycle", job_id)
         return {"submitted": 0}
 
-    names = gemini_batch.submit(
-        gemini,
-        _DEFAULT_GEMINI_MODEL,
-        requests,
-        display_name=f"enrich-job{job_id}",
-    )
+    try:
+        names = gemini_batch.submit(
+            gemini,
+            _DEFAULT_GEMINI_MODEL,
+            requests,
+            display_name=f"enrich-job{job_id}",
+        )
+    except Exception as exc:
+        # Submission failed (API error, quota, precondition): reschedule the
+        # claimed items so they are retried on a later cycle instead of
+        # stranding in 'processing'. Attempts preserved — not their fault.
+        logger.error("Batch %d: submit failed — rescheduling items: %s", job_id, exc)
+        for item in items:
+            fail_item(
+                ops, item["id"], f"submit failed: {exc}",
+                backoff=300, preserve_attempts=True,
+            )
+        return {"submitted": 0}
     set_gemini_batch_name(ops, job_id, "|".join(names))
     logger.info(
         "Batch %d: submitted %d item(s) in %d Gemini batch job(s)",
@@ -538,67 +554,78 @@ def retrieve_gemini_batches(
     gemini: GeminiResource,
     dagster_url: str = _DAGSTER_URL,
 ) -> dict:
-    """Poll + retrieve all submitted Gemini batch jobs that reached a terminal state.
+    """Poll + retrieve every submitted Gemini chunk that reached a terminal
+    state, tracked per chunk name (gemini_batch_status is '|'-joined and
+    aligned to gemini_batch_name — one status per chunk).
 
     On success: match responses back to items via custom_key (batch_items.id),
     validate JSON, write gold_analyses, complete_item. Per-item errors route
-    through fail_item (retry) and dead_letter at MAX_ATTEMPTS. Job-level
-    FAILED/CANCELLED reschedules items for resubmission without burning
-    attempts.
+    through fail_item (retry) and dead_letter at MAX_ATTEMPTS — the next
+    cycle's submit step picks the rescheduled items up as a new chunk.
+    Job-level FAILED/CANCELLED reschedules items for resubmission without
+    burning attempts (same new-chunk path).
     """
     _ensure_schema(ops)
     conn = ops.get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, gemini_batch_name FROM batch_jobs "
-            "WHERE gemini_batch_name IS NOT NULL "
-            "AND (gemini_batch_status IS NULL OR gemini_batch_status NOT IN "
-            "     ('RETRIEVED', 'JOB_FAILED')) "
-            "ORDER BY id"
+            "SELECT id, gemini_batch_name, gemini_batch_status FROM batch_jobs "
+            "WHERE gemini_batch_name IS NOT NULL ORDER BY id"
         ).fetchall()
     finally:
         conn.close()
 
     total_completed = 0
     total_failed = 0
-    for job_id, names_blob in rows:
+    for job_id, names_blob, statuses_blob in rows:
         names = [n for n in names_blob.split("|") if n]
-        job_done = True
-        for name in names:
+        statuses = (statuses_blob or "").split("|") if statuses_blob else []
+        if len(statuses) != len(names):
+            statuses = ["SUBMITTED"] * len(names)
+        all_terminal = True
+        job_error: str | None = None
+        for i, name in enumerate(names):
+            if statuses[i] in ("RETRIEVED", "JOB_FAILED"):
+                continue
             try:
                 job = gemini_batch.poll(gemini, name)
             except Exception as exc:
                 logger.warning("Poll failed for %s: %s", name, exc)
-                job_done = False
+                all_terminal = False
                 continue
             state = gemini_batch.job_state(job)
-            set_gemini_batch_status(ops, job_id, state)
+            statuses[i] = state
 
             if not gemini_batch.is_terminal(state):
-                job_done = False
+                all_terminal = False
                 continue
 
-            if state not in {"SUCCEEDED"}:
+            if state != "SUCCEEDED":
                 error = str(getattr(job, "error", "") or "")
                 logger.error("Gemini batch job %s %s: %s", name, state, error[:200])
-                set_gemini_batch_status(ops, job_id, "JOB_FAILED", error[:500])
+                statuses[i] = "JOB_FAILED"
+                job_error = error[:500]
                 _resubmit_items_preserve_attempts(ops, job_id, error)
                 continue
 
-            # SUCCEEDED — retrieve responses.
+            # SUCCEEDED — retrieve responses for this chunk only.
             try:
                 results = gemini_batch.retrieve(gemini, name)
             except Exception as exc:
                 logger.warning("Retrieve failed for %s: %s", name, exc)
-                job_done = False
+                all_terminal = False
                 continue
 
             processed, failed = _apply_retrieved(ops, duckdb, results)
             total_completed += processed
             total_failed += failed
-            set_gemini_batch_status(ops, job_id, "RETRIEVED")
+            statuses[i] = "RETRIEVED"
 
-        if job_done:
+        set_gemini_batch_status(
+            ops, job_id, "|".join(statuses), job_error
+        )
+
+        if all_terminal:
             progress = batch_progress(ops, job_id)
             remaining = progress["pending"] + progress["processing"]
             if remaining == 0:
@@ -683,15 +710,16 @@ def run_gemini_batch_mode(
     submitted_jobs: list[int] = []
     while True:
         batch = claim_batch(ops, consumer="gemini", mode="gemini-batch")
-        if not batch or batch.get("gemini_batch_name"):
-            if batch:
-                logger.info(
-                    "Batch %d already submitted (%s) — skipping re-submit",
-                    batch["id"], batch["gemini_batch_name"],
-                )
+        if not batch:
             break
         if batch_id is not None and batch["id"] != batch_id:
             break
+        if batch.get("gemini_batch_name"):
+            logger.info(
+                "Batch %d: resubmitting %d claimable item(s) as new chunk(s) "
+                "(existing Gemini jobs: %s)",
+                batch["id"], len(batch["payloads"]), batch["gemini_batch_name"],
+            )
         result = submit_gemini_batches(ops, duckdb, gemini, batch)
         submitted_jobs.append(batch["id"])
         break  # one submit per cycle keeps job bookkeeping simple
@@ -858,7 +886,7 @@ def main() -> None:
             conn.close()
     else:
         logger.info("Looking for pending batch...")
-        batch = claim_batch(ops, consumer="gemini")
+        batch = claim_batch(ops, consumer="gemini", mode="interactive")
         if not batch:
             logger.info("No pending batches found.")
             return

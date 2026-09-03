@@ -162,6 +162,53 @@ class TestBatchModeColumns:
         assert job_id
 
 
+    def test_migration_backfills_mode_on_legacy_rows(self, tmp_path):
+        # Regression: the DML backfill must be committed (DDL autocommits,
+        # DML does not in sqlite3 legacy mode) or legacy rows keep NULL mode.
+        import sqlite3
+
+        db_path = str(tmp_path / "ops.sqlite")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE batch_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "consumer TEXT NOT NULL DEFAULT 'gemini', status TEXT NOT NULL "
+            "DEFAULT 'pending', created_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO batch_jobs (consumer, status, created_at) "
+            "VALUES ('gemini', 'pending', '2026-01-01T00:00:00+00:00')"
+        )
+        conn.commit()
+        conn.close()
+        ops = SQLiteResource(database=db_path)
+        _ensure_schema(ops)
+        check = sqlite3.connect(db_path)
+        mode = check.execute(
+            "SELECT mode FROM batch_jobs WHERE id = 1"
+        ).fetchone()[0]
+        check.close()
+        assert mode == "interactive"
+
+    def test_set_name_extending_appends_submitted_statuses(self, tmp_path):
+        ops = _ops(tmp_path)
+        _ensure_schema(ops)
+        job_id = create_batch(ops, [json.dumps({"post_id": "p"})], mode="gemini-batch")
+        set_gemini_batch_name(ops, job_id, "batches/a")
+        set_gemini_batch_status(ops, job_id, "RETRIEVED", name_index=0)
+        # Incremental resubmission appends a new chunk: old status preserved.
+        set_gemini_batch_name(ops, job_id, "batches/a|batches/b")
+        import sqlite3
+
+        conn = sqlite3.connect(str(tmp_path / "ops.sqlite"))
+        name, status = conn.execute(
+            "SELECT gemini_batch_name, gemini_batch_status FROM batch_jobs WHERE id = ?",
+            [job_id],
+        ).fetchone()
+        conn.close()
+        assert name == "batches/a|batches/b"
+        assert status.split("|") == ["RETRIEVED", "SUBMITTED"]
+
+
 # ── gemini_batch module ─────────────────────────────────────────────────────
 
 
