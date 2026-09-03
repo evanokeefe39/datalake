@@ -1,5 +1,24 @@
 # Architecture — Medallion Lakehouse with Async Enrichment
 
+> This is the **living "current design"** document. For the **rationale and
+> decision history** (why the design is shaped this way, and how it has evolved),
+> see the Architecture Decision Records in [`docs/adr/`](adr/README.md). For the
+> high-level flow (enrichment vs non-enrichment path) see
+> [`enrichment-architecture.html`](../enrichment-architecture.html) and the
+> repo-specific assessment in
+> [`tasks/findings/enrichment-architecture-assessment.md`](../tasks/findings/enrichment-architecture-assessment.md).
+
+### Key decision records
+
+| Decision | ADR | Status |
+|---|---|---|
+| Enrichment output is an ingested source, not a transform (LLM boundary) | [0001](adr/0001-enrichment-as-ingested-source.md) | **Proposed** (pending build-vs-buy) |
+| External worker + gold as AssetSpec (REST materialization, not Pipes) | [0002](adr/0002-external-worker-rest-materialization.md) | Accepted |
+| No LLM/API calls in the transform layer | [0003](adr/0003-no-api-in-transform-layer.md) | Accepted |
+| ops.sqlite vs state.duckdb split; dead-letter + queue | [0004](adr/0004-ops-sqlite-state-duckdb-deadletter.md) | Accepted |
+| Metrics in warehouse views; thin-projector dashboard | [0005](adr/0005-thin-projector-serving.md) | Accepted |
+| Point-in-time-only metric semantics | [0006](adr/0006-point-in-time-metric-semantics.md) | Accepted |
+
 ## Medallion layers
 
 ```

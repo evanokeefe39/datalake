@@ -456,6 +456,11 @@ Set in `.env`:
 
 ## Decision log
 
+> Canonical decision records (with rationale, alternatives, and evolution) live
+> in [`docs/adr/`](docs/adr/README.md) — ADRs are the single source of truth for
+> *why* decisions were made and superseded. This table is a lightweight,
+> chronological index of highlights.
+
 | Date | Decision | Rationale |
 |---|---|---|
 | 2026-06-30 | Parquet for bulk, DuckDB for state | Lock-free parallel writes; DuckDB handles SQL transforms, SCD2, views |
