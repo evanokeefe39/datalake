@@ -460,6 +460,8 @@ def v_engagement_outliers(duckdb: DuckDBResource) -> None:
                     WHEN label = 'standout' AND likes_zscore >= 3 THEN '3σ+'
                     WHEN label = 'standout' AND likes_zscore >= 2 THEN '2σ'
                     WHEN label = 'standout' THEN '1σ'
+                    WHEN likes_zscore <= -3 THEN '-3σ'
+                    WHEN likes_zscore <= -2 THEN '-2σ'
                     WHEN likes_zscore <= -1 THEN '-1σ'
                     ELSE 'normal'
                 END AS sigma_tier
@@ -510,6 +512,163 @@ def v_creator_outlier_rate(duckdb: DuckDBResource) -> None:
             GROUP BY owner_username
             ORDER BY outlier_rate DESC
         """)
+
+
+
+@asset(
+    name="v_underperformer_posts",
+    group_name="serving",
+    description=(
+        "Posts that UNDERPERFORM their creator baseline (negative sigma tiers), "
+        "with enrichment attributes."
+    ),
+    deps=[AssetKey(["v_post_detail"]), AssetKey(["v_engagement_outliers"])],
+)
+def v_underperformer_posts(duckdb: DuckDBResource) -> None:
+    """First-class underperformer surface — the inverse of ``v_outlier_posts``.
+
+    Mirrors the positive surface: one row per post whose ``ig_post_labels``
+    tier is negative (``-1σ``/``-2σ``/``-3σ``), joined with the enrichment
+    and content attributes needed to study WHAT underperforms (topic,
+    content_type, format, admiralty). Additive — no positive semantics
+    touched.
+    """
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE OR REPLACE VIEW v_underperformer_posts AS
+            SELECT
+                post_id,
+                owner_id,
+                owner_username,
+                creator_id,
+                timestamp,
+                likes_count,
+                comments_count,
+                video_view_count,
+                label,
+                method,
+                is_provisional,
+                likes_zscore,
+                sigma_tier,
+                gold_topic,
+                gold_subtopic,
+                gold_domain,
+                gold_subdomain,
+                content_type,
+                format,
+                style,
+                admiralty,
+                is_educational,
+                is_actionable,
+                result_json
+            FROM v_engagement_outliers
+            WHERE sigma_tier IN ('-1σ', '-2σ', '-3σ')
+        """)
+
+
+@asset(
+    name="v_creator_underperformer_rate",
+    group_name="serving",
+    description="Which creators produce the most label-backed underperformers.",
+    deps=[AssetKey(["v_post_detail"]), AssetKey(["v_engagement_outliers"])],
+)
+def v_creator_underperformer_rate(duckdb: DuckDBResource) -> None:
+    """Per-creator underperformer stats — mirror of ``v_creator_outlier_rate``."""
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE OR REPLACE VIEW v_creator_underperformer_rate AS
+            SELECT
+                COALESCE(MAX(owner_id) FILTER (WHERE owner_id IS NOT NULL), 'unknown') AS owner_id,
+                owner_username,
+                MAX(creator_id)                                             AS creator_id,
+                COUNT(*)                                                    AS total_posts,
+                SUM(CASE WHEN sigma_tier IN ('-1σ', '-2σ', '-3σ')
+                         THEN 1 ELSE 0 END)                                 AS underperformer_posts,
+                AVG(CASE WHEN sigma_tier IN ('-1σ', '-2σ', '-3σ')
+                         THEN 1.0 ELSE 0.0 END)                             AS underperformer_rate,
+                AVG(likes_zscore)                                           AS avg_zscore,
+                MIN(likes_zscore)                                              AS min_zscore
+            FROM v_engagement_outliers
+            GROUP BY owner_username
+            ORDER BY underperformer_rate DESC
+        """)
+
+
+@asset(
+    name="v_post_follower_context",
+    group_name="serving",
+    description=(
+        "Per-post owner follower level at post time (nearest at-or-after "
+        "observation), with growth-tier bucketing."
+    ),
+    deps=[
+        AssetKey(["v_post_detail"]),
+        AssetKey(["ig_profiles_slv"]),
+    ],
+)
+def v_post_follower_context(duckdb: DuckDBResource) -> None:
+    """Map each silver post to its owner's follower level AT POST TIME.
+
+    Attribution picks the owner's ``silver_ig_profile_observations`` row
+    nearest at-or-after the post timestamp — preferring an observation from
+    the post's own ``source_dataset`` when one exists, else the nearest by
+    ``observed_at``. ``owner_id`` is the join key, with an
+    ``owner_username`` fallback only for posts that lack an ``owner_id``.
+
+    CAVEAT (honesty): the backfill yields mostly ONE observation per owner,
+    so the "at-post-time" level is really just the nearest observation we
+    have — it may postdate the post by a long margin and does NOT imply the
+    follower count was ever at that level when the post was published. No
+    growth is fabricated: posts with no observation at all carry NULL
+    follower context. Growth-over-time analysis becomes sound only as
+    future scrapes accumulate multiple observations per owner.
+
+    Growth tiers: 0-100 / 100-1k / 1k-10k / 10k+ (lower bound inclusive).
+    """
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE OR REPLACE VIEW v_post_follower_context AS
+            WITH candidates AS (
+                SELECT
+                    p.post_id,
+                    o.followers_count,
+                    o.observed_at,
+                    o.source_dataset,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY p.post_id
+                        ORDER BY
+                            CASE WHEN o.source_dataset = p.source_dataset
+                                 THEN 0 ELSE 1 END,
+                            o.observed_at ASC
+                    ) AS rn
+                FROM v_post_detail p
+                JOIN silver_ig_profile_observations o
+                    ON (o.owner_id = p.owner_id)
+                    OR (p.owner_id IS NULL
+                        AND o.owner_username = p.owner_username)
+                WHERE o.observed_at >= p.timestamp
+            )
+            SELECT
+                p.post_id,
+                p.owner_id,
+                p.owner_username,
+                p.timestamp,
+                c.followers_count,
+                c.observed_at                   AS follower_observed_at,
+                c.source_dataset                AS follower_source_dataset,
+                CASE
+                    WHEN c.followers_count IS NULL     THEN NULL
+                    WHEN c.followers_count < 100       THEN '0-100'
+                    WHEN c.followers_count < 1000      THEN '100-1k'
+                    WHEN c.followers_count < 10000     THEN '1k-10k'
+                    ELSE '10k+'
+                END                             AS follower_tier
+            FROM v_post_detail p
+            LEFT JOIN candidates c
+                ON c.post_id = p.post_id AND c.rn = 1
+        """)
+
+
 
 # ── Canonical metric views (metrics centralization) ─────────────────────────
 
@@ -1062,6 +1221,9 @@ assets: list = [
     v_engagement_outliers,
     v_outlier_posts,
     v_creator_outlier_rate,
+    v_underperformer_posts,
+    v_creator_underperformer_rate,
+    v_post_follower_context,
     v_post_metrics,
     v_creator_metrics,
     v_creator_profile,
