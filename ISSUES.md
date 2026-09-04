@@ -574,7 +574,7 @@ creator-detail post rows link into these detail pages.
 
 ### 19. Batch-multimodal enrichment (wire media into the gemini-batch path)
 
-**Status:** Deferred follow-up (2026-09-04) — explicit scope decision; the
+**Status:** Resolved (2026-09-04) — merged in PR #43 (feat/19-batch-multimodal-20-mime). The
 interactive multimodal path is wired + proven, batch is the durable vehicle
 for video-at-scale.
 **Origin:** First live multimodal runs (2026-09-04) confirmed interactive
@@ -613,7 +613,7 @@ corpus pass possible.
 
 ### 20. media_cache File-API mime-detection gap (intermittent dead-letters)
 
-**Status:** Open (2026-09-04).
+**Status:** Resolved (2026-09-04) — merged in PR #43. Diagnosis history below.
 **Origin:** First multimodal runs dead-lettered ~3% of items with
 `Unknown mime type: Could not determine the mimetype for your file — set the mime_type argument`
 from `google.genai` File API uploads. Recurring, per-item, not systemic — but it
