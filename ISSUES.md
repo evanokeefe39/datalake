@@ -572,6 +572,129 @@ creator-detail post rows link into these detail pages.
 - Which enrichment fields are meaningful at post grain vs already on the card.
 - Navigation/back behavior; whether creator pages deep-link into it.
 
+### 19. Batch-multimodal enrichment (wire media into the gemini-batch path)
+
+**Status:** Deferred follow-up (2026-09-04) — explicit scope decision; the
+interactive multimodal path is wired + proven, batch is the durable vehicle
+for video-at-scale.
+**Origin:** First live multimodal runs (2026-09-04) confirmed interactive
+media enrichment works and materially changes classification (93.6% of
+media-bearing posts vs text-only); the `gemini-batch` execution mode remains
+**text-only** and is the scaling gap.
+
+#### Intent
+
+Media reaches Gemini in **interactive** mode end-to-end (`process_item` reads
+`media_files`, routes through `lookup_or_upload_all` → File API, applies the
+FREE-tier video gate + per-item video-token cap, calls `gemini.analyze(...)` at
+`MEDIA_RESOLUTION_LOW`). The **batch** path is text-only: `build_requests_for_items`
+selects caption only, and `_to_inlined_request` serializes `contents` as a bare
+string with no file `Part`. Batch-multimodal would make a scalable video-at-scale
+corpus pass possible.
+
+#### Locked design direction (from ADR-0001 scope + 2026-09-04 run)
+
+1. Batch requests must carry File-API-referenced media: `build_requests_for_items`
+   reads `media_files` + calls `lookup_or_upload_all`, applies the same tier/video
+   token gates, and attaches the media list to each request.
+2. `_to_inlined_request` builds `contents` as text `Part` + per-file `Part.from_uri`,
+   mirroring `GeminiResource.analyze`'s multimodal branch.
+3. Chunk/token accounting must include media tokens (video ~98 tok/s low-res), not
+   just prompt text — batch in-flight caps bound enqueued INPUT tokens.
+4. **External Integration Gate first:** submit → poll → retrieve a tiny multimodal
+   batch (1 real image + 1 short video) before any scale run. Verify the Batch API
+   accepts file URIs in `InlinedRequest` — unproven and the top risk.
+
+#### Non-goals
+
+- No change to interactive mode (works; leave as-is).
+- No change to `ig_post_labels` / the label pass.
+- Batch-multimodal is NOT required for sub-~700-post runs — interactive suffices.
+
+### 20. media_cache File-API mime-detection gap (intermittent dead-letters)
+
+**Status:** Open (2026-09-04).
+**Origin:** First multimodal runs dead-lettered ~3% of items with
+`Unknown mime type: Could not determine the mimetype for your file — set the mime_type argument`
+from `google.genai` File API uploads. Recurring, per-item, not systemic — but it
+caps recovered counts on every multimodal pass.
+
+#### Intent
+
+`lookup_or_upload_all` (and `_download_bytes`/`cached_local_path`) can fail to
+classify a downloaded media file's MIME type for certain URLs (observed on image
+URLs whose served `Content-Type` / extension mapping falls through the
+`_EXT_BY_MIME` detector), routing otherwise-valid posts to `dead_letter` after 5
+attempts.
+
+#### Root-cause candidates (needs confirmation)
+
+- MIME inferred from URL extension or served `Content-Type` misses some CDN image
+  variants (no/obscured extension; octet-stream fallback not mapped).
+- The resolved `mime_type` is `application/octet-stream`, which Gemini's File API
+  rejects for content it can't sniff, and no file-extension fallback is applied.
+
+#### Acceptance criteria
+
+- [ ] Reproduce on a dead-lettered post's media URL; identify the exact fallthrough.
+- [ ] Add a robust mime fallback (sniff magic bytes via `python-magic`/`file`, or map
+      from extension when `Content-Type` is generic) so image/video posts upload.
+- [ ] Re-enqueue the 25 dead-lettered posts (5 residue + 20 slice) on the fix and
+      confirm they enrich.
+
+#### Non-goals
+
+- No behavior change to the byte-cache-first upload path (CDN fallback stays a
+  fallback — do not re-introduce the expiry race as the primary path).
+- No change to the batch job dead-letter routing semantics.
+
+### 21. Posts table lags at ~10k rows — client-side-everything + eager per-row network images
+
+**Status:** Open (2026-09-04) — raised from frontend use.
+**Origin:** Dashboard /posts visibly lags as the dataset grew (~10k rows). Root-cause
+diagnosed from source (dashboard + dash-api); not yet implemented.
+
+#### Root cause (diagnosed, evidence-backed)
+
+Not buffering — the whole dataset is loaded into the client with no server paging,
+and every grid row renders eager network images:
+
+1. **Full-client row model.** `/posts` fetches the ENTIRE dataset (no server
+   LIMIT: `server.py` applies `LIMIT only if limit>0`; the UI calls
+   `fetchPosts(0,0)`) into `useState` and feeds ~10k rows to AG Grid's CLIENT
+   row model — re-sorting/re-filtering all rows client-side on every filter change
+   (`doesExternalFilterPass` over every node, no debounce on filter/quick-filter).
+2. **Eager per-row network images, no lazy-load.** Each row mounts a `<Thumbnail
+   size=48>` and an `<Avatar>` `<img>` (`posts-table.tsx`), with NO
+   `loading=lazy`/IntersectionObserver (`thumbnail.tsx`), so ~10k thumbnails
+   are requested as rows are created. Refetches (search/username change) recreate
+   the row DOM and re-request every image — no `getRowId`/`immutableData`.
+3. **Backend media-fetch bottleneck.** Uncached thumbnail requests cold-fetch from
+   Instagram via synchronous `urllib` with a 10s timeout inside the sync FastAPI
+   threadpool (`server.py`), so scrolling across thousands of uncached shortcodes
+   saturates the threadpool and stalls JSON + thumbnail endpoints alike.
+4. **Duplicate initial full fetch** (two mount effects fire when search is empty);
+   coarse re-renders on sidebar toggle.
+
+#### Recommended fix direction (deltas; not yet implemented)
+
+- **True server-side / virtual-paged row model** for /posts (LIMIT/OFFSET against
+  the same DuckDB serving view) with client `paginationPageSize` — stop shipping
+  10k rows per request.
+- **`getRowId` + immutable row-data updates** so refetches don't recreate row DOM.
+- **Stop eager grid thumbnails**: serve media only on the post-detail page, or gate
+  grid images behind an IntersectionObserver + `decoding=async`/`fetchpriority=low`
+  and only for the visible page.
+- **Keep media serving async** on the backend so uncached thumbnail fetches never
+  block the endpoint threadpool (real `await`/HTTPX, not sync `urllib`).
+- **Debounce filter + quick-filter**; de-duplicate the mount fetch; move pure
+  value cells to `valueFormatter` and memo reused cell renderers.
+
+#### Non-goals
+
+- No change to canonical serving views (dashboard stays a thin projector).
+- No schema/warehouse change — this is a data-delivery (paging + image delivery)
+  concern.
 ## Resolved
 
 ### 1. Comprehensive medallion testing strategy ✅ (2026-07-01)
