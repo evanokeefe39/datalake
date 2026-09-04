@@ -46,6 +46,8 @@ export function Thumbnail({ shortcode, size = 120, className }: ThumbnailProps) 
       <img
         src={`/api/media/thumbnail/${encodeURIComponent(shortcode)}`}
         alt=""
+        loading="lazy"
+        decoding="async"
         className="absolute inset-0 w-full h-full object-cover"
         onLoad={() => setLoaded(true)}
         onError={() => setError(true)}

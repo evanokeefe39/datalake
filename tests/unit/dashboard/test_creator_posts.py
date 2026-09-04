@@ -138,6 +138,6 @@ def test_creator_posts_unknown_creator(tmp_db, jane_id):
 def test_posts_endpoint_still_shapes_rows(tmp_db, jane_id):
     resp = TestClient(server.app).get("/api/posts")
     assert resp.status_code == 200
-    rows = resp.json()
-    assert len(rows) == 3
-    assert {r["post_id"] for r in rows} == {"p1", "p2", "p3"}
+    body = resp.json()
+    assert body["total"] == 3
+    assert {r["post_id"] for r in body["rows"]} == {"p1", "p2", "p3"}

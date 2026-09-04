@@ -191,12 +191,52 @@ export async function fetchSignals(): Promise<SignalRow[]> {
   return fetchJSON("/signals");
 }
 
+/** One bounded page from the server-side /api/posts endpoint. */
+export interface PostsPage {
+  rows: PostRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** Fetch a single bounded page of posts (server returns {rows,total,limit,offset}). */
+export async function fetchPostsPage(
+  limit: number,
+  offset: number,
+  username?: string,
+): Promise<PostsPage> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (username) params.set("username", username);
+  return fetchJSON(`/posts?${params.toString()}`);
+}
+
+const PAGE_FETCH_LIMIT = 5000; // server-side cap per request
+const MAX_PAGES = 8; // safety bound: 5000*8 = 40k posts max
+
+/** Fetch the full post list as a working set by paging through bounded
+ *  server responses (server caps each request at PAGE_FETCH_LIMIT). The grid
+ *  keeps its client row model over this set. */
+export async function fetchPostsAll(username?: string): Promise<PostRow[]> {
+  const rows: PostRow[] = [];
+  let offset = 0;
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const page = await fetchPostsPage(PAGE_FETCH_LIMIT, offset, username);
+    rows.push(...page.rows);
+    offset += page.rows.length;
+    if (offset >= page.total || page.rows.length === 0) break;
+  }
+  return rows;
+}
+
 export async function fetchPosts(limit = 100, offset = 0): Promise<PostRow[]> {
-  return fetchJSON(`/posts?limit=${limit}&offset=${offset}`);
+  // Backward-compatible: fetch the requested page's rows (or all pages when
+  // the caller passed the historical all-rows sentinel limit<=0).
+  if (limit <= 0) return fetchPostsAll();
+  return (await fetchPostsPage(limit, offset)).rows;
 }
 
 export async function fetchPostsByProfile(username: string): Promise<PostRow[]> {
-  return fetchJSON(`/posts?username=${encodeURIComponent(username)}`);
+  return fetchPostsAll(username);
 }
 
 export async function fetchStandoutPosts(limit = 20): Promise<StandoutRow[]> {

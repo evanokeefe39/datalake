@@ -82,26 +82,31 @@ export default function PostsPage() {
   const location = useLocation();
   const search = location.search as { username?: string };
 
-  // Load initial data
+  // Single loader: fetch the full working set when the page loads, the profile
+  // changes, or the quick search is cleared (< 2 chars). No duplicate mount fetch.
   useEffect(() => {
+    if (searchText.length >= 2) return;
+    let cancelled = false;
     setLoading(true);
     const req = search.username
       ? fetchPostsByProfile(search.username)
       : fetchPosts(0, 0);
-    req.then(setData).catch(console.error).finally(() => setLoading(false));
-  }, [search.username]);
+    req
+      .then((rows) => {
+        if (!cancelled) setData(rows);
+      })
+      .catch(console.error)
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [searchText, search.username]);
 
-  // Search handler — debounced server-side full-text search
+  // Debounced server-side full-text search once the query is >= 2 chars.
   useEffect(() => {
-    if (searchText.length === 0) {
-      const req = search.username
-        ? fetchPostsByProfile(search.username)
-        : fetchPosts(0, 0);
-      req.then(setData).catch(console.error);
-      return;
-    }
     if (searchText.length < 2) return;
-
     const timer = setTimeout(() => {
       setLoading(true);
       fetchSearchResults(searchText)
@@ -109,9 +114,8 @@ export default function PostsPage() {
         .catch(console.error)
         .finally(() => setLoading(false));
     }, 300);
-
     return () => clearTimeout(timer);
-  }, [searchText, search.username]);
+  }, [searchText]);
 
   // Apply external filters when the Filter modal criteria change
   const isExternalFilterPresent = useCallback((): boolean => {

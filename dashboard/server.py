@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
-import urllib.request
+
+import httpx
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -126,34 +127,45 @@ def _cache_media_row(
         con.close()
 
 
-def _fetch_thumbnail_bytes(shortcode: str) -> tuple[bytes, str] | None:
+_MEDIA_CLIENT: httpx.AsyncClient | None = None
+
+
+def _media_client() -> httpx.AsyncClient:
+    """Shared async HTTP client for outbound Instagram media fetches."""
+    global _MEDIA_CLIENT
+    if _MEDIA_CLIENT is None:
+        _MEDIA_CLIENT = httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=httpx.Timeout(10.0),
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Referer": "https://www.instagram.com/",
+            },
+        )
+    return _MEDIA_CLIENT
+
+
+async def _fetch_thumbnail_bytes(shortcode: str) -> tuple[bytes, str] | None:
     """Fetch raw image bytes + content type for a post thumbnail.
 
     Returns None on non-200, non-image content type, or empty body — the
     caller turns that into a 404.
     """
     url = f"https://www.instagram.com/p/{shortcode}/media/?size=m"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Referer": "https://www.instagram.com/",
-        },
-    )
     try:
-        resp = urllib.request.urlopen(req, timeout=10)
+        resp = await _media_client().get(url)
     except Exception as exc:
         logger.warning("Thumbnail fetch failed for %s: %s", shortcode, exc)
         return None
     content_type = resp.headers.get("Content-Type", "")
-    if not content_type.startswith("image/"):
-        logger.warning("Thumbnail %s returned non-image type %s", shortcode, content_type)
+    if resp.status_code != 200 or not content_type.startswith("image/"):
+        logger.warning("Thumbnail %s returned status %s type %s", shortcode, resp.status_code, content_type)
         return None
-    body = resp.read()
+    body = resp.content
     if not body:
         logger.warning("Thumbnail %s returned empty body", shortcode)
         return None
@@ -186,13 +198,13 @@ def avatar(username: str):
 
 
 @app.get("/api/media/thumbnail/{shortcode}")
-def thumbnail(shortcode: str):
+async def thumbnail(shortcode: str):
     """Serve a post thumbnail, byte-caching from Instagram on first request."""
     local = thumbnail_path(shortcode)
     if local.exists() and local.stat().st_size > 0:
         return FileResponse(local, media_type="image/jpeg")
 
-    fetched = _fetch_thumbnail_bytes(shortcode)
+    fetched = await _fetch_thumbnail_bytes(shortcode)
     if fetched is None:
         raise HTTPException(status_code=404, detail="thumbnail unavailable")
     body, content_type = fetched
@@ -331,19 +343,100 @@ def _rows_to_posts(rows) -> list[dict]:
 
 @app.get("/api/posts")
 def posts(
-    limit: int = Query(0, ge=0, le=5000),
+    limit: int = Query(50, ge=1, le=5000),
     offset: int = Query(0, ge=0),
     username: str | None = Query(None),
+    platforms: str | None = Query(None),
+    domains: str | None = Query(None),
+    ranks: str | None = Query(None),
+    educational: str | None = Query(None, pattern="^(all|true|false)$"),
+    actionable: str | None = Query(None, pattern="^(all|true|false)$"),
+    min_likes: int | None = Query(None),
+    max_likes: int | None = Query(None),
+    min_comments: int | None = Query(None),
+    max_comments: int | None = Query(None),
+    min_views: int | None = Query(None),
+    max_views: int | None = Query(None),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    q: str | None = Query(None, min_length=2),
     sort: str | None = Query(None),
     order: str | None = Query("desc"),
 ):
+    """Paged post rows with server-side filtering/search.
+
+    All dashboard filter-modal criteria plus the quick search (``q``, same
+    LIKE semantics as /api/search, min 2 chars) are applied in SQL over the
+    same canonical views the client previously filtered in the browser —
+    same predicates, same view, so results are equivalent per input. The
+    response is ``{rows, total, limit, offset}`` so the grid can page
+    without loading every row.
+    """
     db = _connect()
     try:
-        where = ""
+        clauses: list[str] = []
         params: list = []
+
         if username:
-            where = "WHERE v.owner_username = ?"
+            clauses.append("v.owner_username = ?")
             params.append(username)
+        if platforms:
+            vals = [p.strip() for p in platforms.split(",") if p.strip()]
+            if vals:
+                clauses.append(
+                    f"v.channel IN ({', '.join('?' for _ in vals)})"
+                )
+                params.extend(vals)
+        if domains:
+            vals = [d.strip() for d in domains.split(",") if d.strip()]
+            if vals:
+                clauses.append(
+                    f"v.gold_domain IN ({', '.join('?' for _ in vals)})"
+                )
+                params.extend(vals)
+        if ranks:
+            vals = [r.strip() for r in ranks.split(",") if r.strip()]
+            if vals:
+                clauses.append(
+                    f"SUBSTR(v.admiralty, 1, 1) IN ({', '.join('?' for _ in vals)})"
+                )
+                params.extend(vals)
+        if educational == "true":
+            clauses.append("v.is_educational IS TRUE")
+        elif educational == "false":
+            clauses.append("v.is_educational IS NOT TRUE")
+        if actionable == "true":
+            clauses.append("v.is_actionable IS TRUE")
+        elif actionable == "false":
+            clauses.append("v.is_actionable IS NOT TRUE")
+        for col, lo, hi in (
+            ("likes_count", min_likes, max_likes),
+            ("comments_count", min_comments, max_comments),
+            ("video_view_count", min_views, max_views),
+        ):
+            if lo is not None:
+                clauses.append(f"COALESCE(v.{col}, 0) >= ?")
+                params.append(lo)
+            if hi is not None:
+                clauses.append(f"COALESCE(v.{col}, 0) <= ?")
+                params.append(hi)
+        if date_from:
+            clauses.append("CAST(v.timestamp AS DATE) >= CAST(? AS DATE)")
+            params.append(date_from)
+        if date_to:
+            # Inclusive end date: previously the client's string compare
+            # silently excluded posts on the "to" day itself.
+            clauses.append("CAST(v.timestamp AS DATE) <= CAST(? AS DATE)")
+            params.append(date_to)
+        if q:
+            pattern = f"%{q}%"
+            clauses.append(
+                "(v.caption ILIKE ? OR v.owner_username ILIKE ? "
+                "OR v.gold_topic ILIKE ? OR v.gold_domain ILIKE ?)"
+            )
+            params.extend([pattern, pattern, pattern, pattern])
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
         order_clause = "ORDER BY v.timestamp DESC"
         if sort:
@@ -363,20 +456,24 @@ def posts(
             safe_order = "DESC" if order and order.upper() == "DESC" else "ASC"
             order_clause = f"ORDER BY v.{safe_sort} {safe_order}"
 
-        limit_clause = ""
-        if limit > 0:
-            limit_clause = f"LIMIT {int(limit)} OFFSET {int(offset)}"
+        total = db.execute(
+            f"SELECT COUNT(*) FROM ({_POST_SELECT} {where})",
+            params,
+        ).fetchone()[0]
 
         rows = db.execute(
-            f"{_POST_SELECT} {where} {order_clause} {limit_clause}",
-            params,
+            f"{_POST_SELECT} {where} {order_clause} LIMIT ? OFFSET ?",
+            [*params, int(limit), int(offset)],
         ).fetchall()
 
-        return _rows_to_posts(rows)
+        return {
+            "rows": _rows_to_posts(rows),
+            "total": total,
+            "limit": int(limit),
+            "offset": int(offset),
+        }
     finally:
         db.close()
-
-
 
 
 @app.get("/api/posts/{post_id}")
