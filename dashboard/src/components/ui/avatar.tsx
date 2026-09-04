@@ -29,6 +29,8 @@ export function Avatar({ username, size = 40, className }: AvatarProps) {
     <img
       src={src}
       alt={username}
+      loading="lazy"
+      decoding="async"
       className={cn("flex-shrink-0", className)}
       style={{ width: size, height: size }}
       onError={() => setFallback(true)}
