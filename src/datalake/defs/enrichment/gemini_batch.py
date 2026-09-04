@@ -106,7 +106,7 @@ def chunk_requests(
 ) -> list[list[dict]]:
     """Split requests into chunks whose estimated token count fits ``max_tokens``.
 
-    Each request is ``{"custom_key": ..., "prompt": ..., "media_files": [...],}``.
+    Each request is ``{"custom_key": ..., "prompt": ..., "media_files": [...]}``.
     Token estimate is media-aware (``request_estimate_tokens``) so multimodal
     input counts toward the in-flight cap. Single requests larger than
     ``max_tokens`` get their own chunk (the API will reject them; per-request

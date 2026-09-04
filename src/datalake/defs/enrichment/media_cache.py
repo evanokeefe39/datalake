@@ -98,8 +98,12 @@ def _download_bytes(url: str) -> tuple[bytes, str] | None:
         return None
 
 
-def _download_to_file(url: str, dest: str) -> str | None:
-    """Download ``url`` to ``dest``; return the served Content-Type or None."""
+def _download_to_file(url: str, dest: str) -> str:
+    """Download ``url`` to ``dest``; return the served Content-Type.
+
+    Raises on network failure (the caller classifies it as a File API error),
+    so a mis-cached/live URL never silently uploads the wrong bytes.
+    """
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
