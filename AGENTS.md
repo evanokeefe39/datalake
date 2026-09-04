@@ -32,8 +32,31 @@ multimodal worker code is correct but starved of input. Work items, in order:
 4. Triage-first video processing: deep-pass only high-value posts; uniform deep
    video is ~17.4k tokens/min and pure waste.
 
-**Pending user decision:** video at scale is a Tier 2 batch-API problem (free
-tier skips video in the worker gate). Tier choice is a cost call, not infra.
+
+### Multimodal status (2026-09-04) — INTERACTIVE wired + proven; BATCH deferred
+
+Multimodal media reaches Gemini in **interactive** mode end-to-end (wired and
+smoke-proven on main): `process_item` reads `silver_ig_posts.media_files`,
+routes through `lookup_or_upload_all` (scrape-time byte cache → File API),
+applies the FREE-tier video gate + per-item video-token cap, and calls
+`gemini.analyze(... media_files=...)` at `MEDIA_RESOLUTION_LOW`. The
+`gemini-batch` path is **text-only by ratified scope** (`build_requests_for_items`
+reads caption only; `_to_inlined_request` serializes `contents` as a bare string).
+Batch-multimodal is an explicit deferred follow-up branch — not needed for
+sub-~700-post runs; batch is the durable vehicle for video-at-scale.
+
+First live multimodal runs (2026-09-04, interactive, Tier-1 flash-lite):
+residue batch recovered 125/130 posts (5 dead-lettered), UI/UX media-bearing
+slice 465/485 (20 dead-lettered). Media enrichment changed classification on
+**93.6%** of media-bearing posts vs text-only (topic 72%, subtopic 91%) — the
+model sees actual content, not just captions. Live UI/UX slice query count
+dropped 537 → 479 (70/485 reclassified out of UI/UX). Dead-letter modes seen:
+per-item File-API "Unknown mime type" on a few image URLs (~3%) + transient
+CDN connect timeouts; both route to `dead_letter` correctly (report separately
+from recovered counts). Worker hard-crashes (~52 min, exit 1073807364, no
+traceback — mid File-API upload poll) on very long runs: relaunch the worker
+and reset any stuck `processing` items to `pending`; verify drain by
+`batch_items` status counts, never by worker exit-0.
 
 
 
