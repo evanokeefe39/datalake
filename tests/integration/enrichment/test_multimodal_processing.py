@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
+from datalake.defs.enrichment.assets import ensure_gold_analyses
 
 
 def _seed_silver_with_video(db: DuckDBResource, post_id: str, caption: str) -> None:
@@ -64,13 +65,7 @@ def test_worker_passes_media_uri_to_gemini(tmp_path):
 
     # Setup gold_analyses table (normally done by ensure_gold_analyses)
     with duckdb.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id TEXT NOT NULL, domain TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash TEXT, result_json TEXT, analysed_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
+        ensure_gold_analyses(duckdb)
 
     # Seed: a post WITH a video URL
     _seed_silver_with_video(duckdb, "vid1", "Check out this video tutorial")
@@ -152,13 +147,7 @@ def test_video_post_without_media_files_still_works(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
     with duckdb.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id TEXT NOT NULL, domain TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash TEXT, result_json TEXT, analysed_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
+        ensure_gold_analyses(duckdb)
 
     # Seed: a post WITHOUT media
     from datetime import datetime, timezone
