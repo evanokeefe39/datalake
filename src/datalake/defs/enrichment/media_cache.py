@@ -401,7 +401,9 @@ def lookup_or_upload_all(
                         "No mime_type resolvable for %s — letting the API sniff", url[:80]
                     )
 
-                uploaded: File = client.files.upload(file=upload_path, mime_type=upload_mime)
+                # Files.upload takes mime_type via config, not a top-level kwarg.
+                upload_config = {"mime_type": upload_mime} if upload_mime else None
+                uploaded: File = client.files.upload(file=upload_path, config=upload_config)
 
                 # Poll until ACTIVE or timeout
                 deadline = time.monotonic() + 30

@@ -177,7 +177,8 @@ def test_lookup_upload_passes_resolved_mime_when_content_type_is_generic(tmp_pat
         result = lookup_or_upload_all(ops, gemini, json.dumps([url]))
 
     assert len(result) == 1
-    # The upload must have carried a real mime (extension fallback from .jpg).
+    # The upload must have carried a real mime (extension fallback from .jpg),
+    # passed via the UploadFileConfig (Files.upload has no top-level mime_type).
     sent = fake_files.upload.call_args.kwargs
-    assert sent.get("mime_type") == "image/jpeg", sent
+    assert sent.get("config", {}).get("mime_type") == "image/jpeg", sent
     assert sent.get("file") == str(local)
