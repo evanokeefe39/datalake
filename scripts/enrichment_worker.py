@@ -205,6 +205,50 @@ def _write_gold(
         )
 
 
+
+def _resolve_media_for_post(
+    ops: SQLiteResource,
+    gemini: GeminiResource,
+    post_id: str,
+    media_files_json: str | None,
+) -> list:
+    """Resolve a post's media to File API URIs, applying the tier + token gates.
+
+    Shared by the interactive (``process_item``) and batch
+    (``build_requests_for_items``) paths so multimodal handling stays consistent.
+    Returns the MediaFile dicts to send, or [] for a text-only fallback (no
+    media, FREE-tier video gate, or per-item video token cap exceeded).
+    """
+    tier_cfg = GeminiTierConfig.detect()
+    media_files = lookup_or_upload_all(ops, gemini, media_files_json)
+
+    # Tier gate: FREE tier skips video — text-only fallback
+    if media_files and not tier_cfg.supports_video:
+        logger.info(
+            "Post %s has %d media files but tier is %s — text-only fallback",
+            post_id, len(media_files), tier_cfg.tier.value,
+        )
+        return []
+
+    # Token budget check: drop video if estimated tokens exceed the per-item cap
+    if media_files:
+        total_estimated = 0
+        for mf in media_files:
+            if mf.get("mime_type", "").startswith("video/"):
+                duration = mf.get("duration_seconds") or 0
+                if duration > 0:
+                    total_estimated += duration * _TOKENS_PER_SECOND_VIDEO_LOW
+                else:
+                    total_estimated += 60 * _TOKENS_PER_SECOND_VIDEO_LOW  # assume 1 min
+        if total_estimated > _PER_ITEM_TOKEN_CAP:
+            logger.warning(
+                "Post %s video token estimate %d > cap %d — text-only fallback",
+                post_id, total_estimated, _PER_ITEM_TOKEN_CAP,
+            )
+            return []
+    return media_files
+
+
 def process_item(
     ops: SQLiteResource,
     duckdb: DuckDBResource,
@@ -251,34 +295,8 @@ def process_item(
         logger.info("Post %s has empty caption — completed", post_id)
         return True
 
-    # Media: download + upload to Gemini File API (or cache hit)
-    tier_cfg = GeminiTierConfig.detect()
-    media_files = lookup_or_upload_all(ops, gemini, row[1])
-
-    # Tier gate: FREE tier skips video — text-only fallback
-    if media_files and not tier_cfg.supports_video:
-        logger.info(
-            "Post %s has %d media files but tier is %s — text-only fallback",
-            post_id, len(media_files), tier_cfg.tier.value,
-        )
-        media_files = []
-
-    # Token budget check: skip video if estimated tokens exceed per-item cap
-    if media_files:
-        total_estimated = 0
-        for mf in media_files:
-            if mf.get("mime_type", "").startswith("video/"):
-                duration = mf.get("duration_seconds") or 0
-                if duration > 0:
-                    total_estimated += duration * _TOKENS_PER_SECOND_VIDEO_LOW
-                else:
-                    total_estimated += 60 * _TOKENS_PER_SECOND_VIDEO_LOW  # assume 1 min
-        if total_estimated > _PER_ITEM_TOKEN_CAP:
-            logger.warning(
-                "Post %s video token estimate %d > cap %d — text-only fallback",
-                post_id, total_estimated, _PER_ITEM_TOKEN_CAP,
-            )
-            media_files = []
+    # Media: download + upload to Gemini File API (or cache hit), tier + token gated
+    media_files = _resolve_media_for_post(ops, gemini, post_id, row[1])
 
     # Analyze via Gemini
     prompt_text = _PROMPTS.get(domain, IG_GOLD_PROMPT) + "\n" + caption
@@ -441,16 +459,18 @@ def process_batch(
 def build_requests_for_items(
     ops: SQLiteResource,
     duckdb: DuckDBResource,
+    gemini: GeminiResource,
     items: list[dict],
     model: str = _DEFAULT_GEMINI_MODEL,
 ) -> list[dict]:
-    """Build text-only batch API requests for claimed items.
+    """Build multimodal batch API requests for claimed items.
 
-    Returns ``{"custom_key": <batch_items.id>, "prompt": <prompt+caption>}``
-    dicts. Items without silver rows or with empty captions complete
-    immediately (no API call) — mirrors interactive edge-case handling.
-    Media/multimodal is intentionally NOT wired here (text-only corpus pass;
-    media is a later concern per the ratified scope).
+    Returns ``{"custom_key", "prompt", "post_id", "domain", "media_files": [...]}``
+    dicts — ``media_files`` present (File API URIs) when the post has media that
+    passes the tier + per-item token gates. Items without silver rows or with
+    empty captions complete immediately (no API call) — mirrors interactive
+    edge-case handling. A per-item media upload/File API error fails that item
+    with backoff (mirroring interactive) instead of aborting the whole submit.
     """
     requests: list[dict] = []
     for item in items:
@@ -464,7 +484,7 @@ def build_requests_for_items(
             continue
         with duckdb.get_connection() as conn:
             row = conn.execute(
-                f"SELECT caption FROM {table} WHERE post_id = ?",
+                f"SELECT caption, media_files FROM {table} WHERE post_id = ?",
                 [post_id],
             ).fetchone()
         caption = (row[0] if row else "") or ""
@@ -472,12 +492,36 @@ def build_requests_for_items(
             complete_item(ops, item["id"])
             logger.info("Post %s has empty caption — completed", post_id)
             continue
-        requests.append({
+        media_files = None
+        if row and row[1]:
+            try:
+                media_files = _resolve_media_for_post(ops, gemini, post_id, row[1])
+            except Exception as exc:
+                error_text = str(exc)
+                if _is_file_api_error(exc, error_text):
+                    attempts = fail_item(
+                        ops, item["id"], error_text,
+                        backoff=_exponential_backoff(_item_attempts(ops, item["id"])),
+                    )
+                    logger.warning(
+                        "Media File API error on %s (attempt %d): %s",
+                        post_id, attempts, error_text[:120],
+                    )
+                    if attempts >= MAX_ATTEMPTS:
+                        _dead_letter_insert(
+                            ops, post_id, domain, error_text, attempts,
+                        )
+                    continue  # drop this item from the submit, keep the rest
+                raise
+        req: dict = {
             "custom_key": str(item["id"]),
             "prompt": f"{prompt_template}\n{caption}",
             "post_id": post_id,
             "domain": domain,
-        })
+        }
+        if media_files:
+            req["media_files"] = media_files
+        requests.append(req)
     return requests
 
 
@@ -515,7 +559,7 @@ def submit_gemini_batches(
             break
         items.extend(chunk)
 
-    requests = build_requests_for_items(ops, duckdb, items)
+    requests = build_requests_for_items(ops, duckdb, gemini, items)
     if not requests:
         logger.info("Batch %d: nothing claimable to submit this cycle", job_id)
         return {"submitted": 0}
