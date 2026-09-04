@@ -163,6 +163,19 @@ _DUCKDB_SPECS: dict[str, Table] = {
         },
         primary_key=("post_id", "source_dataset"),
     ),
+    "silver_ig_profile_observations": Table(
+        columns={
+            "owner_id": Column("VARCHAR", not_null=True),
+            "owner_username": Column("VARCHAR"),
+            "observed_at": Column("TIMESTAMP WITH TIME ZONE", not_null=True),
+            "followers_count": Column("INTEGER"),
+            "follows_count": Column("INTEGER"),
+            "posts_count": Column("INTEGER"),
+            "is_verified": Column("BOOLEAN"),
+            "source_dataset": Column("VARCHAR", not_null=True),
+        },
+        primary_key=("owner_id", "observed_at", "source_dataset"),
+    ),
     "ig_post_labels": Table(
         columns={
             "post_id": Column("VARCHAR", primary_key=True),
@@ -191,6 +204,8 @@ DUCKDB_VIEWS: list[str] = [
     "v_engagement_outliers",
     "v_outlier_posts",
     "v_creator_outlier_rate",
+    "v_underperformer_posts",
+    "v_creator_underperformer_rate",
     "v_post_metrics",
     "v_creator_metrics",
     "v_creator_profile",
@@ -199,6 +214,7 @@ DUCKDB_VIEWS: list[str] = [
     "v_overview",
     "v_standout_calendar",
     "v_recent_hot_posts",
+    "v_post_follower_context",
 ]
 
 # ── SQLite (data/ops.sqlite) ────────────────────────────────────────────────

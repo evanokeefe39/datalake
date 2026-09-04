@@ -25,10 +25,10 @@ from ..common.resources import (
 )
 from ..common.schemas import SILVER_COLUMNS, duckdb_ddl
 from ..enrichment.media_cache import cache_media_bytes, seed_media_from_file
-from .config import LOCAL_INGEST_DIR, GoldConfig, ScrapeConfig
 from ..enrichment.prompts import CURRENT_PROMPT_HASH
+from .config import LOCAL_INGEST_DIR, GoldConfig, ScrapeConfig
 from .creators import AD_HOC_LIMIT, enabled_profiles
-from .labels import APPROVED_DECISIONS, LABEL_VERSION, run_label_pass
+from .labels import LABEL_VERSION, run_label_pass
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +120,75 @@ def _read_downloaded_at(meta_path: Path | None) -> datetime | None:
     except (json.JSONDecodeError, ValueError, OSError):
         return None
 
+
+
+_PROFILE_OBS_COLUMNS: tuple[str, ...] = (
+    "owner_id",
+    "owner_username",
+    "observed_at",
+    "followers_count",
+    "follows_count",
+    "posts_count",
+    "is_verified",
+    "source_dataset",
+)
+
+
+def _profile_observations(
+    df: pl.DataFrame, entity_type: str, dataset_id: str, observed_at: datetime
+) -> pl.DataFrame | None:
+    """Build follower-observation rows for one bronze file, or ``None``.
+
+    US-A2.1 gate: the file must GENUINELY carry ``followersCount`` — details
+    files always do; posts files only when the scrape actor embedded the
+    owner object. The gate evaluates the RAW frame (before renames and
+    defaults) so a defaulted ``followers_count=0`` can never be recorded as
+    an observation — fabricated zeros are why most ``silver_ig_profiles``
+    rows sit at 0-100.
+
+    Owner identity follows the entity type: a details row IS the profile
+    (``id`` is the profile id); a posts row carries ``ownerId``. Rows with a
+    null owner id (failed requests) or null follower count (Apify error
+    rows) are dropped; multiple rows per owner in one file collapse to the
+    first.
+
+    Returns ``None`` when the gate excludes the file — no observation rows
+    are emitted for absent/defaulted follower counts.
+    """
+    if "followersCount" not in df.columns:
+        return None
+    id_col = "id" if entity_type == "details" else "ownerId"
+    if id_col not in df.columns:
+        return None
+
+    def _maybe(col: str, dtype: pl.DataType) -> pl.Expr:
+        return (
+            pl.col(col).cast(dtype, strict=False)
+            if col in df.columns
+            else pl.lit(None, dtype=dtype)
+        ).alias(col)
+
+    verified_col = next(
+        (c for c in ("isVerified", "verified") if c in df.columns), None
+    )
+    obs = df.select(
+        pl.col(id_col).cast(pl.Utf8).alias("owner_id"),
+        _maybe("username", pl.Utf8).alias("owner_username"),
+        pl.lit(observed_at).alias("observed_at"),
+        pl.col("followersCount").cast(pl.Int32, strict=False).alias("followers_count"),
+        _maybe("followsCount", pl.Int32).alias("follows_count"),
+        _maybe("postsCount", pl.Int32).alias("posts_count"),
+        (
+            pl.col(verified_col).cast(pl.Boolean, strict=False)
+            if verified_col
+            else pl.lit(None, dtype=pl.Boolean)
+        ).alias("is_verified"),
+        pl.lit(dataset_id).alias("source_dataset"),
+    )
+    obs = obs.filter(
+        pl.col("owner_id").is_not_null() & pl.col("followers_count").is_not_null()
+    ).unique(subset=["owner_id"], keep="first")
+    return obs if not obs.is_empty() else None
 
 # ── Asset ─────────────────────────────────────────────────────────────────
 
@@ -772,6 +841,37 @@ def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame
         if mtime > max_mtime:
             max_mtime = mtime
 
+        # ── Follower-observation append (US-A2.1) ────────────────────────
+        # One row per profile per file, ONLY when this file genuinely
+        # carried followersCount (details always; posts when the actor
+        # embedded the owner object). observed_at provenance: meta
+        # downloaded_at → file mtime. INSERT OR IGNORE on PK
+        # (owner_id, observed_at, source_dataset) keeps reprocessing a
+        # file a no-op; a re-scrape under a new dataset appends exactly
+        # one observation per profile.
+        observed_at = _read_downloaded_at(meta_path) or datetime.fromtimestamp(
+            mtime, tz=timezone.utc
+        )
+        obs = _profile_observations(df, entity_type, f.stem, observed_at)
+        if obs is not None:
+            with db.get_connection() as conn:
+                conn.register("profile_obs_new", obs.to_arrow())
+                conn.execute(
+                    "INSERT OR IGNORE INTO silver_ig_profile_observations "
+                    "SELECT owner_id, owner_username, observed_at, "
+                    "followers_count, follows_count, posts_count, "
+                    "is_verified, source_dataset FROM profile_obs_new"
+                )
+                appended = conn.execute(
+                    "SELECT COUNT(*) FROM profile_obs_new"
+                ).fetchone()[0]
+            logger.info(
+                "Profile observations from %s: %d rows (observed_at=%s)",
+                f.name,
+                appended,
+                observed_at,
+            )
+
         # Map camelCase columns → snake_case
         _profile_col_map = {
             "ownerId": "owner_id",
@@ -1063,6 +1163,7 @@ def _ensure_state_tables(db: DuckDBResource) -> None:
             "gold_analyses",
             "ig_post_labels",
             "silver_ig_post_observations",
+            "silver_ig_profile_observations",
             "watermarks",
             "silver_ig_profiles",
             "silver_ig_comments",
