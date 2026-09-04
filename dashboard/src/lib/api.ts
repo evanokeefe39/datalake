@@ -206,7 +206,7 @@ export async function fetchPostsPage(
   username?: string,
 ): Promise<PostsPage> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  if (username) params.set(username, username);
+  if (username) params.set("username", username);
   return fetchJSON(`/posts?${params.toString()}`);
 }
 
