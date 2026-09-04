@@ -462,3 +462,71 @@ class TestWholeCorpusAdmission:
         finally:
             conn.close()
         assert n == 0  # already enriched at current prompt — never re-pays
+
+# ── Batch multimodal (#19) ─────────────────────────────────────────────────
+
+
+class TestBatchMultimodal:
+    """Media wiring in the gemini-batch path: token accounting + file Parts."""
+
+    def test_media_input_tokens_counts_images_and_video(self):
+        from datalake.defs.enrichment.gemini_batch import _media_input_tokens
+
+        assert _media_input_tokens(None) == 0
+        assert _media_input_tokens([]) == 0
+        # Two images @ 258 each
+        assert _media_input_tokens(
+            [{"mime_type": "image/jpeg"}, {"mime_type": "image/png"}]
+        ) == 516
+        # A 10s video at low-res ~98 tok/s
+        assert _media_input_tokens(
+            [{"mime_type": "video/mp4", "duration_seconds": 10}]
+        ) == 980
+        # Unknown video duration defaults to 60s
+        assert _media_input_tokens([{"mime_type": "video/mp4"}]) == 60 * 98
+
+    def test_request_estimate_tokens_includes_media(self):
+        from datalake.defs.enrichment.gemini_batch import request_estimate_tokens
+
+        text_only = request_estimate_tokens({"prompt": "a" * 40})
+        with_media = request_estimate_tokens(
+            {"prompt": "a" * 40, "media_files": [{"mime_type": "image/jpeg"}]}
+        )
+        # text (~10) + one image (258)
+        assert with_media == text_only + 258
+
+    def test_chunk_requests_accounts_for_media_tokens(self):
+        # A single heavy video request should not share a chunk with text that
+        # together would exceed the cap.
+        img = {"prompt": "p", "media_files": [{"mime_type": "image/jpeg"}]}  # ~258
+        big_vid = {
+            "prompt": "p",
+            "media_files": [{"mime_type": "video/mp4", "duration_seconds": 20}],
+        }  # ~1960
+        chunks = gemini_batch.chunk_requests([img, big_vid, img], max_tokens=1500)
+        # img(258)+big_vid(1960) > 1500 -> split; img+big_vid separate chunks
+        assert len(chunks) == 3
+
+    def test_to_inlined_request_text_only_unchanged(self):
+        req = gemini_batch._to_inlined_request(
+            {"custom_key": "1", "prompt": "hello", "media_files": None}
+        )
+        assert req.contents == "hello"
+        assert req.config.media_resolution is None
+
+    def test_to_inlined_request_builds_file_parts_when_media(self):
+        media = [
+            {"uri": "https://g/v1beta/files/i1", "mime_type": "image/jpeg"},
+            {"uri": "https://g/v1beta/files/v1", "mime_type": "video/mp4"},
+        ]
+        req = gemini_batch._to_inlined_request(
+            {"custom_key": "7", "prompt": "describe", "media_files": media}
+        )
+        # contents is a list of Parts; first two are file URIs, last is text.
+        assert isinstance(req.contents, list)
+        assert len(req.contents) == 3
+        assert req.contents[0].file_data.file_uri == media[0]["uri"]
+        assert req.contents[1].file_data.file_uri == media[1]["uri"]
+        assert req.contents[2].text == "describe"
+        # Low-res video resolution is applied on the batch config.
+        assert req.config.media_resolution == "MEDIA_RESOLUTION_LOW"

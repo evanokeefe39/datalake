@@ -40,15 +40,22 @@ def _client(gemini: GeminiResource):
     return Client(api_key=gemini.api_key)
 
 
-def _generation_config():
-    """Same sampling contract as interactive: JSON mode, 0.2 temp, 2048 out."""
+def _generation_config(*, media: bool = False):
+    """Same sampling contract as interactive: JSON mode, 0.2 temp, 2048 out.
+
+    When media is present, mirror interactive low-resolution video so the batch
+    request pays ~98 tok/s for video instead of ~290 tok/s.
+    """
     from google.genai.types import GenerateContentConfig
 
-    return GenerateContentConfig(
+    kwargs: dict = dict(
         response_mime_type="application/json",
         temperature=0.2,
         max_output_tokens=2048,
     )
+    if media:
+        kwargs["media_resolution"] = "MEDIA_RESOLUTION_LOW"
+    return GenerateContentConfig(**kwargs)
 
 
 # ── Submit ───────────────────────────────────────────────────────────────────
@@ -59,20 +66,57 @@ def estimate_tokens(text: str) -> int:
     return max(1, (len(text) + 3) // 4)
 
 
+_IMAGE_INPUT_TOKENS = 258
+_VIDEO_TOKENS_PER_SECOND_LOW = 98
+_VIDEO_ASSUMED_SECONDS = 60
+
+
+def _media_input_tokens(media_files: list[dict] | None) -> int:
+    """Estimated media input tokens for a request's media list.
+
+    Mirrors the interactive per-item token budget: video at low resolution is
+    ~98 tok/s (via ``duration_seconds`` when present, else assume 60s); images
+    are ~258 tokens each.
+    """
+    total = 0
+    for mf in media_files or []:
+        mime = mf.get("mime_type") or ""
+        if mime.startswith("video/"):
+            d = mf.get("duration_seconds")
+            seconds = d if d and d > 0 else _VIDEO_ASSUMED_SECONDS
+            total += int(seconds * _VIDEO_TOKENS_PER_SECOND_LOW)
+        else:
+            total += _IMAGE_INPUT_TOKENS
+    return total
+
+
+def request_estimate_tokens(req: dict) -> int:
+    """Total input-token estimate for one request: prompt text + any media.
+
+    Batch in-flight enqueued-token caps bound total INPUT tokens, so media must
+    be counted or multimodal chunks would silently overshoot the cap.
+    """
+    return estimate_tokens(req.get("prompt", "")) + _media_input_tokens(
+        req.get("media_files")
+    )
+
+
 def chunk_requests(
     requests: list[dict], max_tokens: int
 ) -> list[list[dict]]:
     """Split requests into chunks whose estimated token count fits ``max_tokens``.
 
-    Each request is ``{"custom_key": ..., "prompt": ...}``. Single requests
-    larger than ``max_tokens`` get their own chunk (the API will reject them;
-    per-request size is bounded by the model context).
+    Each request is ``{"custom_key": ..., "prompt": ..., "media_files": [...]}``.
+    Token estimate is media-aware (``request_estimate_tokens``) so multimodal
+    input counts toward the in-flight cap. Single requests larger than
+    ``max_tokens`` get their own chunk (the API will reject them; per-request
+    size is bounded by the model context).
     """
     chunks: list[list[dict]] = []
     current: list[dict] = []
     current_tokens = 0
     for req in requests:
-        est = estimate_tokens(req["prompt"])
+        est = request_estimate_tokens(req)
         if current and current_tokens + est > max_tokens:
             chunks.append(current)
             current = []
@@ -97,8 +141,10 @@ def submit(
         gemini: resource carrying the API key (paid tier required — verify
             with ``GeminiTierConfig.detect().supports_batch`` BEFORE calling).
         model: model name (e.g. ``gemini-3.5-flash-lite``).
-        requests: ``{"custom_key": str, "prompt": str}`` dicts (text-only;
-            media wiring is a later concern per the ratified scope).
+        requests: ``{"custom_key": str, "prompt": str, "media_files": [...]}``
+            dicts. ``media_files`` (list of ``{"uri", "mime_type",
+            "duration_seconds"?}``) is optional — when present the request is
+            multimodal (file Parts).
         display_name: base display name; multi-chunk submissions get ``-segN``.
         max_tokens: in-flight enqueued-token cap per job
             (default ``GeminiTierConfig.max_batch_tokens``).
@@ -137,17 +183,33 @@ def submit(
         logger.info(
             "Submitted Gemini batch job %s (%d requests, ~%d est. tokens)",
             job.name, len(chunk),
-            sum(estimate_tokens(r["prompt"]) for r in chunk),
+            sum(request_estimate_tokens(r) for r in chunk),
         )
     return names
+
+
+def _build_contents(prompt: str, media_files: list[dict] | None):
+    """Build batch request contents: text-only, or file Parts + text when media."""
+    if not media_files:
+        return prompt
+    from google.genai.types import Part
+
+    parts = []
+    for mf in media_files:
+        parts.append(
+            Part.from_uri(file_uri=mf["uri"], mime_type=mf["mime_type"])
+        )
+    parts.append(Part.from_text(text=prompt))
+    return parts
 
 
 def _to_inlined_request(req: dict):
     from google.genai.types import InlinedRequest
 
+    media_files = req.get("media_files")
     return InlinedRequest(
-        contents=req["prompt"],
-        config=_generation_config(),
+        contents=_build_contents(req["prompt"], media_files),
+        config=_generation_config(media=bool(media_files)),
         metadata={"custom_key": req["custom_key"]},
     )
 

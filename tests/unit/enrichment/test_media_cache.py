@@ -113,9 +113,9 @@ def test_lookup_or_upload_all_prefers_cached_bytes(tmp_path):
     fake_client.files = fake_files
 
     with patch("google.genai.Client", return_value=fake_client), patch(
-        "urllib.request.urlretrieve",
+        "datalake.defs.enrichment.media_cache._download_to_file",
         side_effect=AssertionError("CDN download must not be hit on a cache hit"),
-    ) as urlretrieve:
+    ) as download:
         result = lookup_or_upload_all(ops, gemini, json.dumps([url]))
 
     assert len(result) == 1
@@ -125,4 +125,60 @@ def test_lookup_or_upload_all_prefers_cached_bytes(tmp_path):
     # The upload must have used the cached local path, not a temp download.
     upload_arg = fake_files.upload.call_args.kwargs.get("file")
     assert upload_arg == str(local)
-    urlretrieve.assert_not_called()
+    download.assert_not_called()
+
+
+def test_lookup_upload_passes_resolved_mime_when_content_type_is_generic(tmp_path):
+    """#20: an octet-stream content type must fall back to the URL extension so
+    the upload sends a real mime_type instead of triggering the File API
+    "Unknown mime type" rejection that dead-lettered ~3% of media posts."""
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+    gemini = GeminiResource(api_key="test-key")
+
+    url = "https://cdn.example.com/path/pic.jpg"
+    local = tmp_path / "pic.jpg"
+    local.write_bytes(b"fake-image-bytes")
+
+    from datalake.defs.enrichment.media_cache import _ensure_media_cache_table
+
+    _ensure_media_cache_table(ops)
+    conn = ops.get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO media_cache "
+            "(cache_key, local_path, content_type, size_bytes, fetched_at, source_url) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                url_hash(url),
+                str(local),
+                "application/octet-stream",  # generic — Gemini could not sniff this
+                local.stat().st_size,
+                "2026-01-01T00:00:00+00:00",
+                url,
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    fake_file = MagicMock()
+    fake_file.name = "files/fake-img1"
+    fake_file.uri = "https://generativelanguage.googleapis.com/v1beta/files/fake-img1"
+    fake_file.mime_type = "image/jpeg"
+    fake_file.size_bytes = 12
+    fake_file.video_metadata = None
+    fake_file.state.name = "ACTIVE"
+
+    fake_files = MagicMock()
+    fake_files.upload.return_value = fake_file
+    fake_files.get.return_value = fake_file
+
+    with patch("google.genai.Client", return_value=MagicMock(files=fake_files)):
+        result = lookup_or_upload_all(ops, gemini, json.dumps([url]))
+
+    assert len(result) == 1
+    # The upload must have carried a real mime (extension fallback from .jpg),
+    # passed via the UploadFileConfig (Files.upload has no top-level mime_type).
+    sent = fake_files.upload.call_args.kwargs
+    assert sent.get("config", {}).get("mime_type") == "image/jpeg", sent
+    assert sent.get("file") == str(local)
