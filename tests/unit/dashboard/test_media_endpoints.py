@@ -10,12 +10,15 @@ it is loaded by file path here.
 
 from __future__ import annotations
 
+import asyncio
+
 import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+import httpx
 
 _SERVER_PATH = Path(__file__).resolve().parents[3] / "dashboard" / "server.py"
 _spec = importlib.util.spec_from_file_location("dashboard_server", _SERVER_PATH)
@@ -51,10 +54,18 @@ def tmp_ops(tmp_path, monkeypatch):
 # ── Thumbnail (US-06) ────────────────────────────────────────────────────
 
 
+def _async_return(value):
+    fut: asyncio.Future = asyncio.get_event_loop().create_future()
+    fut.set_result(value)
+    return fut
+
+
 def test_thumbnail_cache_miss(thumb_dir, tmp_ops, monkeypatch):
     """First request fetches bytes, writes to disk, inserts media_cache row."""
     monkeypatch.setattr(
-        server, "_fetch_thumbnail_bytes", lambda s: (b"fakejpeg", "image/jpeg")
+        server,
+        "_fetch_thumbnail_bytes",
+        lambda s: _async_return((b"fakejpeg", "image/jpeg")),
     )
     client = TestClient(server.app)
     resp = client.get("/api/media/thumbnail/abc123")
@@ -98,7 +109,7 @@ def test_thumbnail_cache_hit(thumb_dir, tmp_ops, monkeypatch):
 
 def test_thumbnail_instagram_404(thumb_dir, tmp_ops, monkeypatch):
     """Instagram failure (None) → HTTP 404, nothing cached."""
-    monkeypatch.setattr(server, "_fetch_thumbnail_bytes", lambda s: None)
+    monkeypatch.setattr(server, "_fetch_thumbnail_bytes", lambda s: _async_return(None))
     client = TestClient(server.app)
     resp = client.get("/api/media/thumbnail/missing")
 
@@ -109,51 +120,44 @@ def test_thumbnail_instagram_404(thumb_dir, tmp_ops, monkeypatch):
 def test_thumbnail_non_image_content_type():
     """Non-image content type is not cached."""
     shortcode = "notimage"
-    fake_resp = type(
-        "Resp",
-        (),
-        {
-            "headers": {"Content-Type": "text/html"},
-            "read": lambda self: b"<html></html>",
-        },
-    )()
-    # Patch urlopen at the module level so _fetch_thumbnail_bytes sees it.
-    import urllib.request
 
-    real_urlopen = urllib.request.urlopen
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html></html>", headers={"Content-Type": "text/html"})
 
-    def _fake_urlopen(req, timeout=10):
-        return fake_resp
-
-    server.urllib.request.urlopen = _fake_urlopen
+    server._MEDIA_CLIENT = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
-        assert server._fetch_thumbnail_bytes(shortcode) is None
+        result = asyncio.run(server._fetch_thumbnail_bytes(shortcode))
     finally:
-        server.urllib.request.urlopen = real_urlopen
+        server._MEDIA_CLIENT = None
+    assert result is None
 
 
 def test_thumbnail_empty_body():
     """Empty response body is not cached."""
-    fake_resp = type(
-        "Resp",
-        (),
-        {
-            "headers": {"Content-Type": "image/jpeg"},
-            "read": lambda self: b"",
-        },
-    )()
-    import urllib.request
 
-    real_urlopen = urllib.request.urlopen
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"", headers={"Content-Type": "image/jpeg"})
 
-    def _fake_urlopen(req, timeout=10):
-        return fake_resp
-
-    server.urllib.request.urlopen = _fake_urlopen
+    server._MEDIA_CLIENT = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
-        assert server._fetch_thumbnail_bytes("empty") is None
+        result = asyncio.run(server._fetch_thumbnail_bytes("empty"))
     finally:
-        server.urllib.request.urlopen = real_urlopen
+        server._MEDIA_CLIENT = None
+    assert result is None
+
+
+def test_thumbnail_fetch_rejects_non_200():
+    """Non-200 status is not cached."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="nope")
+
+    server._MEDIA_CLIENT = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        result = asyncio.run(server._fetch_thumbnail_bytes("gone"))
+    finally:
+        server._MEDIA_CLIENT = None
+    assert result is None
 
 
 # ── Avatar (US-07) ───────────────────────────────────────────────────────
