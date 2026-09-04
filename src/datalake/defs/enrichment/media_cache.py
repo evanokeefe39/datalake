@@ -12,6 +12,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,6 +98,20 @@ def _download_bytes(url: str) -> tuple[bytes, str] | None:
         return None
 
 
+def _download_to_file(url: str, dest: str) -> str | None:
+    """Download ``url`` to ``dest``; return the served Content-Type or None."""
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            dest_path = Path(dest)
+            _atomic_write(dest_path, resp.read())
+            return content_type
+    except Exception as exc:
+        logger.warning("media download failed for %s: %s", url[:80], exc)
+        raise
+
+
 def _atomic_write(path: Path, data: bytes) -> None:
     """Write bytes atomically (temp file + rename) to avoid partial reads."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -175,6 +190,34 @@ def cache_media_bytes(
 
 
 _CONTENT_TYPE_BY_EXT = {v: k for k, v in _EXT_BY_MIME.items()}
+
+
+def _normalize_mime(content_type: str | None) -> str | None:
+    """Normalize a Content-Type header: strip parameters, lowercase."""
+    if not content_type:
+        return None
+    mime = content_type.split(";")[0].strip().lower()
+    return mime or None
+
+
+def _mime_from_url(url: str) -> str | None:
+    """Extension-based mime fallback from the URL path (no query/fragment)."""
+    ext = os.path.splitext(urllib.parse.urlparse(url).path)[1].lower()
+    return _CONTENT_TYPE_BY_EXT.get(ext)
+
+
+def _resolve_mime_type(content_type: str | None, url: str) -> str | None:
+    """Best-effort mime for an upload: header first, then URL extension.
+
+    A generic application/octet-stream header is treated as "no useful mime
+    signal" so the URL-extension fallback (or Gemini's own sniffer) can still
+    classify the bytes — passing octet-stream explicitly would reproduce the
+    "Unknown mime type" File API rejection.
+    """
+    mime = _normalize_mime(content_type)
+    if mime and mime != "application/octet-stream":
+        return mime
+    return _mime_from_url(url)
 
 
 def seed_media_from_file(
@@ -338,18 +381,27 @@ def lookup_or_upload_all(
             # ~4-5 days); fall back to a live download only on a cache miss.
             tmp_path = None
             try:
+                upload_mime: str | None = None
                 cached = conn.execute(
-                    "SELECT local_path FROM media_cache WHERE cache_key = ?", [h]
+                    "SELECT local_path, content_type FROM media_cache WHERE cache_key = ?",
+                    [h],
                 ).fetchone()
                 if cached and cached["local_path"] and os.path.exists(cached["local_path"]):
                     upload_path = cached["local_path"]
+                    # Scrape-time cache recorded the served Content-Type.
+                    upload_mime = _resolve_mime_type(cached["content_type"], url)
                 else:
                     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".media")
                     os.close(tmp_fd)
-                    urllib.request.urlretrieve(url, tmp_path)
+                    served_ct = _download_to_file(url, tmp_path)
                     upload_path = tmp_path
+                    upload_mime = _resolve_mime_type(served_ct, url)
+                if not upload_mime:
+                    logger.warning(
+                        "No mime_type resolvable for %s — letting the API sniff", url[:80]
+                    )
 
-                uploaded: File = client.files.upload(file=upload_path)
+                uploaded: File = client.files.upload(file=upload_path, mime_type=upload_mime)
 
                 # Poll until ACTIVE or timeout
                 deadline = time.monotonic() + 30
