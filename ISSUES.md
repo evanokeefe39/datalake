@@ -650,7 +650,7 @@ attempts.
 
 ### 21. Posts table lags at ~10k rows — client-side-everything + eager per-row network images
 
-**Status:** Open (2026-09-04) — raised from frontend use.
+**Status:** Resolved (2026-09-04) — merged in PR #41 (feat/dashboard-posts-paging). See the #41 body + PR diff for the implemented fix. History of the diagnosis retained below.
 **Origin:** Dashboard /posts visibly lags as the dataset grew (~10k rows). Root-cause
 diagnosed from source (dashboard + dash-api); not yet implemented.
 
