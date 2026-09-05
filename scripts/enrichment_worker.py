@@ -211,16 +211,21 @@ def _resolve_media_for_post(
     gemini: GeminiResource,
     post_id: str,
     media_files_json: str | None,
+    inline_images: bool = False,
 ) -> list:
     """Resolve a post's media to File API URIs, applying the tier + token gates.
 
     Shared by the interactive (``process_item``) and batch
     (``build_requests_for_items``) paths so multimodal handling stays consistent.
+    ``inline_images`` (batch path only) serves small images as inline bytes —
+    no File API upload round-trip. Interactive stays on the File API.
     Returns the MediaFile dicts to send, or [] for a text-only fallback (no
     media, FREE-tier video gate, or per-item video token cap exceeded).
     """
     tier_cfg = GeminiTierConfig.detect()
-    media_files = lookup_or_upload_all(ops, gemini, media_files_json)
+    media_files = lookup_or_upload_all(
+        ops, gemini, media_files_json, inline_images=inline_images
+    )
 
     # Tier gate: FREE tier skips video — text-only fallback
     if media_files and not tier_cfg.supports_video:
@@ -500,7 +505,9 @@ def build_requests_for_items(
         media_files = None
         if row and row[1]:
             try:
-                media_files = _resolve_media_for_post(ops, gemini, post_id, row[1])
+                media_files = _resolve_media_for_post(
+                    ops, gemini, post_id, row[1], inline_images=True
+                )
             except Exception as exc:
                 # Media resolution (CDN download on a genuine cache miss, File
                 # API upload) is strictly per-item work — generation quota

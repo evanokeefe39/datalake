@@ -70,7 +70,7 @@ def _patch(monkeypatch, behavior):
     monkeypatch.setattr(
         worker,
         "_resolve_media_for_post",
-        lambda ops, gemini, post_id, media_json: behavior(post_id),
+        lambda ops, gemini, post_id, media_json, **_: behavior(post_id),
     )
 
 

@@ -8,6 +8,8 @@ expire in ~4-5 days.
 from __future__ import annotations
 
 import json
+import os
+import threading
 from unittest.mock import MagicMock, patch
 
 from datalake.defs.common.resources import GeminiResource, SQLiteResource
@@ -182,3 +184,269 @@ def test_lookup_upload_passes_resolved_mime_when_content_type_is_generic(tmp_pat
     sent = fake_files.upload.call_args.kwargs
     assert sent.get("config", {}).get("mime_type") == "image/jpeg", sent
     assert sent.get("file") == str(local)
+
+
+class FakeNotFoundError(Exception):
+    """Mimics google.genai.errors.APIError for a deleted file."""
+
+    code = 404
+
+
+def _seed_byte_cache(ops, url, local_path, content_type="image/jpeg"):
+    from datalake.defs.enrichment.media_cache import _ensure_media_cache_table
+
+    _ensure_media_cache_table(ops)
+    conn = ops.get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO media_cache "
+            "(cache_key, local_path, content_type, size_bytes, fetched_at, source_url) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                url_hash(url),
+                str(local_path),
+                content_type,
+                os.path.getsize(local_path),
+                "2026-01-01T00:00:00+00:00",
+                url,
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _make_fake_client(uris: list[str], get_state: str = "ACTIVE"):
+    """Fake genai Client: upload returns a distinct ACTIVE file per call;
+    files.get echoes the matching (or last uploaded) file."""
+    from unittest.mock import MagicMock
+
+
+    lock = threading.Lock()
+    made: list = []
+
+    def _upload(*args, **kwargs):
+        with lock:
+            i = len(made)
+            f = MagicMock()
+            f.name = f"files/fake-{i}"
+            f.uri = uris[i] if i < len(uris) else f"https://x/files/fake-{i}"
+            f.mime_type = "image/jpeg"
+            f.size_bytes = 12
+            f.video_metadata = None
+            f.state.name = get_state
+            made.append(f)
+        return f
+
+    def _get(name=None):
+        for f in made:
+            if f.name == name:
+                return f
+        return made[-1] if made else MagicMock()
+
+    files = MagicMock()
+    files.upload.side_effect = _upload
+    files.get.side_effect = _get
+    client = MagicMock()
+    client.files = files
+    return client, files
+
+
+def test_lookup_or_upload_all_concurrent_misses_keep_input_order(tmp_path):
+    """(A) A multi-URL cache miss uploads concurrently yet returns the exact
+    input-ordered list of per-media dicts."""
+    import threading
+
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+    gemini = GeminiResource(api_key="test-key")
+    urls = [
+        "https://cdn.example.com/a.jpg",
+        "https://cdn.example.com/b.jpg",
+        "https://cdn.example.com/c.jpg",
+    ]
+    uris = [f"https://generativelanguage.googleapis.com/v1beta/files/f{i}" for i in range(3)]
+    client, files = _make_fake_client(uris)
+    # Prove concurrency: all three uploads must be in flight simultaneously.
+    barrier = threading.Barrier(3, timeout=15)
+    real_upload = files.upload.side_effect
+    dest_to_url: dict = {}
+    uri_by_file: dict = {}
+
+    def _upload(*args, **kwargs):
+        barrier.wait()
+        f = real_upload(*args, **kwargs)
+        uri_by_file[kwargs.get("file")] = f.uri
+        return f
+
+    files.upload.side_effect = _upload
+
+    def _dl(url, dest):
+        dest_to_url[dest] = url
+        with open(dest, "wb") as fh:
+            fh.write(b"x")
+        return "image/jpeg"
+
+    with patch("google.genai.Client", return_value=client), patch(
+        "datalake.defs.enrichment.media_cache._download_to_file", side_effect=_dl
+    ):
+        result = lookup_or_upload_all(ops, gemini, json.dumps(urls))
+
+    assert files.upload.call_count == 3
+    # Which thread got which File API URI is nondeterministic under
+    # concurrency, but the OUTPUT list must be in INPUT URL order.
+    uri_by_url = {dest_to_url[f]: uri for f, uri in uri_by_file.items()}
+    assert [uri_by_url[u] for u in urls] == [r["uri"] for r in result]
+    assert {r["uri"] for r in result} == set(uris)
+    for r in result:
+        assert r["mime_type"] == "image/jpeg"
+        assert "duration_seconds" in r
+
+
+def test_dead_cached_uri_is_reuploaded(tmp_path):
+    """(C) A served-but-dead File API URI (files.get 404) triggers a
+    transparent re-upload instead of failing the request."""
+    from datetime import datetime, timedelta, timezone
+
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+    gemini = GeminiResource(api_key="test-key")
+    from datalake.defs.enrichment.media_cache import _ensure_schema
+    _ensure_schema(ops)
+    url = "https://cdn.example.com/pic.jpg"
+    local = tmp_path / "pic.jpg"
+    local.write_bytes(b"fresh-bytes")
+    _seed_byte_cache(ops, url, local)
+    now = datetime.now(timezone.utc)
+    conn = ops.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO media_metadata (media_url_hash, media_url, file_api_uri, "
+            "mime_type, upload_state, expires_at, created_at) VALUES (?,?,?,?,?,?,?)",
+            [
+                url_hash(url),
+                url,
+                "https://generativelanguage.googleapis.com/v1beta/files/dead",
+                "image/jpeg",
+                "uploaded",
+                (now + timedelta(hours=40)).isoformat(),
+                now.isoformat(),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    new_uri = "https://generativelanguage.googleapis.com/v1beta/files/fresh"
+    client, files = _make_fake_client([new_uri])
+    files.get.side_effect = None
+    # Liveness probe for the dead URI raises 404; the post-upload poll would
+    # also use get — make get succeed for the freshly uploaded file only.
+    def _get(name=None):
+        if name == "files/dead":
+            raise FakeNotFoundError("NOT_FOUND")
+        f = MagicMock()
+        f.uri = new_uri
+        f.state.name = "ACTIVE"
+        f.mime_type = "image/jpeg"
+        f.video_metadata = None
+        f.size_bytes = 11
+        return f
+
+    files.get.side_effect = _get
+
+    with patch("google.genai.Client", return_value=client), patch(
+        "datalake.defs.enrichment.media_cache._download_to_file",
+        side_effect=AssertionError("byte cache should serve the re-upload"),
+    ):
+        result = lookup_or_upload_all(ops, gemini, json.dumps([url]))
+
+    assert files.upload.call_count == 1  # re-upload happened
+    assert result[0]["uri"] == new_uri
+
+
+def test_cache_window_matches_verified_file_api_retention():
+    """(C) Reuse window is the documented 48h File API retention minus a
+    conservative margin — not the old 24h that re-uploaded every day."""
+    from datalake.defs.enrichment.media_cache import (
+        CACHE_REUSE_WINDOW_HOURS,
+        FILE_RETENTION_MARGIN_HOURS,
+        GEMINI_FILE_RETENTION_HOURS,
+    )
+
+    assert GEMINI_FILE_RETENTION_HOURS == 48  # ai.google.dev/gemini-api/docs/files
+    assert FILE_RETENTION_MARGIN_HOURS == 4
+    assert CACHE_REUSE_WINDOW_HOURS == 44
+    assert CACHE_REUSE_WINDOW_HOURS > 24
+
+
+
+def _seed_uploaded_metadata(ops, url, uri, expires_at):
+    from datalake.defs.enrichment.media_cache import _ensure_schema
+
+    _ensure_schema(ops)
+    conn = ops.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO media_metadata (media_url_hash, media_url, file_api_uri, "
+            "mime_type, upload_state, expires_at, created_at) VALUES (?,?,?,?,?,?,?)",
+            [
+                url_hash(url),
+                url,
+                uri,
+                "image/jpeg",
+                "uploaded",
+                expires_at,
+                expires_at,
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_expired_row_conflict_never_serves_stale_uri(tmp_path):
+    """An expired uploaded row is re-uploaded even though the TOCTOU recheck
+    (INSERT OR IGNORE conflict) finds it 'uploaded' — no stale URI service."""
+    from datetime import datetime, timedelta, timezone
+
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+    gemini = GeminiResource(api_key="test-key")
+    url = "https://cdn.example.com/old.jpg"
+    local = tmp_path / "old.jpg"
+    local.write_bytes(b"bytes")
+    _seed_byte_cache(ops, url, local)
+    past = (datetime.now(timezone.utc) - timedelta(hours=50)).isoformat()
+    _seed_uploaded_metadata(
+        ops, url, "https://generativelanguage.googleapis.com/v1beta/files/stale", past
+    )
+
+    new_uri = "https://generativelanguage.googleapis.com/v1beta/files/new"
+    client, files = _make_fake_client([new_uri])
+    with patch("google.genai.Client", return_value=client):
+        lookup_or_upload_all(ops, gemini, json.dumps([url]))
+
+    files.upload.assert_called_once()
+
+
+def test_inline_aggregate_budget_downgrades_to_file_api(tmp_path, monkeypatch):
+    """Once the per-request inline byte budget is exhausted, remaining small
+    images fall back to the File API instead of blowing the request limit."""
+    from datalake.defs.enrichment import media_cache
+
+    monkeypatch.setattr(media_cache, "INLINE_TOTAL_BUDGET_BYTES", 10)
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+    gemini = GeminiResource(api_key="test-key")
+
+    urls = [f"https://cdn.example.com/pic{i}.jpg" for i in range(3)]
+    for i, url in enumerate(urls):
+        local = tmp_path / f"pic{i}.jpg"
+        local.write_bytes(b"0123456789")  # 10 bytes each
+        _seed_byte_cache(ops, url, local)
+
+    uris = [f"https://generativelanguage.googleapis.com/v1beta/files/g{i}" for i in range(2)]
+    client, files = _make_fake_client(uris)
+    with patch("google.genai.Client", return_value=client):
+        result = lookup_or_upload_all(ops, gemini, json.dumps(urls), inline_images=True)
+
+    assert files.upload.call_count == 2  # budget 10 bytes fits exactly ONE image
+    kinds = ["inline" if "inline_data" in r else "uri" for r in result]
+    assert kinds == ["inline", "uri", "uri"]
