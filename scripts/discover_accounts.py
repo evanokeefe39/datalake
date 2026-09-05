@@ -168,7 +168,7 @@ def _expand_related(tok: str, budget: Budget, seeds: list[str], per_seed: int) -
     return found
 
 
-def _enrich(tok: str, budget: Budget, handles: list[str], chunk: int = 10) -> dict[str, dict]:
+def _enrich(tok: str, budget: Budget, handles: list[str], chunk: int = 30) -> dict[str, dict]:
     """First-party profile scrape (followers/bio) for each handle, chunked."""
     out: dict[str, dict] = {}
     for i in range(0, len(handles), chunk):
@@ -210,6 +210,8 @@ def main() -> int:
     ap.add_argument("--seeds", required=True, help="comma-separated seed handles")
     ap.add_argument("--per-seed", type=int, default=20, help="related results per seed")
     ap.add_argument("--max-new", type=int, default=25, help="report at most N new accounts")
+    ap.add_argument("--max-followers", type=int, default=None,
+                    help="only keep/report candidates at or below this follower count (aim small)")
     ap.add_argument("--budget-usd", type=float, default=1.0, help="hard-ish spend cap")
     ap.add_argument("--out", default=None, help="markdown report path (default analysis/output/discovery_<ts>.md)")
     args = ap.parse_args()
@@ -241,22 +243,35 @@ def main() -> int:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
     out = args.out or f"analysis/output/discovery_{ts}.md"
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    sortable = sorted(rows, key=lambda r: (r.get("followers") is None, -(r.get("followers") or 0)))
+    # Optional aim: drop candidates above a follower ceiling (hunt small).
+    if args.max_followers is not None:
+        rows = [r for r in rows if (r.get("followers") or 0) <= args.max_followers]
+    # Small-first: ascending followers (unenriched last). Truncation under
+    # --max-new therefore keeps the LOW tiers (the cohort of interest) and never
+    # drops them for the largest — prior DESC behavior discarded smalls.
+    ordered = sorted(rows, key=lambda r: (r.get("followers") is None, r.get("followers") or 0))
+    shown = ordered[: args.max_new]
+    # Full tier distribution across ALL candidates found (not just shown rows).
+    import collections
+    dist = collections.Counter(_size_tier(r.get("followers")) if r.get("followers") is not None
+                               else "unenriched" for r in rows)
+    dist_str = ", ".join(f"{k}={v}" for k, v in sorted(dist.items()))
     lines = [f"# Account discovery — {args.niche} ({ts})",
              "", f"Budget: {budget}. Seeds: {', '.join(seeds)}. ",
-             f"Candidates found: {len(candidates)} unique-new: {len(rows)}. "
-             f"Tracked roster: {len(tracked)}.",
+             f"Candidates: {len(candidates)} unique-new: {len(rows)} "
+             f"(tiers: {dist_str}). Tracked roster: {len(tracked)}.",
              "", "| handle | followers | size_tier | niche_guess | profile_type |",
              "|---|---|---|---|---|"]
-    for r in sortable[: args.max_new]:
+    for r in shown:
         lines.append(f"| {r['handle']} | {r.get('followers') or ''} | {r['size_tier']} | "
                      f"{r['niche']} | {r['profile_type']} |")
     lines.append("")
-    lines.append("> Success signal is NOT yet scored (needs ingestion + gold). profile_type is "
-                 "size-tier based; refine to successful/unsuccessful after enrichment.")
+    lines.append("> Smallest (low-tier) candidates are listed first and are never truncated "
+                 "away. Success signal is NOT yet scored (needs ingestion + gold); "
+                 "profile_type is size-tier based.")
     with open(out, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))
-    print(f"\nWrote {len(rows)} candidate accounts -> {out}")
+    print(f"\nWrote {len(rows)} candidate accounts -> {out} (shown {len(shown)})")
     print(f"Session {budget}")
     return 0
 
