@@ -1,9 +1,10 @@
 """Dagster Config schemas — typed, validated, surfaced in the launchpad."""
 
 from __future__ import annotations
+
 import os
-from pathlib import Path
 from enum import Enum
+from pathlib import Path
 
 from dagster import Config
 
@@ -33,12 +34,16 @@ class GoldConfig(Config):
     ``whole_corpus`` opts into corpus-wide admission: ALL silver posts with
     non-empty captions (including label-pass ``skip`` posts) are enqueued for
     a text-only enrichment pass (ADR-0001). Default OFF — the standard path
-    stays admission-gated over ``ig_post_labels``.
+    Batches are created in ``gemini-batch`` mode by default (regardless of
+    ``whole_corpus``) whenever the active Gemini tier supports the BATCH API;
+    they fall back to ``interactive`` on the free tier.
+    ``prefer_interactive`` explicitly opts out of the batch API so jobs are
+    created in ``interactive`` mode even on a batch-capable tier.
     """
 
     post_ids: list[str] = []
     whole_corpus: bool = False
-
+    prefer_interactive: bool = False
 
 # ── Gemini Tier Configuration ──────────────────────────────────────────────
 

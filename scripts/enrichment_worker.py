@@ -6,16 +6,22 @@ events to Dagster when batches complete.
 
 Two execution modes (ADR-0001):
 
-- ``interactive`` (default): per-item synchronous Gemini calls with retry,
-  backoff, and dead-letter routing. Unchanged behavior.
-- ``gemini-batch``: submits items to the Gemini BATCH API (~50% cheaper,
-  paid tier only) and polls/retrieves results, reusing the SAME queue,
-  retry, dead-letter, and materialization POST. Submission + polling live
-  here in the worker only — never in the Dagster graph (ADR-0003).
+- ``gemini-batch`` (default for batch creation): submits items to the Gemini
+  BATCH API (~50% cheaper, paid tier only) and polls/retrieves results,
+  reusing the SAME queue, retry, dead-letter, and materialization POST.
+  Submission + polling live here in the worker only — never in the Dagster
+  graph (ADR-0003).
+- ``interactive``: per-item synchronous Gemini calls with retry, backoff,
+  and dead-letter routing. Used for free-tier runs and ad-hoc/one-off jobs.
+
+Since batches now default to ``gemini-batch`` mode (regardless of
+whole_corpus), the expected drain for freshly created gold batches is the
+``--mode gemini-batch`` cycle (submit, then poll/retrieve until jobs are
+terminal). Run it on a loop until ``submitted_jobs=0`` and ``completed=0``.
 
 Usage::
 
-    uv run python scripts/enrichment_worker.py                # Process next batch (interactive)
+    uv run python scripts/enrichment_worker.py                     # next pending batch
     uv run python scripts/enrichment_worker.py --dry-run      # Show state, don't process
     uv run python scripts/enrichment_worker.py --batch-id 3   # Process specific batch
     uv run python scripts/enrichment_worker.py --limit 10     # Process at most 10 items

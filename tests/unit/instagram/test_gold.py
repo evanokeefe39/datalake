@@ -91,7 +91,7 @@ def _seed_silver(db, rows):
 
 def _seed_labels(db, rows):
     """Seed ig_post_labels with (post_id, decision, method, version) tuples."""
-    from datetime import datetime as _dt, timezone as _tz
+    from datetime import timezone as _tz
 
     from datalake.defs.instagram.labels import LABEL_VERSION
 
@@ -360,6 +360,88 @@ def test_enqueue_asset_writes_batch(tmp_path):
     assert len(batch["payloads"]) == 2
     post_ids = {json.loads(p)["post_id"] for p in batch["payloads"]}
     assert post_ids == {"p1", "p2"}
+
+
+class _FakeTier:
+    def __init__(self, supports_batch: bool):
+        self.supports_batch = supports_batch
+
+
+def _run_enqueue(tmp_path, tier, config=None):
+    """Seed one label-approved post and run ig_posts_gen_batches under a
+    faked GeminiTierConfig.detect(). Returns (result, ops, created_mode)."""
+    from unittest.mock import patch
+
+    from datalake.defs.instagram.config import GoldConfig
+
+    db = _make_duckdb(tmp_path)
+    ops = _make_ops_db(tmp_path)
+
+    now = datetime.now(timezone.utc)
+    _seed_silver(db, [("p1", "Test caption", now)])
+    _seed_labels(db, [("p1", "standout", "day7_matched", None)])
+
+    with patch(
+        "datalake.defs.instagram.assets.GeminiTierConfig.detect",
+        classmethod(lambda cls: _FakeTier(tier)),
+    ):
+        result = ig_posts_gen_batches(
+            duckdb=db, ops=ops, config=config or GoldConfig()
+        )
+
+    mode = (
+        "gemini-batch"
+        if claim_batch(ops, mode="gemini-batch") is not None
+        else "interactive" if claim_batch(ops, mode="interactive") else None
+    )
+    return result, ops, mode
+
+
+def test_enqueue_defaults_to_gemini_batch_when_tier_supports(tmp_path):
+    """GIVEN the active tier supports batch and a curated (non-whole-corpus)
+    selection
+    WHEN ig_posts_gen_batches runs
+    THEN the batch is created in gemini-batch mode (batch is the default).
+    """
+    result, _ops, mode = _run_enqueue(tmp_path, tier=True)
+    assert result["enqueued"][0] == 1
+    assert mode == "gemini-batch"
+
+
+def test_enqueue_defaults_to_gemini_batch_whole_corpus(tmp_path):
+    """GIVEN the active tier supports batch and whole_corpus admission
+    WHEN ig_posts_gen_batches runs
+    THEN the batch is created in gemini-batch mode.
+    """
+    from datalake.defs.instagram.config import GoldConfig
+
+    _result, _ops, mode = _run_enqueue(
+        tmp_path, tier=True, config=GoldConfig(whole_corpus=True)
+    )
+    assert mode == "gemini-batch"
+
+
+def test_enqueue_falls_back_to_interactive_on_free_tier(tmp_path):
+    """GIVEN the active tier does NOT support batch (free tier)
+    WHEN ig_posts_gen_batches runs
+    THEN the batch is created in interactive mode.
+    """
+    _result, _ops, mode = _run_enqueue(tmp_path, tier=False)
+    assert mode == "interactive"
+
+
+def test_enqueue_prefer_interactive_opt_out(tmp_path):
+    """GIVEN an operator sets GoldConfig(prefer_interactive=True) on a
+    batch-capable tier
+    WHEN ig_posts_gen_batches runs
+    THEN the batch is created in interactive mode (explicit opt-out wins).
+    """
+    from datalake.defs.instagram.config import GoldConfig
+
+    _result, _ops, mode = _run_enqueue(
+        tmp_path, tier=True, config=GoldConfig(prefer_interactive=True)
+    )
+    assert mode == "interactive"
 
 
 def test_enqueue_skips_current_prompt_enriched(tmp_path):
