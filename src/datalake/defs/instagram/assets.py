@@ -26,7 +26,12 @@ from ..common.resources import (
 from ..common.schemas import SILVER_COLUMNS, duckdb_ddl
 from ..enrichment.media_cache import cache_media_bytes, seed_media_from_file
 from ..enrichment.prompts import CURRENT_PROMPT_HASH
-from .config import LOCAL_INGEST_DIR, GoldConfig, ScrapeConfig
+from .config import (
+    LOCAL_INGEST_DIR,
+    GeminiTierConfig,
+    GoldConfig,
+    ScrapeConfig,
+)
 from .creators import AD_HOC_LIMIT, enabled_profiles
 from .labels import LABEL_VERSION, run_label_pass
 
@@ -1055,6 +1060,16 @@ def ig_posts_gen_batches(
     posts with non-empty captions (including the label pass's ``skip``
     posts) are enqueued for a text-only pass (ADR-0001). Still excludes
     current-prompt gold rows + open batch items so a re-run never re-pays.
+
+    Mode selection: batches default to ``gemini-batch`` (BATCH API, ~50%
+    cheaper) whenever the active Gemini tier supports it
+    (``GeminiTierConfig.detect().supports_batch``, i.e. Tier 1+) — for
+    curated subsets as well as whole-corpus runs. Batches fall back to
+    ``interactive`` when the tier does NOT support batch (free tier) or
+    when ``GoldConfig.prefer_interactive`` is set. Drain the batch jobs
+    with the ``--mode gemini-batch`` worker cycle (submit + poll/retrieve);
+    submit-side enforcement is loud: the free tier cannot submit a
+    gemini-batch job (RuntimeError in gemini_batch.submit_gemini_batch).
     """
     import json
 
@@ -1138,12 +1153,16 @@ def ig_posts_gen_batches(
     ]
 
     if payloads:
-        # Whole-corpus passes run on the Gemini BATCH API (paid tier, ~50%
-        # cheaper); tag them so the gemini-batch worker claims them.
-        create_batch(
-            ops, payloads, consumer="gemini",
-            mode="gemini-batch" if config.whole_corpus else "interactive",
+        # Batch mode is the DEFAULT: tag jobs so the gemini-batch worker
+        # claims them (~50% cheaper). Interactive only when the active tier
+        # cannot use the BATCH API (free tier) or the operator opts out.
+        tier = GeminiTierConfig.detect()
+        mode = (
+            "interactive"
+            if config.prefer_interactive or not tier.supports_batch
+            else "gemini-batch"
         )
+        create_batch(ops, payloads, consumer="gemini", mode=mode)
 
     return pl.DataFrame(
         {
