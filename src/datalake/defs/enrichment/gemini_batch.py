@@ -143,8 +143,9 @@ def submit(
         model: model name (e.g. ``gemini-3.5-flash-lite``).
         requests: ``{"custom_key": str, "prompt": str, "media_files": [...]}``
             dicts. ``media_files`` (list of ``{"uri", "mime_type",
-            "duration_seconds"?}``) is optional — when present the request is
-            multimodal (file Parts).
+            "duration_seconds"?}`` or ``{"inline_data": bytes, "mime_type"}``)
+            is optional — when present the request is multimodal (file Parts
+            or inline_data Parts).
         display_name: base display name; multi-chunk submissions get ``-segN``.
         max_tokens: in-flight enqueued-token cap per job
             (default ``GeminiTierConfig.max_batch_tokens``).
@@ -189,16 +190,29 @@ def submit(
 
 
 def _build_contents(prompt: str, media_files: list[dict] | None):
-    """Build batch request contents: text-only, or file Parts + text when media."""
+    """Build batch request contents: text-only, or media Parts + text.
+
+    Each media dict is either a File API reference (``{"uri", "mime_type"}``)
+    or an inline image (``{"inline_data": bytes, "mime_type"}`` — the batch
+    path's small-image optimization, B). Inline parts are serialized with
+    ``Part.from_bytes``; the SDK base64-encodes the bytes into ``inline_data``.
+    """
     if not media_files:
         return prompt
     from google.genai.types import Part
 
     parts = []
     for mf in media_files:
-        parts.append(
-            Part.from_uri(file_uri=mf["uri"], mime_type=mf["mime_type"])
-        )
+        if mf.get("inline_data") is not None:
+            parts.append(
+                Part.from_bytes(
+                    data=mf["inline_data"], mime_type=mf["mime_type"]
+                )
+            )
+        else:
+            parts.append(
+                Part.from_uri(file_uri=mf["uri"], mime_type=mf["mime_type"])
+            )
     parts.append(Part.from_text(text=prompt))
     return parts
 

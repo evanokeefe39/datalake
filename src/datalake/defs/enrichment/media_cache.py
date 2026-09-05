@@ -21,6 +21,29 @@ from datalake.defs.common.lake import POST_MEDIA_DIR
 from datalake.defs.common.resources import GeminiResource, SQLiteResource
 from datalake.defs.common.schemas import sqlite_ddl
 
+
+# ── Gemini File API retention & reuse window ────────────────────────────────
+#
+# VERIFIED against https://ai.google.dev/gemini-api/docs/files: "Files are
+# automatically deleted after 48 hours." The previous 24h reuse window made
+# multi-day drains re-upload everything each new day even though the served
+# URIs were still live. We reuse until the real retention minus a conservative
+# margin so a served URI is never already deleted server-side; and if a served
+# URI is dead anyway (404 on files.get), the caller gets a transparent
+# re-upload instead of a failed request.
+GEMINI_FILE_RETENTION_HOURS = 48
+FILE_RETENTION_MARGIN_HOURS = 4
+CACHE_REUSE_WINDOW_HOURS = GEMINI_FILE_RETENTION_HOURS - FILE_RETENTION_MARGIN_HOURS  # 44h
+
+# Inline-media cap for batch requests. The GenerateContent request body must
+# stay under the Gemini request-size limit (~20MB with inline bytes); we cap
+# per-file well below it. Images only — video always goes through the File API.
+INLINE_MEDIA_LIMIT_BYTES = 15 * 1024 * 1024
+
+# Modest File API upload concurrency: the upload + ACTIVE-state poll phase is
+# I/O-bound, and this stays well under per-project File API request rate.
+UPLOAD_WORKERS = 6
+
 logger = logging.getLogger("media_cache")
 
 
@@ -282,10 +305,209 @@ def seed_media_from_file(
     return str(dest)
 
 
+def _file_name_from_uri(uri: str) -> str | None:
+    """Extract the File API resource name (``files/<id>``) from a served URI."""
+    idx = uri.rfind("/files/")
+    return uri[idx + 1 :] if idx >= 0 else None
+
+
+def _uri_is_alive(client, uri: str) -> bool:
+    """Check a cached File API URI is still servable (C fallback).
+
+    A 404 / NOT_FOUND from ``files.get`` means the server has already deleted
+    the file — the caller must re-upload. Any other error (transient network,
+    quota) is conservatively treated as alive: serving a possibly-fine cached
+    URI is better than re-uploading the world on every hiccup.
+    """
+    name = _file_name_from_uri(uri)
+    if not name:
+        return True  # not a recognizable File API URI — don't second-guess it
+    try:
+        f = client.files.get(name=name)
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        text = str(exc).upper()
+        if code == 404 or "NOT_FOUND" in text or "NOT FOUND" in text:
+            logger.info("Cached File API URI is dead (404): %s", uri[:80])
+            return False
+        logger.warning("URI liveness probe failed (treating as alive): %s: %s", uri[:80], exc)
+        return True
+    state = getattr(f, "state", None)
+    return state is None or getattr(state, "name", None) == "ACTIVE"
+
+
+def _try_inline_payload(conn, url: str, h: str) -> dict | None:
+    """Return an inline_data part payload for a small image, or None.
+
+    Batch-path optimization (B): image media under the inline limit are served
+    as raw bytes (``{"inline_data": …, "mime_type": …}``) so no File API upload
+    round-trip happens at all. Video, unknown mime, and oversize files return
+    None and fall through to the File API upload path.
+
+    Raises for that file when the bytes cannot be obtained (cache miss + CDN
+    failure) — mirroring the upload path's failure semantics.
+    """
+    cached = conn.execute(
+        "SELECT local_path, content_type FROM media_cache WHERE cache_key = ?",
+        [h],
+    ).fetchone()
+    mime: str | None = None
+    path: str | None = None
+    if cached and cached["local_path"] and os.path.exists(cached["local_path"]):
+        mime = _resolve_mime_type(cached["content_type"], url)
+        path = cached["local_path"]
+    else:
+        mime = _mime_from_url(url)
+
+    if not mime or not mime.startswith("image/"):
+        return None
+
+    if path:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    else:
+        got = _download_bytes(url)
+        if got is None:
+            raise RuntimeError(f"CDN download failed for {url[:80]} (inline path)")
+        data, served_ct = got
+        mime = _normalize_mime(served_ct) or mime
+
+    if len(data) > INLINE_MEDIA_LIMIT_BYTES:
+        logger.info("Image too large for inline (%d bytes): %s", len(data), url[:80])
+        return None
+    return {"inline_data": data, "mime_type": mime, "duration_seconds": None}
+
+
+def _upload_one(
+    ops: SQLiteResource,
+    client,
+    url: str,
+    expires_at: str,
+    now_iso: str,
+) -> dict:
+    """Upload one media URL to the File API and record it (thread worker for A).
+
+    Opens its OWN sqlite connection — media_metadata/media_cache writes are
+    serialized by SQLite's write lock (WAL + busy_timeout), so concurrent
+    workers can never corrupt the DB. Raises on failure: the caller surfaces
+    the error for that file without losing the other uploads' results.
+    """
+    import tempfile
+    import time
+
+    from google.genai.types import File
+
+    h = url_hash(url)
+    conn = ops.get_connection()
+    tmp_path: str | None = None
+    try:
+        logger.info("Uploading %s to Gemini File API...", url[:80])
+
+        # Resolve bytes: prefer the scrape-time byte cache (CDN URLs die in
+        # ~4-5 days); fall back to a live download only on a cache miss.
+        cached = conn.execute(
+            "SELECT local_path, content_type FROM media_cache WHERE cache_key = ?",
+            [h],
+        ).fetchone()
+        if cached and cached["local_path"] and os.path.exists(cached["local_path"]):
+            upload_path = cached["local_path"]
+            # Scrape-time cache recorded the served Content-Type.
+            upload_mime = _resolve_mime_type(cached["content_type"], url)
+        else:
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".media")
+            os.close(tmp_fd)
+            served_ct = _download_to_file(url, tmp_path)
+            upload_path = tmp_path
+            upload_mime = _resolve_mime_type(served_ct, url)
+        if not upload_mime:
+            logger.warning(
+                "No mime_type resolvable for %s — letting the API sniff", url[:80]
+            )
+
+        # Files.upload takes mime_type via config, not a top-level kwarg.
+        upload_config = {"mime_type": upload_mime} if upload_mime else None
+
+        # Minimal 429 awareness for concurrent uploads: one bounded retry.
+        deadline429 = time.monotonic() + 30
+        while True:
+            try:
+                uploaded: File = client.files.upload(file=upload_path, config=upload_config)
+                break
+            except Exception as exc:
+                if getattr(exc, "code", None) == 429 and time.monotonic() < deadline429:
+                    logger.warning("File API 429 for %s — backing off 5s", url[:80])
+                    time.sleep(5)
+                    continue
+                raise
+
+        # Poll until ACTIVE or timeout
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            uploaded = client.files.get(name=uploaded.name)
+            if uploaded.state.name == "ACTIVE":
+                break
+            if uploaded.state.name == "FAILED":
+                raise RuntimeError(
+                    f"Gemini File API upload failed for {url[:80]}: "
+                    f"state={uploaded.state.name}"
+                )
+            time.sleep(2)
+        else:
+            raise TimeoutError(
+                f"Gemini File API upload timed out waiting for ACTIVE state "
+                f"for {url[:80]}"
+            )
+
+        uri = uploaded.uri
+        if not uri:
+            raise ValueError(
+                f"Gemini File API returned no URI for {url[:80]} "
+                f"(name={uploaded.name}). Do not use uploaded.name as URI."
+            )
+
+        mime_type = getattr(uploaded, "mime_type", None) or "application/octet-stream"
+
+        # Extract video duration for token budget estimation
+        duration = None
+        try:
+            vm = getattr(uploaded, "video_metadata", None)
+            if vm is not None:
+                duration = getattr(vm, "duration_seconds", None)
+        except Exception:
+            pass
+
+        conn.execute(
+            """UPDATE media_metadata SET
+               file_api_uri = ?, mime_type = ?, file_size = ?,
+               video_duration_seconds = ?,
+               upload_state = 'uploaded', expires_at = ?,
+               uploaded_at = ?
+               WHERE media_url_hash = ?""",
+            [
+                uri,
+                mime_type,
+                getattr(uploaded, "size_bytes", None),
+                duration,
+                expires_at,
+                now_iso,
+                h,
+            ],
+        )
+        conn.commit()
+
+        logger.info("Upload complete: %s → %s", url[:80], uri[:80])
+        return {"uri": uri, "mime_type": mime_type, "duration_seconds": duration}
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        conn.close()
+
+
 def lookup_or_upload_all(
     ops: SQLiteResource,
     gemini: GeminiResource,
     media_files_json: str | None,
+    inline_images: bool = False,
 ) -> list[dict]:
     """Look up cached File API URIs for media URLs, or download + upload to Gemini.
 
@@ -293,17 +515,27 @@ def lookup_or_upload_all(
         ops: SQLite resource for the media_metadata cache.
         gemini: Gemini resource for File API uploads.
         media_files_json: JSON array of media URLs, or None/empty.
+        inline_images: batch-path option (B). When True, small images are
+            served as ``{"inline_data": bytes, ...}`` payloads with NO File API
+            upload; video/oversize still go through the File API (concurrently).
 
     Returns:
-        List of MediaFile dicts (``{"uri": …, "mime_type": …}``).
+        List of media dicts in INPUT URL ORDER — ``{"uri", "mime_type",
+        "duration_seconds"}`` for File API media, or ``{"inline_data",
+        "mime_type", "duration_seconds"}`` for inline images.
         Empty list if no media URLs or all are invalid.
+
+    Concurrency (A): cache lookups + TOCTOU claims run on the caller's thread;
+    the upload + ACTIVE-poll phase runs on a small ThreadPoolExecutor with
+    per-thread SQLite connections. One failing file raises for that file —
+    after all other uploads have completed and been persisted — so a bad
+    upload never wastes the batch's other work. Existing 429 handling was
+    absent; a bounded single-retry backoff covers concurrent-upload bursts.
     """
-    import tempfile
-    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from datetime import timedelta
 
     from google.genai import Client as GeminiClient
-    from google.genai.types import File
 
     if not media_files_json:
         return []
@@ -327,17 +559,20 @@ def lookup_or_upload_all(
     _ensure_schema(ops)
     _ensure_media_cache_table(ops)
     now = datetime.now(timezone.utc)
-    expires_at = (now + timedelta(hours=24)).isoformat()
+    expires_at = (now + timedelta(hours=CACHE_REUSE_WINDOW_HOURS)).isoformat()
     now_iso = now.isoformat()
     client = GeminiClient(api_key=gemini.api_key)
 
-    result: list[dict] = []
+    results: dict[str, dict] = {}
+    errors: dict[str, Exception] = {}
+    pending: list[str] = []
     conn = ops.get_connection()
     try:
         for url in unique_urls:
             h = url_hash(url)
 
-            # Check cache — must have a URI, be uploaded, and not expired
+            # Check cache — must have a URI, be uploaded, not expired, and
+            # still be alive server-side (dead URIs transparently re-upload).
             row = conn.execute(
                 """SELECT file_api_uri, mime_type, upload_state, expires_at,
                           video_duration_seconds
@@ -345,26 +580,43 @@ def lookup_or_upload_all(
                 [h],
             ).fetchone()
 
+            force = False
             if row and row["file_api_uri"] and row["upload_state"] == "uploaded":
                 if row["expires_at"] and row["expires_at"] > now_iso:
-                    result.append({
-                        "uri": row["file_api_uri"],
-                        "mime_type": row["mime_type"] or "application/octet-stream",
-                        "duration_seconds": row["video_duration_seconds"],
-                    })
-                    continue
+                    if _uri_is_alive(client, row["file_api_uri"]):
+                        results[url] = {
+                            "uri": row["file_api_uri"],
+                            "mime_type": row["mime_type"] or "application/octet-stream",
+                            "duration_seconds": row["video_duration_seconds"],
+                        }
+                        continue
+                    # Dead server-side: re-upload no matter what the row says.
+                    force = True
+                    logger.info("Dead cached URI for %s — re-uploading", url[:80])
                 elif row["expires_at"]:
                     logger.info("Cache expired for %s — re-uploading", url[:80])
 
-            # TOCTOU guard: INSERT OR IGNORE placeholder to prevent duplicate uploads
-            conn.execute(
+            # Batch inline path (B): small images become bytes, no upload.
+            if inline_images:
+                try:
+                    payload = _try_inline_payload(conn, url, h)
+                except Exception as exc:
+                    errors[url] = exc
+                    continue
+                if payload is not None:
+                    results[url] = payload
+                    continue
+
+            # TOCTOU guard: INSERT OR IGNORE placeholder to prevent duplicate
+            # uploads across processes (single-writer DB).
+            cur = conn.execute(
                 """INSERT OR IGNORE INTO media_metadata
                    (media_url_hash, media_url, upload_state, created_at)
                    VALUES (?, ?, 'uploading', ?)""",
                 [h, url, now_iso],
             )
-            # If the INSERT was ignored, another process claimed it — check again
-            if conn.total_changes == 0:
+            if cur.rowcount == 0 and not force:
+                # Another writer claimed it — check whether it already finished.
                 row2 = conn.execute(
                     """SELECT file_api_uri, mime_type, upload_state,
                               video_duration_seconds
@@ -372,105 +624,43 @@ def lookup_or_upload_all(
                     [h],
                 ).fetchone()
                 if row2 and row2["file_api_uri"] and row2["upload_state"] == "uploaded":
-                    result.append({
+                    results[url] = {
                         "uri": row2["file_api_uri"],
                         "mime_type": row2["mime_type"] or "application/octet-stream",
                         "duration_seconds": row2["video_duration_seconds"],
-                    })
+                    }
                     continue
 
-            logger.info("Uploading %s to Gemini File API...", url[:80])
+            pending.append(url)
+            if force:
+                logger.info("Forcing re-upload of %s (dead cached URI)", url[:80])
+            # Release the write lock before worker threads open their own
+            # connections — an uncommitted INSERT would block them.
+            conn.commit()
 
-            # Resolve bytes: prefer the scrape-time byte cache (CDN URLs die in
-            # ~4-5 days); fall back to a live download only on a cache miss.
-            tmp_path = None
-            try:
-                upload_mime: str | None = None
-                cached = conn.execute(
-                    "SELECT local_path, content_type FROM media_cache WHERE cache_key = ?",
-                    [h],
-                ).fetchone()
-                if cached and cached["local_path"] and os.path.exists(cached["local_path"]):
-                    upload_path = cached["local_path"]
-                    # Scrape-time cache recorded the served Content-Type.
-                    upload_mime = _resolve_mime_type(cached["content_type"], url)
-                else:
-                    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".media")
-                    os.close(tmp_fd)
-                    served_ct = _download_to_file(url, tmp_path)
-                    upload_path = tmp_path
-                    upload_mime = _resolve_mime_type(served_ct, url)
-                if not upload_mime:
-                    logger.warning(
-                        "No mime_type resolvable for %s — letting the API sniff", url[:80]
-                    )
-
-                # Files.upload takes mime_type via config, not a top-level kwarg.
-                upload_config = {"mime_type": upload_mime} if upload_mime else None
-                uploaded: File = client.files.upload(file=upload_path, config=upload_config)
-
-                # Poll until ACTIVE or timeout
-                deadline = time.monotonic() + 30
-                while time.monotonic() < deadline:
-                    uploaded = client.files.get(name=uploaded.name)
-                    if uploaded.state.name == "ACTIVE":
-                        break
-                    if uploaded.state.name == "FAILED":
-                        raise RuntimeError(
-                            f"Gemini File API upload failed for {url[:80]}: "
-                            f"state={uploaded.state.name}"
-                        )
-                    time.sleep(2)
-                else:
-                    raise TimeoutError(
-                        f"Gemini File API upload timed out waiting for ACTIVE state "
-                        f"for {url[:80]}"
-                    )
-
-                uri = uploaded.uri
-                if not uri:
-                    raise ValueError(
-                        f"Gemini File API returned no URI for {url[:80]} "
-                        f"(name={uploaded.name}). Do not use uploaded.name as URI."
-                    )
-
-                mime_type = getattr(uploaded, "mime_type", None) or "application/octet-stream"
-
-                # Extract video duration for token budget estimation
-                duration = None
-                try:
-                    vm = getattr(uploaded, "video_metadata", None)
-                    if vm is not None:
-                        duration = getattr(vm, "duration_seconds", None)
-                except Exception:
-                    pass
-
-                conn.execute(
-                    """UPDATE media_metadata SET
-                       file_api_uri = ?, mime_type = ?, file_size = ?,
-                       video_duration_seconds = ?,
-                       upload_state = 'uploaded', expires_at = ?,
-                       uploaded_at = ?
-                       WHERE media_url_hash = ?""",
-                    [
-                        uri,
-                        mime_type,
-                        getattr(uploaded, "size_bytes", None),
-                        duration,
-                        expires_at,
-                        now_iso,
-                        h,
-                    ],
-                )
-                conn.commit()
-
-                result.append({"uri": uri, "mime_type": mime_type, "duration_seconds": duration})
-                logger.info("Upload complete: %s → %s", url[:80], uri[:80])
-
-            finally:
-                if tmp_path and os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-
-        return result
+        # Concurrent upload + ACTIVE-poll phase (A).
+        if pending:
+            with ThreadPoolExecutor(max_workers=UPLOAD_WORKERS) as pool:
+                futures = {
+                    pool.submit(_upload_one, ops, client, u, expires_at, now_iso): u
+                    for u in pending
+                }
+                for fut in as_completed(futures):
+                    u = futures[fut]
+                    try:
+                        results[u] = fut.result()
+                    except Exception as exc:
+                        # Per-file failure isolation: remember, keep collecting.
+                        errors[u] = exc
+                        logger.error("Media upload failed for %s: %s", u[:80], exc)
     finally:
         conn.close()
+
+    if errors:
+        # Raise for the FIRST failing file in input order — matches the
+        # sequential semantics callers were built on; all successful uploads
+        # above were already persisted and will be cache hits next time.
+        first = next(u for u in unique_urls if u in errors)
+        raise errors[first]
+
+    return [results[u] for u in unique_urls]
