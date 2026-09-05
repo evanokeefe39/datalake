@@ -695,6 +695,72 @@ and every grid row renders eager network images:
 - No change to canonical serving views (dashboard stays a thin projector).
 - No schema/warehouse change — this is a data-delivery (paging + image delivery)
   concern.
+
+### 22. Account discovery + crawling — compile niche account lists by profile type
+
+**Status:** Proposed (2026-09-05). Ad-hoc discovery tooling (not yet a scheduled
+pipeline). Companion to the growth-report work (Q3/Q9 sub-100k gaps).
+
+#### Why / the gap
+The lake is 94.5% accounts ≥10k followers and ~73% Tech/Business. To answer
+"what do *small* accounts in our niches do" (Q3) and widen the niche map (Q9) we
+need NEW accounts we don't already track, across follower sizes, topics, and
+success levels. Discovery must be automated and budget-tracked, and must NOT put
+the user's IG account at risk (no logged-in browser bots / no user-session
+cookies on the user's account).
+
+#### Profile types we want to collect (classification target)
+Each discovered account is tagged with a profile-type label so it can be routed
+to the right future cohort. Type = size tier × (success/engagement signal) ×
+niche. Examples of the taxonomy we want output:
+- **small_creator_successful** — low followers (<~10k) but strong relative
+  engagement (the "what a nobody did right" cases the report lacks).
+- **small_creator_domain** — low followers, specific niche/domain (bio/topic),
+  regardless of success — fills the per-topic small-account gap.
+- **mid_creator_* / big_creator_*** — same success/domain dimensions at
+  10k–100k / 100k+.
+- **unsuccessful_100k** — large follower count but weak/declining engagement or
+  stalled growth (the control/anti-pattern cohort — partial Q4 proxy).
+- **successful_100k** — large + strong, the imitation-reference cohort.
+
+Success/engagement is scored from a public no-login profile scrape (followers,
+posts count, avg recent-post likes / engagement rate, bio, join-date if
+available), NOT from the gold lake (these are new, un-enriched accounts).
+
+#### Discovery methods (validate reliability first, then build)
+All ban-free on the user's account (Apify actor infra / search engines; never a
+logged-in user browser bot — rejected as high ban risk, per research):
+1. **Niche keyword / account search** (`data-slayer/instagram-search-users`,
+   `seemuapps/instagram-niche-finder`) — keyword → accounts of all sizes; best
+   for surfacing SMALL accounts in a niche. → validate.
+2. **No-login follower/following graph** (`scraping_solutions/
+   instagram-scraper-followers-following-no-cookies`) — who niche leaders follow
+   ≈ niche adjacency, no session. → validate.
+3. **Related/similar-accounts rail** (`thenetaji/instagram-related-user-scraper`,
+   `elliotpadfield/instagram-related-profiles` [BFS+follower-filter+budget]) —
+   recursive niche widening. CAVEAT (verified): the rail skews to same/larger
+   tier; useful to map the niche above target size, not to find small accounts.
+4. (Fallback/adjacent) SERP discovery — Google-indexed IG posts by niche term
+   (proven working; IG posts indexed since 2025-07-10).
+
+#### Deliverables (in order)
+- Validate which actors reliably return account handles + follower counts (cheap
+  ~$0.01 runs, budget-tracked; under $5 total per session).
+- A basic Python script (ad hoc run, not yet Dagster) that: runs the validated
+  discovery method(s) against our desired niches → compiles candidate account
+  handles → no-login profile-scrapes each → classifies into the profile-type
+  taxonomy above → dedupes against the tracked roster (ops.sqlite `profiles`) →
+  outputs ~20+ new accounts with their type + reason for interest.
+- Log the crawl budget and spend per run (tracked, so sessions stay under cap).
+- Later: productionize as a scheduled Dagster ingestion pipeline (separate
+  issue/plan).
+
+#### Non-goals (this issue)
+- No scheduled pipeline yet (manual/ad-hoc script only).
+- No enrichment of discovered accounts yet (that's the normal gold path once
+  ingested).
+- No scraping of the user's logged-in IG account or follower lists under their
+  session.
 ## Resolved
 
 ### 1. Comprehensive medallion testing strategy ✅ (2026-07-01)
