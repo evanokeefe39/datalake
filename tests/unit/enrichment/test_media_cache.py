@@ -186,7 +186,7 @@ def test_lookup_upload_passes_resolved_mime_when_content_type_is_generic(tmp_pat
     assert sent.get("file") == str(local)
 
 
-class FakeNotFound(Exception):
+class FakeNotFoundError(Exception):
     """Mimics google.genai.errors.APIError for a deleted file."""
 
     code = 404
@@ -342,7 +342,7 @@ def test_dead_cached_uri_is_reuploaded(tmp_path):
     # also use get — make get succeed for the freshly uploaded file only.
     def _get(name=None):
         if name == "files/dead":
-            raise FakeNotFound("NOT_FOUND")
+            raise FakeNotFoundError("NOT_FOUND")
         f = MagicMock()
         f.uri = new_uri
         f.state.name = "ACTIVE"
@@ -422,7 +422,7 @@ def test_expired_row_conflict_never_serves_stale_uri(tmp_path):
     new_uri = "https://generativelanguage.googleapis.com/v1beta/files/new"
     client, files = _make_fake_client([new_uri])
     with patch("google.genai.Client", return_value=client):
-        result = lookup_or_upload_all(ops, gemini, json.dumps([url]))
+        lookup_or_upload_all(ops, gemini, json.dumps([url]))
 
     files.upload.assert_called_once()
 
