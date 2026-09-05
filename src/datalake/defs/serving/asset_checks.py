@@ -141,6 +141,59 @@ def _v_post_detail_row_count_positive(context) -> AssetCheckResult:
         passed=True,
         metadata={"row_count": count},
     )
+
+
+@asset_check(
+    asset="v_post_detail",
+    name="v_post_detail_gold_attribute_coverage",
+    required_resource_keys={"duckdb"},
+    description=(
+        "Fail when gold_analyses rows store attributes that v_post_detail's "
+        "JSON extraction fails to surface; report overall attribute coverage."
+    ),
+)
+def _v_post_detail_gold_attribute_coverage(context) -> AssetCheckResult:
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM v_post_detail").fetchone()[0] or 0
+        if total == 0:
+            return AssetCheckResult(passed=True, metadata={"row_count": 0})
+        missing, unsurfaced = conn.execute("""
+            WITH g AS (
+                SELECT result_json FROM gold_analyses WHERE domain = 'instagram'
+            )
+            SELECT
+                (SELECT COUNT(*) FROM v_post_detail WHERE gold_topic IS NULL),
+                (SELECT COUNT(*) FROM g
+                 WHERE json_extract_string(result_json, '$.topic') IS NULL
+                   AND json_extract_string(result_json, '$[0].topic') IS NOT NULL)
+        """).fetchone()
+        no_gold = conn.execute(
+            "SELECT COUNT(*) FROM v_post_detail WHERE result_json IS NULL"
+        ).fetchone()[0] or 0
+    # unsurfaced > 0 = real extraction bug (stored data the view drops).
+    # no_gold = never-enriched posts — closing that gap costs Gemini money and
+    # is human-gated, so it is reported but does not fail the check.
+    metadata = {
+        "row_count": total,
+        "missing_gold_topic": missing,
+        "no_gold_analyses_row": no_gold,
+        "coverage_ratio_topic": round(1 - missing / total, 4) if total else 1.0,
+        "stored_but_unsurfaced_rows": unsurfaced,
+    }
+    if unsurfaced > 0:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=(
+                f"{unsurfaced} gold_analyses rows store attributes in "
+                "result_json that v_post_detail fails to surface (extraction gap)."
+            ),
+            metadata=metadata,
+        )
+    return AssetCheckResult(passed=True, metadata=metadata)
+
+
 serving_checks = [
     _dim_profile_no_overlapping_intervals,
     _dim_profile_effective_range_valid,

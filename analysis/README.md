@@ -7,11 +7,13 @@ Everything here is read-only against the lake: nothing in `analysis/` writes to
 ## How to run
 
 ```bash
-uv run python analysis/eda_follower_tier.py --help   # see flags; then:
 uv run python analysis/eda_follower_tier.py   # follower-tier stratification (Q3)
+uv run python analysis/eda_cadence_timing.py  # posting cadence / timing (Q5)
+uv run python analysis/eda_cta_education.py   # CTA / educational framing (Q6)
+uv run python analysis/eda_creator_benchmark.py  # per-creator benchmark (Q7)
 ```
 
-Both scripts accept the same flags:
+All five scripts accept the same flags:
 
 | flag | default | meaning |
 |---|---|---|
@@ -61,6 +63,53 @@ dependencies). Scripts must run AFTER the orchestrator materializes the DB
   tier's attributed posts against the whole-population global rates.
 - **States in its output:** follower GROWTH over time is not yet observable
   (sparse backfill, ~58 obs / ~50 owners / 6 files) — tiers are snapshots.
+
+### `eda_cadence_timing.py` (Q5 — descriptive only)
+
+- **Reads:** `v_post_detail` (`timestamp`), `dim_date` (`day_of_week`,
+  `is_weekend` — joined via `v_post_detail.dim_date`), `v_post_metrics`
+  (`is_standout`, `sigma_tier`), `ig_post_labels` (`label_version`).
+- **Emits:** `output/eda_cadence_timing.md` +
+  `eda_cadence_timing_day_of_week.csv` / `_hour_of_day.csv` / `_weekend.csv`
+  — over-index tables in calendar/clock order (day of week) and over-index
+  DESC order (hour of day, weekend), same schema as the content-axis tables.
+- **States in its output:** descriptive only — no experiment, heavily
+  confounded by creator activity level; timestamps carry the scraper's
+  capture timezone, so hour-of-day is a relative prior, not an absolute
+  schedule. Posts without a `dim_date` join are counted and shown as
+  `(missing)`.
+
+### `eda_cta_education.py` (Q6 — partially answerable)
+
+- **Reads:** `v_post_detail` (`is_educational`, `is_actionable` — gold;
+  `has_engagement_bait` — silver_ig_posts; `content_type` — gold),
+  `v_post_metrics`, `ig_post_labels`.
+- **Emits:** `output/eda_cta_education.md` + one CSV per attribute
+  (`eda_cta_education_<attribute>.csv`) — boolean flags as
+  `true`/`false`/`(missing)` rows, `content_type` over-index DESC; decision
+  rows exclude `(missing)`.
+- **States in its output:** column coverage on ALL posts (gold flags are
+  ~88% populated); the `(missing)` segment over-indexes standout, so it is
+  shown, never dropped. Honest data gap: the lake has NO CTA-type taxonomy
+  (comment-bait / save-CTA / follow-CTA) and `has_engagement_bait` never
+  fires in the current corpus (0 `true` rows) — the bait axis is reported
+  as degenerate rather than fabricated.
+
+### `eda_creator_benchmark.py` (Q7)
+
+- **Reads:** `v_creator_outlier_rate` ⨝ `v_creator_underperformer_rate`
+  (per-creator totals + segment counts, pooled across label versions),
+  `v_post_detail` (population baseline).
+- **Emits:** `output/eda_creator_benchmark.md` + `eda_creator_benchmark.csv`
+  — `creator | creator_id | n_posts | standout_n | standout_rate |
+  underperf_n | underperf_rate | over_index | underperf_over_index`.
+  Primary table (n ≥ 10, over_index DESC), capped long tail (top 15,
+  5 ≤ n < 10), thin cells flagged (517/624 creators have n < 5), and
+  imitation-shortlist / underperformance-prone decision rows.
+- **States in its output:** rates are unadjusted for follower tier (mechanical
+  follower advantage, not skill) and pooled across label versions; survivorship
+  caveat — a shortlist within the niche, not a market census.
+
 
 ## Determinism
 
