@@ -2,22 +2,30 @@
 
 Recursively expands from seed accounts (in a target niche) via Instagram's
 related-accounts rail, enriches each new handle with a public no-login profile
-scrape (followers/bio), classifies it into a profile-type taxonomy, and reports
-candidates NOT already tracked — so we can grow the full niche population with
-depth, not just find the first few seeds.
+scrape (followers/bio), classifies it into a size-tier + bio-niche taxonomy, and
+reports candidates NOT already tracked — so we can grow the full niche population
+with depth.
+
+KEY CALIBRATION (validated 2026-09-05): the related rail is size-homophilous when
+seeded from LARGE accounts (edward.builds 333k -> 148 candidates, all >=10k, zero
+under 10k). Seeding from SMALL/MEDIUM tracked accounts flips it (edit.party 7.2k,
+marketingatg 1.4k, steven.builds 48k -> 41 candidates under 10k incl. 14 under 1k).
+So --roster-seeds auto-sources from our tracked small/medium accounts.
 
 BAN-FREE BY DESIGN: all scraping runs on Apify's own infra against public
 profiles. It NEVER touches the user's Instagram session/cookies.
 
 Usage:
+  uv run python scripts/discover_accounts.py --roster-seeds --budget-usd 1.5
   uv run python scripts/discover_accounts.py \
-      --niche "data engineering" --seeds edward.builds,fez.infocus \
-      --budget-usd 1.0 --max-new 25
+      --niche "data engineering" --seeds edward.builds,fez.infocus
 
 Notes:
 - Apify actor runs are invoked with the actor INPUT as the RAW request body
   (not wrapped in {"input": ...}) — verified required for these two actors.
-- This is an ad-hoc, budget-tracked script, NOT yet a Dagster asset.
+- Expansion is capped to 40% of the budget so enrichment is always funded
+  (enrichment is what produces the follower/size data the report needs).
+- Long crawls exceed a foreground window; run with no deadline (timeout 0).
 """
 from __future__ import annotations
 
@@ -34,6 +42,8 @@ API = "https://api.apify.com/v2"
 ACTOR_RELATED = "thenetaji~instagram-related-user-scraper"
 ACTOR_PROFILE = "dSCLg0C3YEZ83HzYX"  # apify/instagram-profile-scraper (first-party)
 PROFILES_DB = "data/ops.sqlite"
+# Share of budget reserved for enrichment (expansion must not eat it all).
+EXPAND_FRAC = 0.4
 
 # Size tiers (followers) aligned to the growth-report buckets.
 TIERS = [(0, "0-100"), (100, "100-1k"), (1000, "1k-10k"), (10000, "10k-100k"), (100000, "100k+")]
@@ -129,6 +139,48 @@ def _tracked_handles() -> set[str]:
         c.close()
 
 
+def _roster_small_medium(max_seeds: int = 25) -> list[str]:
+    """Auto-source seed handles from the TRACKED roster that are small/medium.
+
+    Size = latest follower count recorded in the bronze lake for each tracked IG
+    handle (bronze carries per-post followersCount; we take the most recent seen).
+    Seeds are the tracked accounts at/below 100k followers (the small+medium tiers
+    we hold). NOTE: roster handles with no bronze record have no known size and are
+    excluded (they'd need a size scrape first). Ordering is ascending by followers
+    so the smallest seeds crawl first; capped at max_seeds.
+    """
+    import glob
+
+    import polars as pl
+
+    files = glob.glob("data/lake/bronze/**/*.parquet", recursive=True)
+    parts = []
+    for f in files:
+        try:
+            sch = pl.scan_parquet(f).collect_schema().names()
+            if {"username", "followersCount"} <= set(sch):
+                parts.append(pl.scan_parquet(f).select(["username", "followersCount"]))
+        except Exception:
+            pass
+    if not parts:
+        print("  [warn] no bronze follower data found for roster sizing")
+        return []
+    latest = (pl.concat(parts)
+              .filter(pl.col("username").is_not_null() & pl.col("followersCount").is_not_null())
+              .with_columns(pl.col("followersCount").cast(pl.Int64, strict=False))
+              .filter(pl.col("followersCount") >= 0)
+              .sort("followersCount").unique(subset="username", keep="first").collect())
+    roster = _tracked_handles()
+    sized = [(x["username"].lower(), int(x["followersCount"]))
+             for x in latest.to_dicts()
+             if x["username"].lower() in roster and int(x["followersCount"]) <= 100_000]
+    sized.sort(key=lambda t: t[1])  # smallest first
+    seeds = [h for h, _ in sized[:max_seeds]]
+    print(f"  roster small/medium seeds (<=100k, bronze-sized): {len(sized)} known, "
+          f"using {len(seeds)} smallest")
+    return seeds
+
+
 def _size_tier(followers: int | None) -> str:
     if followers is None:
         return "unknown"
@@ -151,17 +203,31 @@ def _guess_niche(bio: str | None) -> str:
 
 
 def _expand_related(tok: str, budget: Budget, seeds: list[str], per_seed: int) -> list[str]:
-    """Related-rail expansion: one actor run per seed (bounded, budget-aware)."""
+    """Related-rail expansion, one actor run per seed, budget-aware.
+
+    Expansion is capped at `budget.cap * EXPAND_FRAC` so a share of the budget is
+    always reserved for enrichment (which produces the follower/size data the
+    report needs). thenetaji per-seed cost is unpredictable ($0.004-$0.24); without
+    this reservation a large-seed expansion can eat the whole budget and leave
+    every candidate unenriched (observed: 1009 unenriched from a $1.50 budget).
+    """
+    expand_cap = budget.cap * EXPAND_FRAC
+    exp_spent = 0.0
     found: list[str] = []
     for seed in seeds:
         if budget.over:
             print(f"  [stop] budget reached: {budget}")
+            break
+        if exp_spent >= expand_cap:
+            print(f"  [stop] expansion reserve spent ({exp_spent:.3f}/{expand_cap:.2f}); "
+                  f"reserving rest for enrichment")
             break
         rid = _start_run(tok, ACTOR_RELATED, {"username": [seed], "resultsLimit": per_seed})
         if not rid:
             continue
         items = _await_run(tok, rid)
         cost = budget.record(rid, tok)
+        exp_spent += cost
         handles = [str(i.get("username")).lower() for i in (items or []) if i.get("username")]
         found.extend(handles)
         print(f"  related[{seed}]: {len(handles)} accounts (${cost:.4f}, {budget})")
@@ -199,15 +265,16 @@ def _classify(profile: dict) -> dict:
     tier = _size_tier(profile.get("followers"))
     niche = _guess_niche(profile.get("bio"))
     followers = profile.get("followers") or 0
-    # Coarse success proxy absent gold: treat >50 followers as "established";
-    # true success (engagement) needs ingestion+gold later.
     return {"size_tier": tier, "niche": niche, "profile_type": f"{tier}_creator", "followers": followers}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--niche", default=DEFAULT_NICHE, help="label for grouping output")
-    ap.add_argument("--seeds", required=True, help="comma-separated seed handles")
+    ap.add_argument("--seeds", default=None, help="comma-separated seed handles (ignored if --roster-seeds)")
+    ap.add_argument("--roster-seeds", action="store_true",
+                    help="auto-source seeds from the tracked small/medium roster accounts")
+    ap.add_argument("--max-seeds", type=int, default=25, help="cap on --roster-seeds auto-seeds")
     ap.add_argument("--per-seed", type=int, default=20, help="related results per seed")
     ap.add_argument("--max-new", type=int, default=25, help="report at most N new accounts")
     ap.add_argument("--max-followers", type=int, default=None,
@@ -218,26 +285,35 @@ def main() -> int:
 
     tok = _load_token()
     budget = Budget(args.budget_usd)
-    seeds = [s.strip().lower() for s in args.seeds.split(",") if s.strip()]
+    if args.roster_seeds:
+        seeds = _roster_small_medium(args.max_seeds)
+    else:
+        seeds = [s.strip().lower() for s in args.seeds.split(",") if s.strip()]
     tracked = _tracked_handles()
     print(f"niche='{args.niche}' seeds={seeds} tracked={len(tracked)} {budget}")
+    if not seeds:
+        raise SystemExit("No seeds: pass --seeds or --roster-seeds (no small/medium roster accounts sized).")
 
-    # 1) recursive expansion (depth 1; depth>1 is a later refinement)
+    # 1) expansion (budget-capped to EXPAND_FRAC so enrichment is funded)
     candidates = _expand_related(tok, budget, seeds, args.per_seed)
     # drop seeds / already-tracked / dupes
     seen = set(seeds) | tracked
     new = [h for h in candidates if h not in seen]
     new = list(dict.fromkeys(new))  # unique, order-preserving
 
-    # 2) enrich new handles (only what budget allows)
+    # 2) enrich new handles with the remaining (reserved) budget
     profiles = _enrich(tok, budget, new) if new else {}
 
     # 3) classify
     rows = []
     for h in new:
         prof = profiles.get(h, {})
-        rows.append({"handle": h, **prof, **(_classify(prof) if prof else {"size_tier": "unenriched",
-                     "niche": "unknown", "profile_type": "unenriched", "followers": None})})
+        if prof:
+            rows.append({"handle": h, **prof, **_classify(prof)})
+        else:
+            rows.append({"handle": h, "followers": None, "bio": "", "verified": False,
+                         "size_tier": "unenriched", "niche": "unknown",
+                         "profile_type": "unenriched"})
 
     # 4) report
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
@@ -246,32 +322,32 @@ def main() -> int:
     # Optional aim: drop candidates above a follower ceiling (hunt small).
     if args.max_followers is not None:
         rows = [r for r in rows if (r.get("followers") or 0) <= args.max_followers]
-    # Small-first: ascending followers (unenriched last). Truncation under
-    # --max-new therefore keeps the LOW tiers (the cohort of interest) and never
-    # drops them for the largest — prior DESC behavior discarded smalls.
-    ordered = sorted(rows, key=lambda r: (r.get("followers") is None, r.get("followers") or 0))
+    enriched = [r for r in rows if r["size_tier"] != "unenriched"]
+    raw = [r for r in rows if r["size_tier"] == "unenriched"]
+    # Small-first within enriched (unenriched listed after, never counted as found).
+    ordered = sorted(enriched, key=lambda r: r.get("followers") or 0) + raw
     shown = ordered[: args.max_new]
-    # Full tier distribution across ALL candidates found (not just shown rows).
     import collections
-    dist = collections.Counter(_size_tier(r.get("followers")) if r.get("followers") is not None
-                               else "unenriched" for r in rows)
+    dist = collections.Counter(r["size_tier"] for r in enriched)
     dist_str = ", ".join(f"{k}={v}" for k, v in sorted(dist.items()))
     lines = [f"# Account discovery — {args.niche} ({ts})",
              "", f"Budget: {budget}. Seeds: {', '.join(seeds)}. ",
              f"Candidates: {len(candidates)} unique-new: {len(rows)} "
-             f"(tiers: {dist_str}). Tracked roster: {len(tracked)}.",
+             f"(enriched {len(enriched)}: {dist_str}; unenriched {len(raw)}). "
+             f"Tracked roster: {len(tracked)}.",
              "", "| handle | followers | size_tier | niche_guess | profile_type |",
              "|---|---|---|---|---|"]
     for r in shown:
         lines.append(f"| {r['handle']} | {r.get('followers') or ''} | {r['size_tier']} | "
                      f"{r['niche']} | {r['profile_type']} |")
     lines.append("")
-    lines.append("> Smallest (low-tier) candidates are listed first and are never truncated "
-                 "away. Success signal is NOT yet scored (needs ingestion + gold); "
-                 "profile_type is size-tier based.")
+    lines.append("> Smallest enriched candidates listed first. Success signal is NOT yet "
+                 "scored (needs ingestion + gold); profile_type is size-tier based. "
+                 "Unenriched rows ran out of budget before a profile scrape.")
     with open(out, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))
-    print(f"\nWrote {len(rows)} candidate accounts -> {out} (shown {len(shown)})")
+    print(f"\nWrote {len(rows)} candidate accounts -> {out} (shown {len(shown)}, "
+          f"enriched {len(enriched)})")
     print(f"Session {budget}")
     return 0
 
