@@ -38,6 +38,12 @@ CACHE_REUSE_WINDOW_HOURS = GEMINI_FILE_RETENTION_HOURS - FILE_RETENTION_MARGIN_H
 # Inline-media cap for batch requests. The GenerateContent request body must
 # stay under the Gemini request-size limit (~20MB with inline bytes); we cap
 # per-file well below it. Images only — video always goes through the File API.
+
+# Aggregate cap on inline bytes PER REQUEST (one post = one batch request):
+# the GenerateContent body must stay under the ~20MB request limit, so even
+# individually-small images get downgraded to the File API once the running
+# total would exceed this budget.
+INLINE_TOTAL_BUDGET_BYTES = 18 * 1024 * 1024
 INLINE_MEDIA_LIMIT_BYTES = 15 * 1024 * 1024
 
 # Modest File API upload concurrency: the upload + ACTIVE-state poll phase is
@@ -568,6 +574,7 @@ def lookup_or_upload_all(
     pending: list[str] = []
     conn = ops.get_connection()
     try:
+        inline_bytes_used = 0
         for url in unique_urls:
             h = url_hash(url)
 
@@ -579,7 +586,6 @@ def lookup_or_upload_all(
                    FROM media_metadata WHERE media_url_hash = ?""",
                 [h],
             ).fetchone()
-
             force = False
             if row and row["file_api_uri"] and row["upload_state"] == "uploaded":
                 if row["expires_at"] and row["expires_at"] > now_iso:
@@ -597,6 +603,7 @@ def lookup_or_upload_all(
                     logger.info("Cache expired for %s — re-uploading", url[:80])
 
             # Batch inline path (B): small images become bytes, no upload.
+            # A running budget caps the per-request aggregate inline size.
             if inline_images:
                 try:
                     payload = _try_inline_payload(conn, url, h)
@@ -604,8 +611,15 @@ def lookup_or_upload_all(
                     errors[url] = exc
                     continue
                 if payload is not None:
-                    results[url] = payload
-                    continue
+                    size = len(payload["inline_data"])
+                    if inline_bytes_used + size <= INLINE_TOTAL_BUDGET_BYTES:
+                        inline_bytes_used += size
+                        results[url] = payload
+                        continue
+                    logger.info(
+                        "Inline budget exhausted (%d bytes) — File API for %s",
+                        inline_bytes_used, url[:80],
+                    )
 
             # TOCTOU guard: INSERT OR IGNORE placeholder to prevent duplicate
             # uploads across processes (single-writer DB).
@@ -618,12 +632,22 @@ def lookup_or_upload_all(
             if cur.rowcount == 0 and not force:
                 # Another writer claimed it — check whether it already finished.
                 row2 = conn.execute(
-                    """SELECT file_api_uri, mime_type, upload_state,
+                    """SELECT file_api_uri, mime_type, upload_state, expires_at,
                               video_duration_seconds
                        FROM media_metadata WHERE media_url_hash = ?""",
                     [h],
                 ).fetchone()
-                if row2 and row2["file_api_uri"] and row2["upload_state"] == "uploaded":
+                # Same validity bar as the primary cache check: uploaded,
+                # unexpired, and still alive server-side — never serve a
+                # stale/expired URI another writer recorded earlier.
+                if (
+                    row2
+                    and row2["file_api_uri"]
+                    and row2["upload_state"] == "uploaded"
+                    and row2["expires_at"]
+                    and row2["expires_at"] > now_iso
+                    and _uri_is_alive(client, row2["file_api_uri"])
+                ):
                     results[url] = {
                         "uri": row2["file_api_uri"],
                         "mime_type": row2["mime_type"] or "application/octet-stream",

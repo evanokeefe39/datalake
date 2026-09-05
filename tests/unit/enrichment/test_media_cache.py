@@ -376,3 +376,77 @@ def test_cache_window_matches_verified_file_api_retention():
     assert FILE_RETENTION_MARGIN_HOURS == 4
     assert CACHE_REUSE_WINDOW_HOURS == 44
     assert CACHE_REUSE_WINDOW_HOURS > 24
+
+
+
+def _seed_uploaded_metadata(ops, url, uri, expires_at):
+    from datalake.defs.enrichment.media_cache import _ensure_schema
+
+    _ensure_schema(ops)
+    conn = ops.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO media_metadata (media_url_hash, media_url, file_api_uri, "
+            "mime_type, upload_state, expires_at, created_at) VALUES (?,?,?,?,?,?,?)",
+            [
+                url_hash(url),
+                url,
+                uri,
+                "image/jpeg",
+                "uploaded",
+                expires_at,
+                expires_at,
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_expired_row_conflict_never_serves_stale_uri(tmp_path):
+    """An expired uploaded row is re-uploaded even though the TOCTOU recheck
+    (INSERT OR IGNORE conflict) finds it 'uploaded' — no stale URI service."""
+    from datetime import datetime, timedelta, timezone
+
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+    gemini = GeminiResource(api_key="test-key")
+    url = "https://cdn.example.com/old.jpg"
+    local = tmp_path / "old.jpg"
+    local.write_bytes(b"bytes")
+    _seed_byte_cache(ops, url, local)
+    past = (datetime.now(timezone.utc) - timedelta(hours=50)).isoformat()
+    _seed_uploaded_metadata(
+        ops, url, "https://generativelanguage.googleapis.com/v1beta/files/stale", past
+    )
+
+    new_uri = "https://generativelanguage.googleapis.com/v1beta/files/new"
+    client, files = _make_fake_client([new_uri])
+    with patch("google.genai.Client", return_value=client):
+        result = lookup_or_upload_all(ops, gemini, json.dumps([url]))
+
+    files.upload.assert_called_once()
+
+
+def test_inline_aggregate_budget_downgrades_to_file_api(tmp_path, monkeypatch):
+    """Once the per-request inline byte budget is exhausted, remaining small
+    images fall back to the File API instead of blowing the request limit."""
+    from datalake.defs.enrichment import media_cache
+
+    monkeypatch.setattr(media_cache, "INLINE_TOTAL_BUDGET_BYTES", 10)
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+    gemini = GeminiResource(api_key="test-key")
+
+    urls = [f"https://cdn.example.com/pic{i}.jpg" for i in range(3)]
+    for i, url in enumerate(urls):
+        local = tmp_path / f"pic{i}.jpg"
+        local.write_bytes(b"0123456789")  # 10 bytes each
+        _seed_byte_cache(ops, url, local)
+
+    uris = [f"https://generativelanguage.googleapis.com/v1beta/files/g{i}" for i in range(2)]
+    client, files = _make_fake_client(uris)
+    with patch("google.genai.Client", return_value=client):
+        result = lookup_or_upload_all(ops, gemini, json.dumps(urls), inline_images=True)
+
+    assert files.upload.call_count == 2  # budget 10 bytes fits exactly ONE image
+    kinds = ["inline" if "inline_data" in r else "uri" for r in result]
+    assert kinds == ["inline", "uri", "uri"]
