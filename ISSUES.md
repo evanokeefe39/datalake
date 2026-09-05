@@ -766,6 +766,48 @@ logged-in user browser bot — rejected as high ban risk, per research):
   ingested).
 - No scraping of the user's logged-in IG account or follower lists under their
   session.
+
+### 23. Model each IG/social profile as a Dagster producer/source — compare to job-board scraping
+
+**Status:** Idea / design note (2026-09-05). No code changes — investigate, then
+route to an ADR.
+
+#### Why
+Onboarding 50 new IG profiles (issue #22) exposed that **adding a profile to the
+roster does not produce a scrape by itself**: `ig_posts_raw` is a manual,
+config-driven asset that scrapes exactly `config.urls`; it never auto-discovers
+new/enabled profiles. `profiles`/`creators` (ops.sqlite) act as an operational
+*control* list for downstream silver/label/batch scoping, but not as the thing
+that drives ingestion. We had to run an explicit `ig_posts_raw` with the 50
+handles to get their posts into bronze.
+
+The idea: treat **each IG profile — and any future social profile — as a
+first-class Dagster source/producer**, so a tracked profile is something the
+pipeline discovers and pulls from, rather than a URL we feed a manual run.
+
+#### What to compare (this issue is the comparison)
+1. **How job-board scraping was done** — source representation, what drove the
+   discovery/enumeration of what to scrape, scheduling/fan-out, state. Document
+   the pattern we used there.
+2. **Current IG ingestion** — ops.sqlite `profiles`/`creators` as control tables;
+   `ig_posts_raw` config-driven over `config.urls`; silver ingests any new bronze
+   (mtime watermark); `ig_profiles_slv`/labels scope to `enabled_profiles`.
+3. **The proposed producer/source model** — per-profile (or per-platform-source)
+   Dagster source that the medallion pulls from; the creators/profiles registry
+   already generalizes (a creator owns 1..N profiles across platforms), so
+   multi-platform additivity is a design target, not an afterthought.
+
+#### Open questions
+- What exactly was the job-board source/discovery/scheduling design to pattern-match?
+- Does per-source Dagster fan-out justify the complexity vs the current
+  config-driven batch scrape — especially given the Apify scrape-actor reliability
+  constraints found during discovery (login walls)?
+- Should the source registry live in ops.sqlite (profiles/creators) and be read by
+  a Dagster sensor/schedule that enqueues scrapes for enabled profiles without a
+  tracked bronze file?
+
+#### Non-goals (this issue)
+- No code/asset changes here — investigation + comparison + ADR decision only.
 ## Resolved
 
 ### 1. Comprehensive medallion testing strategy ✅ (2026-07-01)
