@@ -700,6 +700,11 @@ and every grid row renders eager network images:
 
 **Status:** Proposed (2026-09-05). Ad-hoc discovery tooling (not yet a scheduled
 pipeline). Companion to the growth-report work (Q3/Q9 sub-100k gaps).
+**Update (2026-09-05):** `scripts/discover_accounts.py` built + validated (PR #51
+feat/account-discovery) and the sized roster-seeded crawl added **50 quality small
+niche creators** (<10k; niche-vocab + >=100 flw gate) to tracking at depth
+results_limit=30 — IG roster 625 -> 675. Curation-group behavior is documented
+in the script docstring. No pipeline yet.
 
 #### Why / the gap
 The lake is 94.5% accounts ≥10k followers and ~73% Tech/Business. To answer
