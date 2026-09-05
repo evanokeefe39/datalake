@@ -15,7 +15,7 @@ Two execution modes (ADR-0001):
 
 Usage::
 
-    uv run python scripts/enrichment_worker.py                # Process next pending batch (interactive)
+    uv run python scripts/enrichment_worker.py                # Process next batch (interactive)
     uv run python scripts/enrichment_worker.py --dry-run      # Show state, don't process
     uv run python scripts/enrichment_worker.py --batch-id 3   # Process specific batch
     uv run python scripts/enrichment_worker.py --limit 10     # Process at most 10 items
@@ -469,8 +469,13 @@ def build_requests_for_items(
     dicts — ``media_files`` present (File API URIs) when the post has media that
     passes the tier + per-item token gates. Items without silver rows or with
     empty captions complete immediately (no API call) — mirrors interactive
-    edge-case handling. A per-item media upload/File API error fails that item
-    with backoff (mirroring interactive) instead of aborting the whole submit.
+    edge-case handling. A per-item media resolution failure (cache-miss CDN
+    download 403, File API upload error) fails that item with backoff instead
+    of aborting the whole submit. MIXED MEDIA POLICY: if a post has some
+    cached and some dead URLs, the whole post is failed (retry/dead-letter) —
+    ``lookup_or_upload_all`` raises on the first unresolvable URL, and
+    submitting partial media would silently change the analysis input, which
+    neither interactive nor batch tolerates.
     """
     requests: list[dict] = []
     for item in items:
@@ -497,22 +502,30 @@ def build_requests_for_items(
             try:
                 media_files = _resolve_media_for_post(ops, gemini, post_id, row[1])
             except Exception as exc:
+                # Media resolution (CDN download on a genuine cache miss, File
+                # API upload) is strictly per-item work — generation quota
+                # errors can never originate here, so ANY exception is a
+                # media failure for this post only. Mirrors interactive
+                # process_item, which routes all per-item exceptions to
+                # fail_item/dead_letter instead of aborting the run.
                 error_text = str(exc)
-                if _is_file_api_error(exc, error_text):
-                    attempts = fail_item(
-                        ops, item["id"], error_text,
-                        backoff=_exponential_backoff(_item_attempts(ops, item["id"])),
+                attempts = fail_item(
+                    ops, item["id"], error_text,
+                    backoff=_exponential_backoff(_item_attempts(ops, item["id"])),
+                )
+                logger.warning(
+                    "Media resolution failed on %s (attempt %d): %s",
+                    post_id, attempts, error_text[:120],
+                )
+                if attempts >= MAX_ATTEMPTS:
+                    _dead_letter_insert(
+                        ops, post_id, domain, error_text, attempts,
                     )
-                    logger.warning(
-                        "Media File API error on %s (attempt %d): %s",
-                        post_id, attempts, error_text[:120],
+                    logger.error(
+                        "Post %s moved to dead_letter after %d media attempts",
+                        post_id, attempts,
                     )
-                    if attempts >= MAX_ATTEMPTS:
-                        _dead_letter_insert(
-                            ops, post_id, domain, error_text, attempts,
-                        )
-                    continue  # drop this item from the submit, keep the rest
-                raise
+                continue  # drop this item from the submit, keep the rest
         req: dict = {
             "custom_key": str(item["id"]),
             "prompt": f"{prompt_template}\n{caption}",
