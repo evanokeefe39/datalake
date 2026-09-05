@@ -12,11 +12,26 @@ under 10k). Seeding from SMALL/MEDIUM tracked accounts flips it (edit.party 7.2k
 marketingatg 1.4k, steven.builds 48k -> 41 candidates under 10k incl. 14 under 1k).
 So --roster-seeds auto-sources from our tracked small/medium accounts.
 
+QUALITY ANNOTATION & CURATION (documented behaviour — nothing is silently dropped):
+Every enriched candidate is grouped by explicit, documented criteria into one of:
+  A) quality   = a known niche keyword matched the bio AND followers >= 100.
+                 These are the small niche creators the crawl exists to find.
+  B) review    = has a non-empty bio but did not reach A (niche vocab miss, or
+                 niche matched but below the 100-follower floor).
+  C) flagged   = empty/absent bio (no signal to judge). The related-rail of small
+                 accounts pulls these junk/placeholder accounts; treat as noise.
+  D) unenriched = budget ran out before a profile scrape.
+ALL candidates remain in the report under their group heading — the group is a
+curation aid, not an automatic drop. At this data size (hundreds of rows) the
+full annotated list can be reviewed as-is (e.g. dumped into a conversation
+context) to decide what to add to tracking. A strict machine gate can be added
+later with --min-followers/--require-niche if wanted.
+
 BAN-FREE BY DESIGN: all scraping runs on Apify's own infra against public
 profiles. It NEVER touches the user's Instagram session/cookies.
 
 Usage:
-  uv run python scripts/discover_accounts.py --roster-seeds --budget-usd 1.5
+  uv run python scripts/discover_accounts.py --roster-seeds --budget-usd 3
   uv run python scripts/discover_accounts.py \
       --niche "data engineering" --seeds edward.builds,fez.infocus
 
@@ -59,6 +74,9 @@ NICHE_KEYWORDS = {
     "education": ["teach", "tutor", "learn", "course", "school"],
 }
 DEFAULT_NICHE = "data/ai"
+# Quality-curation thresholds (documented behaviour; see module docstring).
+QUALITY_MIN_FOLLOWERS = 100
+KNOWN_NICHES = set(NICHE_KEYWORDS)
 
 
 def _load_token() -> str:
@@ -268,6 +286,20 @@ def _classify(profile: dict) -> dict:
     return {"size_tier": tier, "niche": niche, "profile_type": f"{tier}_creator", "followers": followers}
 
 
+def _curate_group(row: dict) -> str:
+    """Documented curation group (see module docstring): quality / review / flagged / unenriched."""
+    if row.get("size_tier") == "unenriched":
+        return "unenriched"
+    followers = row.get("followers") or 0
+    bio = row.get("bio") or ""
+    niche = row.get("niche") or "unknown"
+    if not bio.strip():  # empty bio -> no signal; junk from the small-rail.
+        return "flagged"
+    if niche in KNOWN_NICHES and followers >= QUALITY_MIN_FOLLOWERS:
+        return "quality"
+    return "review"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--niche", default=DEFAULT_NICHE, help="label for grouping output")
@@ -309,45 +341,63 @@ def main() -> int:
     for h in new:
         prof = profiles.get(h, {})
         if prof:
-            rows.append({"handle": h, **prof, **_classify(prof)})
+            row = {"handle": h, **prof, **_classify(prof)}
         else:
-            rows.append({"handle": h, "followers": None, "bio": "", "verified": False,
-                         "size_tier": "unenriched", "niche": "unknown",
-                         "profile_type": "unenriched"})
+            row = {"handle": h, "followers": None, "bio": "", "verified": False,
+                   "size_tier": "unenriched", "niche": "unknown", "profile_type": "unenriched"}
+        row["group"] = _curate_group(row)
+        rows.append(row)
 
-    # 4) report
+    # 4) report (grouped by documented curation group; nothing dropped)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
     out = args.out or f"analysis/output/discovery_{ts}.md"
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    # Optional aim: drop candidates above a follower ceiling (hunt small).
     if args.max_followers is not None:
         rows = [r for r in rows if (r.get("followers") or 0) <= args.max_followers]
-    enriched = [r for r in rows if r["size_tier"] != "unenriched"]
-    raw = [r for r in rows if r["size_tier"] == "unenriched"]
-    # Small-first within enriched (unenriched listed after, never counted as found).
-    ordered = sorted(enriched, key=lambda r: r.get("followers") or 0) + raw
-    shown = ordered[: args.max_new]
     import collections
-    dist = collections.Counter(r["size_tier"] for r in enriched)
-    dist_str = ", ".join(f"{k}={v}" for k, v in sorted(dist.items()))
+    groups = collections.OrderedDict([("quality", []), ("review", []), ("flagged", []), ("unenriched", [])])
+    for r in rows:
+        groups.setdefault(r["group"], []).append(r)
+    order = ["quality", "review", "flagged", "unenriched"]
+    group_counts = {g: len(groups.get(g, [])) for g in order}
+    tier_counts = collections.Counter(r["size_tier"] for r in rows if r["size_tier"] != "unenriched")
+    tier_str = ", ".join(f"{k}={v}" for k, v in sorted(tier_counts.items()))
     lines = [f"# Account discovery — {args.niche} ({ts})",
-             "", f"Budget: {budget}. Seeds: {', '.join(seeds)}. ",
+             "",
+             f"Budget: {budget}. Seeds: {', '.join(seeds)}. Tracked roster: {len(tracked)}.",
              f"Candidates: {len(candidates)} unique-new: {len(rows)} "
-             f"(enriched {len(enriched)}: {dist_str}; unenriched {len(raw)}). "
-             f"Tracked roster: {len(tracked)}.",
-             "", "| handle | followers | size_tier | niche_guess | profile_type |",
-             "|---|---|---|---|---|"]
-    for r in shown:
-        lines.append(f"| {r['handle']} | {r.get('followers') or ''} | {r['size_tier']} | "
-                     f"{r['niche']} | {r['profile_type']} |")
-    lines.append("")
-    lines.append("> Smallest enriched candidates listed first. Success signal is NOT yet "
-                 "scored (needs ingestion + gold); profile_type is size-tier based. "
-                 "Unenriched rows ran out of budget before a profile scrape.")
+             f"(quality={group_counts['quality']}, review={group_counts['review']}, "
+             f"flagged={group_counts['flagged']}, unenriched={group_counts['unenriched']}).",
+             f"Enriched tiers: {tier_str or 'none'}.",
+             "",
+             "Grouping (documented): A)quality = niche vocab matched bio + followers>=100; "
+             "B)review = bio present but below A; C)flagged = empty bio (junk); "
+             "D)unenriched = budget ran out before profile scrape.",
+             ""]
+    captions = {"quality": "A. QUALITY — niche-vocab match, followers>=100 (curate to keep)",
+                "review": "B. REVIEW — bio present, below A (niche vocab miss or micro)",
+                "flagged": "C. FLAGGED — empty bio (junk/placeholder; usually drop)",
+                "unenriched": "D. UNENRICHED — budget ran out before profile scrape"}
+    shown_total = 0
+    for g in order:
+        members = sorted(groups.get(g, []), key=lambda r: (r.get("followers") is None, r.get("followers") or 0))
+        if not members:
+            continue
+        take = members[: max(0, args.max_new - shown_total)]
+        shown_total += len(take)
+        lines += [f"## {captions[g]} ({len(members)} found, showing {len(take)})", "",
+                  "| handle | followers | size_tier | niche_guess | profile_type |",
+                  "|---|---|---|---|---|"]
+        for r in take:
+            lines.append(f"| {r['handle']} | {r.get('followers') or ''} | {r['size_tier']} | "
+                         f"{r['niche']} | {r['profile_type']} |")
+        lines.append("")
+    lines.append("> Success signal is NOT yet scored (needs ingestion + gold). profile_type is "
+                 "size-tier based. Groups are a curation aid only — nothing is auto-dropped; "
+                 "at this data size review the annotated list as-is and decide what to add.")
     with open(out, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))
-    print(f"\nWrote {len(rows)} candidate accounts -> {out} (shown {len(shown)}, "
-          f"enriched {len(enriched)})")
+    print(f"\nWrote {len(rows)} candidate accounts -> {out} (shown {shown_total})")
     print(f"Session {budget}")
     return 0
 
