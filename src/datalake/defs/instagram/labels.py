@@ -265,6 +265,17 @@ def run_label_pass(
                 "maturity_days", "is_provisional", "label_version",
                 "baseline_center", "baseline_spread", "baseline_n",
             ],
+            # Numeric baseline/maturity columns may be all-None in the leading rows
+            # (e.g. new creators on day0 with insufficient baseline), so polars
+            # schema-inference types them as Null and later non-null ints/floats
+            # (e.g. an established creator's baseline_n) fail to append. Fix the
+            # dtypes explicitly so None + value coerce to Int/Float.
+            schema_overrides={
+                "maturity_days": pl.Int32,
+                "baseline_center": pl.Float64,
+                "baseline_spread": pl.Float64,
+                "baseline_n": pl.Int64,
+            },
             orient="row",
         )
         conn.register("labels_new", df.to_arrow())
