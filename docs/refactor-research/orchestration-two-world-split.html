@@ -655,24 +655,136 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
     <p><strong>Two more that the options assume.</strong> <strong>Resources</strong> carry an API client and its config (the two-flavor 429 taxonomy, model/tier) into assets or sensors, so the client&rsquo;s retry and backoff knowledge lives in one testable place. <strong>Asset checks</strong> attach invariants &mdash; freshness, and our <code>check_prompt_currency</code> &mdash; to a materialization. And <strong>incremental materialization</strong> lets an asset rewrite only the rows that changed &mdash; for enrichment, the column-nullability gate (only posts missing signal) is the key to Option C. Each option below names the exact pieces it leans on.</p>
   </div>
 </section>
-
 <section id="fix">
   <h2>The shape of the fix</h2>
   <div class="prose">
-    <p>This remains an open investigation, not a decided plan. The research note frames the option space; the direction is consistent across all of them &mdash; keep the determinism boundary, close the orchestration vacuum.</p>
-    <div class="opt">
-      <span class="opt-k">Option A &middot; sensor-driven external worker</span>
-      <p style="margin:0">Make the consume/harvest loop a Dagster <em>sensor citizen</em>: a sensor with a cursor polls for queue work and for terminal gemini-batch jobs, and triggers the worker (or harvest run) when either is true. ADR-0002&rsquo;s shape is preserved; #24&rsquo;s manual arrow is automated. The direct cure, and the smallest move.</p>
-    </div>
-    <div class="opt">
-      <span class="opt-k">Option B &middot; profiles as first-class sources</span>
-      <p style="margin:0">Treat each tracked profile as a Dagster Source so that adding a profile to the roster <em>is</em> an ingestion trigger (issue #23), instead of a URL list a human feeds a manual run. The 50 accounts from issue #22 would have entered the lake automatically. An open question flagged in the issue: whether per-source fan-out justifies the complexity given Apify actor reliability (login walls) &mdash; and whether a sensor reading <code>profiles</code> from ops.sqlite is the pragmatic middle.</p>
-    </div>
-    <div class="opt">
-      <span class="opt-k">Option C &middot; enrichment in the asset graph</span>
-      <p style="margin:0">Bring enrichment into the asset group as an explicitly-gated enrichment asset group behind incremental (column-nullability) gates &mdash; the job-search-toolkit shape. Cost: relaxes ADR-0003&rsquo;s hermetic-transform rule, acceptable only if the asset is explicitly an enrichment seam. Best suited to bounded in-process work, not hours-long batch jobs.</p>
-    </div>
-    <p>These are not mutually exclusive, and the investigation has not decided among them. What the five whys established is the criterion: the pipeline should not need a person to advance, and nothing should look &ldquo;stuck&rdquo; when the only missing ingredient is a poller.</p>
+    <p>This remains an open investigation, not a decided plan. The research note frames the option space; the direction is consistent across all of them &mdash; keep the determinism boundary, close the orchestration vacuum. Each option below names the exact Dagster pieces it leans on (the machinery above), grounds itself in a pattern that is already working in the wild, and is honest about where it sits relative to Dagster&rsquo;s own guidance. The criterion the five whys settled is the same for all three: the pipeline should not need a person to advance, and nothing should look &ldquo;stuck&rdquo; when the only missing ingredient is a poller.</p>
+  </div>
+
+  <div class="opt">
+    <span class="opt-k">Option A &middot; sensor-driven external worker</span>
+    <p style="margin:0">Keep the external worker (ADR-0002 intact) and make the consume/harvest loop a Dagster <em>sensor citizen</em>: sensors with cursors poll for queue work and for terminal gemini-batch jobs, and request the worker or harvest run when either is true. The direct cure for #24, and the smallest move.</p>
+  </div>
+  <h3>Option A in detail &mdash; submit, then a sensor harvests</h3>
+  <div class="prose">
+    <p><strong>The mechanism.</strong> Two loop-shaped responsibilities, each a sensor with its own cursor. The <em>consume</em> sensor looks for claimable <code>batch_items</code> and, when the worker is idle, requests a worker run. The <em>harvest</em> side handles async work: when a run submits a <code>gemini-batch</code> job, it persists the returned <code>job_id</code> (status <code>pending</code>) in ops.sqlite and returns &mdash; the run ends immediately rather than blocking for hours. A harvest sensor then polls those pending job ids on an interval; when a remote job is terminal, it requests the harvest run that fetches results and writes <code>gold_analyses</code>. This is exactly the stateful-polling shape in Figure&nbsp;7.</p>
+    <p><strong>Grounding.</strong> This is the canonical Dagster answer to &ldquo;external work that takes hours,&rdquo; and it is not exotic: a widely-shared write-up on orchestrating bulk embedding/LLM API work lays out precisely this as its primary pattern &mdash; <em>bulk API &mdash; submit + sensor poll</em>, where the run submits, persists the job id, ends, and a lightweight sensor (running on a <code>minimum_interval_seconds</code> of minutes) polls the remote job and triggers the downstream harvest by <code>RunRequest</code>. Its stated benefits map one-to-one onto our needs: no Dagster worker sits open for the batch duration, the job id is persisted so polling survives restarts, and the sensor tick stays cheap and within its timeout. It is also the pattern Dagster&rsquo;s own docs describe for reacting to external systems, and Dagster&rsquo;s &ldquo;choose your automation&rdquo; guidance puts a basic sensor exactly here: <em>poll an external condition, emit a run request</em>. ADR-0002&rsquo;s worker and AssetSpec stay as they are; we add the citizen that keeps them moving.</p>
+    <p><strong>Where it is challenged.</strong> Two subtleties. First, a sensor evaluation must not itself run the long work &mdash; it <em>requests</em> a run (the worker), which is the idiomatic boundary; a sensor that tried to call Gemini inline would block its tick and defeat the point. Second, &ldquo;consume&rdquo; and &ldquo;harvest&rdquo; are two different external states (a queue with work vs. a remote job finishing), so they are cleanly two sensors with two cursors, not one overloaded loop. The one-shot worker CLI and the <code>--mode gemini-batch</code> path both survive; only the human who re-runs them is automated away.</p>
+  </div>
+
+  <figure class="reveal">
+    <div class="diag-title">Figure 8 &mdash; Option A: submit, then a sensor harvests</div>
+    <svg viewBox="0 0 1080 330" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="optAT">
+      <title id="optAT">A run submits the batch and persists its job id, then ends. A harvest sensor polls pending job ids and requests the harvest run once the remote batch is terminal.</title>
+      <defs>
+        <marker id="aG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#7a8088"/></marker>
+        <marker id="aA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#b45309"/></marker>
+      </defs>
+      <rect x="40" y="56" width="180" height="76" rx="8" fill="#e3efee" stroke="#1b7f79"/>
+      <text x="130" y="92" font-size="11.5" fill="#1b7f79" text-anchor="middle" font-family="JetBrains Mono">enqueue candidates</text>
+      <text x="130" y="114" font-size="10.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">candidate rows</text>
+      <rect x="260" y="56" width="230" height="76" rx="8" fill="#f7ecdd" stroke="#b45309"/>
+      <text x="375" y="92" font-size="11.5" fill="#b45309" text-anchor="middle" font-family="JetBrains Mono">submit &rarr; gemini-batch</text>
+      <text x="375" y="114" font-size="10.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">returns a job_id</text>
+      <rect x="530" y="56" width="210" height="76" rx="8" fill="#f1efe9" stroke="#c9c4b8"/>
+      <text x="635" y="92" font-size="11.5" fill="#7a8088" text-anchor="middle" font-family="JetBrains Mono">persist job_id</text>
+      <text x="635" y="114" font-size="10.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">ops.sqlite &middot; pending</text>
+      <rect x="780" y="56" width="250" height="76" rx="8" fill="#fff" stroke="#e2dfd8"/>
+      <text x="905" y="92" font-size="11.5" fill="#7a8088" text-anchor="middle" font-family="JetBrains Mono">run ends at once</text>
+      <text x="905" y="114" font-size="10.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">no worker sits open</text>
+      <line x1="220" y1="94" x2="256" y2="94" stroke="#7a8088" stroke-width="2" marker-end="url(#aG)"/>
+      <line x1="490" y1="94" x2="526" y2="94" stroke="#7a8088" stroke-width="2" marker-end="url(#aG)"/>
+      <line x1="740" y1="94" x2="776" y2="94" stroke="#7a8088" stroke-width="2" marker-end="url(#aG)"/>
+      <line x1="635" y1="132" x2="635" y2="206" stroke="#7a8088" stroke-width="2" marker-end="url(#aG)"/>
+      <rect x="40" y="206" width="640" height="100" rx="8" fill="#e3efee" stroke="#1b7f79" stroke-dasharray="6 4"/>
+      <text x="58" y="234" font-size="11.5" fill="#1b7f79" font-family="JetBrains Mono">HARVEST SENSOR (cursor)</text>
+      <text x="58" y="262" font-size="11.5" fill="#4b5058" font-family="Public Sans">every N min: read pending job_ids, poll</text>
+      <text x="58" y="284" font-size="11.5" fill="#4b5058" font-family="Public Sans">gemini-batch status; none terminal &rarr; skip</text>
+      <rect x="720" y="206" width="320" height="100" rx="8" fill="#f7ecdd" stroke="#b45309"/>
+      <text x="880" y="236" font-size="11.5" fill="#b45309" text-anchor="middle" font-family="JetBrains Mono">BATCH DONE &rarr; RUN REQUEST</text>
+      <text x="880" y="264" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">harvest run: fetch results,</text>
+      <text x="880" y="286" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">write gold_analyses (done)</text>
+      <line x1="680" y1="256" x2="716" y2="256" stroke="#b45309" stroke-width="2" marker-end="url(#aA)"/>
+      <text x="672" y="248" font-size="11" fill="#b45309" text-anchor="end" font-family="Public Sans">done?</text>
+    </svg>
+    <figcaption>The run that submits is short; the wait is handed to a cheap, durable sensor. Job ids are persisted (ops.sqlite) so polling survives a Dagster restart &mdash; the exact property issue #24 lacked. This mirrors the &ldquo;bulk API &mdash; submit + sensor poll&rdquo; pattern documented for long-running external API work in the wild.</figcaption>
+  </figure>
+
+  <div class="opt">
+    <span class="opt-k">Option B &middot; profiles as first-class sources</span>
+    <p style="margin:0">Treat each tracked profile as a first-class external trigger so that adding a profile to the roster <em>is</em> an ingestion trigger (issue #23), instead of a URL list a human feeds a manual run. The 50 accounts from issue #22 would have entered the lake automatically.</p>
+  </div>
+  <h3>Option B in detail &mdash; a roster change becomes an event</h3>
+  <div class="prose">
+    <p><strong>The mechanism.</strong> The roster &mdash; <code>profiles</code> in ops.sqlite &mdash; is state Dagster does not own, so &ldquo;a new profile appeared&rdquo; needs a bridge into the graph. The canonical Dagster shape is a <strong>basic sensor with a cursor</strong> that reads the roster, compares it against the cursor&rsquo;s last-seen high-water mark, and requests a scrape run for any profile that is new or not yet scraped &mdash; the same stateful-polling machinery as Figure&nbsp;7, pointed at a table instead of a queue. (The older &ldquo;SourceAsset&rdquo; framing of this &mdash; track an external object and react to its changes &mdash; has been folded by Dagster into external assets plus the sensor that watches them, so this is squarely on the supported path.) Scrape config moves from a hand-fed URL list to per-profile rows that the sensor turns into work.</p>
+    <p><strong>Grounding.</strong> Polling a database table for newly-added rows and launching work per change is one of Dagster&rsquo;s most documented sensor idioms &mdash; the file-watching sensor in the docs is the same skeleton, and &ldquo;new rows since the cursor&rdquo; is a textbook cursor use case (it is precisely the reason cursors exist: keep the poll cheap and idempotent). The 50 accounts in issue #22 that were added but never scraped are the concrete payoff: each becomes a trigger, not a forgotten line in a config list.</p>
+    <p><strong>Where it is challenged.</strong> The issue itself flags the open question: per-profile <em>fan-out</em> (a scrape run per account) multiplies complexity and run overhead for no benefit when an Apify actor scrapes many accounts at once &mdash; and Apify reliability (login walls) already makes per-actor runs fragile. The pragmatic middle is a sensor that detects <em>changes to the roster</em> but still requests one consolidated scrape over the affected profiles, rather than one run per profile. So Option B is really a decision about <em>granularity of the trigger</em>, not about whether the roster drives ingestion &mdash; it should; the question is how finely.</p>
+  </div>
+
+  <figure class="reveal">
+    <div class="diag-title">Figure 9 &mdash; Option B: a roster change becomes an ingestion trigger</div>
+    <svg viewBox="0 0 1080 320" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="optBT">
+      <title id="optBT">A profile added to the roster is detected by a cursor-based sensor, which requests the scrape. The open question is granularity: per-profile fan-out vs one consolidated scrape.</title>
+      <defs>
+        <marker id="bG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#7a8088"/></marker>
+      </defs>
+      <rect x="40" y="70" width="250" height="88" rx="8" fill="#e3efee" stroke="#1b7f79"/>
+      <text x="165" y="102" font-size="11.5" fill="#1b7f79" text-anchor="middle" font-family="JetBrains Mono">PROFILE ADDED</text>
+      <text x="165" y="132" font-size="10.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">roster &middot; ops.sqlite profiles (#23)</text>
+      <rect x="340" y="70" width="250" height="88" rx="8" fill="#e3efee" stroke="#1b7f79" stroke-dasharray="6 4"/>
+      <text x="465" y="102" font-size="11.5" fill="#1b7f79" text-anchor="middle" font-family="JetBrains Mono">ROSTER TRIGGER (cursor)</text>
+      <text x="465" y="132" font-size="10.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">new or not-yet-scraped profile?</text>
+      <rect x="640" y="70" width="250" height="88" rx="8" fill="#f7ecdd" stroke="#b45309"/>
+      <text x="765" y="102" font-size="11.5" fill="#b45309" text-anchor="middle" font-family="JetBrains Mono">RUN REQUEST &rarr; SCRAPE</text>
+      <text x="765" y="132" font-size="10.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">bronze &rarr; silver for that profile</text>
+      <line x1="290" y1="114" x2="336" y2="114" stroke="#7a8088" stroke-width="2" marker-end="url(#bG)"/>
+      <line x1="590" y1="114" x2="636" y2="114" stroke="#7a8088" stroke-width="2" marker-end="url(#bG)"/>
+      <rect x="340" y="210" width="550" height="64" rx="8" fill="#f1efe9" stroke="#c9c4b8"/>
+      <text x="358" y="236" font-size="11.5" fill="#7a8088" font-family="Public Sans">open: per-profile fan-out vs one consolidated scrape</text>
+      <text x="358" y="258" font-size="11.5" fill="#7a8088" font-family="Public Sans">(Apify login walls make per-actor runs fragile)</text>
+    </svg>
+    <figcaption>The trigger is roster-driven, not human-fed: the cursor makes &ldquo;what changed since last poll&rdquo; cheap and idempotent. The unsettled question is trigger granularity, not whether the roster should drive ingestion.</figcaption>
+  </figure>
+
+  <div class="opt">
+    <span class="opt-k">Option C &middot; enrichment in the asset graph</span>
+    <p style="margin:0">Bring enrichment into the asset group as an explicitly-gated enrichment asset behind an incremental (column-nullability) gate &mdash; the job-search-toolkit shape. Cost: relaxes ADR-0003&rsquo;s hermetic-transform rule, acceptable only if the asset is explicitly the enrichment seam and the work is bounded.</p>
+  </div>
+  <h3>Option C in detail &mdash; enrichment as a gated in-graph asset</h3>
+  <div class="prose">
+    <p><strong>The mechanism.</strong> Where Options A and B keep the API call outside the graph, C lets an <em>explicit enrichment asset</em> call Gemini in-process, behind an incremental gate: its query reads only rows that still need signal &mdash; a column-nullability test (<code>signal IS NULL</code>) or a stale <code>prompt_hash</code> &mdash; so a re-run costs work only for the rows that are actually missing it, not a full replay. Enrichment is scoped per-dimension (per profile, not per post) so the same profile is not re-enriched every run. Because the asset lives in the graph, lineage, freshness, asset checks (<code>check_prompt_currency</code>), and Dagster-native backfills all apply for free, and its automation is the asset-centric kind: a freshness or <code>eager</code>-style condition re-runs it when upstream updates or signal goes stale.</p>
+    <p><strong>Grounding.</strong> This is the &ldquo;no bulk API &mdash; cached, threaded enrichment&rdquo; shape: a single asset fans work across a bounded <code>ThreadPoolExecutor</code>/async executor, memoizes against a content-hash cache so only changed inputs reach the API, and upserts idempotently. Dagster&rsquo;s own guidance supports bounded in-process fan-out for inference and enrichment &mdash; its &ldquo;when sync isn&rsquo;t enough&rdquo; async-executor material is aimed squarely at exactly this workload &mdash; and it matches the repo&rsquo;s job-search-toolkit precedent. The incrementality is the load-bearing part: without a nullability gate this is just the old full-replay antipattern in a nicer coat.</p>
+    <p><strong>Where it is challenged.</strong> This is the option that <em>relaxes ADR-0003</em>: a stochastic, paid, rate-limited call now lives inside an asset, so the graph is no longer hermetic by construction. That is defensible only if (a) the asset is unambiguously the enrichment <em>seam</em> &mdash; named and tagged as the one place the graph may touch the API &mdash; and (b) the work is bounded: minutes, not the hours-long batches that are Option A&rsquo;s reason to exist. The community decision rule is duration-driven: single-asset in-process polling is fine when work is minutes; hours/days of external work is when you move to sensor-based polling. In our terms: bounded per-profile enrichment can be Option C; hours-long <code>gemini-batch</code> harvesting should stay Option A&rsquo;s sensor.</p>
+  </div>
+
+  <figure class="reveal">
+    <div class="diag-title">Figure 10 &mdash; Option C: a gated enrichment seam in the graph</div>
+    <svg viewBox="0 0 1080 300" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="optCT">
+      <title id="optCT">Silver feeds an explicitly-gated enrichment asset that only calls the API for rows missing signal, writing gold in-graph with asset checks on the result.</title>
+      <defs>
+        <marker id="cG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#1b7f79"/></marker>
+      </defs>
+      <rect x="40" y="66" width="250" height="92" rx="8" fill="#e3efee" stroke="#1b7f79"/>
+      <text x="165" y="96" font-size="12" fill="#1b7f79" text-anchor="middle" font-family="JetBrains Mono">silver_ig_posts</text>
+      <text x="165" y="132" font-size="10.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">hermetic &mdash; no API calls</text>
+      <rect x="330" y="60" width="430" height="104" rx="8" fill="#f7ecdd" stroke="#b45309"/>
+      <text x="545" y="90" font-size="12" fill="#b45309" text-anchor="middle" font-family="JetBrains Mono">ENRICH &mdash; the one gated seam</text>
+      <text x="545" y="120" font-size="10.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">SELECT &hellip; WHERE signal IS NULL</text>
+      <text x="545" y="138" font-size="10.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">or prompt_hash stale (per-dimension)</text>
+      <rect x="810" y="66" width="230" height="92" rx="8" fill="#fff" stroke="#1b7f79" stroke-dasharray="5 4"/>
+      <text x="925" y="98" font-size="12" fill="#22252a" text-anchor="middle" font-family="JetBrains Mono">gold_analyses</text>
+      <text x="925" y="134" font-size="10.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">now written in-graph</text>
+      <line x1="290" y1="112" x2="326" y2="112" stroke="#1b7f79" stroke-width="2" marker-end="url(#cG)"/>
+      <line x1="760" y1="112" x2="806" y2="112" stroke="#1b7f79" stroke-width="2" marker-end="url(#cG)"/>
+      <rect x="330" y="210" width="430" height="58" rx="8" fill="#1d2126"/>
+      <text x="350" y="234" fill="#dfe3e8" font-size="11.5" font-family="Public Sans">asset checks: freshness &middot; check_prompt_currency</text>
+      <text x="350" y="254" fill="#dfe3e8" font-size="11.5" font-family="Public Sans">automation: freshness / eager condition re-runs</text>
+    </svg>
+    <figcaption>The nullability gate is what keeps this from being the full-replay antipattern: only rows missing signal reach the API. The cost is explicit &mdash; ADR-0003&rsquo;s hermetic rule is relaxed for this one named seam, which is only acceptable for bounded, in-process work.</figcaption>
+  </figure>
+
+  <div class="prose">
+    <p>These are not mutually exclusive, and the investigation has not decided among them. Option A and Option B are complementary &mdash; a roster-triggered scrape feeding a sensor-harvested enrichment keeps every API call outside the graph; Option C trades that guarantee for Dagster-native lineage and is better reserved for the bounded work. What the options share is the thing #24 proved was missing: a poller that lives in Dagster, not in a person&rsquo;s terminal.</p>
   </div>
 </section>
 
