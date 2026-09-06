@@ -138,8 +138,9 @@ def run_label_pass(
     for p in posts:
         key = (p["owner_id"] or "").lower()
         by_creator.setdefault(key, []).append(p)
+    _min_aware = datetime.min.replace(tzinfo=timezone.utc)  # aware-epoch fallback for the sort key
     for plist in by_creator.values():
-        plist.sort(key=lambda p: p["ts"] or p["processed_on"] or datetime.min.replace(tzinfo=timezone.utc))
+        plist.sort(key=lambda p: p["ts"] or p["processed_on"] or _min_aware)
 
     out: dict[str, tuple] = {}  # post_id -> row tuple
     stats = {
@@ -196,7 +197,9 @@ def run_label_pass(
             if judged_like is None:
                 label, method, decision, prov = "unjudgeable", "day0_heuristic", "control", True
             elif not judgeable:
-                label, method, decision, prov = "insufficient_baseline", "day0_heuristic", "control", True
+                label, method, decision, prov = (
+                    "insufficient_baseline", "day0_heuristic", "control", True
+                )
             elif empty_caption:
                 label = "standout" if standout else "average" if judgeable else "unjudgeable"
                 method, decision, prov = "day0_heuristic", "skip", True

@@ -11,14 +11,13 @@ it is loaded by file path here.
 from __future__ import annotations
 
 import asyncio
-
 import importlib.util
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
-import httpx
 
 _SERVER_PATH = Path(__file__).resolve().parents[3] / "dashboard" / "server.py"
 _spec = importlib.util.spec_from_file_location("dashboard_server", _SERVER_PATH)

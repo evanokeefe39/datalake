@@ -6,8 +6,6 @@ DuckDB) and ``ig_posts_gen_batches`` (batch-based enqueuer).
 
 from __future__ import annotations
 
-import json
-
 from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource

@@ -257,3 +257,35 @@ def test_label_pass_asset_and_schedule(tmp_path, ops):
     assert rows["px"][2] == "day7_matched"
     # Schedule now drives the label pass
     assert "ig_post_labels" in repr(daily_medallion.target)
+
+
+# ── Write-batch dtype regression (schema_overrides) ─────────────────────────
+
+
+def test_null_leading_baseline_columns_coerce_to_numeric(conn):
+    """Regression: the label write batch must survive a mix of all-None and
+    non-null baseline/maturity columns (50-account ingest, 912 posts).
+
+    GIVEN a label pass whose leading rows (a new creator with NULL likes) are
+    all-None in ``baseline_center/spread/n`` and ``maturity_days``,
+    WHEN a later row (an established creator with >=5 known priors) carries a
+    real ``baseline_n``, THEN ``run_label_pass`` types the nullable numeric
+    columns Int/Float (``schema_overrides``) so the mixed values append without
+    a polars ``ComputeError`` (polars infers the first ~100 rows, so an
+    all-None prefix would otherwise pin the column to Null).
+    """
+    # 120 new-creator posts with NULL likes → unjudgeable, all-None baseline.
+    # These must occupy the leading ~100 rows of the write batch.
+    for i in range(120):
+        _post(conn, f"new{i}", "u_new", None, NOW - timedelta(days=30 + i))
+    # One established creator with >=5 known priors → judgeable, non-null baseline.
+    _history(conn, "u_est", 20, end=NOW - timedelta(days=10))
+    _post(conn, "px", "u_est", 800, NOW - timedelta(days=5))
+
+    stats = run_label_pass(conn, now=NOW)
+
+    # Batch wrote and the trailing judgeable post carried a real baseline.
+    assert stats["stamped"] > 120
+    r = _labels(conn)["px"]
+    assert r[8] is not None and r[8] >= 5  # baseline_n is a stored int
+    assert r[6] is not None and r[7] is not None  # baseline_center/spread floats

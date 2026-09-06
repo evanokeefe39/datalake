@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 
 import pytest
 
@@ -19,8 +18,6 @@ from datalake.defs.enrichment import gemini_batch
 from datalake.defs.enrichment.batch import (
     _ensure_schema,
     claim_batch,
-    claim_pending_items,
-    complete_item,
     create_batch,
     set_gemini_batch_name,
     set_gemini_batch_status,
@@ -95,7 +92,7 @@ class TestBatchModeColumns:
     def test_create_batch_defaults_to_interactive(self, tmp_path):
         ops = _ops(tmp_path)
         _ensure_schema(ops)
-        job_id = create_batch(ops, [json.dumps({"post_id": "p1"})])
+        create_batch(ops, [json.dumps({"post_id": "p1"})])
         batch = claim_batch(ops)
         assert batch["mode"] == "interactive"
         assert batch["gemini_batch_name"] is None
@@ -321,8 +318,8 @@ class TestJobState:
 
 class TestGoldModelColumn:
     def test_write_gold_sets_model(self, tmp_path):
-        from scripts.enrichment_worker import _write_gold
         from datalake.defs.enrichment.assets import ensure_gold_analyses
+        from scripts.enrichment_worker import _write_gold
 
         db = DuckDBResource(database=str(tmp_path / "state.duckdb"))
         ensure_gold_analyses(db)

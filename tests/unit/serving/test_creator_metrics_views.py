@@ -42,7 +42,6 @@ from datalake.defs.serving.assets import (
     v_rising_creators as _v_rising_creators,
 )
 
-
 # ── Fixture plumbing ─────────────────────────────────────────────────────────
 
 POST_COLUMNS = (
@@ -123,7 +122,7 @@ def db(tmp_path) -> DuckDBResource:
     """
     resource = DuckDBResource(database=str(tmp_path / "creator_metrics.duckdb"))
     with resource.get_connection() as con:
-        con.execute(f"""
+        con.execute("""
             CREATE TABLE v_post_detail (
                 post_id TEXT PRIMARY KEY, owner_username TEXT,
                 creator_id INTEGER, channel TEXT, creator_name TEXT,
@@ -133,7 +132,7 @@ def db(tmp_path) -> DuckDBResource:
                 gold_domain TEXT, gold_topic TEXT
             )
         """)
-        con.execute(f"""
+        con.execute("""
             CREATE TABLE ig_post_labels (
                 post_id TEXT PRIMARY KEY, label TEXT, method TEXT,
                 is_provisional BOOLEAN, likes_zscore DOUBLE, sigma_tier TEXT,
@@ -609,7 +608,6 @@ def test_topics_top5_by_count_or_perf_ties_share_rank(db):
         for topic, n in counts.items():
             for k in range(n):
                 # G: only unscored posts; A: 2 of 5 unscored (mean of 3 kept)
-                scored = topic != "G" and (topic != "A" or k < 3)
                 posts.append(
                     _post(f"{topic}{k}", 1, topic=topic, days_ago=5 + k,
                           likes=10)

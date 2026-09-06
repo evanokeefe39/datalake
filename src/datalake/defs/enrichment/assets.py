@@ -181,7 +181,9 @@ def check_prompt_currency(duckdb: DuckDBResource, ops: SQLiteResource) -> AssetC
                 "current_prompt_registered": registered,
             },
         )
-    return AssetCheckResult(passed=True, metadata={"stale_rows": 0, "current_prompt_registered": True})
+    return AssetCheckResult(
+        passed=True, metadata={"stale_rows": 0, "current_prompt_registered": True}
+    )
 
 
 ENRICHMENT_CHECKS = [check_enrichment_health, check_prompt_currency]

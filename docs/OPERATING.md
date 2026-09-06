@@ -167,7 +167,42 @@ uv run python scripts/migrate_schema_drift.py
 | ``scripts/migrate_owner_username.py`` | Backfill null ``owner_username`` from bronze ``username`` fallback. Idempotent, ``--dry-run`` supported. |
 | ``scripts/migrate_schema_drift.py`` | Apply schema migrations: rename tables, move data between DBs, drop vestigial tables. |
 | ``scripts/migrate_to_v2.py`` | One-shot migration from Phase 1-4 schema to v2 domain-scoped tables. |
-| ``scripts/migrate_from_ig_pipeline.py`` | Import bronze Parquet from legacy ig-pipeline repo. |
+## Backups
+
+``ops.sqlite`` (creator/roster + queue + media cache) and ``state.duckdb`` are
+single-writer, gitignored, and local-only. ``scripts/backup_databases.py`` pushes
+consistent snapshots off-machine (Cloudflare R2 via the ``r2-sessions`` AWS
+profile) plus a timestamped local copy under ``data/backups/``:
+
+```bash
+uv run python scripts/backup_databases.py            # R2 + local
+uv run python scripts/backup_databases.py --local-only
+```
+
+Consistency is handled per-engine: ``ops.sqlite`` via the SQLite online-backup API
+(safe while open), ``state.duckdb`` after a DuckDB checkpoint so the restored file
+is self-contained. A roster snapshot (tracked accounts + tier) is also written to
+``backups/roster_<date>.csv`` by ``scripts/snapshot_roster.py``.
+
+## Account discovery (issue #22)
+
+``scripts/discover_accounts.py`` grows the tracked account population — expanding
+from seed handles via Instagram's related-accounts rail, enriching each new handle
+with a public no-login profile scrape, tagging a size-tier + bio-niche, and
+reporting candidates **not** already tracked (deduped against ops.sqlite
+``profiles``). It is ban-free (Apify infra only; never the user's IG session),
+soft budget-capped, and propose-only (no auto-ingest):
+
+```bash
+uv run python scripts/discover_accounts.py --roster-seeds --budget-usd 3
+```
+
+The related rail is size-homophilous when seeded from large accounts — seed from
+tracked small/medium accounts (``--roster-seeds``) to surface the <10k cohort the
+growth report lacks. Curation groups (quality / review / flagged / unenriched) are
+documented in the module docstring; nothing is silently dropped. Long crawls exceed
+a foreground window — run with no deadline (``timeout 0``). Not yet a scheduled
+pipeline (see ISSUES #22/#23).
 
 ## Dagster UI
 
