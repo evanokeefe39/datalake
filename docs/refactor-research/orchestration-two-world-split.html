@@ -147,6 +147,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
     <a href="#network">Where things break</a>
     <a href="#stale">Where data goes stale</a>
     <a href="#history">Why it is this way</a>
+    <a href="#native">The machinery at hand</a>
     <a href="#fix">The shape of the fix</a>
   </div>
 </nav>
@@ -598,6 +599,60 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
     <p><strong>ADR-0002</strong> (decided 2026-07) moved enrichment out of Dagster runs entirely. The reasoning: enrichment calls a rate-limited LLM for hours at a time, absorbing 429s and waiting out the 08:00 UTC quota reset, and must survive crashes and Dagster restarts. The obvious alternative &mdash; Dagster Pipes, a Dagster-launched subprocess &mdash; was rejected because a run blocks until its subprocess exits. Correct for a short dbt job; wrong for hours-long rate-limited work holding a run slot open. So enrichment became a standalone worker, and <code>gold_analyses</code> became an externally-materialized AssetSpec whose sole writer is the worker, reporting via REST.</p>
     <p><strong>ADR-0003</strong> (decided 2026-08) set the determinism boundary: no LLM or API calls anywhere in the Dagster transform graph. A transform is deterministic, idempotent, cheap to replay; an external call is stochastic, rate-limited, and paid. The media-cache work set the precedent &mdash; bytes download at ingestion, never inside a transform &mdash; and the ADR generalized it: network I/O lives at exactly two boundaries, ingestion and the worker. Silver onward is hermetic. The DAG enqueues candidates and consumes gold; it never blocks on Gemini.</p>
     <p>Both decisions hold up. The pain was never the fences &mdash; it was that the gate through the second fence was left unattended. ADR-0002 chose an external worker but said nothing about who keeps the consume loop alive; the one-shot CLI was the simplest answer, and issue #24 is the bill for that simplicity.</p>
+  </div>
+</section>
+
+<section id="native">
+  <h2>The machinery at hand</h2>
+  <div class="prose">
+    <p>The five-minute primer got you to assets and &ldquo;what makes an asset run.&rdquo; The three options below are built out of Dagster machinery the primer deliberately skipped, because until now nothing in datalake used it. All of it is the same idea wearing different clothes: Dagster wants the decision <em>&ldquo;when does this run?&rdquo;</em> to live in code that Dagster keeps evaluating, not in a person&rsquo;s shell. We already have schedules and assets; the fixes need three more-native pieces &mdash; <strong>sensors</strong> (stateful polling that can replace a human re-run), <strong>external-state triggers</strong> (so &ldquo;a profile was added&rdquo; is a first-class event), and <strong>asset-centric automation conditions</strong> (freshness-driven re-runs inside the graph).</p>
+
+    <p><strong>Sensors, and the cursor that makes them cheap.</strong> A sensor is a function Dagster calls repeatedly &mdash; on an interval, an event, or a run-status change. It inspects some state and either requests a run or explains why not. Its power for our case is the <em>cursor</em>: a small blob Dagster persists between evaluations. A tick reads the cursor, looks at external state, decides, and writes a new cursor. That is what makes a sensor &ldquo;stateful polling&rdquo; rather than a busy loop &mdash; each tick is cheap and resumable, and it survives restarts. This is the primitive that turns issue #24&rsquo;s manual &ldquo;re-run the worker&rdquo; into something that happens on its own.</p>
+  </div>
+
+  <figure class="reveal">
+    <div class="diag-title">Figure 7 &mdash; A sensor with a cursor: polling that remembers</div>
+    <svg viewBox="0 0 1080 410" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="sensorT">
+      <title id="sensorT">A sensor evaluates on an interval: it reads a persisted cursor, asks an external system whether there is work, and requests a run when there is - otherwise it skips cheaply.</title>
+      <defs>
+        <marker id="arT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#1b7f79"/></marker>
+        <marker id="arA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#b45309"/></marker>
+        <marker id="arG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#9aa0a8"/></marker>
+      </defs>
+      <!-- top chain -->
+      <rect x="60" y="80" width="300" height="80" rx="8" fill="#e3efee" stroke="#1b7f79"/>
+      <text x="210" y="106" font-size="11.5" fill="#1b7f79" text-anchor="middle" font-family="JetBrains Mono">SENSOR TICK</text>
+      <text x="210" y="142" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">evaluated every N seconds</text>
+      <rect x="400" y="80" width="300" height="80" rx="8" fill="#e3efee" stroke="#1b7f79"/>
+      <text x="550" y="106" font-size="11.5" fill="#1b7f79" text-anchor="middle" font-family="JetBrains Mono">READ CURSOR</text>
+      <text x="550" y="142" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">persisted by Dagster &middot; survives restarts</text>
+      <rect x="740" y="80" width="300" height="80" rx="8" fill="#e3efee" stroke="#1b7f79"/>
+      <text x="890" y="106" font-size="11.5" fill="#1b7f79" text-anchor="middle" font-family="JetBrains Mono">ASK EXTERNAL STATE</text>
+      <text x="890" y="142" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">queue rows to claim? batch done?</text>
+      <line x1="360" y1="120" x2="396" y2="120" stroke="#1b7f79" stroke-width="2" marker-end="url(#arT)"/>
+      <line x1="700" y1="120" x2="736" y2="120" stroke="#1b7f79" stroke-width="2" marker-end="url(#arT)"/>
+      <!-- work-found outcome (the #24 cure) -->
+      <line x1="890" y1="160" x2="890" y2="210" stroke="#1b7f79" stroke-width="2"/>
+      <rect x="740" y="210" width="300" height="150" rx="8" fill="#f7ecdd" stroke="#b45309"/>
+      <text x="890" y="240" font-size="11.5" fill="#b45309" text-anchor="middle" font-family="JetBrains Mono">WORK FOUND &rarr; RUN REQUEST</text>
+      <text x="890" y="268" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">launch the worker / harvest run</text>
+      <text x="890" y="294" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">cursor rewritten to &ldquo;polled&rdquo;</text>
+      <text x="890" y="336" font-size="11" fill="#b45309" text-anchor="middle" font-family="Public Sans" font-style="italic">the #24 cure: nothing sits done, unharvested</text>
+      <!-- skip outcome -->
+      <path d="M740 164 C 560 205 380 230 242 250" fill="none" stroke="#9aa0a8" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arG)"/>
+      <rect x="60" y="250" width="360" height="80" rx="8" fill="#f1efe9" stroke="#c9c4b8"/>
+      <text x="90" y="278" font-size="11.5" fill="#7a8088" font-family="JetBrains Mono">ELSE &rarr; SKIP REASON</text>
+      <text x="90" y="308" font-size="11.5" fill="#4b5058" font-family="Public Sans">no run launched &middot; a cheap, normal tick</text>
+    </svg>
+    <figcaption>Polling lives in the <em>sensor</em>, not in a run &mdash; no op or asset ever blocks on a &ldquo;wait for the batch&rdquo; loop. The cursor is the whole trick: a small persisted value makes every tick stateless-and-cheap and crash-safe, so an interval of a few minutes costs almost nothing. Dagster keeps the daemon that evaluates sensors running; our two <em>schedules</em> being STOPPED never stopped sensors from existing, and a sensor can carry <code>DefaultSensorStatus.RUNNING</code>.</figcaption>
+  </figure>
+
+  <div class="prose">
+    <p><strong>Three kinds of trigger, one idea.</strong> Dagster&rsquo;s &ldquo;what fires a run&rdquo; vocabulary is broader than a schedule. A <strong>basic sensor</strong> polls an external condition on an interval (above: the queue, or a remote job&rsquo;s status). An <strong>asset sensor</strong> fires when a specific asset is materialized &mdash; so &ldquo;<code>labels</code> landed, go enrich&rdquo; can be a trigger, not a schedule. A <strong>run-status sensor</strong> fires on a run succeeding or failing &mdash; the hook for &ldquo;that harvest run finished, do the next thing.&rdquo; And a <strong>Source / external trigger</strong> is the same shape pointed at state Dagster does not own: making &ldquo;a profile was added to the roster&rdquo; readable as an event is what Option B leans on. The recent Dagster line has been folding the older &ldquo;SourceAsset&rdquo; vocabulary into external assets (<code>AssetSpec</code>) plus the sensor that reacts to them &mdash; which is exactly the shape we already have for <code>gold_analyses</code>.</p>
+
+    <p><strong>Asset-centric automation conditions.</strong> Since Dagster&rsquo;s declarative-automation work, the recommended way to express &ldquo;run when&rdquo; for assets that live <em>inside</em> one code location is an <code>AutomationCondition</code> on the asset itself &mdash; <code>eager()</code> (run when upstream updates), <code>on_cron()</code> (on a schedule after upstream is ready), <code>on_missing()</code> (materialize missing work), and freshness as a first-class idea. The system evaluates conditions about every 30&nbsp;s and launches runs when they hold. Sensors remain the right tool for triggering work <em>outside</em> the graph &mdash; an external worker, an async batch &mdash; which is why Option A (sensor-driven worker) and Option C (in-graph gated enrichment, automation-condition-driven) are two sides of Dagster&rsquo;s own &ldquo;choose your automation&rdquo; guidance rather than competing inventions.</p>
+
+    <p><strong>Two more that the options assume.</strong> <strong>Resources</strong> carry an API client and its config (the two-flavor 429 taxonomy, model/tier) into assets or sensors, so the client&rsquo;s retry and backoff knowledge lives in one testable place. <strong>Asset checks</strong> attach invariants &mdash; freshness, and our <code>check_prompt_currency</code> &mdash; to a materialization. And <strong>incremental materialization</strong> lets an asset rewrite only the rows that changed &mdash; for enrichment, the column-nullability gate (only posts missing signal) is the key to Option C. Each option below names the exact pieces it leans on.</p>
   </div>
 </section>
 
