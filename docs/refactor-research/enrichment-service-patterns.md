@@ -127,3 +127,52 @@ recommends sensors vs declarative automation for the async-harvest case.
   declarative-automation vs sensor for async harvest.
 - Read Dagster docs: declarative-automation, external-assets/AssetSpec, Pipes.
 - Extract job-search-toolkit's `enrich_job`/`resources/llm_client.py` concretely.
+
+## 8. Addendum — patterns-in-the-wild grounding (web recovered 2026-09-06)
+
+Web search came back this session. Two sources materially ground the option
+space and resolve several `[VERIFY]` gaps above.
+
+**Community: long-running external API work in Dagster.** A widely-shared gist
+`lukew-cogapp/dagster-long-running-operations` (2026-04) orchestrates bulk
+embedding/LLM/vision API work (~150k records, hours-days) and codifies exactly
+two patterns that mirror our space:
+- **Pattern 1 — Bulk API: Submit + Sensor Poll.** A run filters records against a
+  content-hash cache, submits only misses to the remote batch, persists the
+  `job_id` + status "pending", and **ends immediately**. A lightweight sensor
+  (on `minimum_interval_seconds`, ~300s for hour-long jobs) reads pending job ids,
+  polls the remote job, and on terminal state issues a `RunRequest` to the harvest
+  step. Stated properties map 1:1 to our #24 need: no worker sits open for the
+  batch, job ids persisted externally so polling survives restarts, sensor ticks
+  stay cheap/within timeout. **This is Option A's exact shape.**
+- **Pattern 2 — No bulk API: cached resource + threaded fan-out.** A single asset
+  fans work across a bounded `ThreadPoolExecutor`/async executor, memoizes on a
+  content-hash key (input id + model version + prompt hash), flushes a Parquet
+  cache periodically for crash safety, upserts idempotently. Optionally partitioned
+  for checkpointing (sweet spot 500-2000 records/partition). **This is Option C's
+  shape**, and the cache-key design is exactly our `(post_id, domain, prompt_hash)`.
+- **Decision guide:** single-asset in-process polling fine when work is minutes;
+  hours/days of external work → move to sensor-based polling (or webhook). This is
+  the duration rule that keeps our bounded Option C separate from hours-long Option A.
+
+**Dagster official / vendor.** The `dagster-expert` skill's automation references
+(choosing-automation decision tree; basic/asset/run-status sensors; declarative
+automation) confirm: basic sensors = "poll an external condition, request a run";
+declarative automation (`AutomationCondition`, `eager/on_cron/on_missing`,
+freshness) is Dagster's recommended idiom for asset-to-asset work *inside one code
+location*; sensors remain right for triggering work outside the graph / external
+side effects. Dagster 1.8 deprecated the experimental `external_assets_from_specs`
+and `SourceAsset` naming in favor of **external assets** (`AssetSpec`) — so our
+`gold_analyses` AssetSpec is the current canonical spelling, and Option B's "make
+the roster an external trigger" is a cursor-based basic sensor reading
+`ops.sqlite.profiles` (table-row polling is a textbook documented sensor idiom).
+Dagster's own blog "When Sync Isn't Enough" endorses bounded async in-process
+execution for inference/embeddings/enrichment — grounding Option C's in-process
+shape for bounded work.
+
+Net: **both** Option A (sensor + external worker) and Option C (in-graph gated
+asset) are legitimate, in-the-wild Dagster shapes; the deciding factor is the
+ADR-0003 determinism boundary (D5) and the duration/boundedness of the work —
+the same conclusion the article now draws. Option B reduces to trigger
+granularity (per-profile fan-out vs consolidated scrape), not whether the roster
+drives ingestion.
