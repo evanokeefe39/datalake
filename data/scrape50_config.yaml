@@ -1,0 +1,55 @@
+ops:
+  ig_posts_raw:
+    config:
+      results_limit: 30
+      urls:
+      - https://www.instagram.com/_origin.collective_/
+      - https://www.instagram.com/_sculpta_/
+      - https://www.instagram.com/actandsipnyc/
+      - https://www.instagram.com/adrian.wph/
+      - https://www.instagram.com/ariana.lpca/
+      - https://www.instagram.com/axengardwatches/
+      - https://www.instagram.com/boatandbridge/
+      - https://www.instagram.com/brooke_horras/
+      - https://www.instagram.com/candace.png/
+      - https://www.instagram.com/chels_fish/
+      - https://www.instagram.com/cubed.technologies/
+      - https://www.instagram.com/dylanaleckson/
+      - https://www.instagram.com/elaineexactly/
+      - https://www.instagram.com/empowered.nyu/
+      - https://www.instagram.com/halliechristensen22/
+      - https://www.instagram.com/hasewingroom/
+      - https://www.instagram.com/heung_heung112/
+      - https://www.instagram.com/itsmerachelmg/
+      - https://www.instagram.com/joanna_swanson/
+      - https://www.instagram.com/jonatanadame/
+      - https://www.instagram.com/katlundeb/
+      - https://www.instagram.com/kim_silfving/
+      - https://www.instagram.com/kimbeauty_ibrows.n.ilashes/
+      - https://www.instagram.com/lufecaeppexie/
+      - https://www.instagram.com/maciejohnson10/
+      - https://www.instagram.com/maryjorakowski/
+      - https://www.instagram.com/nathanhurstcreative/
+      - https://www.instagram.com/nationschurch.cork/
+      - https://www.instagram.com/nationscollege/
+      - https://www.instagram.com/odalys.ozuna/
+      - https://www.instagram.com/ozyy.rs/
+      - https://www.instagram.com/pb_mm08/
+      - https://www.instagram.com/pernilla_schonback/
+      - https://www.instagram.com/pernillaarea/
+      - https://www.instagram.com/peteryu_0104/
+      - https://www.instagram.com/phoenix.heavner/
+      - https://www.instagram.com/phrasedwithpurpose/
+      - https://www.instagram.com/productionsbags/
+      - https://www.instagram.com/reisz_and_shine/
+      - https://www.instagram.com/rukawa.kb/
+      - https://www.instagram.com/sageeblackk/
+      - https://www.instagram.com/shannonhallwrites/
+      - https://www.instagram.com/shimmering_blue_love/
+      - https://www.instagram.com/softilja/
+      - https://www.instagram.com/sommerset.studios/
+      - https://www.instagram.com/studioube/
+      - https://www.instagram.com/stuylegacy/
+      - https://www.instagram.com/taylormillerborg/
+      - https://www.instagram.com/theking_of_africa/
+      - https://www.instagram.com/txrachel_hasbrouck/
