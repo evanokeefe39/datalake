@@ -139,6 +139,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
 
 <nav class="toc" aria-label="Article sections">
   <div class="wrap">
+    <a href="#primer">Dagster in brief</a>
     <a href="#flow">How data flows</a>
     <a href="#seam">Where the two worlds meet</a>
     <a href="#manual">The overnight stall</a>
@@ -239,6 +240,114 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
 </figure>
 
 <main class="wrap">
+
+<section id="primer">
+  <h2>Dagster in five minutes (a primer)</h2>
+  <div class="prose">
+    <p class="lede">If you come from conventional ETL and a SQL warehouse, the first thing to unlearn is the unit you orchestrate. Airflow-style tools orchestrate <em>steps</em> &mdash; scripts and tasks with arrows between them, where a "run" is the whole chain, top to bottom. Dagster orchestrates <em>data</em>: the tables, files, and models themselves. You declare the data, how each piece depends on the others, and how to produce it &mdash; and the running falls out of that graph.</p>
+  </div>
+
+  <figure class="reveal">
+    <div class="diag-title">From task pipelines to asset graphs &mdash; same tables, different unit of orchestration</div>
+    <svg viewBox="0 0 1080 360" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="primerAt">
+      <title id="primerAt">Left: a conventional task pipeline runs steps in order. Right: a Dagster asset graph declares the tables and the data-flow edges between them.</title>
+      <defs>
+        <marker id="prA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#7a8088"/></marker>
+        <marker id="prD" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#1b7f79"/></marker>
+      </defs>
+      <!-- divider -->
+      <line x1="540" y1="30" x2="540" y2="300" stroke="#e2dfd8" stroke-dasharray="4 4"/>
+      <!-- LEFT: conventional tasks -->
+      <text x="40" y="52" font-size="11" letter-spacing="2" fill="#7a8088" font-family="JetBrains Mono">CONVENTIONAL &mdash; A PIPELINE OF TASKS</text>
+      <rect x="40" y="90" width="150" height="54" rx="8" fill="#f1efe9" stroke="#c9c4b8"/>
+      <text x="115" y="112" font-size="12.5" fill="#22252a" text-anchor="middle" font-family="JetBrains Mono">extract</text>
+      <text x="115" y="130" font-size="10.5" fill="#7a8088" text-anchor="middle" font-family="Public Sans">task &rarr; bronze files</text>
+      <rect x="245" y="90" width="150" height="54" rx="8" fill="#f1efe9" stroke="#c9c4b8"/>
+      <text x="320" y="112" font-size="12.5" fill="#22252a" text-anchor="middle" font-family="JetBrains Mono">transform</text>
+      <text x="320" y="130" font-size="10.5" fill="#7a8088" text-anchor="middle" font-family="Public Sans">task &rarr; silver_ig_posts</text>
+      <rect x="450" y="90" width="70" height="0" fill="none"/>
+      <line x1="190" y1="117" x2="245" y2="117" stroke="#7a8088" stroke-width="2" marker-end="url(#prA)"/>
+      <line x1="395" y1="117" x2="450" y2="117" stroke="#7a8088" stroke-width="2" marker-end="url(#prA)"/>
+      <text x="120" y="170" text-anchor="middle" font-size="12" fill="#7a8088" font-family="JetBrains Mono">enrich</text>
+      <text x="260" y="170" text-anchor="middle" font-size="12" fill="#7a8088" font-family="JetBrains Mono">...</text>
+      <text x="60" y="205" font-size="12.5" fill="#4b5058" font-family="Public Sans">You run the <em>steps</em>, in order.</text>
+      <text x="60" y="225" font-size="12.5" fill="#4b5058" font-family="Public Sans">A "run" executes the whole chain.</text>
+      <text x="60" y="245" font-size="12.5" fill="#4b5058" font-family="Public Sans">Freshness = "did the whole job run?"</text>
+      <rect x="40" y="268" width="470" height="58" rx="8" fill="#fff" stroke="#e2dfd8"/>
+      <text x="60" y="288" font-size="12" fill="#4b5058" font-family="Public Sans">The tables are <em>side effects</em> of the steps.</text>
+      <text x="60" y="306" font-size="12" fill="#4b5058" font-family="Public Sans">To re-do one step you re-run everything above it.</text>
+      <!-- RIGHT: Dagster assets -->
+      <text x="575" y="52" font-size="11" letter-spacing="2" fill="#1b7f79" font-family="JetBrains Mono">DAGSTER &mdash; AN ASSET GRAPH</text>
+      <rect x="575" y="90" width="130" height="54" rx="8" fill="#e3efee" stroke="#1b7f79"/>
+      <text x="640" y="112" font-size="12.5" fill="#22252a" text-anchor="middle" font-family="JetBrains Mono">bronze</text>
+      <text x="640" y="130" font-size="10.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">parquet files</text>
+      <rect x="775" y="90" width="170" height="54" rx="8" fill="#e3efee" stroke="#1b7f79"/>
+      <text x="860" y="112" font-size="12.5" fill="#22252a" text-anchor="middle" font-family="JetBrains Mono">silver_ig_posts</text>
+      <text x="860" y="130" font-size="10.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">a DuckDB table (asset)</text>
+      <rect x="990" y="90" width="70" height="54" rx="8" fill="#fff" stroke="#1b7f79" stroke-dasharray="5 4"/>
+      <text x="1025" y="112" font-size="12" fill="#22252a" text-anchor="middle" font-family="JetBrains Mono">gold</text>
+      <text x="1025" y="130" font-size="10" fill="#4b5058" text-anchor="middle" font-family="Public Sans">external</text>
+      <line x1="705" y1="117" x2="775" y2="117" stroke="#1b7f79" stroke-width="2" marker-end="url(#prD)"/>
+      <path d="M945 117 L985 117" stroke="#1b7f79" stroke-width="2" marker-end="url(#prD)"/>
+      <text x="575" y="205" font-size="12.5" fill="#4b5058" font-family="Public Sans">Each node is an <em>asset</em>: a piece of data that</text>
+      <text x="575" y="225" font-size="12.5" fill="#4b5058" font-family="Public Sans">exists, depends on upstream, and can be</text>
+      <text x="575" y="245" font-size="12.5" fill="#4b5058" font-family="Public Sans"><em>materialized</em> (written) by its own run.</text>
+      <rect x="575" y="268" width="470" height="58" rx="8" fill="#fff" stroke="#e2dfd8"/>
+      <text x="595" y="288" font-size="12" fill="#4b5058" font-family="Public Sans">To update <em>silver_ig_posts</em> you materialize that one</text>
+      <text x="595" y="306" font-size="12" fill="#4b5058" font-family="Public Sans">asset; Dagster knows its freshness independently.</text>
+      <text x="540" y="345" font-size="13" fill="#4b5058" text-anchor="middle" font-family="Public Sans">The same three tables &mdash; the unit of orchestration is the data, not the step.</text>
+    </svg>
+    <figcaption>The flip that matters for this article: in Dagster a table is a first-class object with its own materialization time and freshness, not a byproduct of a script that ran. That is what lets Dagster re-run <em>one</em> asset, track staleness per table, and express lineage as data.</figcaption>
+  </figure>
+
+  <div class="prose">
+    <p>Once you hold that, four words carry most of the meaning you will meet in this piece:</p>
+    <p><strong>Asset</strong> &mdash; a persistent piece of data (a DuckDB table like <code>silver_ig_posts</code>, a Parquet file, a view) plus the code that produces it. <strong>Materialize</strong> &mdash; run that asset&rsquo;s code to (re)write it; Dagster records a timestamp per materialization, which is what "fresh" and "stale" mean. <strong>Upstream / downstream</strong> &mdash; the dependency edges of the graph: an asset reads its upstream and feeds its downstream. <strong>AssetSpec / external asset</strong> &mdash; a table that Dagster knows about and tracks but does <em>not</em> write itself (in this piece, <code>gold_analyses</code>, written by the enrichment worker).</p>
+  </div>
+
+  <figure class="reveal">
+    <div class="diag-title">Assets do not run themselves &mdash; something must decide to materialize them</div>
+    <svg viewBox="0 0 1080 250" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="primerBt">
+      <title id="primerBt">A schedule, sensor, declarative condition, or a human can materialize an asset. Nothing happens by default.</title>
+      <defs>
+        <marker id="prT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#1b7f79"/></marker>
+      </defs>
+      <g font-size="12.5" font-family="Public Sans" fill="#4b5058">
+        <!-- triggers -->
+        <rect x="40" y="70" width="190" height="44" rx="8" fill="#fff" stroke="#9cc6c3"/>
+        <text x="135" y="97" text-anchor="middle" font-family="JetBrains Mono" font-size="11.5" fill="#1b7f79">SCHEDULE</text>
+        <text x="135" y="108" text-anchor="middle" font-size="10">every 3am</text>
+        <rect x="260" y="70" width="190" height="44" rx="8" fill="#fff" stroke="#9cc6c3"/>
+        <text x="355" y="97" text-anchor="middle" font-family="JetBrains Mono" font-size="11.5" fill="#1b7f79">SENSOR</text>
+        <text x="355" y="108" text-anchor="middle" font-size="10">file arrived / job done</text>
+        <rect x="480" y="70" width="200" height="44" rx="8" fill="#fff" stroke="#9cc6c3"/>
+        <text x="580" y="97" text-anchor="middle" font-family="JetBrains Mono" font-size="11.5" fill="#1b7f79">DECLARATIVE CONDITION</text>
+        <text x="580" y="108" text-anchor="middle" font-size="10">stale or missing</text>
+        <rect x="710" y="70" width="150" height="44" rx="8" fill="#fff" stroke="#9cc6c3"/>
+        <text x="785" y="97" text-anchor="middle" font-family="JetBrains Mono" font-size="11.5" fill="#1b7f79">HUMAN</text>
+        <text x="785" y="108" text-anchor="middle" font-size="10">click "materialize"</text>
+      </g>
+      <line x1="135" y1="114" x2="560" y2="150" stroke="#9cc6c3" stroke-width="1.5"/>
+      <line x1="355" y1="114" x2="560" y2="150" stroke="#9cc6c3" stroke-width="1.5"/>
+      <line x1="580" y1="114" x2="560" y2="150" stroke="#9cc6c3" stroke-width="1.5"/>
+      <line x1="785" y1="114" x2="560" y2="150" stroke="#9cc6c3" stroke-width="1.5"/>
+      <rect x="455" y="150" width="210" height="56" rx="9" fill="#e3efee" stroke="#1b7f79"/>
+      <text x="560" y="173" text-anchor="middle" font-size="13" font-family="JetBrains Mono" fill="#1b7f79">MATERIALIZE an asset</text>
+      <text x="560" y="191" text-anchor="middle" font-size="11" font-family="Public Sans" fill="#4b5058">e.g. silver_ig_posts</text>
+      <text x="560" y="235" text-anchor="middle" font-size="13" fill="#8a3324" font-family="Public Sans">Declaring an asset never runs it. No trigger &rarr; nothing happens. That gap is datalake&rsquo;s orchestration vacuum.</text>
+    </svg>
+    <figcaption>Dagster separates <em>what exists</em> from <em>what runs when</em>. An asset is a definition; a schedule, sensor, condition, or a person must fire it. Our two schedules are <code>DefaultScheduleStatus.STOPPED</code> and there are no sensors &mdash; so today the person is the trigger.</figcaption>
+  </figure>
+
+  <div class="callout reveal">
+    <span class="tag">The assumptions you inherit by reading "asset graph"</span>
+    <p>When the rest of this piece talks about the asset graph, it is assuming you accept four consequences of the model:</p>
+    <p><strong>Ordering comes from dependencies, not a scripted sequence.</strong> The graph is data-flow edges; a "pipeline" is just a named selection of assets to materialize together (a job).</p>
+    <p><strong>Defining an asset is not running it.</strong> Automation (or a person) decides when. This is why an asset graph can exist while nothing in it is actually advancing.</p>
+    <p><strong>Freshness is per asset, and stale is a first-class idea.</strong> Each table carries its own last-materialization time and can carry a freshness policy ("no older than N hours").</p>
+    <p><strong>Pure compute is the comfort zone; external calls are deliberate.</strong> A deterministic, replayable transform is what Dagster treats as normal. Network I/O (an API like Gemini) must be placed on purpose &mdash; in a resource, an ingestion producer, or an external worker &mdash; or you break replayability. That rule is exactly our ADR-0003, and it is the load-bearing reason enrichment lives outside the graph.</p>
+  </div>
+</section>
 
 <section id="flow">
   <h2>How data flows</h2>
@@ -422,6 +531,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
       <text x="880" y="412" font-family="JetBrains Mono" font-size="10.5" fill="#b45309" text-anchor="end" letter-spacing="1.5">STOCHASTIC &#9642; PAID &#9642; NETWORK &#9642; WORLD B</text>
     </svg>
     <figcaption>Network I/O is confined by rule to two boundaries: ingestion (the scrape, and media bytes into <code>media_cache</code>) and the external worker (the sole Gemini caller). Silver onward is a pure transform that neither fetches nor calls.</figcaption>
+  </figure>
 
   <div class="prose">
     <p>The 429 taxonomy matters operationally. A <code>rate_limit_exceeded</code> response means slow down: the worker applies jittered exponential backoff and retries per item, never per run. An <code>insufficient_quota</code> means stop: free-tier quota is gone until the 08:00 UTC reset, so hammering it wastes attempts and dead-letters rows. Both kinds have landed in <code>dead_letter</code> &mdash; six <code>429 RESOURCE_EXHAUSTED</code> rows sat there alongside four legitimate empty-caption skips, awaiting a human&rsquo;s triage.</p>
@@ -519,8 +629,6 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
     <p>Part of the orchestration-refactor investigation. Sources: <code>docs/refactor-research/enrichment-service-patterns.md</code>, ADR-0002, ADR-0003, <code>ISSUES.md</code> #5/#20/#22/#23/#24, <code>src/datalake/defs/</code> as-built. Details marked uncertain in the research note are phrased as open questions here, not facts.</p>
   </div>
 </footer>
-
-</div>
 </main>
 <script>
 (function(){
