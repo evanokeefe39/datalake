@@ -148,6 +148,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
     <a href="#stale">Where data goes stale</a>
     <a href="#history">Why it is this way</a>
     <a href="#native">The machinery at hand</a>
+    <a href="#sources">Source shapes</a>
     <a href="#fix">The shape of the fix</a>
   </div>
 </nav>
@@ -604,6 +605,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
 
 <section id="native">
   <h2>The machinery at hand</h2>
+
   <div class="prose">
     <p>The five-minute primer got you to assets and &ldquo;what makes an asset run.&rdquo; The three options below are built out of Dagster machinery the primer deliberately skipped, because until now nothing in datalake used it. All of it is the same idea wearing different clothes: Dagster wants the decision <em>&ldquo;when does this run?&rdquo;</em> to live in code that Dagster keeps evaluating, not in a person&rsquo;s shell. We already have schedules and assets; the fixes need three more-native pieces &mdash; <strong>sensors</strong> (stateful polling that can replace a human re-run), <strong>external-state triggers</strong> (so &ldquo;a profile was added&rdquo; is a first-class event), and <strong>asset-centric automation conditions</strong> (freshness-driven re-runs inside the graph).</p>
 
@@ -655,6 +657,41 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
     <p><strong>Two more that the options assume.</strong> <strong>Resources</strong> carry an API client and its config (the two-flavor 429 taxonomy, model/tier) into assets or sensors, so the client&rsquo;s retry and backoff knowledge lives in one testable place. <strong>Asset checks</strong> attach invariants &mdash; freshness, and our <code>check_prompt_currency</code> &mdash; to a materialization. And <strong>incremental materialization</strong> lets an asset rewrite only the rows that changed &mdash; for enrichment, the column-nullability gate (only posts missing signal) is the key to Option C. Each option below names the exact pieces it leans on.</p>
   </div>
 </section>
+
+<section id="sources">
+  <h2>Three shapes of external work</h2>
+  <div class="prose">
+    <p>The machinery above only matters once you classify the source you are consuming. External producers fall into three shapes &mdash; chosen by <em>where the latency and the durability live</em>, not by which vendor provides them. The classifier is one question: does the system hand the result back <em>in the call</em> (synchronous), hand you a <em>handle to something it finishes later</em> (async job), or an <em>unbounded flow</em> (stream)? Each shape wants a different Dagster mechanism, and misclassifying produces exactly the bugs in the figures above.</p>
+    <p><strong>Synchronous</strong> (the answer returns in the call &mdash; most REST, a bounded external-DB read): fetch in a normal, bounded run with keyset pagination and chunked/streamed batches rather than one giant payload, per-request retry/backoff, idempotent by key. No sensor &mdash; there is nothing to wait on between calls.</p>
+    <p><strong>Async external job</strong> (the system holds the result until it is done &mdash; Apify actor, <code>gemini-batch</code>, BigQuery/Snowflake/Databricks async-query jobs): submit, persist the handle (<code>run_id</code>/<code>job_id</code>/<code>dataset_id</code>), end the run; a cursor sensor polls terminal state and requests the <em>harvest</em> run that streams the finished dataset into bronze. Never block a Dagster run on the poll, and never make a one-shot CLI the only poller &mdash; both are issue #24.</p>
+    <p><strong>Stream</strong> (unbounded &mdash; Kafka &amp; co.): Dagster is a batch orchestrator, so cut the stream at a chosen boundary &mdash; a micro-batch drain (interval sensor, cursor = the committed offset) when latency allows, or a dedicated stream engine owns the hot path and Dagster orchestrates the landed table.</p>
+    <p>Both of datalake&rsquo;s producers are the <strong>async</strong> shape. <code>gemini-batch</code> is the #24 case; the Apify actor is the same shape &mdash; today <code>ig_posts_raw</code> blocks its Dagster run on <code>poll_run</code> while the actor runs, which is precisely the pattern the async shape exists to avoid. The two-world fix below should make <em>both</em> producers sensor-harvested.</p>
+  </div>
+
+  <figure class="reveal">
+    <div class="diag-title">Figure 8 &mdash; Classify by one question, then pick the mechanism</div>
+    <svg viewBox="0 0 1080 250" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="shapesT">
+      <title id="shapesT">Three shapes of external work: synchronous request-response, async external job, and unbounded stream - each with its Dagster mechanism.</title>
+      <rect x="40" y="46" width="320" height="128" rx="8" fill="#e3efee" stroke="#1b7f79"/>
+      <text x="200" y="74" font-size="11.5" fill="#1b7f79" text-anchor="middle" font-family="JetBrains Mono">SYNCHRONOUS REQUEST-RESPONSE</text>
+      <text x="200" y="110" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">answer in the call</text>
+      <text x="200" y="136" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">fetch in batches: retry &middot; paginate</text>
+      <text x="200" y="158" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">&middot; stream; no sensor</text>
+      <rect x="380" y="46" width="320" height="128" rx="8" fill="#f7ecdd" stroke="#b45309"/>
+      <text x="540" y="74" font-size="11.5" fill="#b45309" text-anchor="middle" font-family="JetBrains Mono">ASYNC EXTERNAL JOB</text>
+      <text x="540" y="110" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">holds the result till done</text>
+      <text x="540" y="136" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">submit &rarr; persist handle &rarr;</text>
+      <text x="540" y="158" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">sensor harvests into bronze</text>
+      <rect x="720" y="46" width="320" height="128" rx="8" fill="#e3efee" stroke="#1b7f79"/>
+      <text x="880" y="74" font-size="11.5" fill="#1b7f79" text-anchor="middle" font-family="JetBrains Mono">UNBOUNDED STREAM</text>
+      <text x="880" y="110" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">cut at a boundary</text>
+      <text x="880" y="136" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">micro-batch drain, or engine</text>
+      <text x="880" y="158" font-size="11.5" fill="#4b5058" text-anchor="middle" font-family="Public Sans">+ Dagster on the landed table</text>
+      <text x="540" y="218" font-size="11.5" fill="#b45309" text-anchor="middle" font-family="Public Sans" font-style="italic">both datalake producers are this shape: Apify actor &middot; gemini-batch</text>
+    </svg>
+    <figcaption>Classify by &ldquo;does it answer in the call, hand you a handle, or stream unbounded?&rdquo; &mdash; then the mechanism follows. Apify and gemini-batch are both async external jobs, so both want submit + sensor-harvest; today the Apify scrape still blocks its run on <code>poll_run</code>.</figcaption>
+  </figure>
+</section>
 <section id="fix">
   <h2>The shape of the fix</h2>
   <div class="prose">
@@ -673,7 +710,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
   </div>
 
   <figure class="reveal">
-    <div class="diag-title">Figure 8 &mdash; Option A: submit, then a sensor harvests</div>
+    <div class="diag-title">Figure 9 &mdash; Option A: submit, then a sensor harvests</div>
     <svg viewBox="0 0 1080 330" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="optAT">
       <title id="optAT">A run submits the batch and persists its job id, then ends. A harvest sensor polls pending job ids and requests the harvest run once the remote batch is terminal.</title>
       <defs>
@@ -722,7 +759,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
   </div>
 
   <figure class="reveal">
-    <div class="diag-title">Figure 9 &mdash; Option B: a roster change becomes an ingestion trigger</div>
+    <div class="diag-title">Figure 10 &mdash; Option B: a roster change becomes an ingestion trigger</div>
     <svg viewBox="0 0 1080 320" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="optBT">
       <title id="optBT">A profile added to the roster is detected by a cursor-based sensor, which requests the scrape. The open question is granularity: per-profile fan-out vs one consolidated scrape.</title>
       <defs>
@@ -758,7 +795,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
   </div>
 
   <figure class="reveal">
-    <div class="diag-title">Figure 10 &mdash; Option C: a gated enrichment seam in the graph</div>
+    <div class="diag-title">Figure 11 &mdash; Option C: a gated enrichment seam in the graph</div>
     <svg viewBox="0 0 1080 300" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="optCT">
       <title id="optCT">Silver feeds an explicitly-gated enrichment asset that only calls the API for rows missing signal, writing gold in-graph with asset checks on the result.</title>
       <defs>
