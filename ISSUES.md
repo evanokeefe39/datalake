@@ -808,6 +808,46 @@ pipeline discovers and pulls from, rather than a URL we feed a manual run.
 
 #### Non-goals (this issue)
 - No code/asset changes here — investigation + comparison + ADR decision only.
+
+### 24. Enrichment appears stuck overnight — no persistent poller for async Gemini batches
+
+**Status:** Diagnosed (2026-09-06). The 50-account ingestion (issue #22/#23 work)
+enriched on a manual worker re-run, but exposed an operational gap.
+
+#### What happened
+Job 6 (593 posts of the 50 scraped accounts, gemini-batch mode) sat at
+**543 'processing' for ~12 hours overnight** with gold flat — looked broken.
+Re-running the worker (`scripts/enrichment_worker.py --mode gemini-batch`) once
+immediately retrieved **535 + failed 8**, and gold grew 9,035 → 9,570. Not a bug —
+the batch had finished on Google's side; nothing was harvesting it.
+
+#### Five Whys
+1. **Why not done?** 543 items stuck 'processing'; only 49 complete; gold not growing.
+2. **Why processing?** Items were claimed + submitted to the Gemini batch API; gold
+   is written only at retrieval-apply, which requires polling a *terminal* batch.
+3. **Why no retrieval?** A worker run does ONE submit-then-poll cycle and EXITS.
+   After a bounded loop stopped at ~00:05 (batch still RUNNING), no worker process
+   ran for hours, so nothing polled/retrieved the (by then finished) Google batch.
+4. **Why no worker running?** The enrichment worker is a one-shot CLI, not a
+   persistent daemon / scheduled sensor; nothing keeps it alive to poll async
+   Gemini batch jobs to completion.
+5. **Root cause:** there is no persistent or scheduled enrichment-consume loop, so
+   an async Gemini batch's completion is only harvested on a manual re-run — making
+   long batches look "stuck" and delaying gold indefinitely. No alerting/monitoring
+   surfaced the "no worker polling for N hours" condition either.
+
+#### Observations (benign, not bugs — verified)
+- Worker DuckDBResource is `data/state.duckdb` — same file queries read; no path split.
+- "49 complete, no gold" was a mid-flight read; gold landed correctly on retrieval.
+- "Failed to POST to Dagster: HTTP 308" = redirect in materialization notify (non-fatal).
+
+#### Suggested fix (not yet done)
+- A scheduled/looping consume path that keeps polling `--mode gemini-batch` until
+  jobs drain (Dagster sensor or a resilient looping runner), plus completion-latency
+  visibility. Related to issue #23 (producer/source + pipeline productionization).
+
+#### Non-goals
+- No code change yet — diagnosis + lesson only.
 ## Resolved
 
 ### 1. Comprehensive medallion testing strategy ✅ (2026-07-01)
