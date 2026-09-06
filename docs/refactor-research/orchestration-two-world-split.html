@@ -103,6 +103,7 @@ h3{font-family:var(--body);font-weight:600;font-size:1.05rem;margin:2em 0 .7em}
 .callout .tag{font-family:var(--mono);font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--danger);display:block;margin-bottom:12px}
 .callout p{color:var(--dark-ink)}
 .callout .mono{background:#2a2f36;border-color:#3a4048;color:#dfe3e8}
+.callout code{background:#2a2f36;border-color:#3a4048;color:#dfe3e8}
 .callout h3{margin:0 0 .6em;color:#f4f1ea;font-size:1.1rem}
 
 /* two-world swatch rows */
@@ -167,7 +168,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
 
 <!-- ============ HERO DIAGRAM ============ -->
 <figure class="wrap reveal" aria-label="End-to-end orchestration flow diagram">
-  <div class="diag-title">Figure 1 &mdash; The end-to-end flow, and the seam</div>
+  <div class="diag-title">Figure 1 &mdash; The two worlds at a glance: the flow and its seam</div>
   <svg viewBox="0 0 1080 340" role="img" aria-labelledby="heroTitle" xmlns="http://www.w3.org/2000/svg">
     <title id="heroTitle">World A: bronze scrape to silver to labels to batch queue. Seam: ops.sqlite queue and gold_analyses AssetSpec. World B: Gemini enrichment worker to gold_analyses to serving.</title>
     <defs>
@@ -228,10 +229,9 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
     </g>
     <text x="850" y="212" font-size="11" fill="#7a8088" text-anchor="middle" font-family="Public Sans">generate_content &middot; File API</text>
     <text x="850" y="228" font-size="11" fill="#7a8088" text-anchor="middle" font-family="Public Sans">gemini-batch (async) &middot; 429s</text>
-    <!-- gold return arrow: below, from B back through seam to serving -->
-    <rect x="845" y="255" width="140" height="0" fill="none"/>
-    <path d="M850 182 L850 300 L300 300" fill="none" stroke="#b45309" stroke-width="2" marker-end="url(#arrB)"/>
-    <text x="575" y="318" font-size="11" fill="#b45309" text-anchor="middle" font-family="Public Sans">gold_analyses written &mdash; Dagster sees it only as an externally-materialized AssetSpec + FreshnessPolicy (REST POST, 308 non-fatal)</text>
+    <!-- gold return arrow: out the right of World B, down the margin, into serving -->
+    <path d="M915 156 L1040 156 L1040 300 L372 300" fill="none" stroke="#b45309" stroke-width="2" marker-end="url(#arrB)"/>
+    <text x="1000" y="236" font-size="10" fill="#b45309" text-anchor="middle" font-family="Public Sans">gold</text>
     <rect x="235" y="282" width="130" height="36" rx="8" fill="#fff" stroke="#b45309" stroke-width="1.5"/>
     <text x="300" y="304" font-size="12" fill="#22252a" text-anchor="middle" font-family="JetBrains Mono">serving</text>
     <text x="560" y="292" font-size="10.5" fill="#7a8088" font-family="Public Sans" text-anchor="middle">&uarr; dim_profile / dim_date &middot; ~17 analytics views &middot; React dashboard</text>
@@ -248,7 +248,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
   </div>
 
   <figure class="reveal">
-    <div class="diag-title">From task pipelines to asset graphs &mdash; same tables, different unit of orchestration</div>
+    <div class="diag-title">Figure 2 &mdash; Tasks vs assets: the mental-model flip</div>
     <svg viewBox="0 0 1080 360" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="primerAt">
       <title id="primerAt">Left: a conventional task pipeline runs steps in order. Right: a Dagster asset graph declares the tables and the data-flow edges between them.</title>
       <defs>
@@ -273,9 +273,8 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
       <text x="60" y="205" font-size="12.5" fill="#4b5058" font-family="Public Sans">You run the <em>steps</em>, in order.</text>
       <text x="60" y="225" font-size="12.5" fill="#4b5058" font-family="Public Sans">A "run" executes the whole chain.</text>
       <text x="60" y="245" font-size="12.5" fill="#4b5058" font-family="Public Sans">Freshness = "did the whole job run?"</text>
-      <rect x="40" y="268" width="470" height="58" rx="8" fill="#fff" stroke="#e2dfd8"/>
-      <text x="60" y="288" font-size="12" fill="#4b5058" font-family="Public Sans">The tables are <em>side effects</em> of the steps.</text>
-      <text x="60" y="306" font-size="12" fill="#4b5058" font-family="Public Sans">To re-do one step you re-run everything above it.</text>
+      <text x="60" y="270" font-size="12.5" fill="#4b5058" font-family="Public Sans">Tables are side effects &mdash; change one step,</text>
+      <text x="60" y="290" font-size="12.5" fill="#4b5058" font-family="Public Sans">re-run everything above it.</text>
       <!-- RIGHT: Dagster assets -->
       <text x="575" y="52" font-size="11" letter-spacing="2" fill="#1b7f79" font-family="JetBrains Mono">DAGSTER &mdash; AN ASSET GRAPH</text>
       <rect x="575" y="90" width="130" height="54" rx="8" fill="#e3efee" stroke="#1b7f79"/>
@@ -289,12 +288,10 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
       <text x="1025" y="130" font-size="10" fill="#4b5058" text-anchor="middle" font-family="Public Sans">external</text>
       <line x1="705" y1="117" x2="775" y2="117" stroke="#1b7f79" stroke-width="2" marker-end="url(#prD)"/>
       <path d="M945 117 L985 117" stroke="#1b7f79" stroke-width="2" marker-end="url(#prD)"/>
-      <text x="575" y="205" font-size="12.5" fill="#4b5058" font-family="Public Sans">Each node is an <em>asset</em>: a piece of data that</text>
-      <text x="575" y="225" font-size="12.5" fill="#4b5058" font-family="Public Sans">exists, depends on upstream, and can be</text>
-      <text x="575" y="245" font-size="12.5" fill="#4b5058" font-family="Public Sans"><em>materialized</em> (written) by its own run.</text>
-      <rect x="575" y="268" width="470" height="58" rx="8" fill="#fff" stroke="#e2dfd8"/>
-      <text x="595" y="288" font-size="12" fill="#4b5058" font-family="Public Sans">To update <em>silver_ig_posts</em> you materialize that one</text>
-      <text x="595" y="306" font-size="12" fill="#4b5058" font-family="Public Sans">asset; Dagster knows its freshness independently.</text>
+      <text x="575" y="205" font-size="12.5" fill="#4b5058" font-family="Public Sans">Each node is an <em>asset</em>: data with its own</text>
+      <text x="575" y="225" font-size="12.5" fill="#4b5058" font-family="Public Sans"><em>materialization</em> time and freshness.</text>
+      <text x="575" y="245" font-size="12.5" fill="#4b5058" font-family="Public Sans">Change one asset &mdash; Dagster knows which are stale.</text>
+      <text x="575" y="270" font-size="12.5" fill="#4b5058" font-family="Public Sans">Re-materialize that asset alone, not the whole job.</text>
       <text x="540" y="345" font-size="13" fill="#4b5058" text-anchor="middle" font-family="Public Sans">The same three tables &mdash; the unit of orchestration is the data, not the step.</text>
     </svg>
     <figcaption>The flip that matters for this article: in Dagster a table is a first-class object with its own materialization time and freshness, not a byproduct of a script that ran. That is what lets Dagster re-run <em>one</em> asset, track staleness per table, and express lineage as data.</figcaption>
@@ -306,7 +303,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
   </div>
 
   <figure class="reveal">
-    <div class="diag-title">Assets do not run themselves &mdash; something must decide to materialize them</div>
+    <div class="diag-title">Figure 3 &mdash; What makes an asset run: the triggers</div>
     <svg viewBox="0 0 1080 250" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="primerBt">
       <title id="primerBt">A schedule, sensor, declarative condition, or a human can materialize an asset. Nothing happens by default.</title>
       <defs>
@@ -397,7 +394,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
   </div>
 
   <figure class="reveal">
-    <div class="diag-title">Figure 2 &mdash; Issue #24: the manual re-invoke loop</div>
+    <div class="diag-title">Figure 4 &mdash; Issue #24: the manual re-invoke loop</div>
     <svg viewBox="0 0 1080 378" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="f24t">
       <title id="f24t">Batch submitted; worker exits; time passes with no poller; gold only advances when a human re-runs the worker.</title>
       <defs>
@@ -456,7 +453,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
   </div>
 
   <figure class="reveal">
-    <div class="diag-title">Figure 3 &mdash; Failure zones pinned to the flow</div>
+    <div class="diag-title">Figure 5 &mdash; Where things break: failure zones on the flow</div>
     <svg viewBox="0 0 1080 430" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="f3t">
       <title id="f3t">Annotated flow with failure markers: Apify reliability at bronze, CDN expiry into media_cache, Gemini 429 taxonomy and batch latency at the worker, 308 redirect at the Dagster REST report.</title>
       <defs>
@@ -545,7 +542,7 @@ footer{margin-top:72px;border-top:1px solid var(--hairline);padding:30px 0 60px;
   </div>
 
   <figure class="reveal">
-    <div class="diag-title">Figure 4 &mdash; staleness and corruption points</div>
+    <div class="diag-title">Figure 6 &mdash; Where data goes stale or corrupt</div>
     <svg viewBox="0 0 1080 250" role="img" xmlns="http://www.w3.org/2000/svg" aria-labelledby="f4t">
       <title id="f4t">Stale gold when prompt_hash drifts; media_cache mime gap routing valid posts to dead letter; null engagement rows entering silver; roster discovered but not scraped.</title>
       <g font-family="Public Sans">
