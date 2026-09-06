@@ -841,6 +841,11 @@ the batch had finished on Google's side; nothing was harvesting it.
 - "49 complete, no gold" was a mid-flight read; gold landed correctly on retrieval.
 - "Failed to POST to Dagster: HTTP 308" = redirect in materialization notify (non-fatal).
 
+#### Suggested fix (not yet done)
+- A scheduled/looping consume path that keeps polling `--mode gemini-batch` until
+  jobs drain (Dagster sensor or a resilient looping runner), plus completion-latency
+  visibility. Related to issue #23 (producer/source + pipeline productionization).
+
 #### Corrective lesson — Dagster source-consumption patterns
 #24 is the canonical failure of treating an **async external job** as a one-shot
 synchronous fetch. The corrective discipline is a documented three-shape taxonomy
