@@ -21,7 +21,6 @@ from datalake.defs.common.lake import POST_MEDIA_DIR
 from datalake.defs.common.resources import GeminiResource, SQLiteResource
 from datalake.defs.common.schemas import sqlite_ddl
 
-
 # ── Gemini File API retention & reuse window ────────────────────────────────
 #
 # VERIFIED against https://ai.google.dev/gemini-api/docs/files: "Files are

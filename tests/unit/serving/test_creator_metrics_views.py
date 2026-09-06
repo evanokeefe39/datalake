@@ -42,7 +42,6 @@ from datalake.defs.serving.assets import (
     v_rising_creators as _v_rising_creators,
 )
 
-
 # ── Fixture plumbing ─────────────────────────────────────────────────────────
 
 POST_COLUMNS = (
@@ -73,14 +72,22 @@ def _post(
     comments: int | None = 0,
     views: int | None = None,
     days_ago: float | None = 30,
+    hour: int = 12,
     domain: str | None = None,
     topic: str | None = None,
     name: str = "Creator",
 ) -> tuple:
-    """v_post_detail row with sensible defaults (image post by default)."""
+    """v_post_detail row with sensible defaults (image post by default).
+
+    ``hour`` pins the timestamp's wall-clock hour (default noon). When a target
+    uses a fractional ``days_ago`` alongside integer-day priors, pin it to an
+    hour past the priors' noon so it can never tie a prior (a tie would drop the
+    newest prior from a strict ``ts < target`` window).
+    """
     return (
         post_id, owner, creator_id, "instagram", name,
-        likes, comments, views, None if days_ago is None else _ts(days_ago),
+        likes, comments, views,
+        None if days_ago is None else _ts(days_ago, hour=hour),
         domain, topic,
     )
 
@@ -123,7 +130,7 @@ def db(tmp_path) -> DuckDBResource:
     """
     resource = DuckDBResource(database=str(tmp_path / "creator_metrics.duckdb"))
     with resource.get_connection() as con:
-        con.execute(f"""
+        con.execute("""
             CREATE TABLE v_post_detail (
                 post_id TEXT PRIMARY KEY, owner_username TEXT,
                 creator_id INTEGER, channel TEXT, creator_name TEXT,
@@ -133,7 +140,7 @@ def db(tmp_path) -> DuckDBResource:
                 gold_domain TEXT, gold_topic TEXT
             )
         """)
-        con.execute(f"""
+        con.execute("""
             CREATE TABLE ig_post_labels (
                 post_id TEXT PRIMARY KEY, label TEXT, method TEXT,
                 is_provisional BOOLEAN, likes_zscore DOUBLE, sigma_tier TEXT,
@@ -203,7 +210,10 @@ def test_baseline_n20_cap_takes_most_recent_priors(db):
             _post(f"p{j}", 1, comments=j + 1, days_ago=j + 1)
             for j in range(25)  # comments 1..25, most recent = 1
         ]
-        posts.append(_post("target", 1, comments=5, days_ago=0.5))
+        # Pin the target past the priors' noon so its strict-prior window never
+        # drops p0: with the default noon hour, a 0.5-day-ago target ties the
+        # 1-day-ago prior when the wall clock is before noon (CI ran 10:40 UTC).
+        posts.append(_post("target", 1, comments=5, days_ago=0.5, hour=18))
         _seed(con, posts, [_label(p[0]) for p in posts])
     _run_metrics_chain(db)
 
@@ -609,7 +619,6 @@ def test_topics_top5_by_count_or_perf_ties_share_rank(db):
         for topic, n in counts.items():
             for k in range(n):
                 # G: only unscored posts; A: 2 of 5 unscored (mean of 3 kept)
-                scored = topic != "G" and (topic != "A" or k < 3)
                 posts.append(
                     _post(f"{topic}{k}", 1, topic=topic, days_ago=5 + k,
                           likes=10)

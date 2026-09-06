@@ -15,16 +15,15 @@ import pytest
 from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLiteResource
 from datalake.defs.enrichment import media_cache
 from datalake.defs.enrichment.gemini_batch import _build_contents, _to_inlined_request
-from datalake.defs.enrichment.media_cache import lookup_or_upload_all, url_hash
-from tests.unit.enrichment.test_media_cache import _make_fake_client, _seed_byte_cache
-
+from datalake.defs.enrichment.media_cache import lookup_or_upload_all
 from scripts.enrichment_worker import build_requests_for_items
+from tests.unit.enrichment.test_media_cache import _make_fake_client, _seed_byte_cache
 
 
 @pytest.fixture()
 def batch_env(tmp_path):
     """Ops db with a claimed gemini-batch + DuckDB silver rows for one post."""
-    from datalake.defs.enrichment.batch import _ensure_schema, claim_pending_items, create_batch
+    from datalake.defs.enrichment.batch import _ensure_schema
 
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
     _ensure_schema(ops)

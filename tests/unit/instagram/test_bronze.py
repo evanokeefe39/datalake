@@ -13,12 +13,12 @@ import polars as pl
 import pytest
 from dagster import build_asset_context
 
+from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.instagram.assets import ig_posts_raw
 from datalake.defs.instagram.config import ScrapeConfig
-from datalake.defs.common.resources import SQLiteResource
 
 
-def _ops_resource(tmp_path: "object") -> SQLiteResource:
+def _ops_resource(tmp_path: object) -> SQLiteResource:
     """Standalone ``ops`` resource passed as a kwarg (Dagster forbids mixing
     context-resources with kwargs in one invocation)."""
     return SQLiteResource(database=str(tmp_path / "ops.sqlite"))

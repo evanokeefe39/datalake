@@ -76,7 +76,8 @@ def env(tmp_path):
         "creator_id INTEGER, creator_name TEXT)"
     )
     con.execute(
-        "INSERT INTO dim_profile VALUES (1, 'w1', 'bywaviboy', 'instagram', TRUE, 243, 'bywaviboy'),"
+        "INSERT INTO dim_profile VALUES "
+        "(1, 'w1', 'bywaviboy', 'instagram', TRUE, 243, 'bywaviboy'),"
         "       (2, 'n1', 'vinny_creative', 'instagram', TRUE, 610, 'vinny_creative')"
     )
     con.close()

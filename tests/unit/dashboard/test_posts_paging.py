@@ -47,15 +47,18 @@ def tmp_db(tmp_path, monkeypatch):
         ('p1', 'jane', 1, 'build a design system', 10, 2, 100, TRUE, FALSE, 'A1',
          'Tech', 't1', 's1', 'reel', 's', 'f', NULL, TIMESTAMP '2026-01-01', 'sc1', 'instagram'),
         ('p2', 'jane', 1, 'ux tips for onboarding', 20, 3, 200, FALSE, TRUE, 'A2',
-         'Creative', 't2', 's2', 'reel', 's', 'f', NULL, TIMESTAMP '2026-01-02', 'sc2', 'instagram'),
+         'Creative', 't2', 's2', 'reel', 's', 'f',
+         NULL, TIMESTAMP '2026-01-02', 'sc2', 'instagram'),
         ('p3', 'other', 2, 'business growth', 5, 0, 50, NULL, NULL, 'B1',
-         'Business', 't3', 's3', 'carousel', 's', 'f', NULL, TIMESTAMP '2026-01-03', 'sc3', 'instagram'),
+         'Business', 't3', 's3', 'carousel', 's', 'f',
+         NULL, TIMESTAMP '2026-01-03', 'sc3', 'instagram'),
         ('p4', 'jane', 1, 'app prototype demo', 40, 5, 400, TRUE, TRUE, 'A1',
          'Tech', 't4', 's4', 'reel', 's', 'f', NULL, TIMESTAMP '2026-01-04', 'sc4', 'instagram'),
         ('p5', 'tiktoker', 3, 'design tools roundup', 3, 1, 30, NULL, NULL, 'C1',
          'Creative', 't5', 's5', 'image', 's', 'f', NULL, TIMESTAMP '2026-01-05', 'sc5', 'tiktok'),
         ('p6', 'jane', 1, 'revenue model notes', 60, 8, 0, TRUE, FALSE, 'A1',
-         'Business', 't6', 's6', 'carousel', 's', 'f', NULL, TIMESTAMP '2026-01-06', 'sc6', 'instagram')
+         'Business', 't6', 's6', 'carousel', 's', 'f',
+         NULL, TIMESTAMP '2026-01-06', 'sc6', 'instagram')
         """
     )
     con.execute(

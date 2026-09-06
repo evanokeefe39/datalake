@@ -16,7 +16,14 @@ from .resources import SQLiteResource
 # Bronze is on-demand (user launches from UI with ScrapeConfig).
 daily_medallion = ScheduleDefinition(
     name="daily_medallion",
-    target=["ig_posts_slv", "ig_post_labels", "ig_posts_gen_batches", "dim_profile", "dim_date", "v_post_detail"],
+    target=[
+        "ig_posts_slv",
+        "ig_post_labels",
+        "ig_posts_gen_batches",
+        "dim_profile",
+        "dim_date",
+        "v_post_detail",
+    ],
     cron_schedule="0 3 * * *",  # 3am daily
     default_status=DefaultScheduleStatus.STOPPED,
     description="Silver dedup + gold enrich + dims + views. Bronze is on-demand.",
@@ -34,7 +41,9 @@ def core_refresh_run_requests(ops: SQLiteResource) -> list[RunRequest] | SkipRea
     changes take effect without a code deploy. Returns a SkipReason when the
     roster is empty.
     """
-    from ..instagram.creators import enabled_profiles  # deferred: avoids common↔instagram import cycle
+    from ..instagram.creators import (
+        enabled_profiles,  # deferred: avoids common↔instagram import cycle
+    )
 
     tier1 = [
         p
@@ -76,6 +85,9 @@ core_refresh = ScheduleDefinition(
     target=["ig_posts_raw"],
     cron_schedule="0 4 2 * *",  # 4am on the 2nd of each month
     default_status=DefaultScheduleStatus.STOPPED,
-    description="Monthly per-profile bronze refresh (max_charge_usd capped). STOPPED pending enablement owner.",
+    description=(
+        "Monthly per-profile bronze refresh (max_charge_usd capped). "
+        "STOPPED pending enablement owner."
+    ),
     execution_fn=_core_refresh_evaluation,
 )

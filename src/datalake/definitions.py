@@ -14,8 +14,8 @@ from .defs.common import (
     GeminiResource,
     PolarsIOManager,
     SQLiteResource,
-    daily_medallion,
     core_refresh,
+    daily_medallion,
 )
 from .defs.enrichment import (
     ENRICHMENT_CHECKS,
@@ -24,8 +24,8 @@ from .defs.enrichment import (
 from .defs.instagram import (
     ig_checks,
     ig_comments_slv,
-    ig_posts_gen_batches,
     ig_post_labels,
+    ig_posts_gen_batches,
     ig_posts_raw,
     ig_posts_slv,
     ig_profiles_slv,

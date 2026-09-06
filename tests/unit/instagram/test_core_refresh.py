@@ -12,12 +12,13 @@ from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.common.schedules import (
     CORE_REFRESH_CHARGE_CAP_USD,
     core_refresh,
+)
+from datalake.defs.common.schedules import (
     core_refresh_run_requests as run_requests,
 )
 from datalake.defs.instagram.assets import ig_posts_raw
 from datalake.defs.instagram.config import ScrapeConfig
 from datalake.defs.instagram.creators import ensure_schema
-
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
 

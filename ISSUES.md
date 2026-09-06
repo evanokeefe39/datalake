@@ -695,6 +695,159 @@ and every grid row renders eager network images:
 - No change to canonical serving views (dashboard stays a thin projector).
 - No schema/warehouse change — this is a data-delivery (paging + image delivery)
   concern.
+
+### 22. Account discovery + crawling — compile niche account lists by profile type
+
+**Status:** Proposed (2026-09-05). Ad-hoc discovery tooling (not yet a scheduled
+pipeline). Companion to the growth-report work (Q3/Q9 sub-100k gaps).
+**Update (2026-09-05):** `scripts/discover_accounts.py` built + validated (PR #51
+feat/account-discovery) and the sized roster-seeded crawl added **50 quality small
+niche creators** (<10k; niche-vocab + >=100 flw gate) to tracking at depth
+results_limit=30 — IG roster 625 -> 675. Curation-group behavior is documented
+in the script docstring. No pipeline yet.
+
+#### Why / the gap
+The lake is 94.5% accounts ≥10k followers and ~73% Tech/Business. To answer
+"what do *small* accounts in our niches do" (Q3) and widen the niche map (Q9) we
+need NEW accounts we don't already track, across follower sizes, topics, and
+success levels. Discovery must be automated and budget-tracked, and must NOT put
+the user's IG account at risk (no logged-in browser bots / no user-session
+cookies on the user's account).
+
+#### Profile types we want to collect (classification target)
+Each discovered account is tagged with a profile-type label so it can be routed
+to the right future cohort. Type = size tier × (success/engagement signal) ×
+niche. Examples of the taxonomy we want output:
+- **small_creator_successful** — low followers (<~10k) but strong relative
+  engagement (the "what a nobody did right" cases the report lacks).
+- **small_creator_domain** — low followers, specific niche/domain (bio/topic),
+  regardless of success — fills the per-topic small-account gap.
+- **mid_creator_* / big_creator_*** — same success/domain dimensions at
+  10k–100k / 100k+.
+- **unsuccessful_100k** — large follower count but weak/declining engagement or
+  stalled growth (the control/anti-pattern cohort — partial Q4 proxy).
+- **successful_100k** — large + strong, the imitation-reference cohort.
+
+Success/engagement is scored from a public no-login profile scrape (followers,
+posts count, avg recent-post likes / engagement rate, bio, join-date if
+available), NOT from the gold lake (these are new, un-enriched accounts).
+
+#### Discovery methods (validate reliability first, then build)
+All ban-free on the user's account (Apify actor infra / search engines; never a
+logged-in user browser bot — rejected as high ban risk, per research):
+1. **Niche keyword / account search** (`data-slayer/instagram-search-users`,
+   `seemuapps/instagram-niche-finder`) — keyword → accounts of all sizes; best
+   for surfacing SMALL accounts in a niche. → validate.
+2. **No-login follower/following graph** (`scraping_solutions/
+   instagram-scraper-followers-following-no-cookies`) — who niche leaders follow
+   ≈ niche adjacency, no session. → validate.
+3. **Related/similar-accounts rail** (`thenetaji/instagram-related-user-scraper`,
+   `elliotpadfield/instagram-related-profiles` [BFS+follower-filter+budget]) —
+   recursive niche widening. CAVEAT (verified): the rail skews to same/larger
+   tier; useful to map the niche above target size, not to find small accounts.
+4. (Fallback/adjacent) SERP discovery — Google-indexed IG posts by niche term
+   (proven working; IG posts indexed since 2025-07-10).
+
+#### Deliverables (in order)
+- Validate which actors reliably return account handles + follower counts (cheap
+  ~$0.01 runs, budget-tracked; under $5 total per session).
+- A basic Python script (ad hoc run, not yet Dagster) that: runs the validated
+  discovery method(s) against our desired niches → compiles candidate account
+  handles → no-login profile-scrapes each → classifies into the profile-type
+  taxonomy above → dedupes against the tracked roster (ops.sqlite `profiles`) →
+  outputs ~20+ new accounts with their type + reason for interest.
+- Log the crawl budget and spend per run (tracked, so sessions stay under cap).
+- Later: productionize as a scheduled Dagster ingestion pipeline (separate
+  issue/plan).
+
+#### Non-goals (this issue)
+- No scheduled pipeline yet (manual/ad-hoc script only).
+- No enrichment of discovered accounts yet (that's the normal gold path once
+  ingested).
+- No scraping of the user's logged-in IG account or follower lists under their
+  session.
+
+### 23. Model each IG/social profile as a Dagster producer/source — compare to job-board scraping
+
+**Status:** Idea / design note (2026-09-05). No code changes — investigate, then
+route to an ADR.
+
+#### Why
+Onboarding 50 new IG profiles (issue #22) exposed that **adding a profile to the
+roster does not produce a scrape by itself**: `ig_posts_raw` is a manual,
+config-driven asset that scrapes exactly `config.urls`; it never auto-discovers
+new/enabled profiles. `profiles`/`creators` (ops.sqlite) act as an operational
+*control* list for downstream silver/label/batch scoping, but not as the thing
+that drives ingestion. We had to run an explicit `ig_posts_raw` with the 50
+handles to get their posts into bronze.
+
+The idea: treat **each IG profile — and any future social profile — as a
+first-class Dagster source/producer**, so a tracked profile is something the
+pipeline discovers and pulls from, rather than a URL we feed a manual run.
+
+#### What to compare (this issue is the comparison)
+1. **How job-board scraping was done** — source representation, what drove the
+   discovery/enumeration of what to scrape, scheduling/fan-out, state. Document
+   the pattern we used there.
+2. **Current IG ingestion** — ops.sqlite `profiles`/`creators` as control tables;
+   `ig_posts_raw` config-driven over `config.urls`; silver ingests any new bronze
+   (mtime watermark); `ig_profiles_slv`/labels scope to `enabled_profiles`.
+3. **The proposed producer/source model** — per-profile (or per-platform-source)
+   Dagster source that the medallion pulls from; the creators/profiles registry
+   already generalizes (a creator owns 1..N profiles across platforms), so
+   multi-platform additivity is a design target, not an afterthought.
+
+#### Open questions
+- What exactly was the job-board source/discovery/scheduling design to pattern-match?
+- Does per-source Dagster fan-out justify the complexity vs the current
+  config-driven batch scrape — especially given the Apify scrape-actor reliability
+  constraints found during discovery (login walls)?
+- Should the source registry live in ops.sqlite (profiles/creators) and be read by
+  a Dagster sensor/schedule that enqueues scrapes for enabled profiles without a
+  tracked bronze file?
+
+#### Non-goals (this issue)
+- No code/asset changes here — investigation + comparison + ADR decision only.
+
+### 24. Enrichment appears stuck overnight — no persistent poller for async Gemini batches
+
+**Status:** Diagnosed (2026-09-06). The 50-account ingestion (issue #22/#23 work)
+enriched on a manual worker re-run, but exposed an operational gap.
+
+#### What happened
+Job 6 (593 posts of the 50 scraped accounts, gemini-batch mode) sat at
+**543 'processing' for ~12 hours overnight** with gold flat — looked broken.
+Re-running the worker (`scripts/enrichment_worker.py --mode gemini-batch`) once
+immediately retrieved **535 + failed 8**, and gold grew 9,035 → 9,570. Not a bug —
+the batch had finished on Google's side; nothing was harvesting it.
+
+#### Five Whys
+1. **Why not done?** 543 items stuck 'processing'; only 49 complete; gold not growing.
+2. **Why processing?** Items were claimed + submitted to the Gemini batch API; gold
+   is written only at retrieval-apply, which requires polling a *terminal* batch.
+3. **Why no retrieval?** A worker run does ONE submit-then-poll cycle and EXITS.
+   After a bounded loop stopped at ~00:05 (batch still RUNNING), no worker process
+   ran for hours, so nothing polled/retrieved the (by then finished) Google batch.
+4. **Why no worker running?** The enrichment worker is a one-shot CLI, not a
+   persistent daemon / scheduled sensor; nothing keeps it alive to poll async
+   Gemini batch jobs to completion.
+5. **Root cause:** there is no persistent or scheduled enrichment-consume loop, so
+   an async Gemini batch's completion is only harvested on a manual re-run — making
+   long batches look "stuck" and delaying gold indefinitely. No alerting/monitoring
+   surfaced the "no worker polling for N hours" condition either.
+
+#### Observations (benign, not bugs — verified)
+- Worker DuckDBResource is `data/state.duckdb` — same file queries read; no path split.
+- "49 complete, no gold" was a mid-flight read; gold landed correctly on retrieval.
+- "Failed to POST to Dagster: HTTP 308" = redirect in materialization notify (non-fatal).
+
+#### Suggested fix (not yet done)
+- A scheduled/looping consume path that keeps polling `--mode gemini-batch` until
+  jobs drain (Dagster sensor or a resilient looping runner), plus completion-latency
+  visibility. Related to issue #23 (producer/source + pipeline productionization).
+
+#### Non-goals
+- No code change yet — diagnosis + lesson only.
 ## Resolved
 
 ### 1. Comprehensive medallion testing strategy ✅ (2026-07-01)

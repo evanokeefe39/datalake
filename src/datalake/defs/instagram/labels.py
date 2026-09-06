@@ -138,8 +138,9 @@ def run_label_pass(
     for p in posts:
         key = (p["owner_id"] or "").lower()
         by_creator.setdefault(key, []).append(p)
+    _min_aware = datetime.min.replace(tzinfo=timezone.utc)  # aware-epoch fallback for the sort key
     for plist in by_creator.values():
-        plist.sort(key=lambda p: p["ts"] or p["processed_on"] or datetime.min.replace(tzinfo=timezone.utc))
+        plist.sort(key=lambda p: p["ts"] or p["processed_on"] or _min_aware)
 
     out: dict[str, tuple] = {}  # post_id -> row tuple
     stats = {
@@ -196,7 +197,9 @@ def run_label_pass(
             if judged_like is None:
                 label, method, decision, prov = "unjudgeable", "day0_heuristic", "control", True
             elif not judgeable:
-                label, method, decision, prov = "insufficient_baseline", "day0_heuristic", "control", True
+                label, method, decision, prov = (
+                    "insufficient_baseline", "day0_heuristic", "control", True
+                )
             elif empty_caption:
                 label = "standout" if standout else "average" if judgeable else "unjudgeable"
                 method, decision, prov = "day0_heuristic", "skip", True
@@ -265,6 +268,17 @@ def run_label_pass(
                 "maturity_days", "is_provisional", "label_version",
                 "baseline_center", "baseline_spread", "baseline_n",
             ],
+            # Numeric baseline/maturity columns may be all-None in the leading rows
+            # (e.g. new creators on day0 with insufficient baseline), so polars
+            # schema-inference types them as Null and later non-null ints/floats
+            # (e.g. an established creator's baseline_n) fail to append. Fix the
+            # dtypes explicitly so None + value coerce to Int/Float.
+            schema_overrides={
+                "maturity_days": pl.Int32,
+                "baseline_center": pl.Float64,
+                "baseline_spread": pl.Float64,
+                "baseline_n": pl.Int64,
+            },
             orient="row",
         )
         conn.register("labels_new", df.to_arrow())
