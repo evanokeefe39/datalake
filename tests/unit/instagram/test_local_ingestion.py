@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import polars as pl
@@ -404,7 +405,16 @@ def test_silver_dedup_prefers_newer_scrape_across_producers(tmp_path, ops):
     assert result["source_dataset"][0] == "local_BxcAvPURKHDxFWzTs"
 
 
+@pytest.mark.skipif(
+    not Path(LOCAL_INGEST_DIR).exists(),
+    reason="dev-machine local ingest dir (scrape-ig-saved-list checkout) not present",
+)
 def test_local_ingest_dir_constant_default():
-    """The knob defaults to the scrape-ig-saved-list checkout and is env-overridable."""
+    """The knob defaults to the scrape-ig-saved-list checkout and is env-overridable.
+
+    Only meaningful on the developer's machine (the default path is a sibling
+    checkout) — skip on CI/fresh clones where that directory does not exist and
+    ``Path.name`` cannot resolve a Windows backslash path.
+    """
     assert LOCAL_INGEST_DIR.name == "ingest"
     assert "scrape-ig-saved-list" in str(LOCAL_INGEST_DIR)
