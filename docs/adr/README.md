@@ -24,11 +24,13 @@ deliberately separate from `docs/ARCHITECTURE.md`, which describes the
 | ADR | Title | Status | Decided |
 |-----|-------|--------|---------|
 | [0001](0001-enrichment-as-ingested-source.md) | Enrichment output is an ingested source, not a transform (LLM/API boundary) | **Proposed** | 2026-09-03 (pending build-vs-buy + ratification) |
-| [0002](0002-external-worker-rest-materialization.md) | External enrichment worker + gold as AssetSpec (REST materialization, not Pipes) | Accepted | 2026-07 (backfilled 2026-09-03) |
-| [0003](0003-no-api-in-transform-layer.md) | No LLM/API calls in the transform layer; network I/O confined to ingestion + external worker | Accepted | 2026-08 (backfilled 2026-09-03) |
+| [0002](0002-external-worker-rest-materialization.md) | External enrichment worker + gold as AssetSpec (REST materialization, not Pipes) | Superseded by [ADR-0007](0007-batch-native-enrichment-deprecate-worker.md) | 2026-07 (backfilled 2026-09-03) |
+| [0003](0003-no-api-in-transform-layer.md) | No LLM/API calls in the transform layer; network I/O confined to ingestion + external worker | Superseded by [ADR-0008](0008-hermetic-with-explicit-api-seam.md) | 2026-08 (backfilled 2026-09-03) |
 | [0004](0004-ops-sqlite-state-duckdb-deadletter.md) | SQLite (ops/coordination) vs DuckDB (analytical state) split; dead-letter + queue decoupling | Accepted | 2026-07 (backfilled 2026-09-03) |
 | [0005](0005-thin-projector-serving.md) | Metrics computed in warehouse views; dashboard/API is a thin projector | Accepted | 2026-08 (backfilled 2026-09-03) |
 | [0006](0006-point-in-time-metric-semantics.md) | Point-in-time-only metric semantics (per-post baselines, not all-time averages) | Accepted | 2026-08 (backfilled 2026-09-03) |
+| [0007](0007-batch-native-enrichment-deprecate-worker.md) | Enrichment is Dagster-native async batch (submit + harvest sensor); deprecate the external worker | Accepted | 2026-09-06 |
+| [0008](0008-hermetic-with-explicit-api-seam.md) | Hermetic transforms with one explicit API seam (batch submit + harvest) | Accepted | 2026-09-06 |
 
 ## Template
 

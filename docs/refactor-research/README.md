@@ -9,6 +9,7 @@ Working plan lives in `tasks/plans/refactor-architecture-investigation.md` (giti
 |------|------|
 | `enrichment-service-patterns.md` | Research note: enrichment-with-API-calls design patterns, Dagster-native building blocks, antipatterns, option-space mapping (grounded in `dagster-expert` skill + our ADRs). |
 | `orchestration-two-world-split.html` | Editorial explainer ("One pipeline, two worlds") — a standalone static HTML article + inline SVG diagrams illustrating data flow, the World A/B seam, and the #23/#24/#22/#20/#5 failure zones. |
+| `migration-batch-native-enrichment.md` | Migration plan: batch-native enrichment, deprecate the external worker (the branch's executable output). Ratified via [ADR-0007](../adr/0007-batch-native-enrichment-deprecate-worker.md) + [ADR-0008](../adr/0008-hermetic-with-explicit-api-seam.md). |
 | `README.md` (this) | Index + the method used to build the article, for reproducible future visual explainers. |
 
 ## How the article was produced (reproducible recipe)
