@@ -1,6 +1,6 @@
 # ADR-0002: External enrichment worker + gold as AssetSpec (REST materialization, not Pipes)
 
-- Status: Accepted
+- Status: Superseded by ADR-0007
 - Decided: 2026-07 (backfilled 2026-09-03)
 
 ## Context
@@ -35,4 +35,6 @@ separately.
 
 ## Supersedes / Superseded by
 
-Supersedes: the old synchronous/graph-coupled enrichment. Superseded by: none.
+Supersedes: the old synchronous/graph-coupled enrichment. Superseded by:
+[ADR-0007](0007-batch-native-enrichment-deprecate-worker.md) (batch-native
+enrichment in Dagster; external worker deprecated).

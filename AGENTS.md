@@ -10,6 +10,27 @@ This repo is operated by Claude. Keep this file current — Claude reads it on e
 - No direct pushes to `main`.
 - Never use PowerShell.
 
+## Report / analysis HTML writing (datalake analysis outputs, READMEs, docs)
+
+When a piece is meant to be *read* (an analysis report, a retrospective, a
+case study) rather than just executed, follow the org house playbook:
+
+- **Writing:** read `~/repos/dev-portfolio-2/docs/content-style.md` for the
+  house structure (SCQA/BLUF spine, ≤6 sections, quantifiable verifiable
+  numbers) and voice (grounded gonzo, anti-AI-tell rules — no "robust/
+  leverage/delve" vocab, no announcing scaffolds, no reflexive em-dash stacks).
+  Data reports keep a neutral register for findings but still follow the
+  anti-tell + burstiness rules.
+- **Visual style for standalone HTML:** copy the register/layout of
+  `~/repos/vibe-coding-analytics/docs/reports/2026-09-06-vibe-coding-analytics-retrospective.html`
+  (skin-F terminal: VT323 display + IBM Plex Sans/Mono, sticky TOC,
+  scroll-reveal, reduced-motion). For Tailwind/Chart.js analysis outputs, keep
+  the existing toolchain but apply the same typographic hierarchy and honest
+  banner conventions.
+- **Ground every number** in the lake/run output; if a claim can't be verified
+  from state, drop it or mark it an estimate. Provenance and caveats go in a
+  footer or honesty banner, never buried mid-argument.
+
 ## Current direction (2026-08-12)
 
 The user's priority is a **robust pipeline that extracts rich signal from video

@@ -1,6 +1,6 @@
 # ADR-0003: No LLM/API calls in the transform layer; network I/O confined to ingestion + the external worker
 
-- Status: Accepted
+- Status: Superseded by ADR-0008
 - Decided: 2026-08 (backfilled 2026-09-03)
 
 ## Context
@@ -43,4 +43,6 @@ guarded (tests + review) so it isn't accidentally reintroduced.
 
 ## Supersedes / Superseded by
 
-Superseded by: none. Related: ADR-0002, ADR-0005.
+Superseded by: [ADR-0008](0008-hermetic-with-explicit-api-seam.md) (the seam is
+an explicit tagged enrichment boundary inside the graph, not an external worker).
+Related: ADR-0002, ADR-0005.

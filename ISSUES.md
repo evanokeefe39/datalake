@@ -846,6 +846,36 @@ the batch had finished on Google's side; nothing was harvesting it.
   jobs drain (Dagster sensor or a resilient looping runner), plus completion-latency
   visibility. Related to issue #23 (producer/source + pipeline productionization).
 
+#### Corrective lesson — Dagster source-consumption patterns
+#24 is the canonical failure of treating an **async external job** as a one-shot
+synchronous fetch. The corrective discipline is a documented three-shape taxonomy
+(global rule in the `dlc-worker` agent definition under `SOURCE-CONSUMPTION
+RULES`; also written into the orchestration HTML post-mortem + the refactor
+plan):
+- **Synchronous request-response** (answer returns in the call — most REST, a
+  bounded external-DB read): fetch in-run with keyset pagination + chunked
+  batches, per-request retry/backoff, idempotent by key. No sensor — nothing to
+  wait on between calls.
+- **Async external job** (the system holds the result until it is done — Apify
+  actor, `gemini-batch`, BigQuery/Snowflake/Databricks async-query jobs, sync
+  tools): **submit → persist the handle (`run_id`/`job_id`/`dataset_id`) → END
+  the run**; a cursor sensor polls terminal state and issues a `RunRequest` to a
+  HARVEST run that streams the finished dataset into landing/bronze. **Never
+  block a Dagster run on `poll_run`/waiting**, and never make a one-shot CLI the
+  sole poller — both are this bug.
+- **Unbounded stream** (Kafka & co.): micro-batch drain (interval sensor,
+  cursor = committed offset) or a stream engine owns the hot path with Dagster
+  orchestrating the landed table. Not an asset materialization.
+
+Decision rule: *does the system give the answer in the call (sync), a handle to
+something it finishes later (async), or an unbounded flow (stream)?* If it hands
+you a token to poll, it is async even when the submit returns immediately.
+
+**Applies to both producers here:** `gemini-batch` (this issue) and the Apify
+actor, which today blocks the bronze run on `poll_run` while the actor runs — both
+should move to submit + sensor-harvest. Landed bytes stay durable (bronze +
+media cache) before any hermetic transform (ADR-0003).
+
 #### Non-goals
 - No code change yet — diagnosis + lesson only.
 ## Resolved
