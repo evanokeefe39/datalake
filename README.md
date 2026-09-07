@@ -21,12 +21,12 @@ Open http://localhost:3000.
 ## Architecture
 
 Medallion lakehouse with async enrichment batches:
-bronze (raw ingest) → silver (dedup) → batch creation → gold (async Gemini worker) → serving (views).
+bronze (raw ingest) → silver (dedup) → batch creation → gold (Dagster enrichment jobs) → serving (views).
 
 ```
 src/datalake/defs/
 ├── common/       # Resources, schedules, path helpers, lake paths
-├── enrichment/   # batch, assets, prompts (standalone worker: scripts/enrichment_worker.py)
+├── enrichment/   # batch, analysis, prompts (Dagster-native enrichment jobs)
 ├── instagram/    # ig_posts_raw, ig_posts_slv, ig_posts_gen_batches, config
 └── serving/      # dim_profile, dim_date, v_post_detail + 13 downstream views (incl. 5 canonical metric views)
 ```

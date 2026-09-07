@@ -2,11 +2,11 @@
 
 Phase 1 of the batch-native-enrichment migration (ADR-0007): a cursor-based
 **sensor** discovers batch jobs with persisted ``gemini_batch_name`` chunks,
-polls their remote state via the same verbs the external worker uses
+polls their remote state via the batch verbs
 (``gemini_batch.poll``/``job_state``/``is_terminal``), and issues a RunRequest
 for the short **harvest job** when a chunk reaches a terminal state. The
 harvest run retrieves terminal chunks, applies results to ``gold_analyses``
-with the SAME idempotent upsert contract as the worker
+with the idempotent ``write_gold`` upsert contract
 (``ON CONFLICT (post_id, domain)``, ordering guard on ``analysed_at``), and
 closes the queue bookkeeping.
 
@@ -14,11 +14,10 @@ Design notes:
 - Job names persist in ``ops.sqlite`` (``batch_jobs.gemini_batch_name``), so
   the sensor survives daemon restarts — the cursor only caches poll results
   to keep ticks cheap; re-discovery comes from the SQLite row, never memory.
-- The harvest op mirrors ``scripts/enrichment_worker.retrieve_gemini_batches``
-  semantics exactly (per-item fail/dead-letter routing, attempts-preserving
-  resubmit on job failure, mark_complete when nothing remains). The worker is
-  unchanged; dual-writer is acceptable during migration because both share
-  the idempotent gold upsert.
+- The harvest op owns the retrieval semantics (per-item fail/dead-letter
+  routing, attempts-preserving resubmit on job failure, mark_complete when
+  nothing remains) — after Phase 5 it is the only consumer of terminal
+  chunks.
 - ADR-0008 seam: the ONLY API calls (poll/retrieve) happen inside this
   tagged enrichment boundary. Silver onward stays hermetic.
 
@@ -73,14 +72,14 @@ _MAX_POLLS_PER_TICK = 25
 
 # ── Gold upsert ──────────────────────────────────────────────────────────────
 # Consolidated (batch-native migration): ``write_gold`` lives in
-# ``analysis.py`` as the single implementation shared with the worker and the
-# submit path — the former byte-identical duplicate here is gone.
+# ``analysis.py`` as the single implementation shared with the submit
+# path — the former byte-identical duplicate here is gone.
 
 
 def _dead_letter_insert(
     ops: SQLiteResource, post_id: str, domain: str, error: str, attempts: int
 ) -> None:
-    """Insert a failed item into dead_letter (mirrors worker)."""
+    """Insert a failed item into dead_letter."""
     conn = ops.get_connection()
     try:
         conn.execute(
@@ -117,7 +116,7 @@ def apply_retrieved(
 ) -> tuple[int, int]:
     """Write retrieved responses to gold and close their batch items.
 
-    Mirror of the worker's ``_apply_retrieved``: custom_key is
+    Custom key is
     ``batch_items.id``; per-item errors route through ``fail_item`` (retry
     with backoff) and ``dead_letter`` at ``MAX_ATTEMPTS``.
     """
@@ -158,7 +157,7 @@ def apply_retrieved(
     return processed, failed
 
 
-# ── Harvest run core (mirror of worker retrieve_gemini_batches, one pass) ────
+# ── Harvest run core (one pass) ──────────────────────────────────────────────
 
 
 def harvest_gemini_batches(
@@ -169,11 +168,10 @@ def harvest_gemini_batches(
     """Poll + retrieve every submitted Gemini chunk that reached a terminal
     state, and apply results to gold.
 
-    Semantics mirror ``scripts/enrichment_worker.retrieve_gemini_batches``
-    exactly, minus the submit step and the REST materialization POST (this
-    runs inside Dagster; the op emits an ``AssetMaterialization`` for
-    ``gold_analyses`` instead). Bounded and short: one pass over the
-    submitted chunks; the sensor re-triggers whenever more chunks terminate.
+    One pass over the submitted chunks: retrieve terminal state, apply
+    results to gold (the op emits an ``AssetMaterialization`` for
+    ``gold_analyses`` inside Dagster), and close the bookkeeping. Bounded
+    and short; the sensor re-triggers whenever more chunks terminate.
     """
     _ensure_schema(ops)
     ensure_gold_analyses(duckdb)

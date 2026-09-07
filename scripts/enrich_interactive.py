@@ -18,7 +18,7 @@ What it deliberately does NOT do:
 
 Reuse vs. reimplement: the per-post semantics (media resolution + tier/token
 gates, prompt assembly, JSON validation, gold upsert, 429 taxonomy,
-dead-letter routing) are IMPORTED from ``scripts/enrichment_worker.py`` —
+dead-letter routing) are IMPORTED from ``datalake.defs.enrichment.analysis`` —
 nothing is duplicated. Only the loop around them differs: retries are local
 (sleep + attempt counter) instead of queue-backed rescheduling, because this
 tool does not participate in the batch queue.
@@ -50,13 +50,6 @@ import json
 import logging
 import sys
 import time
-from pathlib import Path
-
-# Make sibling-module import work regardless of how this file is invoked
-# (direct script run, ``uv run``, or importlib in tests).
-_HERE = str(Path(__file__).resolve().parent)
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
 
 from dotenv import load_dotenv  # noqa: E402
 
@@ -68,8 +61,8 @@ from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH  # noqa: E402
 
 load_dotenv()
 
-# Reuse the worker's interactive enrichment semantics — single source of truth.
-import enrichment_worker as ew  # noqa: E402
+# Reuse the enrichment analysis core — single source of truth.
+from datalake.defs.enrichment import analysis as ew  # noqa: E402
 
 logger = logging.getLogger("enrich_interactive")
 

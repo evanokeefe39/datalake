@@ -117,7 +117,7 @@ def _fake_lookup(ops: SQLiteResource, calls: list[str]):
 def _patch_media_fakes(env, monkeypatch) -> list[str]:
     """Patch the media fake into both consumers of the real uploader:
     the pre-warm core (media_upload's binding) and the request builder
-    (analysis's binding — resolved authoritatively by ``_collab``).
+    (analysis's binding).
     Returns the shared call log."""
     ops, _, _ = env
     calls: list[str] = []

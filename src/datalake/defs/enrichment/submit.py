@@ -13,12 +13,13 @@ the orchestrated loop is::
 Semantics:
 - **First-submission only**: batches that already carry a ``gemini_batch_name``
   are skipped (idempotent re-runs never re-submit in-flight chunks).
-  Resubmission of failed/retrieved chunks remains the standalone worker's
-  submit path on this branch (``scripts/enrichment_worker.py``).
+  Resubmission of failed/retrieved chunks happens through this same submit
+  path: rescheduled items return to ``pending`` and a later submit run
+  picks the batch back up.
 - **Tier gate**: raises ``RuntimeError`` on tiers without BATCH API before any
-  queue mutation (same contract as the worker's submit + ``gemini_batch.submit``).
+  queue mutation (the tier gate inside ``gemini_batch.submit``).
 - **Failure isolation**: a submission failure reschedules the claimed items
-  with attempts preserved (backoff 300s) — identical to the worker's path.
+  with attempts preserved (backoff 300s).
 - **Bounded**: one batch per run (``DEFAULT_SUBMIT_LIMIT``), media pre-warm
   bounded by ``media_upload.DEFAULT_UPLOAD_LIMIT``.
 - ADR-0008 seam: every API call (File API upload, ``batches.create``) happens
@@ -50,12 +51,11 @@ from datalake.defs.instagram.config import GeminiTierConfig
 
 logger = logging.getLogger("enrichment.submit")
 
-# Bounded runs: at most this many batches submit per run (the worker also does
-# one submit per cycle — keeps chunk bookkeeping simple on both writers).
+# Bounded runs: at most this many batches submit per run — one batch per
+# cycle keeps chunk bookkeeping simple.
 DEFAULT_SUBMIT_LIMIT = 1
 
-# Backoff applied to claimed items when the submission itself fails (mirrors
-# the worker's submit_gemini_batches).
+# Backoff applied to claimed items when the submission itself fails.
 _SUBMIT_FAILURE_BACKOFF_SECONDS = 300
 
 
@@ -106,8 +106,8 @@ def submit_batch(
     """
     _ensure_schema(ops)
 
-    # Defensive idempotency re-read: the batch may have been submitted by the
-    # worker (dual-writer migration window) after discovery picked it.
+    # Defensive idempotency re-read: the batch may have been submitted by a
+    # concurrent submit run after discovery picked it.
     conn = ops.get_connection()
     try:
         row = conn.execute(

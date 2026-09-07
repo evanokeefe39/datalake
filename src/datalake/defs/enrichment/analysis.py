@@ -1,20 +1,17 @@
-"""Enrichment analysis core — relocated from ``scripts/enrichment_worker.py``.
+"""Enrichment analysis core — canonical implementation (ADR-0007/0008).
 
-Batch-native migration (ADR-0007/0008), Phases 2+5 enabler: the worker-owned
-reusable logic now lives here so the Dagster-native submit job and the
-standalone worker share ONE implementation:
+Batch-native migration, Phase 5: the enrichment logic lives HERE as the
+single source of truth, consumed by the Dagster-native submit job
+(``defs.enrichment.submit``), the harvest job (``defs.enrichment.harvest``),
+and the out-of-band interactive tool (``scripts/enrich_interactive.py``):
 
 - request building for the Gemini BATCH API (``build_requests_for_items``),
 - media resolution with tier + token gates (``_resolve_media_for_post``),
 - the interactive per-post analysis (``process_item``),
-- the consolidated gold upsert (``write_gold`` — single source of truth,
-  previously duplicated in the worker and ``harvest.py``),
+- the consolidated gold upsert (``write_gold`` — one writer shared by the
+  submit/harvest jobs and the interactive tool),
 - the 429/File-API error taxonomy + backoff helpers,
 - the domain dispatch tables (``_SILVER_TABLES`` / ``_PROMPTS``).
-
-``scripts/enrichment_worker.py`` is a thin CLI that imports + re-exports
-everything from here, so its existing importers (tests, ``enrich_interactive``,
-``smoke_test_media_e2e``) keep working unchanged.
 
 ADR-0008 seam: this module TOUCHES the Gemini API (media upload, analysis
 calls) — it is an enrichment seam module, NOT a hermetic one. The seam guard
@@ -27,7 +24,6 @@ from __future__ import annotations
 import json
 import logging
 import random
-import sys
 from datetime import datetime, timedelta, timezone
 
 from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLiteResource
@@ -191,39 +187,8 @@ def write_gold(
         )
 
 
-# Historical worker name — the worker re-exports it; tests import it from there.
+# Legacy alias retained for existing importers (enrich_interactive, tests).
 _write_gold = write_gold
-
-
-# ── Legacy-patch-aware collaborator resolution (MIGRATION SHIM) ──────────────
-#
-# The enrichment logic moved here from scripts/enrichment_worker.py, but the
-# existing test suite still monkeypatches collaborators on the WORKER module's
-# namespace (``scripts.enrichment_worker.lookup_or_upload_all`` and
-# ``._resolve_media_for_post``) and those tests are repointed only in a later
-# gated slice. ``_collab`` honours such patches until then.
-#
-# Resolution order: (1) a patch applied directly on THIS module (new-style
-# tests), (2) a patch applied on the legacy worker module (existing tests),
-# (3) the relocated definition. A patch is detected by identity against the
-# import-time original. The legacy module is NEVER imported here (a pure
-# ``sys.modules`` lookup) — production Dagster runs pay nothing and never
-# load the worker. DELETE this shim in the test-repoint slice.
-
-_LEGACY_WORKER_MODULE = "scripts.enrichment_worker"
-
-
-def _collab(name: str):
-    """Resolve ``name`` honouring legacy worker-namespace test patches."""
-    own = globals()[name]
-    if own is not _ORIGINALS[name]:
-        return own  # patched on the relocated namespace — authoritative
-    legacy = sys.modules.get(_LEGACY_WORKER_MODULE)
-    if legacy is not None:
-        legacy_binding = getattr(legacy, name, None)
-        if legacy_binding is not None and legacy_binding is not _ORIGINALS[name]:
-            return legacy_binding  # legacy test patch — honour it
-    return own
 
 
 # ── Media resolution ─────────────────────────────────────────────────────────
@@ -246,7 +211,7 @@ def _resolve_media_for_post(
     media, FREE-tier video gate, or per-item video token cap exceeded).
     """
     tier_cfg = GeminiTierConfig.detect()
-    media_files = _collab("lookup_or_upload_all")(
+    media_files = lookup_or_upload_all(
         ops, gemini, media_files_json, inline_images=inline_images
     )
 
@@ -327,7 +292,7 @@ def process_item(
         return True
 
     # Media: download + upload to Gemini File API (or cache hit), tier + token gated
-    media_files = _collab("_resolve_media_for_post")(ops, gemini, post_id, row[1])
+    media_files = _resolve_media_for_post(ops, gemini, post_id, row[1])
 
     # Analyze via Gemini
     prompt_text = _PROMPTS.get(domain, IG_GOLD_PROMPT) + "\n" + caption
@@ -395,7 +360,7 @@ def build_requests_for_items(
         media_files = None
         if row and row[1]:
             try:
-                media_files = _collab("_resolve_media_for_post")(
+                media_files = _resolve_media_for_post(
                     ops, gemini, post_id, row[1], inline_images=True
                 )
             except Exception as exc:
@@ -433,10 +398,3 @@ def build_requests_for_items(
             req["media_files"] = media_files
         requests.append(req)
     return requests
-
-
-# Import-time originals for the legacy-patch shim (identity anchors).
-_ORIGINALS: dict[str, object] = {
-    "lookup_or_upload_all": lookup_or_upload_all,
-    "_resolve_media_for_post": _resolve_media_for_post,
-}

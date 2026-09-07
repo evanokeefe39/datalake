@@ -57,7 +57,7 @@ def test_worker_passes_media_uri_to_gemini(tmp_path):
     """
     import os
 
-    from scripts.enrichment_worker import process_item
+    from datalake.defs.enrichment.analysis import process_item
     os.environ["GEMINI_TIER"] = "tier1"
 
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
@@ -98,7 +98,7 @@ def test_worker_passes_media_uri_to_gemini(tmp_path):
     # Mock lookup_or_upload_all to return MediaFile list
     fake_file_uri = "https://generativelanguage.googleapis.com/v1beta/files/fake-abc123"
     with patch(
-        "scripts.enrichment_worker.lookup_or_upload_all",
+        "datalake.defs.enrichment.analysis.lookup_or_upload_all",
         return_value=[{"uri": fake_file_uri, "mime_type": "video/mp4"}],
     ):
         process_item(ops, duckdb, mock_gemini, item)
@@ -141,7 +141,7 @@ def test_video_post_without_media_files_still_works(tmp_path):
 
     This test should PASS — it verifies the text-only path isn't broken.
     """
-    from scripts.enrichment_worker import process_item
+    from datalake.defs.enrichment.analysis import process_item
 
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
@@ -186,7 +186,7 @@ def test_video_post_without_media_files_still_works(tmp_path):
     mock_gemini = MagicMock()
     mock_gemini.analyze.return_value = '{"is_educational": false}'
 
-    with patch("scripts.enrichment_worker.lookup_or_upload_all", return_value=[]):
+    with patch("datalake.defs.enrichment.analysis.lookup_or_upload_all", return_value=[]):
          result = process_item(ops, duckdb, mock_gemini, item)
 
     assert result is True
