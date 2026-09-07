@@ -186,4 +186,30 @@ def check_prompt_currency(duckdb: DuckDBResource, ops: SQLiteResource) -> AssetC
     )
 
 
-ENRICHMENT_CHECKS = [check_enrichment_health, check_prompt_currency]
+@asset_check(asset=gold_analyses.key)
+def check_enrichment_seam_purity() -> AssetCheckResult:
+    """ADR-0008 seam guard: silver onward stays hermetic.
+
+    Pure enrichment modules must contain no Gemini API calls, and every op
+    in the enrichment domain must carry the ``{adr: 0008, seam:
+    enrichment-api}`` tag. A violation means an API call has leaked into (or
+    an untagged op is one edit away from leaking into) a pure transform.
+    """
+    from datalake.defs.enrichment.media_upload import seam_violations
+
+    violations = seam_violations()
+    return AssetCheckResult(
+        passed=not violations,
+        metadata={
+            "violations": violations,
+            "adr": "0008",
+            "seam": "enrichment-api",
+        },
+    )
+
+
+ENRICHMENT_CHECKS = [
+    check_enrichment_health,
+    check_prompt_currency,
+    check_enrichment_seam_purity,
+]

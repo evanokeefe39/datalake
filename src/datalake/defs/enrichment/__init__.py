@@ -11,6 +11,12 @@ from .harvest import (
     gemini_batch_harvest_sensor,
     harvest_gemini_batches,
 )
+from .media_upload import (
+    media_upload_pending_batches_job,
+    media_upload_pending_batches_op,
+    upload_media_for_pending_batches,
+)
+
 from .registry import register_current_prompt, resolve_prompt
 
 __all__ = [
@@ -28,5 +34,9 @@ __all__ = [
     "gemini_batch_harvest",
     "gemini_batch_harvest_sensor",
     "harvest_gemini_batches",
+    # Media pre-upload (Phase 2a, ADR-0007/0008)
+    "upload_media_for_pending_batches",
+    "media_upload_pending_batches_job",
+    "media_upload_pending_batches_op",
 ]
 
