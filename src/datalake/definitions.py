@@ -19,6 +19,8 @@ from .defs.common import (
 )
 from .defs.enrichment import (
     ENRICHMENT_CHECKS,
+    gemini_batch_harvest,
+    gemini_batch_harvest_sensor,
     gold_analyses,
 )
 from .defs.instagram import (
@@ -67,4 +69,6 @@ defs = Definitions(
     asset_checks=[*ig_checks, *ENRICHMENT_CHECKS, *serving_checks],
     resources=all_resources,
     schedules=[daily_medallion, core_refresh],
+    jobs=[gemini_batch_harvest],
+    sensors=[gemini_batch_harvest_sensor],
 )
