@@ -11,6 +11,11 @@ from .harvest import (
     gemini_batch_harvest_sensor,
     harvest_gemini_batches,
 )
+from .submit import (
+    submit_gemini_batches_job,
+    submit_gemini_batches_op,
+    submit_pending_gemini_batches,
+)
 from .media_upload import (
     media_upload_pending_batches_job,
     media_upload_pending_batches_op,
@@ -34,6 +39,10 @@ __all__ = [
     "gemini_batch_harvest",
     "gemini_batch_harvest_sensor",
     "harvest_gemini_batches",
+    # Batch submit (Phase 2, ADR-0007/0008)
+    "submit_gemini_batches_job",
+    "submit_gemini_batches_op",
+    "submit_pending_gemini_batches",
     # Media pre-upload (Phase 2a, ADR-0007/0008)
     "upload_media_for_pending_batches",
     "media_upload_pending_batches_job",

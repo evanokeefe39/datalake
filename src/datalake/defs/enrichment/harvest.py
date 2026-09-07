@@ -32,7 +32,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime, timezone
 
 from dagster import (
     AssetMaterialization,
@@ -59,7 +58,7 @@ from datalake.defs.enrichment.batch import (
     mark_complete,
     set_gemini_batch_status,
 )
-from datalake.defs.enrichment.prompts import _DEFAULT_GEMINI_MODEL, CURRENT_PROMPT_HASH
+from datalake.defs.enrichment.analysis import write_gold
 
 logger = logging.getLogger("enrichment.harvest")
 
@@ -72,32 +71,10 @@ _HANDLED = {"RETRIEVED", "JOB_FAILED"}
 _MAX_POLLS_PER_TICK = 25
 
 
-# ── Gold upsert (mirrors worker _write_gold exactly) ─────────────────────────
-
-
-def write_gold(
-    duckdb: DuckDBResource,
-    post_id: str,
-    domain: str,
-    result: str,
-    model: str = _DEFAULT_GEMINI_MODEL,
-) -> None:
-    """Upsert a validated analysis into gold_analyses (ordering guard)."""
-    now = datetime.now(timezone.utc).isoformat()
-    with duckdb.get_connection() as conn:
-        conn.execute(
-            """INSERT INTO gold_analyses
-               (post_id, domain, prompt_hash, model, result_json, analysed_at)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT (post_id, domain) DO UPDATE SET
-                   prompt_hash = excluded.prompt_hash,
-                   model = excluded.model,
-                   result_json = excluded.result_json,
-                   analysed_at = excluded.analysed_at
-               WHERE gold_analyses.analysed_at IS NULL
-                  OR excluded.analysed_at > gold_analyses.analysed_at""",
-            [post_id, domain, CURRENT_PROMPT_HASH, model, result, now],
-        )
+# ── Gold upsert ──────────────────────────────────────────────────────────────
+# Consolidated (batch-native migration): ``write_gold`` lives in
+# ``analysis.py`` as the single implementation shared with the worker and the
+# submit path — the former byte-identical duplicate here is gone.
 
 
 def _dead_letter_insert(

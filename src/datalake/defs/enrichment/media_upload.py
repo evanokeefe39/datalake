@@ -30,6 +30,7 @@ from dagster import AssetMaterialization, OpDefinition, op, job
 
 from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLiteResource
 from datalake.defs.enrichment.batch import _ensure_schema
+from datalake.defs.enrichment.analysis import _SILVER_TABLES  # single source of truth
 from datalake.defs.enrichment.media_cache import lookup_or_upload_all
 
 logger = logging.getLogger("enrichment.media_upload")
@@ -37,11 +38,6 @@ logger = logging.getLogger("enrichment.media_upload")
 # ADR-0008 seam tag — every op that may touch the Gemini API carries this.
 SEAM_TAGS = {"adr": "0008", "seam": "enrichment-api"}
 
-# Mirror of the worker's domain → silver table map (media resolution only
-# needs the media_files column; captions are re-read at submit time).
-_SILVER_TABLES: dict[str, str] = {
-    "instagram": "silver_ig_posts",
-}
 
 # Default bound: at most this many distinct posts get media resolved per run.
 DEFAULT_UPLOAD_LIMIT = 50
