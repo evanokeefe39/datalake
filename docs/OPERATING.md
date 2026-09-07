@@ -29,33 +29,22 @@ Steps:
 2. Batches — finds unenriched silver posts, creates a batch in ``ops.sqlite``
 3. Serving — materializes ``dim_date``, ``dim_profile`` (SCD2), and ``v_post_detail`` (cascades to all downstream views)
 
-## Enrichment worker
+## Enrichment (Dagster jobs)
 
-The worker runs independently — it reads from `batch_items` in SQLite, calls Gemini, and writes to `gold_analyses` in DuckDB.
+Enrichment runs inside Dagster (batch-native, ADR-0007): `submit_gemini_batches_job`
+consumes one pending `gemini-batch` batch per run, and the
+`gemini_batch_harvest_sensor` triggers `gemini_batch_harvest` when chunks reach
+terminal state. Out-of-band interactive: `uv run python scripts/enrich_interactive.py`.
 
-### Process next pending batch
-
-```bash
-uv run python scripts/enrichment_worker.py
-```
-
-Claims the oldest pending batch, processes items with per-item retry (exponential backoff, `MAX_ATTEMPTS=5`), routes terminal failures to `dead_letter`, and POSTs materialization events to Dagster.
-
-### Process a specific batch
+### Inspect batch state
 
 ```bash
-uv run python scripts/enrichment_worker.py --batch-id 3
-```
-
-### Dry run (inspect batch state)
-
-```bash
-uv run python scripts/enrichment_worker.py --dry-run
+uv run python -m datalake.cli batches
 ```
 
 ### Rate limiting
 
-The worker handles two kinds of Gemini 429:
+Both enrichment paths handle two kinds of Gemini 429:
 
 | Type | Behavior |
 |---|---|
@@ -64,7 +53,7 @@ The worker handles two kinds of Gemini 429:
 
 ### Stale item recovery
 
-If the worker crashes mid-batch, items stuck in `processing` state are reclaimed on the next run. The stale reaper looks for items where `status = 'processing'` and `started_at` is older than 30 minutes.
+If a run crashes mid-batch, items stuck in `processing` state are reclaimed on the next run. The stale reaper looks for items where `status = 'processing'` and `started_at` is older than 30 minutes.
 
 ## Watermark resets
 

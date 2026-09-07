@@ -141,7 +141,7 @@ def main() -> None:
         create_batch,
     )
     from datalake.defs.enrichment.media_cache import lookup_or_upload_all
-    from scripts.enrichment_worker import process_item
+    from datalake.defs.enrichment.analysis import process_item
 
     ensure_gold_analyses(duckdb)
 

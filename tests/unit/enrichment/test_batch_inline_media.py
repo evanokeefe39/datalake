@@ -16,7 +16,7 @@ from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLit
 from datalake.defs.enrichment import media_cache
 from datalake.defs.enrichment.gemini_batch import _build_contents, _to_inlined_request
 from datalake.defs.enrichment.media_cache import lookup_or_upload_all
-from scripts.enrichment_worker import build_requests_for_items
+from datalake.defs.enrichment.analysis import build_requests_for_items
 from tests.unit.enrichment.test_media_cache import _make_fake_client, _seed_byte_cache
 
 
@@ -58,9 +58,9 @@ def _patch_tier(monkeypatch):
     tier = MagicMock()
     tier.supports_video = True
     tier.supports_batch = True
-    monkeypatch.setattr(
-        "scripts.enrichment_worker.GeminiTierConfig.detect", classmethod(lambda cls: tier)
-    )
+    from datalake.defs.instagram.config import GeminiTierConfig
+
+    monkeypatch.setattr(GeminiTierConfig, "detect", classmethod(lambda cls: tier))
 
 
 def test_lookup_inline_images_returns_bytes_without_upload(tmp_path):

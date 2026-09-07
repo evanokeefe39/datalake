@@ -2,6 +2,9 @@
 
 - Status: Accepted
 - Decided: 2026-09-06
+- As-built: 2026-09-07 — implemented on `migration/batch-native-enrichment`;
+  submit + harvest Dagster jobs replace the external worker (worker removed,
+  Phase 5); ISSUES #24 resolved by the harvest sensor.
 
 ## Context
 

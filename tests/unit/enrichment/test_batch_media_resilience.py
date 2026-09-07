@@ -29,7 +29,7 @@ from datalake.defs.enrichment.batch import (
     claim_pending_items,
     create_batch,
 )
-from scripts.enrichment_worker import (
+from datalake.defs.enrichment.analysis import (
     _item_attempts,
     build_requests_for_items,
 )
@@ -65,7 +65,7 @@ def env(tmp_path):
 
 def _patch(monkeypatch, behavior):
     """Patch _resolve_media_for_post: behavior(post_id) called per item."""
-    import scripts.enrichment_worker as worker
+    from datalake.defs.enrichment import analysis as worker
 
     monkeypatch.setattr(
         worker,

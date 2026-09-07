@@ -89,7 +89,7 @@ and reset any stuck `processing` items to `pending`; verify drain by
 | Bronze | Parquet (`data/lake/bronze/`) | Polars (direct write) | None — file-based |
 | Silver | Parquet (`data/lake/silver/`) | PolarsIOManager | DuckDB `silver_ig_posts` + watermarks |
 | Batches | SQLite (`data/ops.sqlite`) | `ig_posts_gen_batches` | `batch_jobs` + `batch_items` |
-| Gold | DuckDB table | `enrichment_worker` (standalone) | `gold_analyses` (AssetSpec, externally materialized) |
+| Gold | DuckDB table | Dagster enrichment jobs (submit → harvest) | `gold_analyses` (AssetSpec, externally materialized) |
 | Serving | DuckDB views + tables | DuckDB | `dim_profile` (SCD2), `dim_date`, 14 analytics views (incl. 5 canonical metric views) |
 
 **SQLite for operational state, DuckDB for analytical state:**
@@ -245,8 +245,9 @@ uv run python scripts/run_pipeline.py --update-stale-analyses
 ```
 
 This queries `gold_analyses WHERE prompt_hash IS NULL OR prompt_hash != CURRENT_PROMPT_HASH`,
-batches them directly (bypassing the watermark + NOT EXISTS guard), and the enrichment
-worker picks them up and UPSERTs fresh analyses with the current prompt.
+batches them directly (bypassing the watermark + NOT EXISTS guard), and the
+Dagster enrichment jobs (submit → harvest) pick them up and UPSERT fresh
+analyses with the current prompt.
 
 ## DAGSTER_HOME
 
@@ -272,10 +273,14 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
 - **Empty captions:** skipped at the label pass (`enrich_decision='skip'`, US-L6)
 - **Re-enrichment:** explicit `post_ids` bypasses all guards; stale-prompt gold rows re-enqueue automatically
 
-### enrichment_worker (standalone CLI)
+### Enrichment (Dagster-native, batch)
 
-- **Trigger:** run directly: `uv run python scripts/enrichment_worker.py` (no sensor needed)
-- **Lifecycle:** claims oldest pending batch → processes items with per-item retry → POSTs materialization to Dagster via REST
+- **Trigger:** `submit_gemini_batches_job` consumes ONE pending, unsubmitted
+  `gemini-batch` batch per run; the `gemini_batch_harvest_sensor` issues
+  `gemini_batch_harvest` runs when chunks reach terminal state. Out-of-band
+  interactive: `uv run python scripts/enrich_interactive.py`.
+- **Lifecycle:** gen_batches → media_upload → submit → harvest; the shared
+  enrichment logic lives in `defs/enrichment/analysis.py`.
 - **Retry:** exponential backoff with jitter, `MAX_ATTEMPTS=5`, terminal failures → `dead_letter`
 
 ### Why batch-based (not synchronous)
@@ -331,7 +336,7 @@ distinguish subtypes:
 | ``insufficient_quota`` | Daily RPD spent — out of requests for the day. | **Stop retrying.** Wait until 08:00 UTC. Switch projects or upgrade tier. |
 
 The ``_is_quota_exhausted()`` and ``_is_rate_limited()`` helpers in the
-``enrichment_worker`` op inspect ``google.genai.errors.APIError`` attributes
+``defs/enrichment/analysis.py`` module inspect ``google.genai.errors.APIError`` attributes
 (``code``, ``message``, ``details``) to distinguish subtypes. If the SDK
 error isn't parseable it falls back to substring matching on quota-related keywords.
 
@@ -391,8 +396,9 @@ Workaround: use separate projects for free-tier evaluation and paid production.
 
 ### Approach per tier
 
-**Free — Evaluation only.** ``enrichment_worker`` processes via queue with
-per-item backpressure. Not for production volume.
+**Free — Evaluation only.** Out-of-band interactive
+(``scripts/enrich_interactive.py``) with per-item backpressure. Not for
+production volume.
 
 **Tier 1 — Interactive via queue.** Queue-based enrichment handles routine
 volume with per-item rate limiting. Batch API deferred; re-introduce as a

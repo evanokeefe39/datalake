@@ -1,9 +1,10 @@
-"""Gemini BATCH API verbs — worker-owned, never called from the Dagster graph.
+"""Gemini BATCH API verbs — driven by the Dagster enrichment jobs.
 
-Three verbs only (ADR-0001): ``submit``, ``poll``, ``retrieve``. The worker
-(``scripts/enrichment_worker.py --mode gemini-batch``) drives them against the
-existing ops.sqlite queue; Dagster assets never touch this module (ADR-0003 —
-submission/polling must not become a blocking transform asset).
+Three verbs only (ADR-0001): ``submit``, ``poll``, ``retrieve``. The
+Dagster-native submit/harvest jobs (``defs.enrichment.submit`` /
+``.harvest``) drive them against the ops.sqlite queue; pure transform
+assets never touch this module (ADR-0003 — submission/polling must not
+become a blocking transform asset).
 
 Batch API facts (KB spike + google-genai 2.10):
 - Paid-tier only (Tier 1+); 50% discount on token cost.
@@ -27,7 +28,7 @@ import tempfile
 from datalake.defs.common.resources import GeminiResource
 from datalake.defs.instagram.config import GeminiTierConfig
 
-logger = logging.getLogger("enrichment_worker.gemini_batch")
+logger = logging.getLogger("enrichment.gemini_batch")
 
 _TERMINAL_OK = {"SUCCEEDED"}
 _TERMINAL_FAIL = {"FAILED", "CANCELLED", "EXPIRED"}

@@ -319,7 +319,7 @@ class TestJobState:
 class TestGoldModelColumn:
     def test_write_gold_sets_model(self, tmp_path):
         from datalake.defs.enrichment.assets import ensure_gold_analyses
-        from scripts.enrichment_worker import _write_gold
+        from datalake.defs.enrichment.analysis import _write_gold
 
         db = DuckDBResource(database=str(tmp_path / "state.duckdb"))
         ensure_gold_analyses(db)

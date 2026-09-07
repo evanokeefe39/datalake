@@ -143,8 +143,8 @@ def run(
         _run_update_stale(ops)
         print_full_state("After stale update")
         print(
-            "\nDone. Run `python scripts/enrichment_worker.py` "
-            "to re-process stale analyses."
+            "\nDone. Re-process stale analyses via the Dagster enrichment "
+            "jobs (`submit_gemini_batches_job` → `gemini_batch_harvest`)."
         )
         raise typer.Exit()
 
@@ -163,8 +163,9 @@ def run(
     print_full_state("After")
 
     print(
-        f"\nDone. {enqueued} posts enqueued. "
-        "Run `python scripts/enrichment_worker.py` to process."
+        f"\nDone. {enqueued} posts enqueued. Process via the Dagster "
+        "enrichment jobs (`submit_gemini_batches_job` → `gemini_batch_harvest`) "
+        "or `scripts/enrich_interactive.py` for out-of-band interactive."
     )
 
 

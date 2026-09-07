@@ -1,4 +1,4 @@
-"""Unit tests for the enrichment worker's rate-limit helpers.
+"""Unit tests for the enrichment analysis rate-limit helpers.
 
 These cover the two failure modes found in the architecture review:
 
@@ -11,7 +11,7 @@ These cover the two failure modes found in the architecture review:
 
 from __future__ import annotations
 
-from scripts.enrichment_worker import (
+from datalake.defs.enrichment.analysis import (
     _exponential_backoff,
     _is_quota_exhausted,
     _is_rate_limited,
