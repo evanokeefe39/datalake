@@ -811,8 +811,15 @@ pipeline discovers and pulls from, rather than a URL we feed a manual run.
 
 ### 24. Enrichment appears stuck overnight — no persistent poller for async Gemini batches
 
-**Status:** Diagnosed (2026-09-06). The 50-account ingestion (issue #22/#23 work)
-enriched on a manual worker re-run, but exposed an operational gap.
+**Status:** Resolved (2026-09-07) — Dagster-native harvest (migration branch
+`migration/batch-native-enrichment`). The fix replaces the one-shot manual worker
+re-run with a Dagster `gemini_batch_harvest_sensor` (cursor, persisted-job
+rediscovery) + short `gemini_batch_harvest` run, plus a `submit_gemini_batches_job`,
+so a finished async Gemini batch is always harvested with no manual step. Live-proven
+on the original job 6 (593 posts): our harvest path applied the stranded terminal
+tail (gold 9,570→9,576; items 584→590 complete; remote status RETRIEVED) with no human.
+The external worker is removed. The 50-account ingestion (issue #22/#23 work)
+enriched on the old manual worker re-run, which exposed the gap.
 
 #### What happened
 Job 6 (593 posts of the 50 scraped accounts, gemini-batch mode) sat at
@@ -876,8 +883,6 @@ actor, which today blocks the bronze run on `poll_run` while the actor runs — 
 should move to submit + sensor-harvest. Landed bytes stay durable (bronze +
 media cache) before any hermetic transform (ADR-0003).
 
-#### Non-goals
-- No code change yet — diagnosis + lesson only.
 ## Resolved
 
 ### 1. Comprehensive medallion testing strategy ✅ (2026-07-01)
