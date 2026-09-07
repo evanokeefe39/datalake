@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Batch-native enrichment: the migration report — datalake</title>
+<meta name="description" content="How datalake's gold enrichment moved from an external worker to a Dagster-native gemini-batch submit-harvest path (ADR-0007/0008): the contracts now in force, the live validation that closed ISSUES #24, the medallion state it leaves behind, and what is still not done.">
+<!-- Design system: dev-portfolio-2 /landing skin-F (cool type-led terminal), reused per
+     the org content-style playbook (docs/content-style.md + the vibe-coding retro HTML).
+     Standalone, self-contained, reduced-motion respected. Every figure is live lake state. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&family=VT323&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ld-bg:#f6f8fa; --ld-ink:#1c2733; --ld-ink-soft:#45525e; --ld-ink-faint:#8a97a3;
+  --ld-accent:#0e7490; --ld-rule:#dde4ea; --ld-card-bg:#eef2f6; --ld-card-border:#d4dce3;
+  --ld-btn-bg:#1c2733; --ld-btn-ink:#22d3ee; --ld-french:#0055A4; --ld-french-soft:#e6edf8;
+  --ld-diff-del:#b91c1c; --ld-dark:#1c2733; --ld-dark-ink:#dfe5ea;
+  --display:"VT323",var(--mono),monospace; --body:"IBM Plex Sans",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{font-family:var(--body);background:var(--ld-bg);color:var(--ld-ink);font-size:16.5px;line-height:1.65;-webkit-font-smoothing:antialiased}
+@media (prefers-reduced-motion:no-preference){html.js .reveal:not(.in){opacity:0;transform:translateY(14px)}html.js .reveal{transition:opacity .7s ease,transform .7s ease}html.js .reveal.in{opacity:1;transform:none}}
+.wrap{max-width:1100px;margin:0 auto;padding:0 24px}
+.prose{max-width:70ch}
+a{color:var(--ld-accent);text-underline-offset:3px}
+a:focus-visible{outline:2px solid var(--ld-accent);outline-offset:2px}
+code,.mono{font-family:var(--mono);font-size:.82em;background:var(--ld-card-bg);border:1px solid var(--ld-card-border);border-radius:2px;padding:.1em .35em;overflow-wrap:anywhere}
+strong{font-weight:600}
+@media(max-width:720px){table{display:block;overflow-x:auto;font-size:13px}nav.toc a{padding:14px 10px}}
+.masthead{border-bottom:1px solid var(--ld-rule);padding:16px 0;background:var(--ld-bg);position:relative;z-index:5}
+.masthead .wrap{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.kicker{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ld-ink-faint)}
+.kicker a{color:inherit;text-decoration:none}
+nav.toc{position:sticky;top:0;z-index:40;background:rgba(246,248,250,.94);backdrop-filter:blur(6px);border-bottom:1px solid var(--ld-rule)}
+nav.toc .wrap{display:flex;gap:4px;overflow-x:auto;padding:0 24px;scrollbar-width:none}
+nav.toc .wrap::-webkit-scrollbar{display:none}
+nav.toc a{font-family:var(--mono);font-size:12px;letter-spacing:.04em;color:var(--ld-ink-faint);text-decoration:none;padding:14px 12px;border-bottom:2px solid transparent;white-space:nowrap;transition:color .2s,border-color .2s}
+nav.toc a:hover{color:var(--ld-ink)}
+nav.toc a.active{color:var(--ld-ink);border-bottom-color:var(--ld-accent)}
+header.hero{padding:56px 0 36px}
+.hero h1{font-family:var(--display);font-weight:400;text-transform:uppercase;font-size:clamp(2.4rem,5.6vw,4.2rem);line-height:1.05;letter-spacing:.01em;max-width:24ch}
+.hero h1 .after{color:var(--ld-accent)}
+.hero h1 .before{color:var(--ld-french)}
+.hero .dek{font-family:var(--body);font-size:clamp(1.05rem,1.8vw,1.2rem);line-height:1.62;color:var(--ld-ink-soft);max-width:72ch;margin-top:20px}
+.hero .dek .n{color:var(--ld-accent);font-weight:600;font-variant-numeric:tabular-nums}
+.hero .dek em{color:var(--ld-ink);font-style:italic}
+figure{margin:2.4em 0}
+figcaption{font-size:13px;color:var(--ld-ink-faint);margin-top:12px;max-width:84ch;line-height:1.6}
+.diag-title{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ld-ink-faint);margin-bottom:14px}
+.diag-title::before{content:"> ";color:var(--ld-accent)}
+section{padding:52px 0 6px;scroll-margin-top:56px}
+h2{font-family:var(--display);font-weight:400;text-transform:uppercase;font-size:clamp(1.9rem,3.4vw,2.7rem);line-height:1.1;letter-spacing:.01em;margin-bottom:16px;max-width:34ch}
+h3{font-family:var(--body);font-weight:600;font-size:1.05rem;margin:1.6em 0 .6em}
+.lede{font-family:var(--body);font-weight:500;font-size:1.15rem;line-height:1.6;color:var(--ld-ink-soft);max-width:62ch;margin-bottom:1.4em}
+section p{margin:0 0 1.3em;max-width:70ch}
+.pull{font-family:var(--body);font-weight:500;font-size:clamp(1.2rem,2.2vw,1.5rem);line-height:1.45;max-width:46ch;margin:2em 0;padding-left:22px;border-left:3px solid var(--ld-accent);color:var(--ld-ink)}
+.pull .where{display:block;font-family:var(--mono);font-weight:400;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ld-ink-faint);margin-top:12px}
+.callout{background:var(--ld-dark);color:var(--ld-dark-ink);border-radius:0;padding:24px 28px;margin:2em 0;max-width:900px;border-left:3px solid #22d3ee}
+.callout .tag{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#f0a8a8;display:block;margin-bottom:12px}
+.callout p{color:var(--ld-dark-ink);max-width:78ch}
+.callout code{background:#26313c;border-color:#3a4550;color:#cfe6ee}
+.callout ul{color:var(--ld-dark-ink);margin:0 0 1em 1.2em;max-width:76ch}
+.callout li{margin:.3em 0}
+table{border-collapse:collapse;width:100%;max-width:1040px;margin:1.4em 0;font-size:14px}
+th{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ld-ink-faint);text-align:left;padding:10px 12px;border-bottom:2px solid var(--ld-ink)}
+td{padding:10px 12px;border-bottom:1px solid var(--ld-rule);vertical-align:top}
+tr.done td:last-child,.ok{color:var(--ld-accent);font-weight:600}
+tr.todo td:last-child{color:var(--ld-french);font-weight:600}
+.mode-cap{font-family:var(--mono);font-size:.6rem;letter-spacing:.04em;text-transform:uppercase;color:var(--ld-ink-faint);display:block;margin-top:.3em;line-height:1.35;font-weight:400}
+.mode{display:inline-block;font-family:var(--mono);font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;font-weight:600;padding:.22em .6em;border-radius:0;white-space:nowrap}
+.mode.green{color:var(--ld-accent);background:#e4f2f4;border:1px solid #b5d7dd}
+.mode.blue{color:var(--ld-french);background:var(--ld-french-soft);border:1px solid #9db8dd}
+.mode.grey{color:var(--ld-ink-soft);background:#eef1f3;border:1px solid var(--ld-card-border)}
+.statrow{display:flex;flex-wrap:wrap;gap:12px;margin:1.8em 0;max-width:1040px}
+.stat{flex:1 1 150px;background:var(--ld-card-bg);border:1px solid var(--ld-card-border);padding:14px 16px;min-width:150px}
+.stat .v{display:block;font-family:var(--mono);font-size:1.7rem;line-height:1.05;color:var(--ld-ink);font-weight:600;font-variant-numeric:tabular-nums}
+.stat .k{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ld-ink-faint);margin-top:7px}
+.stat .s{display:block;font-family:var(--mono);font-size:11px;color:var(--ld-accent);margin-top:2px}
+.arch{display:flex;align-items:stretch;gap:8px;margin:1.6em 0;max-width:1000px}
+.astage{flex:1 1 0;min-width:0}
+.astitle{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ld-ink-faint);margin:0 0 8px 2px}
+.anode{background:var(--ld-card-bg);border:1px solid var(--ld-card-border);padding:10px 12px;margin:0 0 8px}
+.anode .t{font-family:var(--mono);font-weight:600;font-size:13px;color:var(--ld-ink);line-height:1.3}
+.anode .b{display:block;font-family:var(--mono);font-size:11px;color:var(--ld-ink-faint);margin-top:2px;line-height:1.4}
+.aarrow{flex:none;display:flex;align-items:center;justify-content:center;font-size:22px;color:var(--ld-accent);padding:0 3px}
+@media(max-width:720px){.arch{flex-direction:column}.aarrow{transform:rotate(90deg);padding:2px 0;height:20px}}
+.take{margin:0 0 1.1em;max-width:84ch}
+.take .n{font-family:var(--mono);font-weight:600;color:var(--ld-accent);font-size:1em}
+.take .n.b{color:var(--ld-french)}
+footer{margin-top:72px;border-top:1px solid var(--ld-rule);padding:30px 0 60px;font-size:13px;color:var(--ld-ink-faint)}
+footer p{max-width:90ch;margin-bottom:.6em}
+.slog{font-family:var(--mono);font-size:13.5px;line-height:1.7;max-width:920px;margin:1.4em 0;border-left:2px solid var(--ld-rule);padding-left:20px}
+.slog li{margin:0 0 1.1em;list-style:none;position:relative}
+.slog li::before{content:"";position:absolute;left:-25px;top:.55em;width:8px;height:8px;background:var(--ld-bg);border:1.5px solid var(--ld-ink-faint)}
+.slog li.hi::before{border-color:var(--ld-accent);background:color-mix(in srgb,var(--ld-accent) 30%,var(--ld-bg))}
+.slog li.warn::before{border-color:var(--ld-french);background:var(--ld-french-soft)}
+.slog .ph{display:block;color:var(--ld-ink);font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-size:11.5px}
+</style>
+</head>
+<body id="top">
+<div class="masthead"><div class="wrap">
+  <span class="kicker"><a href="#top">datalake &rsaquo; migration report</a></span>
+  <span class="kicker">Dagster + DuckDB + Gemini &middot; 2026-09-07</span>
+</div></div>
+<nav class="toc" aria-label="Sections"><div class="wrap">
+  <a href="#migration">The migration</a>
+  <a href="#contracts">Contracts</a>
+  <a href="#validation">Validation</a>
+  <a href="#state">Lake state</a>
+  <a href="#scope">Done / not done</a>
+  <a href="#next">What&rsquo;s left</a>
+</div></nav>
+<header class="hero"><div class="wrap">
+  <h1>Enrichment is now <span class="before">batch-native</span>.<br>The worker is <span class="after">gone</span>.</h1>
+  <p class="dek">Gold&rsquo;s one orchestrated writer is a Dagster <span class="n">submit &rarr; harvest</span> path over async Gemini batches. The external <code>enrichment_worker.py</code> is deleted. The #24 failure &mdash; a finished batch nothing harvests &mdash; is closed by a harvest sensor, proven <span class="n">live on the actual production batch that broke</span>: 6 posts applied to gold with no human, no manual re-run.</p>
+</div></header>
+<main class="wrap">
+
+<!-- 1 THE MIGRATION -->
+<section id="migration" class="reveal">
+  <h2>The migration</h2>
+  <p class="lede">Gold enrichment used to run in an external process (ADR-0002). That split coordination Dagster already owns out of Dagster, and it produced the #24 incident: an async Gemini batch finished on Google&rsquo;s side while nothing polled or harvested it. The answer, ratified in ADR-0007/0008, is one orchestrated async path in Dagster.</p>
+
+  <div class="ba" style="display:grid;grid-template-columns:1fr 1fr;gap:18px;max-width:1000px">
+    <div class="ba-before" style="background:var(--ld-french-soft);border:1.5px dashed var(--ld-french);padding:22px 24px">
+      <span class="colk" style="font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ld-french)">Before &mdash; external worker</span>
+      <div class="t" style="font-family:var(--mono);font-weight:600">scripts/enrichment_worker.py</div>
+      <ul style="margin:.6em 0 0 1.1em;font-size:15px"><li>one-shot CLI &mdash; submit-then-poll cycle, then exits</li><li>nothing keeps it alive to poll async jobs to completion (#24)</li><li>batch claim + REST materialization lived in the process</li><li>interactive (sync) and batch both orchestrated by it</li></ul>
+    </div>
+    <div class="ba-after" style="background:color-mix(in srgb,var(--ld-accent) 10%,var(--ld-bg));border:1.5px solid var(--ld-accent);padding:22px 24px">
+      <span class="colk" style="font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ld-accent)">After &mdash; Dagster-native batch</span>
+      <div class="t" style="font-family:var(--mono);font-weight:600">gen_batches &rarr; media_upload &rarr; submit &rarr; harvest</div>
+      <ul style="margin:.6em 0 0 1.1em;font-size:15px"><li>harvest sensor is the persistent poller &mdash; #24 impossible by construction</li><li>submit + harvest are short bounded Dagster jobs; the hours-long work is external</li><li>interactive is out-of-band only (a manual script, never orchestrated)</li><li>defs/enrichment owns the logic; worker deleted</li></ul>
+    </div>
+  </div>
+
+  <p>Seven commits on <code>migration/batch-native-enrichment</code> (off <code>main</code> f2c561a, HEAD <code>530a73e</code>, tree clean) take it end to end:</p>
+  <table>
+    <thead><tr><th>Commit</th><th>Phase</th><th>What it did</th></tr></thead>
+    <tbody>
+      <tr><td><code>48aa7b3</code></td><td>1 / #24</td><td>Harvest sensor (<code>gemini_batch_harvest_sensor</code>, cursor, persisted-job rediscovery) + short harvest run applying terminal chunks to gold.</td></tr>
+      <tr><td><code>49a9c3b</code></td><td>2a + 5</td><td>Bounded media File-API pre-upload op + ADR-0008 seam-purity check with a failing-regression test.</td></tr>
+      <tr><td><code>0b7c5fe</code></td><td>4</td><td>Out-of-band interactive tool (<code>scripts/enrich_interactive.py</code>), reusing defs logic.</td></tr>
+      <tr><td><code>1ceef1e</code></td><td>2+5</td><td>Relocated worker analysis logic into <code>defs/enrichment/analysis.py</code>; added submit-job scaffold.</td></tr>
+      <tr><td><code>2c71eff</code></td><td>2+5</td><td>Thinned the worker to re-export from defs; wired <code>submit_gemini_batches_job</code> into definitions.</td></tr>
+      <tr><td><code>cf6fc9c</code></td><td>5</td><td>Deleted <code>enrichment_worker.py</code> + every reference; repointed importers to defs; dropped REST materialization.</td></tr>
+      <tr><td><code>530a73e</code></td><td>6</td><td>Docs: OPERATING/README/AGENTS to the new run path; ISSUES #24 resolved; ADR-0007 as-built.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 2 CONTRACTS -->
+<section id="contracts" class="reveal">
+  <h2>Contracts and guarantees now in force</h2>
+  <p class="lede">These are the invariants the migration leaves behind. Each is enforced in code or by construction, not asserted in prose.</p>
+  <table>
+    <thead><tr><th>Guarantee</th><th>Where it is enforced</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr class="done"><td><strong>Gold has one orchestrated writer</strong> &mdash; the harvest run. Gold upsert is idempotent on <code>(post_id, domain)</code> with an <code>analysed_at</code> ordering guard, keyed to the current prompt hash.</td><td><code>analysis.write_gold</code> / <code>gemini_batch_harvest</code></td><td>done</td></tr>
+      <tr class="done"><td><strong>Async completion is never stranded</strong> (#24) &mdash; a finished batch is always harvested by the sensor; job names persist in <code>batch_jobs.gemini_batch_name</code>, so rediscovery survives a restart.</td><td><code>gemini_batch_harvest_sensor</code> (cursor) + harvest run</td><td>done + live-proven</td></tr>
+      <tr class="done"><td><strong>DuckDB is single-writer</strong> &mdash; orchestrated harvest and any ad-hoc run never write concurrently; ad-hoc is deliberate.</td><td>submit/harvest split; interactive out-of-band</td><td>done</td></tr>
+      <tr class="done"><td><strong>Silver onward is hermetic</strong> (ADR-0008) &mdash; no Gemini API call inside a pure transform. Every op that may touch the API carries <code>{adr:&nbsp;0008, seam:&nbsp;enrichment-api}</code>.</td><td><code>check_enrichment_seam_purity</code> asset check + <code>seam_violations()</code> scanner + failing-regression test</td><td>done</td></tr>
+      <tr class="done"><td><strong>Runs never block for hours</strong> &mdash; submit and harvest are short, bounded passes; the long work is external. Nothing orchestrated does synchronous interactive enrichment.</td><td>Dagster jobs; interactive only via <code>enrich_interactive.py</code></td><td>done</td></tr>
+      <tr class="done"><td><strong>Media upload is idempotent and bounded</strong> &mdash; cache-first (URL-hash keyed), a re-run over the same candidates issues zero File-API uploads.</td><td><code>media_upload_pending_batches_job</code> over <code>media_cache</code> (27,748 entries)</td><td>done</td></tr>
+      <tr class="done"><td><strong>Per-item failures are isolated</strong> &mdash; a bad post fails that item (retry, then <code>dead_letter</code> at <code>MAX_ATTEMPTS</code>), never the run. The 429 taxonomy distinguishes rate-limit from quota-exhausted.</td><td><code>analysis.py</code> taxonomy + <code>batch.py</code></td><td>done</td></tr>
+    </tbody>
+  </table>
+  <p class="pull">The green gate used to prove the pipeline ran. Now a finished async job is harvested by a sensor, and an API call inside a pure transform turns a registered asset check red.
+    <span class="where">#24 is closed by construction; the seam is guarded by a failing test</span></p>
+</section>
+
+<!-- 3 VALIDATION -->
+<section id="validation" class="reveal">
+  <h2>Validation, with the receipts</h2>
+  <p class="lede">The load-bearing validation is the live External Integration Gate: the new harvest path was pointed at the real production batch that originally broke, and it finished the tail with no human. Everything else is the branch&rsquo;s test and build state.</p>
+
+  <h3>The live gate &mdash; production batch job #6</h3>
+  <p>Job 6 (593 posts, gemini-batch mode) had finished on Google&rsquo;s side &mdash; both chunks remote <code>SUCCEEDED</code> &mdash; but sat locally <code>processing</code>/<code>RUNNING</code> with a tail never harvested. That is the #24 bug, live. The migration harvest path (<code>harvest_gemini_batches</code>, the exact code the sensor triggers) was run once against production:</p>
+  <table>
+    <thead><tr><th>Metric</th><th>Before</th><th>After</th></tr></thead>
+    <tbody>
+      <tr><td>gold_analyses total rows</td><td>9,570</td><td><strong>9,576</strong> (+6 applied)</td></tr>
+      <tr><td>job-6 posts covered in gold</td><td>535 / 593</td><td><strong>541 / 593</strong></td></tr>
+      <tr><td>job-6 items complete</td><td>584 / 593</td><td><strong>590 / 593</strong></td></tr>
+      <tr><td>job-6 remote chunk status</td><td>RUNNING (stale)</td><td><strong>RETRIEVED</strong></td></tr>
+      <tr><td>human / manual re-run</td><td>needed one</td><td><strong>none</strong></td></tr>
+    </tbody>
+  </table>
+  <p>The 6 newly applied rows carry the current prompt hash (<code>24c8e291</code>), the default model (<code>gemini-3.5-flash-lite</code>), and parse as valid schema (<code>actionable_json</code>, <code>content_type</code>, <code>domain</code>, &hellip;). All 541 of job-6&rsquo;s gold rows are valid JSON. The residual 2 tail items returned malformed JSON and were routed to per-item retry / dead-letter &mdash; a genuine quality failure, not the stranded-terminal class. Rollback backups were taken first: <code>data/backups/*.harvest-gate-20260907_083143</code>.</p>
+
+  <h3>Test and build state (branch HEAD 530a73e)</h3>
+  <table>
+    <thead><tr><th>Gate</th><th>Result</th><th>Scope</th></tr></thead>
+    <tbody>
+      <tr class="done"><td><code>uv run pytest tests/unit/enrichment tests/integration/enrichment tests/unit/scripts -v</code></td><td>93 passed</td><td>migration-affected suites</td></tr>
+      <tr class="done"><td><code>uv run pytest tests/unit -q</code></td><td>358 passed, 2 skipped</td><td>whole unit tree &mdash; no collateral from the worker removal</td></tr>
+      <tr class="done"><td>Seam guard (<code>test_seam_guard.py</code>)</td><td>5 passed; <code>seam_violations()==[]</code></td><td>ADR-0008 hermeticity</td></tr>
+      <tr class="done"><td><code>grep enrichment_worker</code> over src/tests/scripts</td><td>zero references</td><td>worker fully removed</td></tr>
+      <tr class="done"><td><code>from datalake.definitions import defs</code></td><td>loads; jobs/sensor registered</td><td>Dagster definitions</td></tr>
+    </tbody>
+  </table>
+  <p>One caveat carried honestly: the plan&rsquo;s gate also asks for strict batch-vs-interactive parity on the same posts. The applied rows match interactive&rsquo;s prompt hash, model, and schema and parse cleanly, but a separate interactive re-run on the same 6 posts was not spent. That parity check is not done.</p>
+</section>
+
+<!-- 4 LAKE STATE -->
+<section id="state" class="reveal">
+  <h2>The medallion it leaves behind</h2>
+  <p class="lede">Live state on 2026-09-07, queried from <code>data/state.duckdb</code> and <code>data/ops.sqlite</code>, not guessed.</p>
+  <div class="statrow">
+    <div class="stat"><span class="v">23</span><span class="k">bronze datasets</span><span class="s">parquet</span></div>
+    <div class="stat"><span class="v">10,038</span><span class="k">silver posts</span><span class="s">silver_ig_posts</span></div>
+    <div class="stat"><span class="v">9,576</span><span class="k">gold analyses</span><span class="s">all current-prompt</span></div>
+    <div class="stat"><span class="v">625 / 366</span><span class="k">dim profile / date</span><span class="s">serving</span></div>
+  </div>
+  <table>
+    <thead><tr><th>Layer</th><th>Table / artifact</th><th>Rows</th><th>Notes</th></tr></thead>
+    <tbody>
+<tr><td rowspan="2"><strong>Bronze</strong><br><span class="mode-cap">parquet, direct writes</span></td><td><code>data/lake/bronze/</code></td><td>23 files · 12,834 raw rows</td><td>per-account / per-run snapshots from Apify; file-based, no state tracking</td></tr>
+      <tr><td>silver_ig_posts source</td><td>&mdash;</td><td>deduped upstream of silver</td></tr>
+      <tr><td rowspan="3"><strong>Silver</strong><br><span class="mode-cap">DuckDB + watermark</span></td><td><code>silver_ig_posts</code></td><td><strong>10,038</strong></td><td>deduped, normalized, domain-scoped; <code>processed_on</code> first-seen semantics</td></tr>
+      <tr><td><code>silver_ig_profiles</code> / comments / observations</td><td>present</td><td>profiles carry creator linkage</td></tr>
+      <tr><td><code>ig_post_labels</code></td><td>present</td><td>enrichment decision + label version; gold discovery source</td></tr>
+      <tr><td rowspan="2"><strong>Gold</strong><br><span class="mode-cap">sole writer = harvest run</span></td><td><code>gold_analyses</code></td><td><strong>9,576</strong></td><td>9,576 distinct posts, all <code>domain=instagram</code>, all current prompt hash (24c8e291), all valid JSON</td></tr>
+      <tr><td><code>watermarks</code> / dims</td><td>dim_profile 625, dim_date 366</td><td>SCD2 profile + date dims; 20+ serving views</td></tr>
+      <tr><td rowspan="2"><strong>Ops</strong><br><span class="mode-cap">SQLite, operational state</span></td><td><code>batch_jobs</code></td><td>6 (3 gemini-batch complete, 1 processing = job 6, 2 interactive complete)</td><td>job 6 done except 2 residual invalid-JSON retries</td></tr>
+      <tr><td><code>batch_items</code> 10,285 &middot; <code>dead_letter</code> 46 &middot; <code>media_cache</code> 27,748 &middot; <code>media_metadata</code> 3,025 &middot; profiles/creators 675</td><td>&mdash;</td><td>dead-letter modes seen: unknown mime (~3%), CDN connect timeouts, File-API timeout, HTTP 403</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 5 SCOPE: DONE / NOT DONE -->
+<section id="scope" class="reveal">
+  <h2>Definition of done &mdash; done and not done</h2>
+  <p class="lede">The migration&rsquo;s merge-gate DoD (from the plan), reconciled to the branch. Code-complete items are marked done on the branch; the items that also need the live deployment are flagged.</p>
+  <table>
+    <thead><tr><th>DoD criterion</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr class="done"><td>Batch is the sole orchestrated gold writer; worker removed</td><td>done on branch (submit &rarr; harvest owns gold; <code>enrichment_worker.py</code> deleted)</td></tr>
+      <tr class="done"><td>A batch that finishes is always harvested by the sensor (no #24 class)</td><td>done + live-proven on job 6 (sensor defaults STOPPED until deployed)</td></tr>
+      <tr class="done"><td>Interactive enrichment is out-of-band (manual script); nothing orchestrated blocks for hours</td><td>done (<code>enrich_interactive.py</code>; worker gone)</td></tr>
+      <tr class="done"><td>ADR-0008 seam guarded by a failing test; pure transforms hermetic</td><td>done (seam check + failing regression test green)</td></tr>
+      <tr><td>OPERATING / ARCHITECTURE / tests updated; full suite green</td><td>docs updated; 358 unit + 93 scoped green; full e2e not re-run (slow)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Not done &mdash; the cutover and the deferred tail</h3>
+  <div class="take"><span class="n b">1 &mdash; Deploy and cut over (needs the live environment).</span> The harvest sensor is <code>DefaultSensorStatus.STOPPED</code> by design until the smoke. Flipping it RUNNING, running a real submit &rarr; harvest at volume, and merging to <code>main</code> happen in the running Dagster, not on the branch.</div>
+  <div class="take"><span class="n b">2 &mdash; Strict interactive-vs-batch parity on the same posts.</span> Not spent (structural parity only: same prompt hash / model / schema confirmed on the live apply).</div>
+  <div class="take"><span class="n b">3 &mdash; Job-6 residual retries.</span> 2 tail items returned invalid JSON and are pending resubmission through the submit path &mdash; a real per-item retry, expected, not a stranded-terminal defect.</div>
+  <div class="take"><span class="n">4 &mdash; Media-expiry race (cache bytes at scrape time).</span> Pre-existing deferred direction (CDN URLs die in ~4&ndash;5 days); the media cache table exists and is populated (27,748 entries) but the scrape-time byte capture is not this migration&rsquo;s scope.</div>
+  <div class="take"><span class="n">5 &mdash; Batch-multimodal at scale + Tier-2 threshold.</span> Batch now carries media via the File-API upload op; video-at-scale / batch-API-at-volume remains the follow-on that the plan always deferred to Tier-2 triggers.</div>
+
+  <h3>Epic / user-story mapping</h3>
+  <table>
+    <thead><tr><th>Epic / issue</th><th>Story or ask</th><th>Relation to this migration</th></tr></thead>
+    <tbody>
+      <tr class="done"><td><code>ISSUES #24</code> &mdash; no persistent poller for async batches</td><td>a finished batch must be harvested without a human</td><td>resolved &mdash; the harvest sensor is the poller; live-proven on the original job 6</td></tr>
+      <tr class="done"><td><code>ISSUES #19</code> &mdash; batch multimodal</td><td>media reaching Gemini in batch</td><td>enabled &mdash; File-API media pre-upload op + batch submit path</td></tr>
+      <tr><td><code>ISSUES #22/#23</code> &mdash; 50-account ingestion / profile-as-source</td><td>scale ingestion beyond IG</td><td>related &mdash; the #24 origin batch; batch-native makes enrichment scale-safe</td></tr>
+      <tr><td>AGENTS &ldquo;current direction&rdquo; &mdash; pipeline hardening</td><td>wire media end-to-end; batch as default; multi-source additive</td><td>batch-native enrichment is the orchestration half of that direction</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 6 NEXT -->
+<section id="next" class="reveal">
+  <h2>What&rsquo;s left, and the transferable lesson</h2>
+  <p class="lede">The branch is the merge-ready deliverable. What happens next is deployment, not code.</p>
+  <ul class="prose" style="margin:0 0 1.4em 1.3em">
+    <li>Open the PR from <code>migration/batch-native-enrichment</code> to <code>main</code>, review, merge.</li>
+    <li>In the running Dagster: flip <code>gemini_batch_harvest_sensor</code> RUNNING; confirm a real submit &rarr; harvest run; let job-6&rsquo;s 2 residual retries resubmit.</li>
+    <li>Then the follow-ons: scrape-time media-byte capture, batch-multimodal at volume, the Tier-2 threshold.</li>
+  </ul>
+  <p class="pull">An async external job is not a one-shot synchronous fetch. If the answer comes back later as a handle, you need a poller that outlives any single run &mdash; and the guarantee that it exists is a sensor, not a process someone remembers to start.
+    <span class="where">the #24 discipline, now enforced in Dagster</span></p>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p><strong>Provenance.</strong> All figures are live state or build output: medallion counts queried from <code>data/state.duckdb</code> and <code>data/ops.sqlite</code> on 2026-09-07; the job-6 live gate was run through the migration&rsquo;s <code>harvest_gemini_batches</code> against production (backups at <code>data/backups/*.harvest-gate-20260907_083143</code>); test counts from <code>uv run pytest</code> at branch HEAD <code>530a73e</code>. Migration rationale: <a href="0007-batch-native-enrichment-deprecate-worker.md">ADR-0007</a>, <a href="0008-hermetic-with-explicit-api-seam.md">ADR-0008</a>, <a href="migration-batch-native-enrichment.md">the migration plan</a>.</p>
+    <p>Companion run-path docs: <a href="../OPERATING.md">OPERATING.md</a>. House style: <code>~/repos/dev-portfolio-2/docs/content-style.md</code>.</p>
+  </div>
+</footer>
+
+<script>
+(function(){if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;document.documentElement.classList.add('js');
+var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}})},{threshold:.08});
+document.querySelectorAll('.reveal').forEach(function(el){io.observe(el);});
+var secs=[].slice.call(document.querySelectorAll('section[id]'));var links={};[].slice.call(document.querySelectorAll('nav.toc a')).forEach(function(a){links[a.getAttribute('href').slice(1)]=a;});
+var spy=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){Object.keys(links).forEach(function(k){links[k].classList.remove('active');});var id=e.target.id;if(links[id])links[id].classList.add('active');}})},{rootMargin:'-30% 0px -60% 0px'});
+secs.forEach(function(s){spy.observe(s);});})();
+</script>
+</body>
+</html>
