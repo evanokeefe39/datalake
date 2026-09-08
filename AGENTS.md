@@ -10,6 +10,31 @@ This repo is operated by Claude. Keep this file current — Claude reads it on e
 - No direct pushes to `main`.
 - Never use PowerShell.
 
+## Where Epics & User Stories live
+
+The canonical Epic/User-Story store is **`tasks/epics/`** — one directory per
+epic (`tasks/epics/<epic_slug>/epic.md`), with that epic's user stories under
+`tasks/epics/<epic_slug>/user-stories/`. The registry/status board is
+`tasks/epics/README.md`.
+
+- **Only `tasks/epics/` is git-tracked** (`.gitignore` ignores the rest of
+  `tasks/`). Epics/stories are governance content and are versioned;
+  `tasks/plans/` and `tasks/lessons.md` are untracked working notes.
+- **Author new user stories in the store**, under their epic, with
+  As-a/I-want/So-that + binary AC + DoD + tests. Link to the source plan for the
+  "how"; the plan may point to its canonical epic.
+- **Canonical ownership is one story → one epic (many-to-one).** A story can be
+  *relevant* to other epics via a `relates-to` link — never a second copy.
+- **`tasks/plans/*.md` are immutable history** — do not retroactively edit them
+  from here. When an old plan needs aligning with a merged/canonical epic,
+  publish a new version that links to it.
+- Consolidating similar epics is a deliberate step: record the merge in the
+  registry and in affected stories' `relates-to`, then (optionally) version the
+  source plan.
+- When starting feature work, check the registry first: attach new stories to
+  existing epics (commonly the enrichment/serving seams) rather than spinning up
+  a fresh plan-only workstream.
+
 ## Report / analysis HTML writing (datalake analysis outputs, READMEs, docs)
 
 When a piece is meant to be *read* (an analysis report, a retrospective, a

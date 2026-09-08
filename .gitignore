@@ -28,7 +28,8 @@ dagster_home/
 *.swp
 *~
 *.db
-tasks/
+tasks/*
+!tasks/epics/
 data/backups/
 data/_tmp_*/
 scripts/_diag_*
