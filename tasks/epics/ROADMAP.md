@@ -26,13 +26,15 @@ New feature epics: **enrich-facets**, **enrich-summaries**, **enrich-transcripts
 - **Transcripts are independent of Gemini** (local ffmpeg+whisper) → they are a
   parallel cheap enabler that upgrades the text layer; they do NOT block the
   caption-only text layer.
+- **Dev/test ≠ full backfill.** Iteration runs on a *slice* (fast locally or via
+  a cloud burst), never the full corpus; production is the overnight local run.
 
 ### Build order
 | # | Work | Epic / US | Gate / decision before next |
 |---|---|---|---|
 | 1 | Engagement-utility validation (free) | enrich-facets · US-EFAC-2 | Report which facets discriminate standout/hot vs underperformer per media type; non-discriminators marked drop |
 | 2 | Lock V3 facet schema (uses #1) | enrich-facets · US-EFAC-1 | value_medium + brand_logos/on_screen_claim resolved; reserved-key validator tests pass |
-| 3 | Transcripts: run-location decision + build | enrich-transcripts · US-ETR-1..3 | **Decision:** local laptop vs cx33 box (where scrape lives); then ffmpeg→whisper incremental + resumable backfill |
+| 3 | Transcripts: backend + incremental + backfill | enrich-transcripts · US-ETR-1..4 | ffmpeg→whisper incremental + resumable overnight backfill; **US-ETR-4 pluggable backend** gives a fast GCP-spot burst for dev/test slices |
 | 4 | Universal video call (visual facets + folded summaries) | enrich-facets · US-EFAC-3 + enrich-summaries · US-ESUM-1 | Single additive call; smoke on temp/isolated DB; carousel index-alignment validated |
 | 5 | Text-layer facets (caption-only first, transcript later) | enrich-facets · US-EFAC-4 | Re-runnable cheap text call; video input never re-sent on schema change |
 | 6 | (Deferred) visual-faithfulness gate | enrich-summaries · US-ESUM-2 | ONLY if a summary becomes decision-grade |
@@ -52,8 +54,13 @@ New feature epics: **enrich-facets**, **enrich-summaries**, **enrich-transcripts
   honest coverage flags).
 
 ### Decisions deferred until triggered
-- **GCS / GCP media** + Cloud Run/STT: only when re-enrich is recurring (not for
-  first extraction). No GPU purchase for the one-time transcript backfill.
+- **Full-media GCS move** + Cloud Run/STT: only when re-enrich is recurring (not
+  for first extraction). No GPU *purchase* — the one-time backfill uses local
+  CPU or a rented spot GPU.
+- **Transcript burst** (US-ETR-4): GCP spot GPU in the SAME region as the
+  media/staging bucket (internal transfer $0, per-second billing). VPN does NOT
+  reduce cloud egress — region is a GCP setting; media must be colocated with
+  the compute.
 - Transcript **run location** (laptop vs cx33) pending where the scrape lives.
 
 ---

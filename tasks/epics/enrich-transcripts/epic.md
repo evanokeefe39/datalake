@@ -1,4 +1,4 @@
-# Epic E-ENRICH-TRANSCRIPTS — Local ASR transcript capture
+# Epic E-ENRICH-TRANSCRIPTS — ASR transcript capture (local default + cloud burst)
 
 - **Theme:** Richer media-grounded enrichment (new)
 - **Owner:** dlc-worker
@@ -30,3 +30,8 @@ dependency and no scrape-time expiry race**.
 - [ ] ffmpeg audio-extract → faster-whisper job; `transcript` additive column.
 - [ ] Incremental-at-scrape + resumable overnight backfill; music-only clips yield
       near-empty transcripts (no pre-filter needed).
+- [ ] **Pluggable transcript backend** (US-ETR-4): `local` faster-whisper is the
+      default ($0; incremental + prod overnight); an on-demand **GCP spot GPU
+      burst** in the SAME region as the media bucket runs the SAME model for
+      fast dev/test slices (parity preserved, per-second billing). Cost-
+      guarded + guaranteed tear-down.

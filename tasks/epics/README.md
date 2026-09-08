@@ -4,9 +4,9 @@
 > (facets/summaries/transcripts) with quality gates, plus the deferred
 > Epic/PR governance automation (hook + SQLite) with its decisions recorded.
 >
-> Personas: **[`personas/`](personas/README.md)** — P1–P7 principals + the
-> AI-agent transitive actor (`personas/ai-agent.md`). User stories carry
-> `persona: P#`.
+>
+> Plan↔Epic reverse lookup: **[`PLANS-INDEX.md`](PLANS-INDEX.md)** — every
+> `tasks/plans/*.md` maps back to its epic(s) (and US where applicable).
 
 Canonical store for Epics and User Stories. **The enrichment spine is the
 through-line of this repo**: capture rich media → media-grounded Gemini signal
