@@ -16,6 +16,9 @@ Design notes (documented in ``docs/growth-facets-schema.md``):
   are separate additive columns, not facets.
 - No ``jsonschema`` dependency: validation is hand-rolled with clear,
   human-readable error strings (checked pyproject 2026-09-08).
+- ``value_medium`` is **open-with-other** free text (V3 was <0.85 agreement;
+  demoted at lock 2026-09-08 rather than gated on a later v4 bump).
+  ``VALUE_MEDIUM_EXAMPLES`` is model-facing vocabulary only, never enforced.
 """
 
 from __future__ import annotations
@@ -68,7 +71,9 @@ CTA_TYPES = (
     "other",
 )
 VALUE_DEPTHS = ("shallow", "practical", "deep")
-VALUE_MEDIUMS = (
+VALUE_MEDIUM_EXAMPLES = (
+    # Open-with-other: shown to the model as descriptive vocabulary, NOT
+    # validated. The model writes the actual presentation form as free text.
     "demo",
     "talking_head",
     "screenshare",
@@ -97,6 +102,7 @@ FREE_TEXT_FIELDS = (
     "sponsorship_signal",
     "replicable_tactic",
     "evidence",
+    "value_medium",
 )
 BOOL_FIELDS = (
     "is_sponsored",
@@ -110,7 +116,6 @@ ENUM_FIELDS = {
     "hook_type": HOOK_TYPES,
     "cta_type": CTA_TYPES,
     "value_depth": VALUE_DEPTHS,
-    "value_medium": VALUE_MEDIUMS,
 }
 ARRAY_FIELDS = ("brand_logos",)
 OPTIONAL_FIELDS = ("hashtag_strategy",)
@@ -156,7 +161,7 @@ GROWTH_FACETS_JSON_SCHEMA: dict = {
         "hashtag_strategy": {"type": "string"},
         "evidence": {"type": "string"},
         "face_present": {"type": "boolean"},
-        "value_medium": {"type": "string", "enum": list(VALUE_MEDIUMS)},
+        "value_medium": {"type": "string"},
         "brand_logos": {
             "type": "array",
             "items": {"type": "string"},

@@ -40,7 +40,7 @@ channel that can carry its evidence. The schema does not encode channels;
 | Field | Type / enum | Meaning | Required |
 |---|---|---|---|
 | `face_present` | bool | A human face is visible | yes |
-| `value_medium` | enum: `demo`, `talking_head`, `screenshare`, `broll_voiceover`, `slideshow_carousel`, `text_graphic`, `other` | Primary delivery format of the value | yes |
+| `value_medium` | string (open-with-`other` free text; example vocab: `demo`, `talking_head`, `screenshare`, `broll_voiceover`, `slideshow_carousel`, `text_graphic`, `other`) | Primary delivery format of the value, described in the creator's own terms | yes |
 | `brand_logos` | array of strings (may be `[]`) | Objective list of visible brand marks/logos (see firmed definition) | yes |
 | `text_overlay_present` | bool | Text is overlaid on the imagery | yes |
 | `on_screen_claim` | bool | A result/claim appears ONLY on-screen (not spoken/caption) | yes |
@@ -95,21 +95,21 @@ for nullability.
 
 ## Resolved design points (flagged for review, not silently guessed)
 
-### (a) `value_medium` granularity — RECOMMENDATION: keep the enum for V3.1, demote only if the re-run still scores <0.85
+### (a) `value_medium` granularity — DECISION (2026-09-08): demote to open-with-`other` free text
 
-Keep the 7-value enum as locked above; do **not** demote to open-with-`other`
-now. Rationale:
+Locked as **free text**, not the 7-value enum. The 0.82 agreement (95-post
+fold spike) is within noise of `format_structure`'s 0.86, and the enum's main
+failure mode (boundary demo vs talking_head) is disagreement *between two
+correct-ish enums*. Rather than ship a weak enum and demote later via a v4
+bump, the user chose to demote **now**, before the schema's first release:
+`value_medium` takes a free-text description of the delivery format, with the
+old enum values retained as model-facing example vocabulary
+(`VALUE_MEDIUM_EXAMPLES` in the module) — never enforced.
 
-- The 0.82 came from the 95-post fold spike, within noise of
-  `format_structure`'s 0.86; the enum has a clear `other` escape already, so
-  the main failure mode (boundary cases demo vs talking_head) is
-  disagreement *between two correct-ish enums*, which open-text would not
-  fix — it would just make the disagreement unverifiable and break
-  analytics grouping.
-- The universal call has not shipped yet (this PR locks the schema only).
-  Re-validate at larger n per the keep-bias decision (design §4): if the
-  V3 re-run still holds <0.85, demote to open-text-with-`other` in a v4
-  schema bump (version constant exists for exactly this), not by silent edit.
+Tradeoff accepted: no fixed analytics grouping on this field (use free-text
+grouping or embeddings); the cost is small and it removes a guaranteed-noise
+enum before any data is written under it. If a stable grouping later proves
+decision-useful, reintroduce a tight enum in a v4 bump with agreement evidence.
 
 ### (b) Firmed codebook wording (was 68% `brand_logos`, 73% `on_screen_claim`)
 

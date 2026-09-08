@@ -136,10 +136,18 @@ class TestEnums:
         errors = validate_growth_facets(payload)
         assert any("hook_type" in e and "not in enum" in e for e in errors)
 
-    def test_bad_value_medium_rejected(self):
+    def test_value_medium_open_with_other_accepts_descriptive(self):
+        # value_medium demoted to open-with-other free text at lock (US-EFAC-1);
+        # any descriptive string is valid, not just the example vocabulary.
         payload = _valid_payload()
         payload["value_medium"] = "documentary"
-        assert any("value_medium" in e for e in validate_growth_facets(payload))
+        assert validate_growth_facets(payload) == []
+
+    def test_value_medium_non_string_rejected(self):
+        payload = _valid_payload()
+        payload["value_medium"] = 42
+        errors = validate_growth_facets(payload)
+        assert any("value_medium" in e and "expected string" in e for e in errors)
 
     def test_non_bool_field_rejected(self):
         payload = _valid_payload()
