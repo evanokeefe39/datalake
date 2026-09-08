@@ -61,3 +61,91 @@ Caption:"""  # no trailing whitespace needed
 _DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 CURRENT_PROMPT_HASH = compute_prompt_hash(IG_GOLD_PROMPT, _DEFAULT_GEMINI_MODEL)
+
+
+# ── Universal video→Gemini call (US-EFAC-3 + US-ESUM-1) ──────────────────────
+
+from datalake.defs.enrichment.growth_facets_schema import (  # noqa: E402
+    GROWTH_FACETS_SCHEMA_VERSION,
+    VALUE_MEDIUM_EXAMPLES,
+)
+
+_VISUAL_CODEBOOK = """\
+Codebook (apply strictly):
+- face_present=true ONLY if a human face is visible.
+- brand_logos: list every LEGIBLE brand mark in the imagery — logos, wordmarks,
+  or distinctive brand packaging/labels a viewer could name. Include the
+  creator's own brand only if it is a registered brand mark. EXCLUDE: generic
+  products without a readable mark, UI chrome (the recording platform's app
+  icon), and merely descriptive text. If no mark is legible, return [] — do
+  not guess.
+- text_overlay_present=true only if text is rendered ON the imagery.
+- on_screen_claim=true only when a SPECIFIC result or performance claim
+  appears as on-screen text (overlay, burned-in caption, slide text) — e.g.
+  numbers ('+12,400 followers'), outcomes ('doubled revenue'), before/after
+  figures. The claim must NOT appear in the spoken audio or the caption for
+  this flag to be TRUE (that is claimed_results' channel — do not emit it).
+  FALSE when on-screen text is merely descriptive (step labels, titles) or
+  when the same claim is also spoken/captioned.
+- value_medium: free text describing HOW the content is primarily delivered,
+  in the creator's own terms. Example vocabulary (guidance only, not an enum):
+  demo, talking_head, screenshare, broll_voiceover, slideshow_carousel,
+  text_graphic, other.
+- content_summary / per-image summaries: describe only what is visible; never
+  infer the unseen. Do not rest on the caption for visual claims."""
+
+
+def build_growth_facets_prompt(caption: str, n_media: int) -> str:
+    """Build the ONE universal media-call prompt (visual facets + summaries).
+
+    ``n_media`` = number of media files sent. n_media > 1 means a carousel:
+    the model additionally folds per-image summaries aligned to display order.
+    Text-layer facets (hook_*, is_sponsored, claimed_results, cta_type,
+    audience_named, value_depth, replicable_tactic, brand_safety) are
+    explicitly out of scope (US-EFAC-4) — the prompt forbids them.
+    """
+    visual_keys = "face_present, value_medium, brand_logos, text_overlay_present, on_screen_claim"
+    if n_media > 1:
+        summary_task = (
+            f"image_summaries: an array with EXACTLY {n_media} entries, one "
+            "per image in display order; each entry {\"index\": int, "
+            "\"summary\": string} — one short sentence per image."
+        )
+    else:
+        summary_task = "content_summary: string (2-3 short sentences)."
+    return (
+        "You are a meticulous content analyst. You will see the post's media "
+        "(video, carousel, or image). Caption is CONTEXT ONLY, not grounds for "
+        "visual claims.\n\n"
+        "TASK — return ONE JSON object with EXACTLY these keys:\n"
+        "  visual_facets: object with EXACTLY these keys: " + visual_keys + "\n"
+        "  " + summary_task + "\n"
+        "Nothing else. No extra keys — especially do NOT emit hook_content, "
+        "hook_type, is_sponsored, sponsorship_signal, claimed_results, "
+        "cta_type, audience_named, value_depth, replicable_tactic, "
+        "hashtag_strategy, brand_safety, evidence, or any brand_safety flags.\n\n"
+        "Codebook:\n" + _VISUAL_CODEBOOK + "\n\n"
+        "Return ONLY valid JSON. No markdown, no explanation.\n\n"
+        "Caption:\n" + caption
+    )
+
+
+def facets_instruction_skeleton() -> str:
+    """Static instruction text — hashed with model + schema version below."""
+    return (
+        "universal-video-call v1 | "
+        "growth_facets_schema_v" + GROWTH_FACETS_SCHEMA_VERSION + " | "
+        "visual core: face_present,value_medium,brand_logos,"
+        "text_overlay_present,on_screen_claim | summaries: content_summary,"
+        "image_summaries"
+    )
+
+
+def compute_facets_prompt_hash(model: str = _DEFAULT_GEMINI_MODEL) -> str:
+    """Own prompt_hash for the visual pass (schema version folded in, AC6)."""
+    return compute_prompt_hash(
+        facets_instruction_skeleton() + ":" + model, model
+    )
+
+
+CURRENT_FACETS_PROMPT_HASH = compute_facets_prompt_hash(_DEFAULT_GEMINI_MODEL)

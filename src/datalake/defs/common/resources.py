@@ -109,9 +109,9 @@ class GeminiResource(ConfigurableResource):
         prompt: str,
         *,
         model: str | None = None,
-        media_resolution: str | None = None,
         count_tokens: bool = False,
         media_files: list[MediaFile] | None = None,
+        max_output_tokens: int | None = None,
     ) -> str:
         """Send a prompt to Gemini and return the response text.
 
@@ -166,7 +166,7 @@ class GeminiResource(ConfigurableResource):
         config_kwargs: dict = dict(
             response_mime_type="application/json",
             temperature=0.2,
-            max_output_tokens=2048,
+            max_output_tokens=max_output_tokens or 2048,
         )
 
         # Build contents: multimodal when media_files provided, text-only otherwise
@@ -197,6 +197,67 @@ class GeminiResource(ConfigurableResource):
         return response.text
 
 
+    def analyze_with_usage(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        media_resolution: str | None = None,
+        media_files: list[MediaFile] | None = None,
+        max_output_tokens: int | None = None,
+    ) -> tuple[str, dict | None]:
+        """Like ``analyze`` but also returns the response's token usage.
+
+        Additive variant for cost accounting (US-EFAC-3 AC5): returns
+        ``(text, usage)`` where ``usage`` is None when the SDK reports no
+        usage metadata. ``analyze`` stays the thin default wrapper.
+        """
+        from google.genai import Client as GeminiClient
+        from google.genai.types import GenerateContentConfig, Part
+
+        model_name = model or _DEFAULT_GEMINI_MODEL
+        client = GeminiClient(api_key=self.api_key)
+        config_kwargs: dict = dict(
+            response_mime_type="application/json",
+            temperature=0.2,
+            max_output_tokens=max_output_tokens or 2048,
+        )
+        if media_files:
+            if media_resolution is None:
+                media_resolution = "MEDIA_RESOLUTION_LOW"
+            config_kwargs["media_resolution"] = media_resolution
+            contents: list[Part | str] = []
+            for mf in media_files:
+                contents.append(
+                    Part.from_uri(
+                        file_uri=mf["uri"],
+                        mime_type=mf["mime_type"],
+                    )
+                )
+            contents.append(Part.from_text(text=prompt))
+        else:
+            if media_resolution is not None:
+                config_kwargs["media_resolution"] = media_resolution
+            contents = prompt
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=GenerateContentConfig(**config_kwargs),
+        )
+        usage = None
+        um = getattr(response, "usage_metadata", None)
+        if um is not None:
+            usage = {
+                "prompt_token_count": getattr(um, "prompt_token_count", None),
+                "candidates_token_count": getattr(
+                    um, "candidates_token_count", None
+                ),
+                "total_token_count": getattr(um, "total_token_count", None),
+            }
+        return response.text, usage
+
+
 class PolarsIOManager(ConfigurableIOManager):
     """Polars-based I/O manager for Parquet persistence.
 
@@ -219,3 +280,5 @@ class PolarsIOManager(ConfigurableIOManager):
         if not Path(path).exists():
             raise FileNotFoundError(f"Input Parquet not found: {path}")
         return pl.read_parquet(path)
+
+

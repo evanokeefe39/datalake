@@ -883,6 +883,48 @@ actor, which today blocks the bronze run on `poll_run` while the actor runs — 
 should move to submit + sensor-harvest. Landed bytes stay durable (bronze +
 media cache) before any hermetic transform (ADR-0003).
 
+### 25. Broken media coverage — partial/zero byte-cache carousels + live-CDN fallback (rescrape backlog) — DEFERRED 2026-09-08
+
+**Deferred** (2026-09-08, user): park the broken-media remediation so the
+enrichment-facets PR series can proceed. Full analysis is done and captured
+below; resume by resolving the no-CDN-fallback correctness fix + the ingestion
+coverage gap, then re-run the census and pick the Apify rescrape set.
+
+**Problem (measured 2026-09-08):** of 8,849 media-bearing posts, 790 have ≥1
+media URL missing from the scrape-time byte cache (`media_cache` in ops.sqlite) —
+303 partial + 487 zero — 1,892 missing slide-URLs total. On enrichment, a cache
+miss triggers a **live CDN download fallback** in `media_cache.py`
+(`_upload_one` / `_try_inline_payload` / `lookup_or_upload_all`); those Instagram
+CDN URLs are ~always expired by enrich time → HTTP 403 → the whole post
+dead-letters after 5 wasted retries (all-or-nothing per post by design). The
+byte cache is otherwise healthy (26,657 post-media keys, files present).
+
+**Affected posts by age (silvered):** 0-4d=204 (suspicious — recent scrape should
+have been cached → ingestion seeding gap, not expiry), 5-14d=556 (expired-CDN
+set), 45d+=30 (predates the cache ~Aug 14). Whole-profile wipeouts (30/30 zero
+cached: collective_career_lab, andrewwarner, empowered.nyu, hasewingroom,
+theking_of_africa, kimbeauty_...) indicate per-scrape-run seeding failures, not
+random expiry. `girsta` 78/94 mostly partial carousels.
+
+**Census + candidate CSVs (committed):** `analysis/output/rescrape_candidates_2026-09-08.csv`
+(790 posts: post_id/owner/permalink/shortcode/missing/severity/age, grouped by
+owner) and `analysis/output/rescrape_owners_2026-09-08.csv` (owner rollup).
+
+**To resume — three work items (do in order):**
+1. **No live-CDN fallback at enrich/upload time** — cache miss ⇒ terminal,
+   accurate "media unavailable (not byte-cached)" error, dead-letter on attempt 1
+   (not 5). Only `cache_media_bytes` (scrape-time fill, fresh URLs) may download
+   live. Add/update tests (`test_media_cache.py`, `test_batch_inline_media.py`).
+2. **Ingestion coverage gap (root cause)** — why specific carousel slides +
+   whole recent scrape batches never seeded (`seed_media_from_file` /
+   `_local_post_media_pairs` in `instagram/assets.py`); fix so every persisted
+   slide is byte-cached at scrape. By-design exception: a video's `displayUrl` is
+   not cached when a real video file exists (`test_local_ingestion.py`).
+3. **Re-run the census + pick the Apify rescrape set** — posts whose missing
+   bytes aren't recoverable from surviving bronze local files genuinely need a
+   rescrape (Apify, by profile); recoverable ones just need a re-seed (no Apify).
+   Whole-profile wipeouts + 45d+ are the safest first rescrape targets.
+
 ## Resolved
 
 ### 1. Comprehensive medallion testing strategy ✅ (2026-07-01)
