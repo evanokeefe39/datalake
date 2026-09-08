@@ -61,8 +61,6 @@ def _csv(value: str | None) -> list[str] | None:
 def _open_state(state_db: str):
     """Open the state duckdb read-write (creates the file if absent)."""
     import duckdb
-    _tier_gate()
-    args.model = args.model or _DEFAULT_GEMINI_MODEL
     Path(state_db).parent.mkdir(parents=True, exist_ok=True)
     return duckdb.connect(state_db)
 

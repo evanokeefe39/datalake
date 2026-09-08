@@ -120,6 +120,7 @@ def _record_jobs(
     est_tokens: int,
     meta: dict,
 ) -> None:
+    _ensure_ledger(ops)
     now = ew._now_iso()
     conn = ops.get_connection()
     try:
@@ -194,6 +195,9 @@ def enumerate_targets(
     if post_ids:
         where += " AND post_id IN (" + ",".join("?" * len(post_ids)) + ")"
         params.extend(post_ids)
+    # Idempotent ensure: plan mode may run against a state db that has never
+    # materialized gold_growth_facets.
+    conn.execute(facets._GOLD_FACETS_DDL)
     rows = conn.execute(
         f"SELECT post_id, caption, media_files FROM silver_ig_posts "
         f"WHERE {where} ORDER BY post_id",
