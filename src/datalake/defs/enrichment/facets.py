@@ -30,6 +30,7 @@ from datalake.defs.common.schemas import duckdb_ddl
 from datalake.defs.enrichment import analysis as ew
 from datalake.defs.enrichment.growth_facets_schema import (
     GROWTH_FACETS_SCHEMA_VERSION,
+    validate_text_facets,
     validate_visual_facets,
 )
 from datalake.defs.enrichment.prompts import (
@@ -129,6 +130,29 @@ def parse_universal_response(text: str | None, n_media: int) -> dict[str, Any]:
             "image_summaries": image_summaries, "errors": errors}
 
 
+
+def parse_text_response(text: str | None) -> dict[str, Any]:
+    """Parse + validate ONE text-layer-call response (US-EFAC-4).
+
+    Returns ``{"text_facets", "errors"}`` — ``text_facets`` is populated only
+    when ``validate_text_facets`` passes clean (all required fields present,
+    correct types, no unknown keys, no visual/summary bleed). Never raises.
+    """
+    if not text or not text.strip():
+        return {"text_facets": None, "errors": ["empty response"]}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return {"text_facets": None, "errors": [f"invalid JSON: {exc}"]}
+    if not isinstance(payload, dict):
+        return {
+            "text_facets": None,
+            "errors": [f"expected object, got {type(payload).__name__}"],
+        }
+    errors = validate_text_facets(payload)
+    return {"text_facets": None if errors else payload, "errors": errors}
+
+
 _GOLD_FACETS_DDL = duckdb_ddl("gold_growth_facets")
 
 _GOLD_FACETS_UPSERT = """INSERT INTO gold_growth_facets
@@ -168,6 +192,57 @@ def write_gold_facets_conn(
             prompt_hash or CURRENT_FACETS_PROMPT_HASH,
             GROWTH_FACETS_SCHEMA_VERSION,
             json.dumps(visual_facets, sort_keys=True),
+            content_summary,
+            json.dumps(image_summaries) if image_summaries is not None else None,
+            model,
+            ew._now_iso(),
+        ],
+    )
+
+
+def write_gold_facets_pass_conn(
+    conn,
+    post_id: str,
+    domain: str,
+    facet_fields: dict,
+    model: str = _DEFAULT_GEMINI_MODEL,
+    prompt_hash: str | None = None,
+    content_summary: str | None = None,
+    image_summaries: list | None = None,
+) -> None:
+    """Upsert ONE pass's sub-fields into ``gold_growth_facets`` (MERGE).
+
+    Partial-storage contract (batch path): the visual pass writes the visual
+    sub-fields + ``content_summary`` / ``image_summaries_json``; the text pass
+    merges the text sub-fields. Each write MERGES into the row's existing
+    ``growth_facets_json`` (never clobbers the other pass's fields), so the
+    stored row is the union and satisfies the full V3 schema once both passes
+    have landed. Ordering guard identical to ``write_gold``: a stale write
+    (older ``analysed_at``) never clobbers a newer one.
+    """
+    conn.execute(_GOLD_FACETS_DDL)
+    existing = conn.execute(
+        "SELECT growth_facets_json, analysed_at FROM gold_growth_facets "
+        "WHERE post_id = ? AND domain = ?",
+        [post_id, domain],
+    ).fetchone()
+    merged: dict = {}
+    if existing and existing[0]:
+        try:
+            prior = json.loads(existing[0])
+            if isinstance(prior, dict):
+                merged = prior
+        except json.JSONDecodeError:
+            pass
+    merged.update(facet_fields)
+    conn.execute(
+        _GOLD_FACETS_UPSERT,
+        [
+            post_id,
+            domain,
+            prompt_hash or CURRENT_FACETS_PROMPT_HASH,
+            GROWTH_FACETS_SCHEMA_VERSION,
+            json.dumps(merged, sort_keys=True),
             content_summary,
             json.dumps(image_summaries) if image_summaries is not None else None,
             model,
