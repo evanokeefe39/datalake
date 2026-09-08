@@ -1,7 +1,8 @@
 """Canonical V3 growth-facet JSON-Schema + post-parse validator (US-EFAC-1).
-US-EFAC-3 addendum: this module also carries the VISUAL-CORE sub-schema — the
-field subset the universal video→Gemini call extracts (see VISUAL_FACET_FIELDS
-and validate_visual_facets). The full V3 contract is unchanged.
+US-EFAC-4 addendum: this module also carries the TEXT-LAYER sub-schema — the
+field subset the cheap media-free text call extracts from caption
+(+ transcript when present) (see TEXT_FACET_FIELDS and validate_text_facets).
+The full V3 contract is unchanged.
 
 This module is the single source of truth for the ``growth_facets_json``
 column produced by the universal video→Gemini call (design doc §4). It is
@@ -141,6 +142,40 @@ VISUAL_BOOL_FIELDS = (
     "text_overlay_present",
     "on_screen_claim",
 )
+
+# ── Text-layer sub-schema (US-EFAC-4, cheap media-free text call) ────────────
+# The fields the TEXT call extracts from caption (+ transcript when present).
+# The universal video call must NOT emit these (its sub-validator rejects
+# them), and the text call must NOT emit the visual-core fields or summaries —
+# validate_text_facets rejects those as unknown keys to enforce the split.
+# brand_safety here reads the TEXT channels (caption/transcript); audio/video
+# profanity without a transcript is out of the text layer's scope.
+TEXT_FACET_FIELDS = (
+    "hook_content",
+    "hook_type",
+    "is_sponsored",
+    "sponsorship_signal",
+    "claimed_results",
+    "cta_type",
+    "audience_named",
+    "value_depth",
+    "replicable_tactic",
+    "hashtag_strategy",  # optional (see OPTIONAL_FIELDS)
+    "evidence",
+)
+TEXT_BOOL_FIELDS = (
+    "is_sponsored",
+    "claimed_results",
+    "audience_named",
+)
+TEXT_ENUM_FIELDS = {
+    "hook_type": HOOK_TYPES,
+    "cta_type": CTA_TYPES,
+    "value_depth": VALUE_DEPTHS,
+}
+TEXT_REQUIRED_FIELDS = tuple(
+    f for f in TEXT_FACET_FIELDS if f not in OPTIONAL_FIELDS
+) + ("brand_safety",)
 
 # ── JSON-Schema (canonical, draft-agnostic) ─────────────────────────────────
 GROWTH_FACETS_JSON_SCHEMA: dict = {
@@ -352,6 +387,87 @@ def validate_visual_facets(obj: object) -> list[str]:
             errors.append(
                 f"{key}: unknown field in visual sub-schema (V3 visual core "
                 f"is {list(VISUAL_FACET_FIELDS)})"
+            )
+
+    return errors
+
+
+def validate_text_facets(obj: object) -> list[str]:
+    """Validate the text-layer sub-payload of ``growth_facets_json`` (US-EFAC-4).
+
+    Same rules as ``validate_growth_facets`` restricted to the text-layer
+    subset (``TEXT_FACET_FIELDS`` + ``brand_safety``): object shape,
+    reserved-key exclusion, all required text fields present with correct
+    types, ``brand_safety`` exact 6-flag bool shape, no unknown keys.
+    Visual-core fields, ``content_summary`` / ``image_summaries`` and any
+    other key are UNKNOWN here — the text call must not emit them (the
+    visual call owns those; summaries are separate additive columns).
+    ``hashtag_strategy`` is the only optional field. Returns a list of
+    human-readable error strings; empty list = valid.
+    """
+    errors: list[str] = []
+    if not isinstance(obj, dict):
+        return [f"payload: expected object, got {type(obj).__name__}"]
+
+    # Reserved gold keys — same exclusion as the full schema.
+    for key in sorted(RESERVED_GOLD_KEYS & obj.keys()):
+        errors.append(
+            f"{key}: reserved gold key is structurally excluded from "
+            "growth_facets_json"
+        )
+
+    for field in TEXT_REQUIRED_FIELDS:
+        if field not in obj:
+            errors.append(f"{field}: missing required text field")
+
+    for field in TEXT_FACET_FIELDS:
+        if field not in obj:
+            continue
+        value = obj[field]
+        if field in TEXT_BOOL_FIELDS:
+            if not isinstance(value, bool):
+                errors.append(_err_type(field, "boolean", value))
+        elif field in TEXT_ENUM_FIELDS:
+            allowed = TEXT_ENUM_FIELDS[field]
+            if not isinstance(value, str):
+                errors.append(_err_type(field, "string enum", value))
+            elif value not in allowed:
+                errors.append(f"{field}: {value!r} not in enum {list(allowed)}")
+        elif field == "hashtag_strategy":
+            if not isinstance(value, str):
+                errors.append(_err_type(field, "string", value))
+        else:  # free-text string fields ("" allowed)
+            if not isinstance(value, str):
+                errors.append(_err_type(field, "string", value))
+
+    # brand_safety: exact 6-flag bool object (same rule as the full schema).
+    if "brand_safety" in obj:
+        bs = obj["brand_safety"]
+        if not isinstance(bs, dict):
+            errors.append(_err_type("brand_safety", "object", bs))
+        else:
+            for flag in BRAND_SAFETY_FLAGS:
+                if flag not in bs:
+                    errors.append(f"brand_safety.{flag}: missing required flag")
+            for key, value in sorted(bs.items()):
+                if key not in BRAND_SAFETY_FLAGS:
+                    errors.append(
+                        f"brand_safety.{key}: unknown brand-safety flag "
+                        f"(allowed: {list(BRAND_SAFETY_FLAGS)})"
+                    )
+                elif not isinstance(value, bool):
+                    errors.append(
+                        _err_type(f"brand_safety.{key}", "boolean", value)
+                    )
+
+    # Unknown keys: anything outside the text subset (visual-core facets are
+    # US-EFAC-3's; summary keys belong in their own columns, not the facet JSON).
+    allowed_keys = set(TEXT_FACET_FIELDS) | {"brand_safety"}
+    for key in sorted(obj.keys() - allowed_keys):
+        if key not in RESERVED_GOLD_KEYS:
+            errors.append(
+                f"{key}: unknown field in text sub-schema (V3 text layer is "
+                f"{list(TEXT_FACET_FIELDS)} + brand_safety)"
             )
 
     return errors
