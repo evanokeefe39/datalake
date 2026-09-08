@@ -34,7 +34,9 @@ Steps:
 Enrichment runs inside Dagster (batch-native, ADR-0007): `submit_gemini_batches_job`
 consumes one pending `gemini-batch` batch per run, and the
 `gemini_batch_harvest_sensor` triggers `gemini_batch_harvest` when chunks reach
-terminal state. Out-of-band interactive: `uv run python scripts/enrich_interactive.py`.
+terminal state. Batch-native growth facets:
+`uv run python scripts/enrich_facets_batch.py` (interactive enrichment was
+removed 2026-09-08 — batch is the only path).
 
 ### Inspect batch state
 
