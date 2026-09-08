@@ -98,6 +98,20 @@ _DUCKDB_SPECS: dict[str, Table] = {
         },
         primary_key=("post_id", "domain"),
     ),
+    "gold_growth_facets": Table(
+        columns={
+            "post_id": Column("VARCHAR", not_null=True),
+            "domain": Column("VARCHAR", not_null=True, default="'instagram'"),
+            "prompt_hash": Column("VARCHAR", not_null=True),
+            "schema_version": Column("VARCHAR", not_null=True),
+            "growth_facets_json": Column("VARCHAR", not_null=True),
+            "content_summary": Column("VARCHAR"),
+            "image_summaries_json": Column("VARCHAR"),
+            "model": Column("VARCHAR"),
+            "analysed_at": Column("VARCHAR", not_null=True),
+        },
+        primary_key=("post_id", "domain"),
+    ),
     "watermarks": Table(
         columns={
             "name": Column("VARCHAR", primary_key=True),
