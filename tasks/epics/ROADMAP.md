@@ -32,7 +32,7 @@ New feature epics: **enrich-facets**, **enrich-summaries**, **enrich-transcripts
 ### Build order
 | # | Work | Epic / US | Gate / decision before next |
 |---|---|---|---|
-| 1 | Engagement-utility validation (free) | enrich-facets · US-EFAC-2 | Report which facets discriminate standout/hot vs underperformer per media type; non-discriminators marked drop |
+| 1 | Engagement-utility validation (free) | enrich-facets · US-EFAC-2 | Report which facets discriminate standout/hot vs underperformer per media type; non-discriminators flagged monitor, NOT dropped (keep-bias) |
 | 2 | Lock V3 facet schema (uses #1) | enrich-facets · US-EFAC-1 | value_medium + brand_logos/on_screen_claim resolved; reserved-key validator tests pass |
 | 3 | Transcripts: backend + incremental + backfill | enrich-transcripts · US-ETR-1..4 | ffmpeg→whisper incremental + resumable overnight backfill; **US-ETR-4 pluggable backend** gives a fast GCP-spot burst for dev/test slices |
 | 4 | Universal video call (visual facets + folded summaries) | enrich-facets · US-EFAC-3 + enrich-summaries · US-ESUM-1 | Single additive call; smoke on temp/isolated DB; carousel index-alignment validated |

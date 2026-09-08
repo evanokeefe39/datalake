@@ -62,7 +62,7 @@ Degenerate fields culled by value-distribution screen: `originality` (2 values),
 
 **Visual-necessary** (imagery required): `face_present`, what's shown (product/scene — left to embeddings), `brand_logos` (visible marks), `value_medium`/format, on-screen-only claims.
 
-**Prompt = V3** (enum-constrained categoricals + codebook decision-rules + boundary exemplars), which beat both ingredients alone. Validity = V3 inter-run agreement gate + downstream engagement-utility (no human gold — user decision; see plan).
+**Prompt = V3** (enum-constrained categoricals + codebook decision-rules + boundary exemplars), which beat both ingredients alone. Validity = V3 inter-run agreement gate + downstream engagement-utility (no human gold — user decision; see plan). **Keep-bias decision (2026-09-08):** engagement-utility *informs* the schema but does NOT auto-prune facets. Adding a facet to the universal call is near-free (same video input, marginal output); re-adding a pruned one means a full, expensive re-enrich. So low/zero discrimination on thin evidence flags a facet **monitor** (default KEEP); only a genuinely degenerate field (zero variance / single value, no descriptive use) is a prune candidate. Re-validate at larger n after the universal call ships (additive).
 
 ## 5. Transcript capture (new)
 

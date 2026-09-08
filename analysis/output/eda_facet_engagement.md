@@ -24,6 +24,17 @@ lake engagement state. Reproduce with
   (either direction); **refine** = signal between 1.25 and 1.5, or all
   cells n<10; **drop** = zero variance or max over_index < 1.25.
 
+> **Decision — keep-bias (supersedes the drop labels below).** The classed
+> signal here is thin (8 high / 26 low of 94), so no facet is pruned on this
+> evidence. Adding a facet to the schema is near-free (same universal video
+> call); re-adding a pruned one later means a full, expensive re-enrich.
+> Therefore the per-facet `drop` labels below mean **"monitor — low current
+> discrimination," NOT "remove."** Default is KEEP. The only prune candidates
+> are genuinely degenerate fields (zero variance / single value with no
+> descriptive use), and even those are cheap to keep. Re-validate discrimination
+> against a larger-n facet dataset after the universal video call ships
+> (additive — no re-enrich needed to re-check).
+
 ## Coverage (honesty first)
 
 | segment | n | high | low | other |
