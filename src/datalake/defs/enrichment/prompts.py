@@ -66,7 +66,12 @@ CURRENT_PROMPT_HASH = compute_prompt_hash(IG_GOLD_PROMPT, _DEFAULT_GEMINI_MODEL)
 # ── Universal video→Gemini call (US-EFAC-3 + US-ESUM-1) ──────────────────────
 
 from datalake.defs.enrichment.growth_facets_schema import (  # noqa: E402
+    BRAND_SAFETY_FLAGS,
+    CTA_TYPES,
     GROWTH_FACETS_SCHEMA_VERSION,
+    HOOK_TYPES,
+    TEXT_FACET_FIELDS,
+    VALUE_DEPTHS,
     VALUE_MEDIUM_EXAMPLES,
 )
 
@@ -149,3 +154,77 @@ def compute_facets_prompt_hash(model: str = _DEFAULT_GEMINI_MODEL) -> str:
 
 
 CURRENT_FACETS_PROMPT_HASH = compute_facets_prompt_hash(_DEFAULT_GEMINI_MODEL)
+
+
+
+# ── Text-layer facets (US-EFAC-4, cheap media-free text call) ────────────────
+
+
+def text_facets_instruction_skeleton() -> str:
+    """Static instruction text — hashed with model for the text pass."""
+    return (
+        "text-layer-facets v1 | "
+        "growth_facets_schema_v" + GROWTH_FACETS_SCHEMA_VERSION + " | "
+        "text core: hook_content,hook_type,is_sponsored,sponsorship_signal,"
+        "claimed_results,cta_type,audience_named,value_depth,"
+        "replicable_tactic,hashtag_strategy,evidence,brand_safety"
+    )
+
+
+def compute_text_facets_prompt_hash(model: str = _DEFAULT_GEMINI_MODEL) -> str:
+    """Own prompt_hash for the text pass (schema version folded in)."""
+    return compute_prompt_hash(
+        text_facets_instruction_skeleton() + ":" + model, model
+    )
+
+
+CURRENT_TEXT_FACETS_PROMPT_HASH = compute_text_facets_prompt_hash(
+    _DEFAULT_GEMINI_MODEL
+)
+
+
+def build_text_facets_prompt(caption: str) -> str:
+    """Build the cheap media-free TEXT call prompt (US-EFAC-4).
+
+    Extracts ONLY the text-layer facet fields from the caption (+ transcript
+    when it becomes available — caption-only first per US-EFAC-4). Visual-core
+    fields and summaries are explicitly out of scope; ``validate_text_facets``
+    rejects them as unknown keys to enforce the split.
+    """
+    hook_types = " | ".join(HOOK_TYPES)
+    cta_types = " | ".join(CTA_TYPES)
+    value_depths = " | ".join(VALUE_DEPTHS)
+    safety_flags = ", ".join(BRAND_SAFETY_FLAGS)
+    return (
+        "You are a meticulous content analyst. You will see ONLY the text "
+        "channels of an Instagram post (caption; transcript when available). "
+        "You have NO media — do not speculate about visuals.\n\n"
+        "TASK — return ONE JSON object with EXACTLY these keys:\n"
+        "  hook_content: string (\"\" when no hook) — the opening line/claim "
+        "verbatim or a tight paraphrase.\n"
+        "  hook_type: one of " + hook_types + "\n"
+        "  is_sponsored: boolean — a brand partnership/sponsorship is stated "
+        "or hashtagged (#ad, #sponsored, paid partnership).\n"
+        "  sponsorship_signal: string (\"\") — the exact textual evidence "
+        "for is_sponsored.\n"
+        "  claimed_results: boolean — a SPECIFIC result/performance claim "
+        "appears in the text (numbers, outcomes, before/after).\n"
+        "  cta_type: one of " + cta_types + " — the primary ask.\n"
+        "  audience_named: boolean — the caption addresses a specific "
+        "audience segment by name.\n"
+        "  value_depth: one of " + value_depths + "\n"
+        "  replicable_tactic: string (\"\") — the concrete tactic a peer "
+        "creator could copy, or \"\".\n"
+        "  hashtag_strategy: string (optional — omit the key entirely when "
+        "no hashtags).\n"
+        "  evidence: string — one short sentence citing the decisive text "
+        "span.\n"
+        "  brand_safety: object with EXACTLY these boolean keys: "
+        + safety_flags + "\n"
+        "Nothing else. Do NOT emit visual-core fields (face_present, "
+        "value_medium, brand_logos, text_overlay_present, on_screen_claim), "
+        "content_summary, or image_summaries — those belong to the media "
+        "call.\n\n"
+        "Return ONLY valid JSON. No markdown, no explanation.\n\n"
+        "Caption:\n" + caption
+    )

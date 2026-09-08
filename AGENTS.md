@@ -79,30 +79,32 @@ multimodal worker code is correct but starved of input. Work items, in order:
    video is ~17.4k tokens/min and pure waste.
 
 
-### Multimodal status (2026-09-04) — INTERACTIVE wired + proven; BATCH deferred
+### Multimodal status (2026-09-08) — BATCH-NATIVE ONLY; interactive removed
 
-Multimodal media reaches Gemini in **interactive** mode end-to-end (wired and
-smoke-proven on main): `process_item` reads `silver_ig_posts.media_files`,
-routes through `lookup_or_upload_all` (scrape-time byte cache → File API),
-applies the FREE-tier video gate + per-item video-token cap, and calls
-`gemini.analyze(... media_files=...)` at `MEDIA_RESOLUTION_LOW`. The
-`gemini-batch` path is **text-only by ratified scope** (`build_requests_for_items`
-reads caption only; `_to_inlined_request` serializes `contents` as a bare string).
-Batch-multimodal is an explicit deferred follow-up branch — not needed for
-sub-~700-post runs; batch is the durable vehicle for video-at-scale.
+Enrichment is **batch-native only** as of 2026-09-08: the synchronous
+per-item interactive path (`process_item`, `scripts/enrich_interactive.py`,
+`scripts/enrich_facets_full.py`, `scripts/enrich_facets_pilot.py`,
+`GeminiResource.analyze/analyze_with_usage`) was removed entirely. The
+`gemini-batch` path is multimodal and is the ONLY enrichment vehicle:
 
-First live multimodal runs (2026-09-04, interactive, Tier-1 flash-lite):
+- **Gold analyses (text + multimodal):** `submit_gemini_batches_job` →
+  `gemini_batch_harvest`; `build_requests_for_items` resolves media through
+  `_resolve_media_for_post` (scrape-time byte cache → File API / inline
+  images, FREE-tier video gate + per-item video-token cap) and serializes
+  media Parts at `MEDIA_RESOLUTION_LOW`.
+- **Growth facets (`gold_growth_facets`, visual + text layer):**
+  `scripts/enrich_facets_batch.py` driver over `defs.enrichment.facets_batch`
+  (submit/harvest; visual pass with media, text pass caption-only).
+
+First live multimodal runs (2026-09-04, then interactive, Tier-1 flash-lite):
 residue batch recovered 125/130 posts (5 dead-lettered), UI/UX media-bearing
 slice 465/485 (20 dead-lettered). Media enrichment changed classification on
 **93.6%** of media-bearing posts vs text-only (topic 72%, subtopic 91%) — the
-model sees actual content, not just captions. Live UI/UX slice query count
-dropped 537 → 479 (70/485 reclassified out of UI/UX). Dead-letter modes seen:
+model sees actual content, not just captions. Dead-letter modes seen:
 per-item File-API "Unknown mime type" on a few image URLs (~3%) + transient
-CDN connect timeouts; both route to `dead_letter` correctly (report separately
-from recovered counts). Worker hard-crashes (~52 min, exit 1073807364, no
-traceback — mid File-API upload poll) on very long runs: relaunch the worker
-and reset any stuck `processing` items to `pending`; verify drain by
-`batch_items` status counts, never by worker exit-0.
+CDN connect timeouts; both route to `dead_letter` correctly. The former
+interactive worker hard-crash on very long runs is moot with interactive gone.
+
 
 
 
@@ -302,8 +304,9 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
 
 - **Trigger:** `submit_gemini_batches_job` consumes ONE pending, unsubmitted
   `gemini-batch` batch per run; the `gemini_batch_harvest_sensor` issues
-  `gemini_batch_harvest` runs when chunks reach terminal state. Out-of-band
-  interactive: `uv run python scripts/enrich_interactive.py`.
+  `gemini_batch_harvest` runs when chunks reach terminal state. Batch-native
+  growth facets: `uv run python scripts/enrich_facets_batch.py` (interactive
+  enrichment removed 2026-09-08).
 - **Lifecycle:** gen_batches → media_upload → submit → harvest; the shared
   enrichment logic lives in `defs/enrichment/analysis.py`.
 - **Retry:** exponential backoff with jitter, `MAX_ATTEMPTS=5`, terminal failures → `dead_letter`
@@ -418,19 +421,19 @@ Workaround: use separate projects for free-tier evaluation and paid production.
 | **Spend rate limit** | None | $10/10 min | $200/10 min |
 | **Data training** | Yes | **No** | **No** |
 | **Pro models** | No | Yes | Yes |
+**Free — Evaluation only.** Batch API is paid-tier only, so free-tier work is
+restricted to non-batch experimentation (prompt spikes, token counting). No
+production enrichment.
 
-### Approach per tier
+**Tier 1 — Batch-native (current, 2026-09-08).** ALL enrichment runs through
+the Gemini BATCH API: gold analyses via `submit_gemini_batches_job` →
+`gemini_batch_harvest`, growth facets (visual + text) via
+`scripts/enrich_facets_batch.py`. The interactive per-item path was removed
+2026-09-08 — batch is the only execution vehicle at every paid tier.
 
-**Free — Evaluation only.** Out-of-band interactive
-(``scripts/enrich_interactive.py``) with per-item backpressure. Not for
-production volume.
-
-**Tier 1 — Interactive via queue.** Queue-based enrichment handles routine
-volume with per-item rate limiting. Batch API deferred; re-introduce as a
-worker variant when cost savings justify the complexity.
-
-**Tier 2 — Batch-first (future).** When batch API is re-introduced, all
-enrichment via batch. Interactive asset for ad-hoc single-post only.
+**Tier 2 — Same batch-native model, higher caps.** Upgrade for in-flight
+batch token ceilings (10M → 500M) and spend headroom, not for a different
+execution model.
 
 ### Trigger points
 
@@ -439,11 +442,9 @@ enrichment via batch. Interactive asset for ad-hoc single-post only.
 | Dead letter filling with 429s daily | **Tier 1** |
 | Need to clear the backlog this week | **Tier 1** |
 | Don't want Google training on your data | **Tier 1** |
-| Batch job exceeds 10M token limit | **Tier 2** |
 | Weekly volume >1,000 posts steady-state | **Tier 2** |
-| Adding video enrichment | **Tier 2** (immediately) |
-| $250/mo spend cap exhausted | **Tier 2** |
 | $2,000/mo spend cap exhausted | **Tier 3** |
+
 ### Tier 1 → Tier 2 escalation threshold (numeric)
 
 Current decision (2026-08-12): operate on **Tier 1**. Escalate to Tier 2 when
@@ -452,14 +453,13 @@ any of these three numeric triggers fires (monitor via a metric query or the
 
 |Metric|Threshold|Why|
 |---|---|---|
-|Weekly post volume|≥ 1,000 posts/week for 2 consecutive weeks|Interactive-only processing exceeds per-item rate limiting at sustained volume|
+|Weekly post volume|≥ 1,000 posts/week for 2 consecutive weeks|Sustained volume exceeds Tier 1's 10M in-flight batch token cap (chunk into more sequential waves, or escalate)|
 |Batch token projection|Any batch job projected > 10M tokens|Tier 1 flash-lite batch cap is 10M; Tier 2 is 500M|
 |Rolling 30-day Gemini spend|≥ $200 (80% of Tier 1's $250/mo cap)|Leaves 20% headroom to avoid a hard stop mid-cycle|
 
-Video enrichment remains an immediate Tier 2 trigger regardless of these
-metrics (token volume + upload time make interactive processing impractical
-above ~100 videos/week).
-
+Video enrichment runs natively through the batch path (no interactive
+processing penalty since 2026-09-08); video remains cost-relevant but is no
+longer an execution-model trigger.
 
 ### Video scaling
 

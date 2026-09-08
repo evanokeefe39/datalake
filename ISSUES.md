@@ -479,7 +479,9 @@ the producer and bypass watermark/dedup.
 
 ### 17. Upgrade to Gemini Tier 2 for batch enrichment (+ cost estimates)
 
-**Status:** Proposed (2026-09-01).
+**Status:** Proposed (2026-09-01). **Update (2026-09-08):** superseded —
+batch enrichment is now the only path and runs on Tier 1; the interactive
+"bottleneck" framing no longer applies. Kept for cost-estimate history.
 **Origin:** #16 — the local-ad-hoc ingestion backlog (1,016 posts) is pending
 enrichment; Tier 1 interactive processing is the bottleneck and video is
 gated behind Tier 2.
@@ -574,13 +576,19 @@ creator-detail post rows link into these detail pages.
 
 ### 19. Batch-multimodal enrichment (wire media into the gemini-batch path)
 
-**Status:** Resolved (2026-09-04) — merged in PR #43 (feat/19-batch-multimodal-20-mime). The
-interactive multimodal path is wired + proven, batch is the durable vehicle
-for video-at-scale.
+**Status:** Resolved (2026-09-04) — merged in PR #43 (feat/19-batch-multimodal-20-mime).
+Batch multimodal is wired + proven and is the durable vehicle for video-at-scale.
 **Origin:** First live multimodal runs (2026-09-04) confirmed interactive
 media enrichment works and materially changes classification (93.6% of
-media-bearing posts vs text-only); the `gemini-batch` execution mode remains
-**text-only** and is the scaling gap.
+media-bearing posts vs text-only); at the time the `gemini-batch` execution
+mode was text-only — since closed out (batch multimodal shipped, interactive
+removed).
+
+**status (2026-09-08):** batch IS multimodal and is the ONLY enrichment
+vehicle — the entire synchronous interactive path (process_item,
+scripts/enrich_interactive.py, GeminiResource.analyze) was removed; batch
+growth facets run via scripts/enrich_facets_batch.py (see AGENTS.md
+multimodal status).
 
 #### Intent
 
@@ -603,13 +611,13 @@ corpus pass possible.
    just prompt text — batch in-flight caps bound enqueued INPUT tokens.
 4. **External Integration Gate first:** submit → poll → retrieve a tiny multimodal
    batch (1 real image + 1 short video) before any scale run. Verify the Batch API
-   accepts file URIs in `InlinedRequest` — unproven and the top risk.
+   accepts file URIs in `InlinedRequest` — unproven and the top risk. (PASSED
+   2026-09-08 on the facets-batch branch.)
 
 #### Non-goals
 
-- No change to interactive mode (works; leave as-is).
 - No change to `ig_post_labels` / the label pass.
-- Batch-multimodal is NOT required for sub-~700-post runs — interactive suffices.
+- Batch-multimodal is NOT required for sub-~700-post runs (historical note).
 
 ### 20. media_cache File-API mime-detection gap (intermittent dead-letters)
 

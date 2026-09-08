@@ -133,17 +133,14 @@ def main() -> None:
         cached.get(VIDEO_URL, "<missing>"),
     )
 
-    # ── Gate 2: worker → Gemini (cached bytes → File API → multimodal) ──────
-    from datalake.defs.enrichment.assets import ensure_gold_analyses
+    # ── Gate 2: batch-native request build (cached bytes → File API) ────────
+    from datalake.defs.enrichment.analysis import build_requests_for_items
     from datalake.defs.enrichment.batch import (
         claim_batch,
         claim_pending_items,
         create_batch,
     )
     from datalake.defs.enrichment.media_cache import lookup_or_upload_all
-    from datalake.defs.enrichment.analysis import process_item
-
-    ensure_gold_analyses(duckdb)
 
     create_batch(
         ops,
@@ -165,22 +162,22 @@ def main() -> None:
             f"{len(uploaded)} file(s), mime={uploaded[0]['mime_type'] if uploaded else 'n/a'}",
         )
 
-    # Real Gemini analyze calls (multimodal for both posts).
-    for post_id in ("img1", "vid1"):
-        ok = process_item(ops, duckdb, gemini, items[post_id])
-        _check(f"{post_id} analyzed by Gemini", ok)
-
-    with duckdb.get_connection() as conn:
-        gold = conn.execute(
-            "SELECT post_id, result_json FROM gold_analyses ORDER BY post_id"
-        ).fetchall()
-    _check("gold_analyses has both posts", {r[0] for r in gold} == {"img1", "vid1"})
-    for post_id, result_json in gold:
-        try:
-            parsed = json.loads(result_json)
-        except json.JSONDecodeError:
-            _check(f"{post_id} gold result is valid JSON", False, result_json[:120])
-        _check(f"{post_id} gold result is valid JSON", isinstance(parsed, dict))
+    # Batch-native: build the actual BATCH API requests (media resolved with
+    # inline images, tier + per-item token gates). Gemini generation itself is
+    # proven end-to-end by smoke_test_batch_multimodal.py (batch submit/parse).
+    requests = build_requests_for_items(ops, duckdb, gemini, list(items.values()))
+    _check(
+        "batch requests built for both posts",
+        {r["post_id"] for r in requests} == {"img1", "vid1"},
+        f"{len(requests)} request(s)",
+    )
+    for req in requests:
+        media = req.get("media_files") or []
+        _check(
+            f"{req['post_id']} batch request carries resolved media",
+            bool(media) and media[0].get("mime_type", "") != "",
+            f"{len(media)} media part(s)",
+        )
 
     print(f"\nAll gates passed. Scratch state at {tmp}")
 

@@ -165,7 +165,7 @@ def run(
     print(
         f"\nDone. {enqueued} posts enqueued. Process via the Dagster "
         "enrichment jobs (`submit_gemini_batches_job` → `gemini_batch_harvest`) "
-        "or `scripts/enrich_interactive.py` for out-of-band interactive."
+        "or `scripts/enrich_facets_batch.py` for batch-native growth facets."
     )
 
 
