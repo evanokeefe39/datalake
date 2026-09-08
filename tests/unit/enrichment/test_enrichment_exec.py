@@ -319,11 +319,11 @@ class TestJobState:
 class TestGoldModelColumn:
     def test_write_gold_sets_model(self, tmp_path):
         from datalake.defs.enrichment.assets import ensure_gold_analyses
-        from datalake.defs.enrichment.analysis import _write_gold
+        from datalake.defs.enrichment.analysis import write_gold
 
         db = DuckDBResource(database=str(tmp_path / "state.duckdb"))
         ensure_gold_analyses(db)
-        _write_gold(db, "p1", "instagram", '{"ok": true}')
+        write_gold(db, "p1", "instagram", '{"ok": true}')
         with db.get_connection() as conn:
             row = conn.execute(
                 "SELECT model, prompt_hash FROM gold_analyses WHERE post_id = 'p1'"

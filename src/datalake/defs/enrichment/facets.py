@@ -1,21 +1,16 @@
-"""Universal video→Gemini call — visual facets + folded summaries (US-EFAC-3/1).
+"""Facets response parsing + gold_growth_facets writes (US-EFAC-3/4/1).
 
-One media call per post at MEDIA_RESOLUTION_LOW on flash-lite:
-- ``visual_facets``  — the V3 visual-core sub-schema (face_present,
-  value_medium, brand_logos, text_overlay_present, on_screen_claim), validated
-  by ``validate_visual_facets``; text-layer facets are NOT extracted here
-  (US-EFAC-4 deferral).
-- ``content_summary`` / ``image_summaries`` — separate additive columns, never
-  inside the facet JSON (locked schema rejects them as unknown fields).
+The batch-native facets path (``facets_batch``) submits visual + text calls
+to the Gemini BATCH API and harvests them here:
+- ``parse_universal_response`` / ``parse_text_response`` — validate each
+  response against the V3 schema / text-layer sub-schema,
+- ``write_gold_facets_conn`` / ``write_gold_facets_pass_conn`` — additive,
+  MERGE-semantics upserts into ``gold_growth_facets`` keyed
+  ``(post_id, domain)`` with its own ``prompt_hash``; the gold table and
+  reserved keys are untouched (ADR-0008).
 
-Reuses the proven interactive media path (scrape-time byte cache → File API →
-tier + per-item token gate) via ``analysis._resolve_media_for_post`` — no
-parallel pipeline (AGENTS.md multimodal status). Storage is additive: a
-``gold_growth_facets`` table keyed ``(post_id, domain)`` with its own
-``prompt_hash``; the gold table and reserved keys are untouched (ADR-0008).
-
-Cost accounting: per-response usage_metadata + Tier-1 flash-lite list-price
-ESTIMATES (configurable via env); reported per item and per run.
+The synchronous interactive call (``run_universal_call``) was removed
+2026-09-08 — enrichment is BATCH-NATIVE ONLY.
 """
 
 from __future__ import annotations
@@ -23,7 +18,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from typing import Any
 
 from datalake.defs.common.schemas import duckdb_ddl
@@ -46,6 +40,7 @@ UNIVERSAL_MAX_OUTPUT_TOKENS = 4096
 
 # Tier-1 flash-lite list-price ESTIMATES, USD per 1M tokens (env-overridable).
 # Grounded against the repo's own ~$0.002/media-call estimate (design §7).
+# Shared with the batch cost projection in ``facets_batch``.
 _INPUT_PRICE_PER_M = float(os.environ.get("FACETS_INPUT_PRICE_PER_M", "0.10"))
 _OUTPUT_PRICE_PER_M = float(os.environ.get("FACETS_OUTPUT_PRICE_PER_M", "0.40"))
 
@@ -275,67 +270,3 @@ def write_gold_facets(
         )
 
 
-# ── The universal call (one media call per post) ─────────────────────────────
-
-
-def run_universal_call(
-    ops: SQLiteResource,
-    gemini: GeminiResource,
-    post_id: str,
-    caption: str,
-    media_files_json: str | None,
-) -> dict[str, Any]:
-    """Run the ONE universal media call for a post (US-EFAC-3 + US-ESUM-1).
-
-    Reuses the proven interactive media path: byte cache → File API via
-    ``_resolve_media_for_post`` (FREE-tier video gate + per-item token cap),
-    then a single flash-lite call at MEDIA_RESOLUTION_LOW, 4096 output.
-    Returns ``{"ok", "visual_facets", "content_summary", "image_summaries",
-    "usage", "cost_usd", "elapsed_s", "n_media", "errors", "text_only"}``.
-    Raises on transport-level failure only (429 taxonomy handled by caller's
-    retry loop, same as ``process_item``).
-    """
-    started = time.monotonic()
-    media_files = ew._resolve_media_for_post(ops, gemini, post_id, media_files_json)
-    if not media_files:
-        # Media unresolvable / gated out: terminal per-item condition.
-        return {"ok": False, "visual_facets": None, "content_summary": None,
-                "image_summaries": None, "usage": None, "cost_usd": 0.0,
-                "elapsed_s": 0.0, "n_media": 0, "text_only": True,
-                "errors": ["media unresolvable or gated out (no File API media)"]}
-
-    n_media = len(media_files)
-    prompt = build_growth_facets_prompt(caption, n_media)
-    text, usage = gemini.analyze_with_usage(
-        prompt,
-        media_files=media_files,
-        media_resolution="MEDIA_RESOLUTION_LOW",
-        max_output_tokens=UNIVERSAL_MAX_OUTPUT_TOKENS,
-    )
-    parsed = parse_universal_response(text, n_media)
-    elapsed = time.monotonic() - started
-    cost = _estimate_cost(usage)
-    return {
-        "ok": not parsed["errors"],
-        "visual_facets": parsed["visual_facets"],
-        "content_summary": parsed["content_summary"],
-        "image_summaries": parsed["image_summaries"],
-        "usage": usage,
-        "cost_usd": cost,
-        "elapsed_s": elapsed,
-        "text_only": False,
-        "errors": parsed["errors"],
-        "raw": text,
-    }
-
-
-def _estimate_cost(usage: dict | None) -> float:
-    """Tier-1 flash-lite cost estimate from response usage (design §7)."""
-    if not usage:
-        return 0.0
-    prompt_t = usage.get("prompt_token_count") or 0
-    cand_t = usage.get("candidates_token_count") or 0
-    return (
-        prompt_t / 1_000_000 * _INPUT_PRICE_PER_M
-        + cand_t / 1_000_000 * _OUTPUT_PRICE_PER_M
-    )

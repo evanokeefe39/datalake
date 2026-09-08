@@ -1,20 +1,24 @@
 """Enrichment analysis core — canonical implementation (ADR-0007/0008).
 
-Batch-native migration, Phase 5: the enrichment logic lives HERE as the
-single source of truth, consumed by the Dagster-native submit job
-(``defs.enrichment.submit``), the harvest job (``defs.enrichment.harvest``),
-and the out-of-band interactive tool (``scripts/enrich_interactive.py``):
+The enrichment logic lives HERE as the single source of truth, consumed by
+the Dagster-native submit job (``defs.enrichment.submit``) and the harvest
+job (``defs.enrichment.harvest``):
 
 - request building for the Gemini BATCH API (``build_requests_for_items``),
-- media resolution with tier + token gates (``_resolve_media_for_post``),
-- the interactive per-post analysis (``process_item``),
+- media resolution with tier + token gates (``_resolve_media_for_post``,
+  also shared with the batch-native facets path in ``facets_batch``),
 - the consolidated gold upsert (``write_gold`` — one writer shared by the
-  submit/harvest jobs and the interactive tool),
+  submit/harvest jobs),
 - the 429/File-API error taxonomy + backoff helpers,
 - the domain dispatch tables (``_SILVER_TABLES`` / ``_PROMPTS``).
 
-ADR-0008 seam: this module TOUCHES the Gemini API (media upload, analysis
-calls) — it is an enrichment seam module, NOT a hermetic one. The seam guard
+Enrichment is BATCH-NATIVE ONLY: the synchronous per-item interactive path
+(``process_item`` / ``scripts/enrich_interactive.py``) was removed 2026-09-08.
+Visual + text facets run exclusively through ``defs.enrichment.facets_batch``
+(submit/harvest) driven by ``scripts/enrich_facets_batch.py``.
+
+ADR-0008 seam: this module TOUCHES the Gemini API (media upload) — it is an
+enrichment seam module, NOT a hermetic one. The seam guard
 (``media_upload.seam_violations``) only scans the ``_PURE_MODULES`` for API
 markers and requires seam tags on ops; this module defines no ops.
 """
@@ -27,11 +31,11 @@ import random
 from datetime import datetime, timedelta, timezone
 
 from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLiteResource
+
 from datalake.defs.common.schemas import sqlite_ddl
 from datalake.defs.enrichment.batch import (
     MAX_ATTEMPTS,
     _now_iso,
-    claim_pending_items,
     complete_item,
     fail_item,
 )
@@ -186,11 +190,6 @@ def write_gold(
             [post_id, domain, CURRENT_PROMPT_HASH, model, result, now],
         )
 
-
-# Legacy alias retained for existing importers (enrich_interactive, tests).
-_write_gold = write_gold
-
-
 # ── Media resolution ─────────────────────────────────────────────────────────
 
 
@@ -203,10 +202,10 @@ def _resolve_media_for_post(
 ) -> list:
     """Resolve a post's media to File API URIs, applying the tier + token gates.
 
-    Shared by the interactive (``process_item``) and batch
-    (``build_requests_for_items``) paths so multimodal handling stays consistent.
-    ``inline_images`` (batch path only) serves small images as inline bytes —
-    no File API upload round-trip. Interactive stays on the File API.
+    Shared by the batch request builders (``build_requests_for_items`` and
+    the batch-native facets path ``facets_batch.build_facets_requests``) so
+    multimodal handling stays consistent. ``inline_images`` serves small
+    images as inline bytes — no File API upload round-trip.
     Returns the MediaFile dicts to send, or [] for a text-only fallback (no
     media, FREE-tier video gate, or per-item video token cap exceeded).
     """
@@ -238,79 +237,7 @@ def _resolve_media_for_post(
                 "Post %s video token estimate %d > cap %d — text-only fallback",
                 post_id, total_estimated, _PER_ITEM_TOKEN_CAP,
             )
-            return []
     return media_files
-
-
-# ── Interactive item processing ──────────────────────────────────────────────
-
-
-def process_item(
-    ops: SQLiteResource,
-    duckdb: DuckDBResource,
-    gemini: GeminiResource,
-    item: dict,
-) -> bool:
-    """Process a single batch item: read silver → Gemini → write gold.
-
-    Returns True on success, False on failure.
-    Edge cases handled:
-    - Unknown domain → skips with completion (clears from pipeline)
-    - Post not found in silver → skips with completion
-    - Empty caption → skips with completion (no Gemini call)
-    - Rate limit → backoff + reschedule
-    - Quota exhausted → raises to caller for global reschedule
-    - Max attempts → dead letter
-    """
-    payload = json.loads(item["payload"])
-    post_id = payload["post_id"]
-    domain = payload["domain"]
-    item_id = item["id"]
-
-    table = _SILVER_TABLES.get(domain)
-    if not table:
-        complete_item(ops, item_id)
-        logger.info("Unknown domain %s for post %s — completed", domain, post_id)
-        return True
-
-    # Read caption + media from silver
-    with duckdb.get_connection() as conn:
-        row = conn.execute(
-            f"SELECT caption, media_files FROM {table} WHERE post_id = ?",
-            [post_id],
-        ).fetchone()
-
-    if not row:
-        complete_item(ops, item_id)
-        logger.info("Post %s not in silver — completed", post_id)
-        return True
-
-    caption = row[0] or ""
-    if not caption.strip():
-        complete_item(ops, item_id)
-        logger.info("Post %s has empty caption — completed", post_id)
-        return True
-
-    # Media: download + upload to Gemini File API (or cache hit), tier + token gated
-    media_files = _resolve_media_for_post(ops, gemini, post_id, row[1])
-
-    # Analyze via Gemini
-    prompt_text = _PROMPTS.get(domain, IG_GOLD_PROMPT) + "\n" + caption
-    analyze_kwargs: dict = {}
-    if media_files:
-        analyze_kwargs["media_files"] = media_files
-    result = gemini.analyze(prompt_text, **analyze_kwargs)
-    # Validate JSON
-    try:
-        json.loads(result)
-    except json.JSONDecodeError:
-        raise ValueError(f"Gemini returned invalid JSON for post {post_id}")
-
-    # Write gold_analyses with ordering guard
-    write_gold(duckdb, post_id, domain, result)
-
-    complete_item(ops, item_id)
-    return True
 
 
 # ── Gemini BATCH API request building ────────────────────────────────────────
@@ -328,14 +255,14 @@ def build_requests_for_items(
     Returns ``{"custom_key", "prompt", "post_id", "domain", "media_files": [...]}``
     dicts — ``media_files`` present (File API URIs) when the post has media that
     passes the tier + per-item token gates. Items without silver rows or with
-    empty captions complete immediately (no API call) — mirrors interactive
-    edge-case handling. A per-item media resolution failure (cache-miss CDN
+    empty captions complete immediately (no API call). A per-item media
+    resolution failure (cache-miss CDN
     download 403, File API upload error) fails that item with backoff instead
     of aborting the whole submit. MIXED MEDIA POLICY: if a post has some
     cached and some dead URLs, the whole post is failed (retry/dead-letter) —
     ``lookup_or_upload_all`` raises on the first unresolvable URL, and
     submitting partial media would silently change the analysis input, which
-    neither interactive nor batch tolerates.
+    batch does not tolerate.
     """
     requests: list[dict] = []
     for item in items:
@@ -367,9 +294,8 @@ def build_requests_for_items(
                 # Media resolution (CDN download on a genuine cache miss, File
                 # API upload) is strictly per-item work — generation quota
                 # errors can never originate here, so ANY exception is a
-                # media failure for this post only. Mirrors interactive
-                # process_item, which routes all per-item exceptions to
-                # fail_item/dead_letter instead of aborting the run.
+                # media failure for this post only. Per-item exceptions route
+                # to fail_item/dead_letter instead of aborting the run.
                 error_text = str(exc)
                 attempts = fail_item(
                     ops, item["id"], error_text,

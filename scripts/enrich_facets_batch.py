@@ -1,8 +1,10 @@
-"""Batch-native growth-facets driver — supersedes the interactive
-``enrich_facets_full.py`` submit loop (batch-native migration plan).
+"""Batch-native growth-facets driver — THE enrichment execution vehicle.
 
-Runs the facets → ``gold_growth_facets`` path end-to-end on the Gemini BATCH
-API (~50% of interactive list price) via ``defs.enrichment.facets_batch``:
+The synchronous interactive paths (``enrich_interactive.py``,
+``enrich_facets_pilot.py``, ``enrich_facets_full.py``) were removed
+2026-09-08; enrichment is BATCH-NATIVE ONLY. This driver runs the facets →
+``gold_growth_facets`` path end-to-end on the Gemini BATCH API (~50% of
+list price) via ``defs.enrichment.facets_batch``:
 
     enumerate targets → build requests (media pre-resolution included)
       → gemini_batch.submit (tier gate + in-flight token caps)
