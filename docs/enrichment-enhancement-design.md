@@ -4,7 +4,7 @@ Date: 2026-09-07. Consolidated from the facet-design work (see `tasks/plans/face
 
 ## 1. Executive summary
 
-The current enrichment is a single batch-native Gemini pass (ADR-0007/0008) that classifies each post (educational/actionable/admiralty/domain/topic/content_type/format) and is text/caption-only at scale (multimodal only in interactive runs). This design *enhances* enrichment into a small set of complementary passes that extract far richer, media-grounded signal:
+The enrichment is a batch-native Gemini pass (ADR-0007/0008) that classifies each post (educational/actionable/admiralty/domain/topic/content_type/format). Since 2026-09-08 batch is the ONLY execution vehicle — the synchronous interactive path was removed; multimodal media reaches Gemini through the batch path (`facets_batch` submit/harvest). This design *enhances* enrichment into a small set of complementary passes that extract far richer, media-grounded signal:
 
 - **Universal video→Gemini call** (media posts, ONCE per post): visual-necessary facets + bounded `content_summary` + per-image carousel summaries in a single call — the expensive video input is paid once and never re-sent (§6).
 - **Transcript capture**: extract audio from the already-cached video bytes (ffmpeg) → ASR (faster-whisper, local, $0) → text; fully independent of Gemini (§5).
@@ -22,7 +22,7 @@ Everything is strictly additive (own column/hash), modality-agnostic (a facet re
 | Cached media bytes | 27,748 rows / 55.36 GB (video 49.86 GB / **7,029 mp4**; image 5.5 GB / 20,719) |
 | Cached video avg duration | ~35 s (probed 15.6–47 s); **all 7,029 cached mp4s carry an AAC audio stream** |
 | Media type | videos and carousel images cached on disk; File-API URIs expire ~48 h → re-enrich re-uploads unless in GCS |
-| Gold | caption-derived (batch text-only); multimodal only in interactive |
+| Gold | caption-derived via batch; multimodal media (visual facets) rides the batch-native facets path (`facets_batch`, submit/harvest) |
 | Batch jobs | ~95 requests/job processed in ~4–8 min (observed); Tier-1 Flash-Lite, in-flight token caps |
 
 ## 3. Target architecture — evidence bundle + passes
@@ -81,6 +81,11 @@ Transcripts are stored as text (additive column), discarded audio. Spoken audio 
 Whole-video `content_summary` + **per-image carousel summaries** (`image_summaries: [{index, summary}]`, aligned to sent media order; validate length == #images to catch mis-alignment). A summary is free-text — not a facet (no reliability gate) — and serves embeddings/search, qualitative "what do winning posts show/say", and grounding.
 
 **Design decision — summaries ride the one universal video call, NOT a separate pass.** This deliberately **reverses the triage-first stance** (AGENTS: deep-pass only high-value items): that principle applies when video input cost is *incurred per call*, but here the visual-facet core already sends every media post's video once, so the input is spent regardless — asking for a bounded summary alongside is near-free marginal *output* on the already-paid call, and folding it in eliminates a second video round-trip (the exact scope the user is cutting). Trade-off: summary output now rides all ~8,849 media posts (not a ~15% subset), raising universal output modestly — still small next to the paid video input, and it costs no extra upload or encode wall-clock. The universal call runs at **4096 output** to fit visual facets + summaries. Caps: video summary 2–3 sentences visual-first; one sentence per carousel image.
+
+**Execution note (2026-09-08):** the "universal video call" is executed by the
+batch-native visual pass (`defs.enrichment.facets_batch` visual targets +
+`scripts/enrich_facets_batch.py`); the synchronous `run_universal_call`
+interactive variant was removed with the rest of the interactive path.
 
 **Spike evidence (2026-09-08, `scripts/facet_summary_spike.py`, 22 posts = 11 video + 11 carousel × 3 modes A/B_F/B_S, media identical across modes):**
 - **Facet fidelity under fold** (A folded vs B_F facets-only, per-field agreement) — measures task-*interference*, Gemini-vs-itself: is_sponsored 100%, text_overlay_present 100%, face_present 95%, sponsorship_signal 95%, value_medium 86%, brand_logos 68%, on_screen_claim 73%. Core fields hold; folding does not perturb facet extraction.
