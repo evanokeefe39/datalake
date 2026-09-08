@@ -109,6 +109,24 @@ dependencies). Scripts must run AFTER the orchestrator materializes the DB
 - **States in its output:** rates are unadjusted for follower tier (mechanical
   follower advantage, not skill) and pooled across label versions; survivorship
   caveat — a shortlist within the niche, not a market census.
+### `eda_facet_engagement.py` (US-EFAC-2)
+
+- **Reads:** `data/facet_menu.duckdb` (`facet_menu`, `variant='V3'`, run 0
+  primary, run 1 for inter-run flip counts) + `data/state.duckdb`
+  (`silver_ig_posts`, `v_post_metrics`, `ig_post_labels` held on
+  `label_version` = MAX, `v_post_detail` for the niche coverage check).
+- **Outcome:** high = `enrich_decision='standout'`; low =
+  `sigma_tier='-1σ'`; mean `likes_zscore` reported over all posts.
+- **Emits:** `output/eda_facet_engagement.md` + one CSV per media type
+  (`eda_facet_engagement__<media_type>.csv`) plus a pooled CSV — per-value
+  `n | high | high_rate | low | low_rate | over_index | low_over_index |
+  mean_z`, keep/refine/drop verdicts, zero-variance flags, and
+  coverage/thin-cell banners. Media type is DERIVED (`video_view_count>0`
+  → video, `media_count>1` → carousel, else image) — silver has no
+  `media_type` column.
+- **States in its output:** n=94 parseable facet posts (8 high / 26 low);
+  niche split impossible (93 distinct `gold_subtopic`s over 94 posts);
+  per-media-type classed cells are 2–10 posts — indicative only.
 
 
 ## Determinism
