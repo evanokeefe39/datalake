@@ -1,4 +1,7 @@
 """Canonical V3 growth-facet JSON-Schema + post-parse validator (US-EFAC-1).
+US-EFAC-3 addendum: this module also carries the VISUAL-CORE sub-schema — the
+field subset the universal video→Gemini call extracts (see VISUAL_FACET_FIELDS
+and validate_visual_facets). The full V3 contract is unchanged.
 
 This module is the single source of truth for the ``growth_facets_json``
 column produced by the universal video→Gemini call (design doc §4). It is
@@ -119,6 +122,25 @@ ENUM_FIELDS = {
 }
 ARRAY_FIELDS = ("brand_logos",)
 OPTIONAL_FIELDS = ("hashtag_strategy",)
+
+# ── Visual-core sub-schema (US-EFAC-3, universal video call) ─────────────────
+# The fields the universal media call extracts NOW. Text-layer/cross-modal
+# fields (hook_*, is_sponsored, claimed_results, cta_type, audience_named,
+# value_depth, replicable_tactic, hashtag_strategy, brand_safety) are deferred
+# to US-EFAC-4's cheap text call — this pass must NOT extract them, and the
+# sub-validator rejects them as unknown keys to enforce the split.
+VISUAL_FACET_FIELDS = (
+    "face_present",
+    "value_medium",
+    "brand_logos",
+    "text_overlay_present",
+    "on_screen_claim",
+)
+VISUAL_BOOL_FIELDS = (
+    "face_present",
+    "text_overlay_present",
+    "on_screen_claim",
+)
 
 # ── JSON-Schema (canonical, draft-agnostic) ─────────────────────────────────
 GROWTH_FACETS_JSON_SCHEMA: dict = {
@@ -274,5 +296,62 @@ def validate_growth_facets(obj: object) -> list[str]:
     for key in sorted(obj.keys() - GROWTH_FACETS_JSON_SCHEMA["properties"].keys()):
         if key not in RESERVED_GOLD_KEYS:
             errors.append(f"{key}: unknown field (not in V3 schema)")
+
+    return errors
+
+
+def validate_visual_facets(obj: object) -> list[str]:
+    """Validate the visual-core sub-payload of ``growth_facets_json`` (US-EFAC-3).
+
+    Same rules as ``validate_growth_facets`` restricted to
+    ``VISUAL_FACET_FIELDS``: object shape, reserved-key exclusion, all visual
+    fields present with correct types, no unknown keys. Text-layer fields are
+    UNKNOWN here — the universal call must not emit them (US-EFAC-4 deferral),
+    and ``content_summary`` / ``image_summaries`` are rejected too (they are
+    separate additive columns, not facets).
+    Returns a list of human-readable error strings; empty list = valid.
+    """
+    errors: list[str] = []
+    if not isinstance(obj, dict):
+        return [f"payload: expected object, got {type(obj).__name__}"]
+
+    # Reserved gold keys — same exclusion as the full schema.
+    for key in sorted(RESERVED_GOLD_KEYS & obj.keys()):
+        errors.append(
+            f"{key}: reserved gold key is structurally excluded from "
+            "growth_facets_json"
+        )
+
+    for field in VISUAL_FACET_FIELDS:
+        if field not in obj:
+            errors.append(f"{field}: missing required visual field")
+
+    for field in VISUAL_BOOL_FIELDS:
+        if field in obj and not isinstance(obj[field], bool):
+            errors.append(_err_type(field, "boolean", obj[field]))
+
+    if "value_medium" in obj and not isinstance(obj["value_medium"], str):
+        errors.append(_err_type("value_medium", "string", obj["value_medium"]))
+
+    if "brand_logos" in obj:
+        value = obj["brand_logos"]
+        if not isinstance(value, list):
+            errors.append(_err_type("brand_logos", "array of strings", value))
+        else:
+            for i, item in enumerate(value):
+                if not isinstance(item, str):
+                    errors.append(
+                        f"brand_logos[{i}]: expected string, got "
+                        f"{type(item).__name__} ({item!r})"
+                    )
+
+    # Unknown keys: anything outside the visual subset (text-layer facets are
+    # US-EFAC-4's; summary keys belong in their own columns, not the facet JSON).
+    for key in sorted(obj.keys() - set(VISUAL_FACET_FIELDS)):
+        if key not in RESERVED_GOLD_KEYS:
+            errors.append(
+                f"{key}: unknown field in visual sub-schema (V3 visual core "
+                f"is {list(VISUAL_FACET_FIELDS)})"
+            )
 
     return errors
