@@ -66,7 +66,9 @@ CURRENT_PROMPT_HASH = compute_prompt_hash(IG_GOLD_PROMPT, _DEFAULT_GEMINI_MODEL)
 # ── Universal video→Gemini call (US-EFAC-3 + US-ESUM-1) ──────────────────────
 
 from datalake.defs.enrichment.growth_facets_schema import (  # noqa: E402
+    BRAND_SAFETY_FLAGS,
     GROWTH_FACETS_SCHEMA_VERSION,
+    HOOK_TYPES,
     VALUE_MEDIUM_EXAMPLES,
 )
 
@@ -149,3 +151,82 @@ def compute_facets_prompt_hash(model: str = _DEFAULT_GEMINI_MODEL) -> str:
 
 
 CURRENT_FACETS_PROMPT_HASH = compute_facets_prompt_hash(_DEFAULT_GEMINI_MODEL)
+
+
+# ── Text-layer text call (US-EFAC-4) ─────────────────────────────────────────
+
+_TEXT_CODEBOOK = """\
+Codebook (apply strictly):
+- Read ONLY the caption (and transcript, when provided). Do not guess at
+  visuals, audio, or anything not present in the text.
+- hook_content: the actual opening line/phrase verbatim or near-verbatim (may
+  be "" if the text carries no distinct hook).
+- hook_type: one of %s.
+- is_sponsored: true only when the text discloses sponsorship/paid
+  partnership (e.g. #ad, #sponsored, 'paid partnership', disclosure language).
+- sponsorship_signal: the exact disclosure phrase found ("" when none).
+- claimed_results: true when the text claims a SPECIFIC result or performance
+  outcome (numbers, outcomes, before/after figures).
+- cta_type: the primary call-to-action present in the text; "none" when there
+  is no CTA.
+- audience_named: true when the text explicitly names or addresses its target
+  audience (e.g. 'for data engineers').
+- value_depth: shallow (entertainment/surface), practical (usable steps or
+  tips), or deep (substantial teaching or original insight).
+- replicable_tactic: the concrete repeatable tactic a creator could copy (may
+  be "").
+- hashtag_strategy: how hashtags are used, if discernible; omit the key when
+  there is nothing to say.
+- evidence: short justification quoting the deciding text.
+- brand_safety: judge ONLY what the text itself carries (profanity,
+  sexualized content, political content, medical claims, financial
+  guarantees, violence/trauma). All six flags are required booleans.""" % (
+    list(HOOK_TYPES),
+)
+
+
+def build_text_facets_prompt(caption: str, transcript: str | None = None) -> str:
+    """Build the cheap media-free TEXT-call prompt (US-EFAC-4).
+
+    Caption (+ transcript when present) is the ONLY input — no media is sent.
+    Visual-core facets and summaries are explicitly out of scope.
+    """
+    text_keys = (
+        "hook_content, hook_type, is_sponsored, sponsorship_signal, "
+        "claimed_results, cta_type, audience_named, value_depth, "
+        "replicable_tactic, evidence"
+    )
+    channels = "Caption (and transcript, when provided) below."
+    transcript_block = ""
+    if transcript and transcript.strip():
+        channels = "Transcript (primary) and Caption below."
+        transcript_block = "\n\nTranscript:\n" + transcript
+    return (
+        "You are a meticulous content analyst. " + channels + " You see NO "
+        "media.\n\n"
+        "TASK — return ONE JSON object with EXACTLY these keys:\n"
+        "  text_facets: object with EXACTLY these keys: " + text_keys + "\n"
+        "  brand_safety: object with EXACTLY these keys: "
+        + ", ".join(BRAND_SAFETY_FLAGS) + "\n"
+        "hashtag_strategy is OPTIONAL — include it only when the text shows "
+        "a hashtag strategy. Nothing else. No extra keys — especially do NOT "
+        "emit face_present, value_medium, brand_logos, text_overlay_present, "
+        "on_screen_claim, content_summary, or image_summaries.\n\n"
+        "Codebook:\n" + _TEXT_CODEBOOK + "\n\n"
+        "Return ONLY valid JSON. No markdown, no explanation."
+        + transcript_block + "\n\nCaption:\n" + caption
+    )
+
+
+def compute_text_facets_prompt_hash(model: str = _DEFAULT_GEMINI_MODEL) -> str:
+    """Own prompt_hash for the text pass (schema version folded in, AC6)."""
+    return compute_prompt_hash(
+        build_text_facets_prompt("[canary]")
+        + f"|schema_v{GROWTH_FACETS_SCHEMA_VERSION}",
+        model,
+    )
+
+
+CURRENT_TEXT_FACETS_PROMPT_HASH = compute_text_facets_prompt_hash(
+    _DEFAULT_GEMINI_MODEL
+)
