@@ -26,7 +26,7 @@ import os
 import time
 from typing import Any
 
-from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLiteResource
+from datalake.defs.common.schemas import duckdb_ddl
 from datalake.defs.enrichment import analysis as ew
 from datalake.defs.enrichment.growth_facets_schema import (
     GROWTH_FACETS_SCHEMA_VERSION,
@@ -129,18 +129,7 @@ def parse_universal_response(text: str | None, n_media: int) -> dict[str, Any]:
             "image_summaries": image_summaries, "errors": errors}
 
 
-_GOLD_FACETS_DDL = """CREATE TABLE IF NOT EXISTS gold_growth_facets (
-       post_id VARCHAR NOT NULL,
-       domain VARCHAR NOT NULL DEFAULT 'instagram',
-       prompt_hash VARCHAR NOT NULL,
-       schema_version VARCHAR NOT NULL,
-       growth_facets_json VARCHAR NOT NULL,
-       content_summary VARCHAR,
-       image_summaries_json VARCHAR,
-       model VARCHAR,
-       analysed_at VARCHAR NOT NULL,
-       PRIMARY KEY (post_id, domain)
-   )"""
+_GOLD_FACETS_DDL = duckdb_ddl("gold_growth_facets")
 
 _GOLD_FACETS_UPSERT = """INSERT INTO gold_growth_facets
    (post_id, domain, prompt_hash, schema_version,
