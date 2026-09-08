@@ -213,10 +213,6 @@ def run_pilot(args: argparse.Namespace) -> int:
     targets = {"video": args.video, "carousel": args.carousel}
     posts = sample_posts(str(REPO_ROOT / args.state_db), limit, args.seed,
                          targets=targets)
-    if not posts:
-        print("no media-bearing posts selected")
-        return 1
-
     # Pre-flight cost accounting (AC5).
     est = len(posts) * EST_COST_PER_POST_USD
     print(f"[{mode}] {len(posts)} media-bearing posts "
@@ -230,6 +226,11 @@ def run_pilot(args: argparse.Namespace) -> int:
           f"{len(posts) * 8}–{len(posts) * 20}s incl. uploads")
 
     pilot_conn = _init_pilot_db(str(REPO_ROOT / args.pilot_db))
+    # Resume semantics: never re-pay for items already in the pilot DB
+    # (the 1-item smoke already consumed 1 slot of the 30-item pilot cap).
+    done = {r[0] for r in pilot_conn.execute(
+        "SELECT post_id FROM facets_pilot").fetchall()}
+    posts = [p for p in posts if p["post_id"] not in done]
 
     ok_n = dead_n = quota_stop = 0
     total_cost = 0.0
