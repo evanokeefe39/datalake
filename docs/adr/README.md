@@ -30,7 +30,8 @@ deliberately separate from `docs/ARCHITECTURE.md`, which describes the
 | [0005](0005-thin-projector-serving.md) | Metrics computed in warehouse views; dashboard/API is a thin projector | Accepted | 2026-08 (backfilled 2026-09-03) |
 | [0006](0006-point-in-time-metric-semantics.md) | Point-in-time-only metric semantics (per-post baselines, not all-time averages) | Accepted | 2026-08 (backfilled 2026-09-03) |
 | [0007](0007-batch-native-enrichment-deprecate-worker.md) | Enrichment is Dagster-native async batch (submit + harvest sensor); deprecate the external worker | Accepted | 2026-09-06 |
- | [0009](0009-qwen-batch-service.md) | Enrichment backend is a standalone qwen batch service (replaces gemini-batch) | Accepted | 2026-09-09 |
+| [0008](0008-hermetic-with-explicit-api-seam.md) | Hermetic transforms with one explicit API seam (batch submit + harvest) | Accepted | 2026-09-06 |
+| [0009](0009-qwen-batch-service.md) | Enrichment backend is a standalone qwen batch service (replaces gemini-batch) | Accepted | 2026-09-09 |
 
 ## Template
 
