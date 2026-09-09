@@ -19,7 +19,12 @@ New feature epics: **enrich-facets**, **enrich-summaries**, **enrich-transcripts
 (+ supporting **enrich-engine** universal call, **media-capture** cached bytes).
 
 ### Sequencing rationale
-- Engagement-utility is **free** (no Gemini spend) and tells us which facets to
+- **Engine backend (2026-09-09, ADR-0009):** the universal call + all media-backed
+  passes run on the standalone **qwen batch service** (`~/repos/qwen-batch-service`,
+  US-EENG-1), not Gemini — media is client-side frame-sampled and sent in-request
+  (no File-API upload, no GCS mirror). qwen is ~$3 for the corpus. US-EFAC-3/
+  US-ESUM-1 below are qwen-backed.
+- Engagement-utility is **free** (no model spend) and tells us which facets to
   ship → it gates schema finalization, not after it.
 - The **universal video call** is one physical integration shared by facets and
   summaries (US-EFAC-3 + US-ESUM-1) — build it once.

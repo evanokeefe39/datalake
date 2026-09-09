@@ -27,15 +27,13 @@ plans not yet cited by an epic are assigned by title and marked `[assign]`.
 - `media-and-entity-routing.md`
 - `19-20-batch-multimodal-mime.md` (media_cache + mime fixes)
 
-## E-ENRICH-ENGINE — batch-native Gemini engine
-- `phase-3-gold-asset.md` `[assign]` (gold enrichment)
-- `enrichment-architecture-v2.md`, `migration-enrichment-v2.md`
-- `gold-enrichment-scaling.md`, `enrichment-exec-upgrade.md`
-- `multimodal-processing.md` (engine multimodal pass)
-- `refactor-architecture-investigation.md`, `orchestration-investigation-opening.md`
-- `pipeline-hardening-architecture-review.md`
-- Supporting: `docs/refactor-research/migration-batch-native-enrichment*`,
-  `docs/adr/0007` + `0008`, `docs/adr/0002/0003`, `tasks/plans/findings/enrichment-architecture-assessment.md`
+## E-ENRICH-ENGINE — qwen batch engine (ADR-0009; pre-pivot history kept)
+- `qwen-batch-enrichment.md` → US-EENG-1/US-EENG-2 (qwen-batch backend swap; pivot)
+- Pre-pivot (Gemini era): `phase-3-gold-asset.md`, `enrichment-architecture-v2.md`,
+  `migration-enrichment-v2.md`, `gold-enrichment-scaling.md`, `enrichment-exec-upgrade.md`,
+  `multimodal-processing.md`, `pipeline-hardening-architecture-review.md`,
+  `refactor-architecture-investigation.md`, `orchestration-investigation-opening.md`
+- Supporting: `docs/adr/0009`, `docs/adr/0007` (shape) + `0008`, `docs/adr/0002/0003`
 
 ## E-ENRICH-LABELS — triage labels
 - `post-performance-observations-workstreams.md` (Epic 3 — the value driver)

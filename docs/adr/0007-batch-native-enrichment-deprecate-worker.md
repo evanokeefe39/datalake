@@ -1,10 +1,18 @@
 # ADR-0007: Enrichment is Dagster-native async batch (submit + harvest sensor); deprecate the external worker
 
-- Status: Accepted
+- Status: Accepted (backend superseded by ADR-0009, 2026-09-09 — see note below)
 - Decided: 2026-09-06
 - As-built: 2026-09-07 — implemented on `migration/batch-native-enrichment`;
   submit + harvest Dagster jobs replace the external worker (worker removed,
   Phase 5); ISSUES #24 resolved by the harvest sensor.
+
+> **2026-09-09 (ADR-0009):** this decision's *orchestration shape* stands — Dagster
+> owns submit/poll/harvest and there is no domain enrichment worker. Its *backend*
+> is superseded: the async work moves from Google's `gemini-batch` to a standalone,
+> domain-agnostic **qwen batch service** (`~/repos/qwen-batch-service`) that holds
+> its own job/item state, because qwen is synchronous and the Gemini File-API path
+> caps at 20 GiB. Media becomes client-side frame-sampling (no File-API upload, no
+> GCS mirror). See `docs/adr/0009-qwen-batch-service.md`.
 
 ## Context
 
