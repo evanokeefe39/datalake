@@ -244,18 +244,26 @@ def enumerate_targets(
 
 
 def _done_post_ids(conn, mode: str) -> set[str]:
+    """Post_ids already fully enriched for ``mode`` under the current engine
+    (model) + schema — content-based, so a pass-owned prompt_hash overwrite
+    cannot double-spend, while rows from a superseded engine (e.g. gemini-era)
+    are re-enqueued for the current (qwen) engine."""
     if mode == "visual":
-        # A row is visually done when its stored facet JSON carries every
-        # required visual field under the current schema version — NOT when
-        # prompt_hash matches: the text pass overwrites prompt_hash on the
-        # same row, so a hash check would re-enqueue (and re-pay for)
-        # text-done posts every run.
+        # Done iff schema_version is current, the stored facet JSON carries
+        # every required visual field, AND the row was produced by the current
+        # engine (model). Must NOT gate on prompt_hash: the text pass overwrites
+        # prompt_hash on the same row, so a hash-only check would re-enqueue
+        # (and re-pay for) text-done posts every run. model is stable across
+        # both passes (each stamps the current qwen model), so it stays a valid
+        # discriminator that also re-enqueues gemini-era rows under qwen.
         rows = conn.execute(
-            "SELECT post_id, growth_facets_json, schema_version "
+            "SELECT post_id, growth_facets_json, schema_version, model "
             "FROM gold_growth_facets"
         ).fetchall()
         done = set()
-        for post_id, blob, schema_version in rows:
+        for post_id, blob, schema_version, model in rows:
+            if model != _DEFAULT_QWEN_MODEL:
+                continue
             if schema_version != GROWTH_FACETS_SCHEMA_VERSION:
                 continue
             try:
@@ -267,14 +275,15 @@ def _done_post_ids(conn, mode: str) -> set[str]:
             ):
                 done.add(post_id)
         return done
-    # text: done when the stored JSON carries every required text field.
+    # text: done iff the stored JSON carries every required text field AND the
+    # row was produced by the current engine (model) — mirroring visual.
     rows = conn.execute(
-        "SELECT post_id, growth_facets_json FROM gold_growth_facets "
-        "WHERE prompt_hash = ?",
-        [CURRENT_TEXT_FACETS_PROMPT_HASH],
+        "SELECT post_id, growth_facets_json, model FROM gold_growth_facets "
+        "WHERE model = ?",
+        [_DEFAULT_QWEN_MODEL],
     ).fetchall()
     done = set()
-    for post_id, blob in rows:
+    for post_id, blob, model in rows:
         try:
             payload = json.loads(blob) if blob else None
         except json.JSONDecodeError:
@@ -282,7 +291,6 @@ def _done_post_ids(conn, mode: str) -> set[str]:
         if isinstance(payload, dict) and all(f in payload for f in _TEXT_REQUIRED):
             done.add(post_id)
     return done
-
 
 # ── Request building ─────────────────────────────────────────────────────────
 

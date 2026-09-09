@@ -470,6 +470,18 @@ class TestVisualDoneDetection:
         )
         targets = facets_batch.enumerate_targets(state_conn, "visual")
         assert "p_img" in {t["post_id"] for t in targets}
+    def test_superseded_engine_row_is_reenqueued(self, state_conn):
+        # A gemini-era row (all visual fields under schema v3, but model =
+        # gemini) must NOT count as done under qwen — it is re-enqueued so the
+        # qwen corpus run re-enriches it (backend migration). p_video is a
+        # silver visual candidate; a gemini gold row on it must still target it.
+        write_gold_facets_pass_conn(
+            state_conn, "p_video", "instagram",
+            _visual_payload()["visual_facets"],
+            model="gemini-3.5-flash-lite",
+        )
+        targets = facets_batch.enumerate_targets(state_conn, "visual")
+        assert "p_video" in {t["post_id"] for t in targets}
 
 
 class TestHarvestLedgerGuards:
