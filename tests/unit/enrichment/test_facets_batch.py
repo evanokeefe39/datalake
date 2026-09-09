@@ -539,3 +539,108 @@ class TestDriverPlan:
         assert "targets=1" in out  # p1 only for visual (media-bearing)
         assert "targets=2" in out  # both captions for text
         assert "qwen_cost_usd" in out
+
+
+class TestResumeAfterMidRunFailure:
+    """US-EENG-1 AC7: a second discovery→submit→harvest cycle resubmits
+    ONLY posts lacking a current gold row. Gold posts are neither
+    resubmitted nor double-written (UPSERT idempotent); failed posts are
+    retried — the credits-outage resume guarantee.
+
+    Scenario: p_img succeeds in cycle 1 (gets gold); p_video's item fails
+    server-side in cycle 1 (ok=False → no gold row). Cycle 2 must skip
+    p_img entirely and retry p_video.
+    """
+
+    def test_rerun_skips_gold_and_retries_failed(self, state_conn, tmp_path,
+                                                 cached_media, monkeypatch):
+        ops = _sqlite(tmp_path)
+        submitted: list[list[dict]] = []
+
+        def fake_submit(*args, **kwargs):
+            submitted.append(
+                [it["custom_key"] for it in args[1] if "custom_key" in it]
+            )
+            return f"svc-{len(submitted)}"
+
+        # Cycle 1: p_img ok, p_video fails server-side (credits outage).
+        cycle1_results = [
+            {"custom_key": "p_img", "ok": True,
+             "output": json.dumps(_visual_payload()), "error": None},
+            {"custom_key": "p_video", "ok": False, "output": None,
+             "error": "out of credits"},
+        ]
+        results_by_cycle = [cycle1_results]
+
+        def fake_get_results(*a, **k):
+            return results_by_cycle.pop(0)
+
+        monkeypatch.setattr(facets_batch.qwen_client, "check_health",
+                            lambda *_: {})
+        monkeypatch.setattr(facets_batch.qwen_client, "submit_job",
+                            fake_submit)
+        monkeypatch.setattr(facets_batch.qwen_client, "get_job",
+                            lambda *a, **k: _completed_job())
+        monkeypatch.setattr(facets_batch.qwen_client, "get_results",
+                            fake_get_results)
+
+        def run_cycle():
+            targets = facets_batch.enumerate_targets(state_conn, "visual")
+            items = facets_batch.build_facets_batch_requests(
+                ops, state_conn, targets, "visual"
+            )
+            if items:
+                facets_batch.submit_facets_batch(ops, items, "visual")
+            return facets_batch.harvest_facets_batches(ops, state_conn)
+
+        # ── Cycle 1 ──
+        out1 = run_cycle()
+        assert out1["written"] == 1 and out1["failed_items"] == 1
+        assert submitted[-1] == ["p_img", "p_video"]
+        assert state_conn.execute(
+            "SELECT count(*) FROM gold_growth_facets "
+            "WHERE post_id = 'p_img'"
+        ).fetchone()[0] == 1
+        assert state_conn.execute(
+            "SELECT count(*) FROM gold_growth_facets "
+            "WHERE post_id = 'p_video'"
+        ).fetchone()[0] == 0
+
+        # (a) cycle-2 discovery excludes the gold post, includes the failed one
+        targets2 = facets_batch.enumerate_targets(state_conn, "visual")
+        assert "p_img" not in {t["post_id"] for t in targets2}
+        assert "p_video" in {t["post_id"] for t in targets2}
+
+        # Cycle 2: both items now succeed; the ledger is reused so the
+        # harvest picks up the resubmitted batch.
+        cycle2_results = [
+            dict(r, ok=True, output=json.dumps(_visual_payload()),
+                 error=None)
+            for r in cycle1_results
+        ]
+        results_by_cycle.append(cycle2_results)
+        out2 = run_cycle()
+        assert submitted[-1] == ["p_video"]  # ONLY the failed post retried
+        assert "p_img" not in submitted[-1]
+        assert out2["written"] == 2  # both cycle-2 items land (UPSERT)
+
+        # (b) idempotency: gold row for p_img still exactly one row
+        assert state_conn.execute(
+            "SELECT count(*) FROM gold_growth_facets "
+            "WHERE post_id = 'p_img'"
+        ).fetchone()[0] == 1
+        assert state_conn.execute(
+            "SELECT count(*) FROM gold_growth_facets "
+            "WHERE post_id = 'p_video'"
+        ).fetchone()[0] == 1
+
+        # (b) UPSERT: re-presenting p_img to the gold write never duplicates
+        write_gold_facets_pass_conn(
+            state_conn, "p_img", "instagram",
+            _visual_payload()["visual_facets"],
+            model=_DEFAULT_QWEN_MODEL,
+        )
+        assert state_conn.execute(
+            "SELECT count(*) FROM gold_growth_facets "
+            "WHERE post_id = 'p_img'"
+        ).fetchone()[0] == 1
