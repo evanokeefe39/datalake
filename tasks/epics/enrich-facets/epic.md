@@ -3,10 +3,18 @@
 - **Theme:** Richer media-grounded enrichment (new)
 - **Owner:** dlc-worker
 - **Status:** Open (design) — schema is V3-validated; build not started
-- **Depends on:** E-ENRICH-ENGINE, E-MEDIA, E-SERVING-ANALYTICS (utility check)
+- **Depends on:** E-ENRICH-ENGINE (now the qwen batch service, ADR-0009), E-MEDIA,
+  E-SERVING-ANALYTICS (utility check)
 - **Relates to:** E-ENRICH-SUMMARIES (same universal video call), E-ENRICH-TRANSCRIPTS
   (text-layer facets), E-ENRICH-LABELS (standout/underperformer labels reused as the
   engagement-utility criterion)
+
+## Backend note (2026-09-09, ADR-0009)
+The visual-facet pass (US-EFAC-3) rides the qwen engine: media is **client-side
+ffmpeg frame-sampled** (reels → frames) and sent as image parts to the standalone
+qwen batch service — not Gemini File-API URIs / `MEDIA_RESOLUTION_LOW`. The facets
+schema, prompt hashing, and additive gold-column semantics are unchanged; only the
+transport/backend changed.
 
 ## Outcome
 Posts carry a validated, additive `growth_facets_json`: cross-modal facets

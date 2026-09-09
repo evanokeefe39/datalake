@@ -79,7 +79,28 @@ multimodal worker code is correct but starved of input. Work items, in order:
    video is ~17.4k tokens/min and pure waste.
 
 
-### Multimodal status (2026-09-08) — BATCH-NATIVE ONLY; interactive removed
+### DIRECTION PIVOT (2026-09-09) — qwen batch service replaces gemini-batch (ADR-0009)
+
+The enrichment backend is pivoting from Google's `gemini-batch` to a **standalone,
+domain-agnostic qwen batch service** (`~/repos/qwen-batch-service`, dockerized) —
+driven by the Gemini Developer-API File-API **20 GiB storage cap** that killed a
+full-corpus video run and the absence of a Vertex vision batch discount. qwen
+(`qwen/qwen3.7-flash` via OpenRouter, ~$0.03/$0.13 per 1M) is ~$3 for the corpus.
+Media becomes **client-side ffmpeg frame-sampling** (no File-API upload, no GCS
+mirror — the GCS durable-media work is dropped). See **ADR-0009** and
+`tasks/plans/qwen-batch-enrichment.md`; governance on branch `feat/qwen-enrichment`
+(US-EENG-1/US-EENG-2 under E-ENRICH-ENGINE).
+
+**Dependent service (US-EENG-2):** enrichment treats the qwen-batch service as a
+hard dependency. Spin up: `docker compose up` (or `uv run`) in
+`~/repos/qwen-batch-service`. The enrichment submit path MUST ping `GET /health`
+first and **fail loudly** (never a quiet "nothing to do") if the service is down.
+
+**Code state note:** the repo still carries the `gemini-batch` machinery until
+US-EENG-1 lands — treat the 2026-09-08 section below as the *current code* and the
+qwen pivot as the *active direction*.
+
+### Multimodal status (2026-09-08) — BATCH-NATIVE ONLY; interactive removed (PRE-PIVOT)
 
 Enrichment is **batch-native only** as of 2026-09-08: the synchronous
 per-item interactive path (`process_item`, `scripts/enrich_interactive.py`,

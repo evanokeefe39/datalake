@@ -9,7 +9,11 @@ status: Open
 - **Epic:** E-ENRICH-FACETS
 - **Status:** Open
 - **Relates to:** E-ENRICH-SUMMARIES (same universal video call), E-ENRICH-ENGINE
+  (backend = qwen batch service, ADR-0009)
 - **Source:** `docs/enrichment-enhancement-design.md` §3
+- **Backend note (2026-09-09):** media transport changed from Gemini File-API
+  upload + `MEDIA_RESOLUTION_LOW` to **client-side ffmpeg frame-sampling** →
+  image parts on the qwen service. Schema + additive semantics unchanged.
 
 ## Story
 **As a** pipeline operator, **I want** one universal media call per post that
@@ -19,8 +23,8 @@ without touching the gold schema and without re-running universal multimodal
 for each new feature.
 
 ## Acceptance criteria (binary)
-- AC1: One media call per post (media resolved once, File API URIs reused across
-      passes), output `max_output_tokens=4096`, `MEDIA_RESOLUTION_LOW`.
+- AC1: One media pass per post (media resolved once — native images + ffmpeg frames
+      for reels), sent as image parts to the qwen batch service (US-EENG-1 backend).
 - AC2: Output additive — new column/table + own `prompt_hash`; gold table and
       reserved keys untouched.
 - AC3: Post-parse validation passes: valid JSON, no reserved keys, all required
