@@ -20,13 +20,15 @@ resume-safety without the Gemini File-API storage cap or a domain-owned queue.
 
 ## Acceptance criteria (binary)
 
-- AC1: The Dagster submit path files candidates as a `qwen-batch-service` job
-      (POST /jobs) and returns sub-second — no blocking, no Gemini client.
-- AC2: A harvest sensor polls GET /jobs/{id}; on terminal state it reads
-      /results and writes `gold_growth_facets` keyed `(post_id, domain)`.
-- AC3: Media = client-side ffmpeg frame-sampling of reels + native images →
-      image file paths; the service treats media as opaque images (no IG/GCS
-      coupling in the service).
+- AC1: The facets SUBMIT PATH (scripts/enrich_facets_batch.py →
+      facets_batch.submit_facets_batch) files candidates as a
+      `qwen-batch-service` job (POST /jobs); orchestration is the one-shot CLI
+      driver, no Dagster op.
+- AC2: facets_batch.harvest_facets_batches polls GET /jobs/{id}; on
+      `completed` it reads /results and writes `gold_growth_facets` keyed
+      `(post_id, domain)`.
+- AC3: Media = cached local file paths; the SERVICE frame-samples reels with
+      ffmpeg on its own host + native images (the client never runs ffmpeg).
 - AC4: Per-item results survive a service restart (its own durable store);
       failed items are service-side dead-lettered, never silently dropped.
 - AC5: Incremental runs re-discover only posts lacking a current-schema gold row.

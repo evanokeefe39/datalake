@@ -24,14 +24,15 @@ silently skip enrichment.
 - AC2: Before any submit, the client pings the service `GET /health`; a non-OK or
       connection failure raises a clear error naming the service and how to start
       it (docker compose up), never returning an empty/quiet success.
-- AC3: The failure surfaces in Dagster as a failed/errored step, not a completed
+- AC3: The failure surfaces as a loud CLI failure (QwenServiceError →
+      non-zero exit from scripts/enrich_facets_batch.py), never a completed
       run with zero items.
 - AC4: Health/readiness state is visible in the enrichment logs at run start.
 
 ## Definition of done
 
 - [ ] Health check wired into the submit path; AC2 verified with the service
-      stopped (Dagster step fails loudly) and started (passes).
+      stopped (driver run fails loudly) and started (passes).
 - [ ] Dependent-service + spin-up instructions documented in AGENTS.md.
 
 ## Tests

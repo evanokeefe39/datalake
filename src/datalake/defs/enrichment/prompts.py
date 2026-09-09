@@ -60,6 +60,10 @@ Caption:"""  # no trailing whitespace needed
 
 _DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
+# Facets engine (gold_growth_facets) runs on the standalone qwen-batch
+# service — NOT Gemini. The IG-gold path keeps _DEFAULT_GEMINI_MODEL above.
+_DEFAULT_QWEN_MODEL = "qwen/qwen3.7-flash"
+
 CURRENT_PROMPT_HASH = compute_prompt_hash(IG_GOLD_PROMPT, _DEFAULT_GEMINI_MODEL)
 
 
@@ -146,14 +150,16 @@ def facets_instruction_skeleton() -> str:
     )
 
 
-def compute_facets_prompt_hash(model: str = _DEFAULT_GEMINI_MODEL) -> str:
+def compute_facets_prompt_hash(model: str = _DEFAULT_QWEN_MODEL) -> str:
     """Own prompt_hash for the visual pass (schema version folded in, AC6)."""
     return compute_prompt_hash(
         facets_instruction_skeleton() + ":" + model, model
     )
 
 
-CURRENT_FACETS_PROMPT_HASH = compute_facets_prompt_hash(_DEFAULT_GEMINI_MODEL)
+CURRENT_FACETS_PROMPT_HASH = compute_facets_prompt_hash(_DEFAULT_QWEN_MODEL)
+
+
 
 
 
@@ -171,7 +177,7 @@ def text_facets_instruction_skeleton() -> str:
     )
 
 
-def compute_text_facets_prompt_hash(model: str = _DEFAULT_GEMINI_MODEL) -> str:
+def compute_text_facets_prompt_hash(model: str = _DEFAULT_QWEN_MODEL) -> str:
     """Own prompt_hash for the text pass (schema version folded in)."""
     return compute_prompt_hash(
         text_facets_instruction_skeleton() + ":" + model, model
@@ -179,7 +185,7 @@ def compute_text_facets_prompt_hash(model: str = _DEFAULT_GEMINI_MODEL) -> str:
 
 
 CURRENT_TEXT_FACETS_PROMPT_HASH = compute_text_facets_prompt_hash(
-    _DEFAULT_GEMINI_MODEL
+    _DEFAULT_QWEN_MODEL
 )
 
 

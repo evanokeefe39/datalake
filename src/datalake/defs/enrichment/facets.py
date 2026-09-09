@@ -28,7 +28,7 @@ from datalake.defs.enrichment.growth_facets_schema import (
     validate_visual_facets,
 )
 from datalake.defs.enrichment.prompts import (
-    _DEFAULT_GEMINI_MODEL,
+    _DEFAULT_QWEN_MODEL,
     CURRENT_FACETS_PROMPT_HASH,
     build_growth_facets_prompt,
 )
@@ -38,11 +38,6 @@ logger = logging.getLogger("enrichment.facets")
 # Universal-call output budget (design §6): facets + bounded summaries fit 4096.
 UNIVERSAL_MAX_OUTPUT_TOKENS = 4096
 
-# Tier-1 flash-lite list-price ESTIMATES, USD per 1M tokens (env-overridable).
-# Grounded against the repo's own ~$0.002/media-call estimate (design §7).
-# Shared with the batch cost projection in ``facets_batch``.
-_INPUT_PRICE_PER_M = float(os.environ.get("FACETS_INPUT_PRICE_PER_M", "0.10"))
-_OUTPUT_PRICE_PER_M = float(os.environ.get("FACETS_OUTPUT_PRICE_PER_M", "0.40"))
 
 
 # ── Response parsing + validation ────────────────────────────────────────────
@@ -159,8 +154,10 @@ _GOLD_FACETS_UPSERT = """INSERT INTO gold_growth_facets
        prompt_hash = excluded.prompt_hash,
        schema_version = excluded.schema_version,
        growth_facets_json = excluded.growth_facets_json,
-       content_summary = excluded.content_summary,
-       image_summaries_json = excluded.image_summaries_json,
+       content_summary = coalesce(excluded.content_summary,
+                                  gold_growth_facets.content_summary),
+       image_summaries_json = coalesce(excluded.image_summaries_json,
+                                       gold_growth_facets.image_summaries_json),
        model = excluded.model,
        analysed_at = excluded.analysed_at
    WHERE gold_growth_facets.analysed_at IS NULL
@@ -174,7 +171,7 @@ def write_gold_facets_conn(
     visual_facets: dict,
     content_summary: str | None,
     image_summaries: list | None,
-    model: str = _DEFAULT_GEMINI_MODEL,
+    model: str = _DEFAULT_QWEN_MODEL,
     prompt_hash: str | None = None,
 ) -> None:
     """``write_gold_facets`` over an EXISTING duckdb connection (pilot path)."""
@@ -200,7 +197,7 @@ def write_gold_facets_pass_conn(
     post_id: str,
     domain: str,
     facet_fields: dict,
-    model: str = _DEFAULT_GEMINI_MODEL,
+    model: str = _DEFAULT_QWEN_MODEL,
     prompt_hash: str | None = None,
     content_summary: str | None = None,
     image_summaries: list | None = None,
@@ -253,7 +250,7 @@ def write_gold_facets(
     visual_facets: dict,
     content_summary: str | None,
     image_summaries: list | None,
-    model: str = _DEFAULT_GEMINI_MODEL,
+    model: str = _DEFAULT_QWEN_MODEL,
     prompt_hash: str | None = None,
 ) -> None:
     """Upsert validated universal-call output into ``gold_growth_facets``.

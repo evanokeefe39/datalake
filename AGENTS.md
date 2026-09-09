@@ -96,9 +96,10 @@ hard dependency. Spin up: `docker compose up` (or `uv run`) in
 `~/repos/qwen-batch-service`. The enrichment submit path MUST ping `GET /health`
 first and **fail loudly** (never a quiet "nothing to do") if the service is down.
 
-**Code state note:** the repo still carries the `gemini-batch` machinery until
-US-EENG-1 lands — treat the 2026-09-08 section below as the *current code* and the
-qwen pivot as the *active direction*.
+**Code state note:** the growth-facets engine now runs on the qwen-batch
+service (one-shot CLI driver, no Dagster op); the separate IG `gold_analyses`
+gemini path (gemini-batch machinery) remains until its own migration — treat
+the 2026-09-08 section below as applying to that path.
 
 ### Multimodal status (2026-09-08) — BATCH-NATIVE ONLY; interactive removed (PRE-PIVOT)
 
