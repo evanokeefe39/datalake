@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Dagster + our medallion lakehouse: an async-enrichment explainer</title>
+<style>
+  :root{
+    --ink:#0f172a; --mut:#64748b; --line:#e2e8f0; --bg:#ffffff; --paper:#f8fafc;
+    --core:#0e7490; --core-soft:#e0f2fe;
+    --async:#ea580c; --async-soft:#ffedd5;
+    --done:#16a34a; --done-soft:#dcfce7;
+    --wait:#64748b; --wait-soft:#f1f5f9;
+    --bronze:#92400e; --bronze-soft:#fef3c7;
+    --serving:#7c3aed; --serving-soft:#ede9fe;
+    --dash:#0f172a; --dash-soft:#e2e8f0;
+    --code:#334155; --code-bg:#f1f5f9; --radius:12px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.6 "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;}
+  .wrap{max-width:960px;margin:0 auto;padding:0 22px 80px}
+  header.hero{padding:44px 22px 8px}
+  header.hero h1{font-size:30px;line-height:1.2;margin:0 0 6px;letter-spacing:-.02em}
+  header.hero p.lede{color:var(--mut);max-width:720px;margin:0;font-size:17px}
+  .meta{color:var(--mut);font-size:13px;margin-top:8px}
+  /* nav */
+  nav.toc{position:sticky;top:0;background:#ffffffdd;backdrop-filter:blur(6px);
+    border-bottom:1px solid var(--line);padding:10px 0;z-index:5;margin-top:20px}
+  nav.toc .inner{max-width:960px;margin:0 auto;padding:0 22px;display:flex;gap:6px;flex-wrap:wrap;font-size:14px}
+  nav.toc a{color:var(--core);text-decoration:none;padding:4px 10px;border-radius:999px;background:var(--core-soft)}
+  nav.toc a:hover{filter:brightness(.97)}
+  section{margin-top:52px}
+  h2{font-size:23px;letter-spacing:-.01em;margin:0 0 6px}
+  h3{font-size:18px;margin:26px 0 6px}
+  p{margin:10px 0}
+  .mut{color:var(--mut)}
+  code{font:13px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;background:var(--code-bg);
+    color:var(--code);padding:1px 5px;border-radius:5px}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;overflow:auto}
+  pre code{background:none;padding:0}
+  /* figures */
+  .fig{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);padding:18px;margin:18px 0}
+  .fig figcaption{font-size:13px;color:var(--mut);margin-top:10px;text-align:center}
+  .figure-title{font-weight:600;font-size:13px;color:var(--ink);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
+  svg{display:block;max-width:100%;height:auto;margin:0 auto}
+  /* callouts */
+  .key{background:var(--done-soft);border-left:4px solid var(--done);border-radius:0 var(--radius) var(--radius) 0;padding:12px 16px;margin:16px 0}
+  .warn{background:var(--async-soft);border-left:4px solid var(--async);border-radius:0 var(--radius) var(--radius) 0;padding:12px 16px;margin:16px 0}
+  .metaphor{background:#eef2ff;border:1px dashed #c7d2fe;border-radius:var(--radius);padding:12px 16px;margin:16px 0;font-style:italic;color:#3730a3}
+  /* tables */
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--paper);font-weight:600}
+  td code{white-space:nowrap}
+  .chip{display:inline-block;font-size:12px;padding:1px 8px;border-radius:999px;margin-right:6px}
+  .c-core{background:var(--core-soft);color:var(--core)}
+  .c-async{background:var(--async-soft);color:var(--async)}
+  .c-done{background:var(--done-soft);color:var(--done)}
+  .c-wait{background:var(--wait-soft);color:var(--wait)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .card{border:1px solid var(--line);border-radius:var(--radius);padding:14px}
+  .big{font-size:34px;font-weight:700;line-height:1}
+  .stat{text-align:center}
+  .foot{color:var(--mut);font-size:13px;border-top:1px solid var(--line);margin-top:64px;padding-top:16px}
+  .p2{color:var(--mut);font-size:14px}
+  .legend{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;font-size:13px;margin-top:6px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:12px;height:12px;border-radius:3px;display:inline-block}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Dagster + our medallion lakehouse</h1>
+  <p class="lede">A gentle visual explainer of how we schedule the pipeline, and how "enriching a post with an AI model" fits — and breaks — the normal medallion pattern.</p>
+  <p class="meta">C:/Users/evano/repos/datalake &nbsp;·&nbsp; aimed at a new junior engineer ·&nbsp; real numbers from our database</p>
+</header>
+
+<nav class="toc"><div class="inner">
+  <a href="#metaphor">The metaphor</a>
+  <a href="#primitives">1 · Primitives</a>
+  <a href="#medallion">2 · Medallion pattern</a>
+  <a href="#departure">3 · The async departure</a>
+  <a href="#real">4 · Our real numbers</a>
+  <a href="#scheduling">5 · Scheduling model</a>
+  <a href="#cheat">6 · Cheat-sheet</a>
+  <a href="#playbooks">7 · Dev/test playbooks</a>
+</div></nav>
+
+<section id="metaphor">
+  <h2>Read this first: the inventory metaphor</h2>
+  <div class="metaphor">
+    Think of the warehouse pipeline as <strong>inventory management</strong> for a shop. We "stock" tables (assets). We can only stock a shelf if the shelf it depends on is stocked first. Most restocking runs on a clock. Some restocking happens when a delivery truck <em>arrives</em> — an event we can't predict, so we keep an eye out for it.
+    Every Dagster term below maps onto that picture.
+  </div>
+  <p>We'll color-code every diagram consistently:</p>
+  <div class="legend">
+    <span><i class="sw" style="background:var(--core)"></i> core / synchronous path</span>
+    <span><i class="sw" style="background:var(--async)"></i> async enrichment bridge</span>
+    <span><i class="sw" style="background:var(--done)"></i> gold (done output)</span>
+    <span><i class="sw" style="background:var(--wait)"></i> waiting / pending</span>
+  </div>
+</section>
+
+<section id="primitives">
+  <h2>1 · The Dagster primitives</h2>
+  <p>Dagster has a small vocabulary. Each idea is simple; the power comes from combining them.</p>
+
+  <h3>Asset — the thing we stock</h3>
+  <p>An <strong>asset</strong> is a persistent object our code produces — usually a table. Assets are <em>nouns</em>: <code>silver_ig_posts</code>, <code>gold_growth_facets</code>, a serving view.</p>
+
+  <div class="fig">
+    <div class="figure-title">One asset = one node</div>
+    <svg viewBox="0 0 460 90" role="img" aria-label="A single asset node">
+      <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#0e7490"/></marker></defs>
+      <rect x="150" y="18" width="160" height="54" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+      <text x="230" y="51" text-anchor="middle" font-family="monospace" font-size="14" fill="#0e7490">gold_growth_facets</text>
+      <text x="230" y="82" text-anchor="middle" font-size="12" fill="#64748b">an asset (a table)</text>
+    </svg>
+    <figcaption>Materializing an asset = running the step that (re)produces the table.</figcaption>
+  </div>
+
+  <h3>Asset dependency — "you can't stock X until Y"</h3>
+  <p>Assets link into a <strong>graph</strong>: an edge means the downstream asset needs the upstream one to exist first. Serving depends on gold; gold depends on silver.</p>
+
+  <div class="grid2">
+    <div class="fig" style="margin:0">
+      <div class="figure-title">A tiny graph</div>
+      <svg viewBox="0 0 330 120" role="img" aria-label="silver to gold to serving arrow">
+        <rect x="8" y="34" width="86" height="50" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+        <text x="51" y="64" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">silver</text>
+        <line x1="98" y1="59" x2="122" y2="59" stroke="#0e7490" stroke-width="2" marker-end="url(#a)"/>
+        <rect x="126" y="34" width="86" height="50" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+        <text x="169" y="64" text-anchor="middle" font-family="monospace" font-size="12" fill="#16a34a">gold</text>
+        <line x1="216" y1="59" x2="240" y2="59" stroke="#0e7490" stroke-width="2" marker-end="url(#a)"/>
+        <rect x="244" y="34" width="78" height="50" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+        <text x="283" y="64" text-anchor="middle" font-family="monospace" font-size="12" fill="#7c3aed">serving</text>
+        <text x="165" y="104" text-anchor="middle" font-size="12" fill="#64748b">downstream runs only after upstream</text>
+      </svg>
+    </div>
+    <div class="fig" style="margin:0">
+      <div class="figure-title">The everyday image</div>
+      <p class="p2" style="margin:6px 0">The "shelf with weekly metrics" can't be filled until the "clean post table" shelf is filled. Dagster just tracks these edges and runs things in the right order.</p>
+    </div>
+  </div>
+
+  <h3>Job, schedule, sensor, partition</h3>
+  <div class="fig">
+    <div class="figure-title">The four "when/how" controls</div>
+    <svg viewBox="0 0 900 210" role="img" aria-label="job schedule sensor partition cards">
+      <!-- Job -->
+      <rect x="10" y="10" width="210" height="180" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="115" y="40" text-anchor="middle" font-weight="700" font-size="15">JOB</text>
+      <rect x="30" y="56" width="170" height="40" rx="8" fill="#e0f2fe" stroke="#0e7490"/>
+      <text x="115" y="81" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">silver</text>
+      <rect x="30" y="102" width="170" height="40" rx="8" fill="#e0f2fe" stroke="#0e7490"/>
+      <text x="115" y="127" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">serving</text>
+      <text x="115" y="166" text-anchor="middle" font-size="11" fill="#64748b">a named selection run together</text>
+      <text x="115" y="184" text-anchor="middle" font-size="11" fill="#64748b">(a shopping list)</text>
+      <!-- Schedule -->
+      <rect x="230" y="10" width="210" height="180" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="335" y="40" text-anchor="middle" font-weight="700" font-size="15">SCHEDULE</text>
+      <circle cx="335" cy="96" r="30" fill="none" stroke="#0e7490" stroke-width="3"/>
+      <circle cx="335" cy="96" r="4" fill="#0e7490"/>
+      <line x1="335" y1="66" x2="335" y2="52" stroke="#0e7490" stroke-width="2"/>
+      <line x1="335" y1="96" x2="358" y2="96" stroke="#0e7490" stroke-width="2"/>
+      <text x="335" y="146" text-anchor="middle" font-size="11" fill="#64748b">a clock: "restock every day at</text>
+      <text x="335" y="162" text-anchor="middle" font-size="11" fill="#64748b">midnight" → runs a job</text>
+      <text x="335" y="182" text-anchor="middle" font-size="11" fill="#64748b">(predictable / recurring)</text>
+      <!-- Sensor -->
+      <rect x="450" y="10" width="210" height="180" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="555" y="40" text-anchor="middle" font-weight="700" font-size="15">SENSOR</text>
+      <rect x="470" y="56" width="80" height="44" rx="8" fill="#ffedd5" stroke="#ea580c"/>
+      <text x="510" y="83" text-anchor="middle" font-size="10" fill="#ea580c">truck arrives</text>
+      <line x1="550" y1="78" x2="596" y2="78" stroke="#ea580c" stroke-width="2" marker-end="url(#a)"/>
+      <rect x="600" y="56" width="52" height="44" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="626" y="83" text-anchor="middle" font-size="10" fill="#16a34a">stock</text>
+      <text x="555" y="130" text-anchor="middle" font-size="11" fill="#64748b">polls an external signal →</text>
+      <text x="555" y="146" text-anchor="middle" font-size="11" fill="#64748b">requests a run</text>
+      <text x="555" y="176" text-anchor="middle" font-size="11" fill="#ea580c">⚠ sensors POLL; not magic</text>
+      <!-- Partition -->
+      <rect x="670" y="10" width="220" height="180" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="780" y="40" text-anchor="middle" font-weight="700" font-size="15">PARTITION</text>
+      <!-- a partitioned asset = one segmented bar cut into per-day units -->
+      <rect x="690" y="58" width="184" height="38" rx="9" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5"/>
+      <line x1="736" y1="58" x2="736" y2="96" stroke="#cbd5e1"/>
+      <line x1="782" y1="58" x2="782" y2="96" stroke="#cbd5e1"/>
+      <line x1="828" y1="58" x2="828" y2="96" stroke="#cbd5e1"/>
+      <rect x="782" y="59" width="46" height="36" fill="#dcfce7" stroke="#16a34a" stroke-dasharray="3 2" stroke-width="1.5"/>
+      <rect x="828" y="59" width="45" height="36" fill="#bfdbfe" stroke="#0e7490"/>
+      <text x="713" y="112" text-anchor="middle" font-family="monospace" font-size="9" fill="#64748b">day 1</text>
+      <text x="759" y="112" text-anchor="middle" font-family="monospace" font-size="9" fill="#64748b">day 2</text>
+      <text x="805" y="112" text-anchor="middle" font-family="monospace" font-size="9" fill="#16a34a">backfill</text>
+      <text x="850" y="112" text-anchor="middle" font-family="monospace" font-size="9" fill="#0e7490">today</text>
+      <text x="782" y="140" text-anchor="middle" font-size="11" fill="#64748b">split an asset into units (by day)</text>
+      <text x="782" y="158" text-anchor="middle" font-size="11" fill="#64748b">so you can materialize a new slice</text>
+      <text x="782" y="176" text-anchor="middle" font-size="11" fill="#64748b">or backfill an old one on its own</text>
+    </svg>
+    <figcaption>Job = a selection to run; Schedule = run on a clock; Sensor = react to an external signal; Partition = incremental units.</figcaption>
+  </div>
+
+  <div class="key"><strong>Quick reference.</strong> Job = what to run together. Schedule = run it on a clock. Sensor = run it when something external happens. Partition = run/backfill a slice. <em>Asset checks/freshness</em> = quality gates and "how stale is this?" — we use them to fail loudly on bad/wedged data.</div>
+</section>
+
+<section id="medallion">
+  <h2>2 · The canonical medallion pattern</h2>
+  <p>Our data warehouse is layered like most: <strong>bronze → silver → gold → serving → dashboard</strong>. Each layer is a set of assets; the next depends on the previous.</p>
+
+  <div class="fig">
+    <div class="figure-title">The standard layered medallion graph</div>
+    <svg viewBox="0 0 900 130" role="img" aria-label="bronze to silver to gold to serving to dashboard">
+      <defs><marker id="m" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#64748b"/></marker></defs>
+      <g>
+        <rect x="20" y="36" width="140" height="58" rx="10" fill="#fef3c7" stroke="#92400e" stroke-width="2"/>
+        <text x="90" y="60" text-anchor="middle" font-family="monospace" font-size="13" fill="#92400e">bronze</text>
+        <text x="90" y="78" text-anchor="middle" font-size="10" fill="#92400e">raw as-ingested</text>
+        <line x1="164" y1="65" x2="192" y2="65" stroke="#64748b" stroke-width="2" marker-end="url(#m)"/>
+        <rect x="196" y="36" width="140" height="58" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+        <text x="266" y="60" text-anchor="middle" font-family="monospace" font-size="13" fill="#0e7490">silver</text>
+        <text x="266" y="78" text-anchor="middle" font-size="10" fill="#0e7490">clean · dedup · normalize</text>
+        <line x1="340" y1="65" x2="368" y2="65" stroke="#64748b" stroke-width="2" marker-end="url(#m)"/>
+        <rect x="372" y="36" width="140" height="58" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+        <text x="442" y="60" text-anchor="middle" font-family="monospace" font-size="13" fill="#16a34a">gold</text>
+        <text x="442" y="78" text-anchor="middle" font-size="10" fill="#16a34a">metrics · features</text>
+        <line x1="516" y1="65" x2="544" y2="65" stroke="#64748b" stroke-width="2" marker-end="url(#m)"/>
+        <rect x="548" y="36" width="150" height="58" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+        <text x="623" y="60" text-anchor="middle" font-family="monospace" font-size="13" fill="#7c3aed">serving</text>
+        <text x="623" y="78" text-anchor="middle" font-size="10" fill="#7c3aed">thin views · projectors</text>
+        <line x1="702" y1="65" x2="730" y2="65" stroke="#64748b" stroke-width="2" marker-end="url(#m)"/>
+        <rect x="734" y="36" width="146" height="58" rx="10" fill="#e2e8f0" stroke="#0f172a" stroke-width="2"/>
+        <text x="807" y="60" text-anchor="middle" font-family="monospace" font-size="13" fill="#0f172a">dashboard</text>
+        <text x="807" y="78" text-anchor="middle" font-size="10" fill="#0f172a">what people read</text>
+      </g>
+      <text x="450" y="120" text-anchor="middle" font-size="12" fill="#64748b">one schedule materializes the chain: silver → gold → serving → dashboard</text>
+    </svg>
+    <figcaption>Canonical medallion: layered, dependency-ordered, schedule-driven. Serving views are thin projectors (no heavy logic).</figcaption>
+  </div>
+
+  <div class="warn"><strong>The hidden assumption.</strong> A normal medallion transform is <em>fast and synchronous</em> — materializing gold is a normal compute step taking seconds to minutes. That premise is true for cleaning data. It is <em>false</em> for the next thing we do, which is why the next section exists.</div>
+</section>
+
+<section id="departure">
+  <h2>3 · Where we depart: async AI enrichment</h2>
+  <p>We also want to <strong>enrich each post with an AI model that reads its media</strong> — detect the brand logos, whether a face is present, the "value medium", and (soon) transcribe the audio. Three facts make this unlike a normal transform:</p>
+  <ul>
+    <li><strong>Slow</strong> — enriching a whole corpus takes <em>hours</em> (one big pass ≈ 15 hours), not seconds.</li>
+    <li><strong>External</strong> — it calls a network API (an LLM batch service).</li>
+    <li><strong>Per-record</strong> — every post is a separate model call.</li>
+  </ul>
+  <p>If we modelled this as a normal synchronous asset step, a materialization would <strong>block for 15 hours</strong> and re-run everything naively. That breaks the fast-and-synchronous assumption of section 2.</p>
+
+  <div class="key"><strong>Our answer: an async bridge.</strong> The enrichment stays <em>in</em> the asset graph but is split so Dagster never waits. Sub-second submit + an external service that drains in its own worker + a sensor that harvests each completed batch.</div>
+
+  <div class="fig">
+    <div class="figure-title">The async enrichment bridge</div>
+    <svg viewBox="0 0 900 360" role="img" aria-label="submit to external service to sensor to harvest">
+      <defs>
+        <marker id="b" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#ea580c"/></marker>
+        <marker id="c" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#64748b"/></marker>
+      </defs>
+      <!-- row 1: silver -> submit -->
+      <rect x="20" y="20" width="150" height="56" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+      <text x="95" y="44" text-anchor="middle" font-family="monospace" font-size="13" fill="#0e7490">silver_ig_posts</text>
+      <text x="95" y="62" text-anchor="middle" font-size="10" fill="#0e7490">new/clean posts</text>
+      <line x1="174" y1="48" x2="206" y2="48" stroke="#64748b" stroke-width="2" marker-end="url(#c)"/>
+      <text x="190" y="36" text-anchor="middle" font-size="10" fill="#64748b">depends on</text>
+      <!-- submit -->
+      <rect x="210" y="20" width="150" height="56" rx="10" fill="#ffedd5" stroke="#ea580c" stroke-width="2"/>
+      <text x="285" y="44" text-anchor="middle" font-family="monospace" font-size="13" fill="#ea580c">submit</text>
+      <text x="285" y="62" text-anchor="middle" font-size="10" fill="#ea580c">POST one job · sub-second</text>
+      <!-- external service -->
+      <rect x="470" y="20" width="200" height="56" rx="10" fill="#fff7ed" stroke="#ea580c" stroke-dasharray="5 4"/>
+      <text x="570" y="44" text-anchor="middle" font-family="monospace" font-size="12" fill="#ea580c">qwen-batch-service</text>
+      <text x="570" y="62" text-anchor="middle" font-size="10" fill="#ea580c">external · drains in its own worker</text>
+      <line x1="364" y1="48" x2="466" y2="48" stroke="#ea580c" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#b)"/>
+      <text x="415" y="40" text-anchor="middle" font-size="10" fill="#ea580c">HTTP job</text>
+      <!-- sensor (bottom left) -->
+      <rect x="210" y="150" width="150" height="64" rx="10" fill="#ffedd5" stroke="#ea580c" stroke-width="2"/>
+      <text x="285" y="176" text-anchor="middle" font-family="monospace" font-size="13" fill="#ea580c">sensor</text>
+      <text x="285" y="196" text-anchor="middle" font-size="10" fill="#ea580c">polls job state; on</text>
+      <text x="285" y="208" text-anchor="middle" font-size="10" fill="#ea580c">"completed" → request run</text>
+      <!-- harvest -->
+      <rect x="210" y="252" width="150" height="64" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+      <text x="285" y="278" text-anchor="middle" font-family="monospace" font-size="13" fill="#16a34a">harvest</text>
+      <text x="285" y="298" text-anchor="middle" font-size="10" fill="#16a34a">read results → write gold</text>
+      <!-- gold -->
+      <rect x="470" y="252" width="200" height="64" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+      <text x="570" y="278" text-anchor="middle" font-family="monospace" font-size="13" fill="#16a34a">gold_growth_facets</text>
+      <text x="570" y="298" text-anchor="middle" font-size="10" fill="#16a34a">MERGE UPSERT on (post_id, domain)</text>
+      <!-- dotted lines service<->sensor and sensor->harvest and harvest->gold -->
+      <line x1="470" y1="70" x2="350" y2="150" stroke="#ea580c" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#b)"/>
+      <text x="470" y="120" text-anchor="middle" font-size="10" fill="#ea580c">GET /jobs/{id}</text>
+      <line x1="285" y1="214" x2="285" y2="248" stroke="#16a34a" stroke-width="2" marker-end="url(#b)"/>
+      <line x1="364" y1="284" x2="466" y2="284" stroke="#16a34a" stroke-width="2" marker-end="url(#b)"/>
+      <!-- timeline -->
+      <text x="760" y="40" text-anchor="middle" font-weight="700" font-size="12" fill="#64748b">TIMELINE</text>
+      <g font-size="11" fill="#64748b">
+        <rect x="660" y="56" width="200" height="34" rx="8" fill="#e0f2fe"/>
+        <text x="760" y="78" text-anchor="middle">t=0 · submit (sub-second)</text>
+        <rect x="660" y="96" width="200" height="34" rx="8" fill="#ffedd5"/>
+        <text x="760" y="118" text-anchor="middle">service drains … hours …</text>
+        <rect x="660" y="136" width="200" height="34" rx="8" fill="#dcfce7"/>
+        <text x="760" y="158" text-anchor="middle">harvest on completion</text>
+        <text x="760" y="196" text-anchor="middle">(Dagster never waits here)</text>
+      </g>
+    </svg>
+    <figcaption>The submit is an in-graph asset (sub-second). The external service drains for hours. A sensor notices completion and triggers the harvest, which writes gold once per <em>completed job</em> — i.e. per <em>batch of posts</em>, never per single result.</figcaption>
+  </div>
+
+  <div class="key"><strong>Beginner-trap correction:</strong> new posts reaching silver trigger the submit via <em>asset dependency</em> (silver → submit) — <strong>not</strong> a sensor "watching" for posts. Sensors are only the async <em>completion</em> bridge, polling the external service.</div>
+
+  <h3>One post → several enrichment dimensions</h3>
+  <p>A single post is enriched by <em>several independent services</em>, each writing its <strong>own gold table</strong>:</p>
+  <ul>
+    <li><span class="chip c-done">facets</span> (LLM reads media) → <code>gold_growth_facets</code></li>
+    <li><span class="chip c-async">transcripts</span> (whisper transcribes audio) → <code>gold_transcripts</code></li>
+  </ul>
+  <p>So <strong>"done" is per-dimension, never a single <code>enriched = True</code> boolean</strong> — we can't know which upstream consumer needs which dimension. Each post has a <em>status per dimension</em>: pending / in-flight / done / failed / stale.</p>
+
+  <div class="fig">
+    <div class="figure-title">Fan-out, independent work, rejoin at serving</div>
+    <svg viewBox="0 0 900 210" role="img" aria-label="one silver post fans to facets and transcripts then rejoins at serving">
+      <defs><marker id="d" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#64748b"/></marker></defs>
+      <rect x="10" y="76" width="170" height="58" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+      <text x="95" y="100" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">silver post</text>
+      <text x="95" y="118" text-anchor="middle" font-size="10" fill="#0e7490">id 36918… + media</text>
+      <!-- branches -->
+      <path d="M180 105 L270 105 L300 60 L300 40" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#d)"/>
+      <path d="M180 105 L270 105 L300 150 L300 176" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#d)"/>
+      <text x="300" y="30" text-anchor="middle" font-size="10" fill="#64748b">facets</text>
+      <text x="300" y="198" text-anchor="middle" font-size="10" fill="#64748b">transcripts</text>
+      <!-- facets pipeline -->
+      <rect x="320" y="16" width="170" height="40" rx="9" fill="#ffedd5" stroke="#ea580c"/>
+      <text x="405" y="41" text-anchor="middle" font-size="11" fill="#ea580c">facets submit → service → harvest</text>
+      <rect x="320" y="62" width="170" height="40" rx="9" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="405" y="87" text-anchor="middle" font-family="monospace" font-size="11" fill="#16a34a">gold_growth_facets</text>
+      <!-- transcripts pipeline -->
+      <rect x="320" y="158" width="170" height="40" rx="9" fill="#ffedd5" stroke="#ea580c"/>
+      <text x="405" y="183" text-anchor="middle" font-size="11" fill="#ea580c">transcript submit → service → harvest</text>
+      <rect x="320" y="108" width="170" height="40" rx="9" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="405" y="133" text-anchor="middle" font-family="monospace" font-size="11" fill="#16a34a">gold_transcripts</text>
+      <!-- rejoin -->
+      <path d="M490 82 L560 82 L560 160 L600 160" fill="none" stroke="#7c3aed" stroke-width="2" marker-end="url(#d)"/>
+      <path d="M490 128 L560 128 L560 160 L600 160" fill="none" stroke="#7c3aed" stroke-width="2" marker-end="url(#d)"/>
+      <rect x="604" y="132" width="120" height="56" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+      <text x="664" y="157" text-anchor="middle" font-family="monospace" font-size="12" fill="#7c3aed">serving join</text>
+      <text x="664" y="175" text-anchor="middle" font-size="10" fill="#7c3aed">by post_id, per dimension</text>
+      <text x="470" y="206" text-anchor="middle" font-size="11" fill="#64748b">independent pipelines, no write conflicts (different gold tables); only downstream serving joins across dimensions</text>
+    </svg>
+    <figcaption>Each dimension runs as its own async pipeline; they rejoin only where someone reads them, keyed by <code>post_id</code>.</figcaption>
+  </div>
+</section>
+
+<section id="real">
+  <h2>4 · Our real numbers</h2>
+  <p>Real counts from <code>data/state.duckdb</code> today. This is exactly the "waiting to be enriched" idea made concrete — <em>for one dimension</em>:</p>
+
+  <div class="fig">
+    <div class="figure-title">The facets (visual) dimension's pending queue</div>
+    <svg viewBox="0 0 900 120" role="img" aria-label="coverage bar eligible 8751 done 102 waiting 8649">
+      <!-- scale: full 8751 = width 860 -->
+      <!-- done 102 -> tiny; split: eligible bar with done + waiting -->
+      <text x="10" y="24" font-size="12" fill="#64748b">eligible to enrich (visual): 8,751 posts</text>
+      <rect x="10" y="34" width="860" height="30" rx="6" fill="#f1f5f9"/>
+      <rect x="10" y="34" width="10" height="30" fill="#16a34a"/>
+      <rect x="20" y="34" width="850" height="30" fill="#cbd5e1"/>
+      <!-- legend labels below -->
+      <rect x="20" y="80" width="14" height="14" fill="#16a34a"/><text x="40" y="92" font-size="12" fill="#64748b">done: 102</text>
+      <rect x="120" y="80" width="14" height="14" fill="#cbd5e1"/><text x="140" y="92" font-size="12" fill="#64748b">waiting: ~8,649</text>
+      <text x="660" y="92" font-size="12" fill="#0f172a" font-weight="700">8,751 − 102 ≈ 8,649 waiting</text>
+    </svg>
+    <figcaption>~8,649 of 8,751 visual-eligible posts are not yet enriched for the facets dimension. A per-dimension "waiting" signal is a simple coverage view: eligible − done − in-flight.</figcaption>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="figure-title">What "enriched" produces (real rows)</div>
+      <pre style="font-size:12.5px;margin:8px 0"><code>gold_growth_facets (model=gemini-3.5-flash-lite, schema v3)
+
+3656354316108722448
+  {"brand_logos": [],
+   "face_present": true,
+   "on_screen_claim": true,
+   "text_overlay_present": true,
+   "value_medium": "broll_voiceover"}
+
+3691893705957994148
+  {"brand_logos": ["Nike","Adidas"],
+   "face_present": true,
+   "on_screen_claim": false,
+   "text_overlay_present": true,
+   "value_medium": "broll_voiceover"}
+
+3704903391376510643
+  {"brand_logos": ["Nike","Prada","Chanel","Gucci"],
+   "face_present": true,
+   "on_screen_claim": false,
+   "text_overlay_present": true,
+   "value_medium": "broll_voiceover"}</code></pre>
+    </div>
+    <div class="card">
+      <div class="figure-title">The post that got enriched</div>
+      <p class="p2" style="margin:6px 0">The silver row for <code>3691893705957994148</code> (media_count 1) begins:</p>
+      <pre style="font-size:12.5px;margin:8px 0"><code>Fashion photographers are about to
+become extinct.
+
+The dress isn't re…</code></pre>
+      <p class="p2">caption + the single media file (a photo or video) were sent to the model; the facets JSON above is what came back — the "enriched" facts downstream analytics can use.</p>
+    </div>
+  </div>
+</section>
+
+<section id="scheduling">
+  <h2>5 · The scheduling mental model</h2>
+  <p>Because enrichment is <strong>post-driven</strong> (a post is done when it has a current gold row), it isn't really a clock-based pipeline. We schedule different <em>parts</em> differently — all under one orchestrator (Dagster):</p>
+
+  <div class="fig">
+    <div class="figure-title">Different parts, different triggers — one orchestrator</div>
+    <svg viewBox="0 0 900 240" role="img" aria-label="schedule core, asset-dep submit, sensor harvest, manual full job">
+      <defs><marker id="e" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#0e7490"/></marker></defs>
+      <!-- rows -->
+      <rect x="10" y="18" width="430" height="52" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+      <text x="225" y="40" text-anchor="middle" font-weight="700" font-size="13" fill="#0e7490">SCHEDULE — the fast core</text>
+      <text x="225" y="60" text-anchor="middle" font-size="11" fill="#0e7490">silver → serving → dashboard, hourly (a clock)</text>
+      <rect x="460" y="18" width="430" height="52" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+      <text x="675" y="40" text-anchor="middle" font-weight="700" font-size="13" fill="#0e7490">ASSET-DEPENDENCY — enrichment submit</text>
+      <text x="675" y="60" text-anchor="middle" font-size="11" fill="#0e7490">silver → submit · sub-second; auto-run on new silver via a condition</text>
+
+      <rect x="10" y="86" width="430" height="52" rx="10" fill="#ffedd5" stroke="#ea580c" stroke-width="2"/>
+      <text x="225" y="108" text-anchor="middle" font-weight="700" font-size="13" fill="#ea580c">SENSOR — async harvest</text>
+      <text x="225" y="128" text-anchor="middle" font-size="11" fill="#ea580c">when a service job completes → harvest → write gold</text>
+      <rect x="460" y="86" width="430" height="52" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+      <text x="675" y="108" text-anchor="middle" font-weight="700" font-size="13" fill="#64748b">OPTIONAL NIGHTLY PUBLISH (a schedule)</text>
+      <text x="675" y="128" text-anchor="middle" font-size="11" fill="#64748b">if consumers should only see day-end gold</text>
+
+      <rect x="10" y="154" width="880" height="52" rx="10" fill="#e2e8f0" stroke="#0f172a" stroke-width="2"/>
+      <text x="450" y="176" text-anchor="middle" font-weight="700" font-size="13" fill="#0f172a">MANUAL JOB — a full-corpus re-run</text>
+      <text x="450" y="196" text-anchor="middle" font-size="11" fill="#0f172a">launch by hand when a model/prompt changes; the "done-guard" makes it state-incremental</text>
+      <text x="450" y="232" text-anchor="middle" font-size="12" fill="#64748b">One orchestrator: the qwen / transcript services are external backends, NOT co-orchestrators</text>
+    </svg>
+    <figcaption>Four trigger styles, one asset graph. Nothing blocks: the submit is sub-second, the hours are spent in the external service, and the sensor harvests per completed job.</figcaption>
+  </div>
+
+  <div class="key"><strong>Initial load vs. daily?</strong> For <em>time-series</em> core assets (silver/serving by period) we use partitions + a schedule, and a full historical load is a <em>partition backfill</em>. For <em>post-driven enrichment</em>, partitions don't fit: a post is done by <em>state</em> (current gold row), so a full re-run is just a manually-launched job — a model/prompt change auto-re-enqueues everything that's now stale. No second partition system needed.</div>
+</section>
+
+<section id="cheat">
+  <h2>6 · Decision cheat-sheet</h2>
+  <table>
+    <thead><tr><th>Reach for…</th><th>When</th><th>Our usage</th></tr></thead>
+    <tbody>
+      <tr><td><code>Schedule</code></td><td>Predictable, recurring work on a clock</td><td>Hourly fast core; optional nightly publish</td></tr>
+      <tr><td><code>Asset dependency</code></td><td>Downstream can run only after upstream (ordering). To <em>auto-run</em> downstream on new upstream data, wire a declarative automation condition (eager / on_new_upstream_data) or a sensor — the edge alone schedules nothing</td><td>silver → enrichment submit (new posts)</td></tr>
+      <tr><td><code>Sensor</code></td><td>React to an external event Dagster can't foresee</td><td>service job completes → trigger harvest</td></tr>
+      <tr><td><code>Job</code></td><td>A named selection to launch together, incl. one-off / full runs</td><td><code>full_corpus_enrichment</code> re-run</td></tr>
+      <tr><td><code>Partition</code></td><td>Split a time-series asset for incremental / backfill</td><td>core silver/serving by period (not gold)</td></tr>
+    </tbody>
+  </table>
+  <div class="key" style="font-size:16px">Takeaway: <strong>schedule the fast core · asset-dependency the submit · sensor the async completion · manual job the full re-run.</strong> Keep the async services as external backends, and enrichment stays in the graph without ever blocking it.</div>
+</section>
+
+<section id="playbooks">
+  <h2>7 · Dev / test playbooks</h2>
+  <p>Because the enrichment engine is a CLI driver over <em>file-based</em> DuckDB + an external service, a "test environment" is just the <strong>same code pointed at scratch databases</strong> — no special environment needed, and a tiny real run costs a fraction of a cent. The driver already exposes every knob you need: <code>--plan</code> (offline dry-run, no spend), <code>--limit</code>, <code>--posts</code>, <code>--state-db</code>, <code>--ops-db</code>, <code>--service-url</code>, <code>--mode</code>.</p>
+
+  <div class="warn"><strong>The one rule:</strong> never let a test run <em>write</em> to the real <code>data/state.duckdb</code> or <code>data/ops.sqlite</code>. Copy them to a scratch dir first. The engine also reads media by absolute path from the same machine — so scratch runs can safely <em>read</em> the real <code>data/media/posts</code> byte cache read-only.</div>
+
+  <div class="fig">
+    <div class="figure-title">An isolated test workspace = same code, scratch DBs</div>
+    <svg viewBox="0 0 900 220" role="img" aria-label="isolated test workspace diagram">
+      <defs><marker id="w" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#0e7490"/></marker></defs>
+      <!-- prod block (outside) -->
+      <rect x="10" y="20" width="400" height="180" rx="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 4"/>
+      <text x="210" y="40" text-anchor="middle" font-weight="700" font-size="13" fill="#64748b">PRODUCTION (never written by a test)</text>
+      <rect x="30" y="54" width="180" height="42" rx="8" fill="#e0f2fe" stroke="#0e7490"/>
+      <text x="120" y="81" text-anchor="middle" font-family="monospace" font-size="11" fill="#0e7490">data/state.duckdb</text>
+      <rect x="30" y="104" width="180" height="42" rx="8" fill="#f1f5f9" stroke="#64748b"/>
+      <text x="120" y="131" text-anchor="middle" font-family="monospace" font-size="11" fill="#64748b">data/ops.sqlite (ledger)</text>
+      <rect x="228" y="54" width="166" height="92" rx="8" fill="#ffedd5" stroke="#ea580c"/>
+      <text x="311" y="86" text-anchor="middle" font-size="10" fill="#ea580c">media bytes cache</text>
+      <text x="311" y="102" text-anchor="middle" font-size="10" fill="#ea580c">data/media/posts</text>
+      <text x="311" y="122" text-anchor="middle" font-size="9" fill="#ea580c">← tests may READ this</text>
+      <text x="210" y="170" text-anchor="middle" font-size="10" fill="#64748b">real qwen service (own worker) — shared</text>
+      <text x="210" y="186" text-anchor="middle" font-size="10" fill="#64748b">or a scratch instance for isolation</text>
+      <!-- dev block -->
+      <rect x="470" y="20" width="420" height="180" rx="12" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="680" y="40" text-anchor="middle" font-weight="700" font-size="13" fill="#16a34a">SCRATCH / dev (data/dev/)</text>
+      <rect x="488" y="54" width="180" height="42" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="578" y="81" text-anchor="middle" font-family="monospace" font-size="11" fill="#16a34a">state_dev.duckdb</text>
+      <rect x="488" y="104" width="180" height="42" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="578" y="131" text-anchor="middle" font-family="monospace" font-size="11" fill="#16a34a">ops_dev.sqlite</text>
+      <rect x="686" y="54" width="186" height="92" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+      <text x="779" y="90" text-anchor="middle" font-size="10" fill="#16a34a">your test instance</text>
+      <text x="779" y="108" text-anchor="middle" font-size="9" fill="#16a34a">copy of real state+ops,</text>
+      <text x="779" y="122" text-anchor="middle" font-size="9" fill="#16a34a">then add fake rows or</text>
+      <text x="779" y="136" text-anchor="middle" font-size="9" fill="#16a34a">--limit / --posts subsets</text>
+      <text x="680" y="180" text-anchor="middle" font-size="10" fill="#16a34a">driver: --state-db state_dev.duckdb --ops-db ops_dev.sqlite</text>
+      <!-- arrows from driver into dev -->
+      <line x1="470" y1="120" x2="470" y2="120" stroke="#16a34a"/>
+    </svg>
+    <figcaption>Copy the real DBs into <code>data/dev/</code>, run the driver against them, share the read-only media cache. Prod is untouched.</figcaption>
+  </div>
+
+  <h3>Playbook A — plan a subset with no spend (dry-run)</h3>
+  <pre><code># one-time: fresh scratch copies (real silver + media_cache come along)
+mkdir -p data/dev
+cp data/state.duckdb data/dev/state_dev.duckdb
+cp data/ops.sqlite  data/dev/ops_dev.sqlite
+
+# offline: show what 20 visual targets WOULD submit — nothing submitted, $0
+# (--plan also creates the empty gold table in the scratch DB if missing — harmless)
+uv run python scripts/enrich_facets_batch.py --plan --mode visual \
+  --limit 20 --state-db data/dev/state_dev.duckdb --ops-db data/dev/ops_dev.sqlite</code></pre>
+
+  <h3>Playbook B — pick specific real posts to test a known shape</h3>
+  <pre><code># exercise two posts you know (a single-image post + a reel):
+# NOTE: both already carry gemini-era gold rows, so the done-guard re-enqueues
+# them under qwen (model discriminator) — a handy regression check.
+uv run python scripts/enrich_facets_batch.py --plan --mode visual \
+  --posts 3656354316108722448,3691893705957994148 \
+  --state-db data/dev/state_dev.duckdb --ops-db data/dev/ops_dev.sqlite
+
+# add --mode text for the caption-only pass, or --harvest to poll + harvest
+# ledger jobs already on the scratch DB</code></pre>
+
+  <h3>Playbook C — real end-to-end that WRITES gold (fraction of a cent)</h3>
+  <p>The most honest "how does the pipeline behave" test is a real tiny run: scratch DBs + the real service + a few posts. qwen is on the order of a few cents per 1M input tokens — a 3-post visual run is <em>well under a cent</em>.</p>
+  <pre><code># 1) start the service pointed at SCRATCH state (own worker, own job store).
+#    The service reads media by ABSOLUTE path, so run it on this same machine
+#    (data/media/posts is shared) — or mount that dir into its container.
+cd ~/repos/qwen-batch-service
+QWEN_BATCH_DB=/c/Users/evano/repos/datalake/data/dev/qwen_dev.sqlite uv run qwen-batch
+
+# 2) run a tiny visual batch against the scratch duckdb (writes gold there)
+cd ~/repos/datalake
+uv run python scripts/enrich_facets_batch.py --run --mode visual --limit 3 \
+  --state-db data/dev/state_dev.duckdb --ops-db data/dev/ops_dev.sqlite
+
+# 3) confirm the gold row landed ONLY in the scratch db
+uv run python -c "import duckdb;print(duckdb.connect('data/dev/state_dev.duckdb').execute('select post_id,model,analysed_at from gold_growth_facets').fetchall())"
+
+# RESUME / idempotency test: kill a --run mid-poll, then re-run it (or --harvest).
+# The service kept the job in its own store and the ops_dev.sqlite ledger knows it,
+# so the harvest recovers and each post lands exactly one gold row (UPSERT).
+# To reset the scratch dir to a clean state, just re-copy the two DBs from data/.
+#</code></pre>
+
+  <h3>Playbook D — fake N "new posts" and see how the pipeline treats them</h3>
+  <p>The engine discovers posts from <code>silver_ig_posts</code>. To simulate <em>new arrivals</em>, insert synthetic rows into the <em>scratch</em> silver. Two gotchas: the <code>done-guard</code> skips a fake whose <code>post_id</code> collides with a real gold row (use fresh ids), and <code>visual</code> mode needs <em>cached media</em> — a URL with no cached bytes is skipped. The reliable way to give a fake media is to <strong>reuse a real post's already-cached media</strong>, not to invent a URL (see the note below for inventing one).</p>
+  <pre><code># Recommended — reuse real, cached media so visual mode resolves bytes.
+# The scratch db is a full copy, so a REAL post that isn't yet in gold is
+# already a perfect "new arrival": no synthetic row needed.
+#   1) pick a real visual post not yet enriched
+#      (it is NOT in gold_growth_facets):
+SELECT post_id FROM silver_ig_posts
+WHERE caption <> '' AND media_files NOT IN ('[]')
+  AND post_id NOT IN (SELECT post_id FROM gold_growth_facets) LIMIT 5;
+
+#   2) run it exactly like a brand-new post (Playbook C against scratch):
+uv run python scripts/enrich_facets_batch.py --run --mode visual \
+  --posts 3691893705957994148 \
+  --state-db data/dev/state_dev.duckdb --ops-db data/dev/ops_dev.sqlite
+
+# Want a genuinely NEW fake id instead? Clone a real cached post's row under
+# a fresh post_id (its media_files URL is already in the media cache, so
+# media_paths finds the bytes). DuckDB lets you copy then override:
+INSERT INTO silver_ig_posts
+SELECT * REPLACE ('9990000000000000001' AS post_id)
+FROM silver_ig_posts WHERE post_id = '3691893705957994148';
+
+# Note on inventing a URL: media_paths looks up media_cache by
+# sha256(url), so a made-up URL resolves ONLY if you add a row whose
+# cache_key = sha256(url) hexdigest pointing at a file that exists on disk.
+# Reusing a real cached post's URL sidesteps all of that.</code></pre>
+  <p>Then run Playbook C's <code>--run --posts 9990000000000000001</code> (or <code>--limit N</code>) against the scratch DB and watch the gold row appear for your fake. Delete the scratch dir when done.</p>
+  <h3>Playbook E — plumbing-only, no model spend</h3>
+  <pre><code># run the service with its worker DISABLED: submit/poll wiring works,
+# items never reach OpenRouter (no spend). Fine for plumbing tests.
+QWEN_BATCH_DISABLE_WORKER=1 uv run qwen-batch
+
+# For full parse/write logic WITHOUT any service, the repo's unit tests
+# already stub qwen_client (see tests/unit/enrichment/test_facets_batch.py).</code></pre>
+
+  <div class="key"><strong>And "test versions of the asset graph"?</strong> Today the enrichment isn't in the Dagster graph — it's the CLI driver — so today the subset and the isolation are the same knob: <code>--posts</code>/<code>--limit</code> pick which posts run, and <code>--state-db</code>/<code>--ops-db</code> point writes at a scratch DB. When we fold enrichment into Dagster, keep those two ideas separate and reach for the three mechanisms you'll actually meet: <strong>(1) isolation</strong> — point the resources at scratch paths via env-var config (<code>OPS_DB_PATH</code> / <code>IG_DATA_DIR</code> already exist here; one <code>.env</code> per environment); <strong>(2) subset</strong> — asset selection, not the DB (materialize just <code>gold_growth_facets</code> + its <code>downstream()</code>, or one partition); <strong>(3) unit tests</strong> — call <code>materialize()</code> in pytest with the same resources on scratch paths (<code>test_facets_batch.py</code> already does). No special test code-location required.</div>
+</section>
+
+<footer class="foot">
+  Companion explainer for the datalake repo. Concepts verified against Dagster documentation and our own pipeline (<code>silver_ig_posts</code>, <code>gold_growth_facets</code>, the qwen-batch service). Diagrams hand-authored inline SVG — open offline, no network.
+</footer>
+
+</div>
+</body>
+</html>
