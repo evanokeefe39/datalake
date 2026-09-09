@@ -32,6 +32,18 @@ resume-safety without the Gemini File-API storage cap or a domain-owned queue.
 - AC4: Per-item results survive a service restart (its own durable store);
       failed items are service-side dead-lettered, never silently dropped.
 - AC5: Incremental runs re-discover only posts lacking a current-schema gold row.
+- AC6 (service durability): A mid-run SERVICE restart, or an OpenRouter outage /
+      credits exhaustion, does not lose completed work or wedge a job. On
+      restart the service finishes only unfinished items — completed items are
+      never reprocessed; transient outages retry with backoff and recover;
+      a persistent outage terminal-fails only the affected items (never a stuck
+      `processing` job). Proven by service-level tests.
+- AC7 (client resume-without-reprocessing): A datalake re-run after a mid-run
+      failure (service down, outage, credits) resubmits ONLY posts lacking a
+      current gold row. Posts already written to gold are neither resubmitted
+      nor double-written (UPSERT idempotent). Proven by a client-level test
+      that runs the discovery → submit cycle twice and asserts zero re-submits
+      of done posts.
 
 ## Definition of done
 
@@ -47,3 +59,9 @@ resume-safety without the Gemini File-API storage cap or a domain-owned queue.
 - A transient qwen failure on one item retries and does not fail the job.
 - A full corpus is resume-safe: re-running after a mid-job crash enriches only
   the unfinished posts (no duplicate gold writes).
+- Service restart mid-job (AC6): the completed item is not reprocessed; the
+  unfinished one resumes and the job completes.
+- OpenRouter outage / credits exhaustion persistent (AC6): the affected item is
+  terminal-failed (bounded retries), never a stuck `processing` job.
+- Client resume-without-reprocessing (AC7): discovery → submit run twice over the
+  same DB submits zero items for already-gold posts and never double-writes.

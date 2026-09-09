@@ -65,3 +65,6 @@ Why (recorded in ADR-0009):
 - [ ] Service is a declared dependent service; enrichment fails loudly if it is
       down (US-EENG-2).
 - [ ] Full-corpus run resume-safe on the service; dead-letter is service-side.
+- [ ] Durability verified by tests (US-EENG-1 AC6/AC7): a service restart and an
+      OpenRouter/credits outage resume without reprocessing completed items or
+      duplicating gold; transient outages recover; no job wedges in `processing`.
