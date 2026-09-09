@@ -88,8 +88,8 @@ full-corpus video run and the absence of a Vertex vision batch discount. qwen
 (`qwen/qwen3.7-flash` via OpenRouter, ~$0.03/$0.13 per 1M) is ~$3 for the corpus.
 Media becomes **client-side ffmpeg frame-sampling** (no File-API upload, no GCS
 mirror — the GCS durable-media work is dropped). See **ADR-0009** and
-`tasks/plans/qwen-batch-enrichment.md`; governance on branch `feat/qwen-enrichment`
-(US-EENG-1/US-EENG-2 under E-ENRICH-ENGINE).
+`tasks/plans/qwen-batch-enrichment.md`; governance landed on `main` (PR #62,
+2026-09-09; US-EENG-1/US-EENG-2 under E-ENRICH-ENGINE).
 
 **Dependent service (US-EENG-2):** enrichment treats the qwen-batch service as a
 hard dependency. Spin up: `docker compose up` (or `uv run`) in
@@ -283,7 +283,8 @@ Any table the pipeline reads or writes must be listed here. The readiness test
 | `scripts/migrate_from_ig_pipeline.py` | Import bronze Parquet from legacy ig-pipeline repo. |
 | `scripts/migrate_owner_username.py` | Backfill null ``owner_username`` in silver from bronze ``username`` fallback. Idempotent. |
 | `scripts/migrate_creators_profiles.py` | Split `scrape_targets` → `creators` + `profiles` (1:1 backfill), recreate lost batch tables, drop `scrape_targets`. Idempotent. |
-| `scripts/migrate_curated_creator_merge.py` | Consolidate duplicate auto-creators into curated identities (21→`bywaviboy`, 147→`vinny_creative`; 243/610 retired). Reassigns profiles, records `creator_merges`, refreshes `dim_profile`. Idempotent, `--undo` reverses. Replaces `migrate_owner_profiles.py`. |
+| `scripts/enrich_facets_batch.py` | The growth-facets enrichment driver (qwen-batch service): `--plan` (offline cost projection) / `--run` (discover→submit→poll→harvest) / `--harvest`; `--mode visual\|text`, `--limit`/`--posts`, scratch DBs via `--state-db`/`--ops-db`. Resume-safe — re-running polls+harvests any still-submitted ledger job. |
+| `scripts/poll_qwen_run.py` | Read-only progress poller for a live qwen-batch job. Reads the service job store (QWEN_BATCH_DB or `~/.qwen-batch/state.sqlite`), prints state / done / failed / rate / ETA, and shows the harvest+continue command once the newest job is terminal. |
 ## Stale analysis update
 
 When the enrichment prompt or model changes, existing `gold_analyses` rows have stale `prompt_hash`.
