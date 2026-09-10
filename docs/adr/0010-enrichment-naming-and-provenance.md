@@ -41,9 +41,7 @@ service era (ADR-0009):
    `gold_visual_summaries`, `gold_text_annotations`, `gold_text_summaries`,
    `gold_audio_transcripts`. The one cross-channel artifact (taxonomy +
    educational/actionable/admiralty, consuming caption + transcript + visual
-   summaries) is content-scoped: `gold_content_classification`. The
-   deterministic core trio follows `gold_core_<entity>`
-   (`gold_core_post`/`gold_core_creator`/`gold_core_comment`).
+   summaries) is content-scoped: `gold_content_classification`.
 2. **Provider is NOT in table names.** It lives in the metadata columns
    (`provider`, `model`), so a provider swap (qwen ⇄ Gemini for the text
    workload) is a data change, never a rename/rebind.

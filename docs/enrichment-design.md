@@ -39,10 +39,10 @@ row. The same status enum separates `pending` / `done` / `empty_audio`.
 
 ## 3. Tables
 
-Nine gold tables: six enrichment (external, paid, provenance-stamped) + three
-core (deterministic, derived from silver).
-
-### Enrichment tables (6)
+Six enrichment tables (external, paid, provenance-stamped). Deterministic
+post/creator/comment metrics are intentionally NOT a new gold layer — the
+serving views (`v_post_metrics`, `v_creator_metrics`, `v_profile_metrics`)
+already own them.
 
 | Table | Artifact | Producer/workload | Inputs |
 |---|---|---|---|
@@ -52,16 +52,6 @@ core (deterministic, derived from silver).
 | `gold_text_annotations` | text-layer facets | text LLM (provider swappable; qwen default) | caption + transcript |
 | `gold_text_summaries` | transcript summary | text LLM | transcript |
 | `gold_content_classification` | taxonomy + educational/actionable + admiralty | text LLM | caption + transcript + visual summaries |
-
-### Core tables (3)
-
-| Table | Artifact | Producer | Inputs |
-|---|---|---|---|
-| `gold_core_post` | per-post engagement/momentum | none — deterministic | silver |
-| `gold_core_creator` | per-creator rollup | none — deterministic | silver |
-| `gold_core_comment` | per-comment | none — deterministic | silver |
-
-No LLM in the core path: deterministic transforms, no provider metadata.
 
 ## 4. Columns
 
