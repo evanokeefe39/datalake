@@ -61,10 +61,16 @@ queue and dead_letter are retired; the rest of ops.sqlite is untouched.**
    anti-join `landed(bronze) ∖ conformed(silver)`, and a Dagster asset check
    fails loudly with counts and the stuck post ids (S3). A failed item never
    fails its job, so the check is the *only* thing making it visible.
-8. **Every job pins `in_process_executor` explicitly.** The default multiprocess
-   executor destroyed the parent instance's run state — runs visible before
-   execution and gone after (S1), recurring on the check job (S3). This is a
-   standing rule, not a one-off.
+8. **Jobs run in-process for measured overhead — NOT for safety.** On Windows the
+   compute-log tail added ~50 s to a harvest step under the default multiprocess
+   executor, so pinning `in_process_executor` is a reasonable default for these
+   jobs. It is explicitly **not** a correctness requirement. An earlier reading of
+   spike S1 blamed the multiprocess executor for destroying instance run state;
+   that attribution was **WRONG and has been retracted** — the loss came from the
+   spike harness wiping its own scratch `DAGSTER_HOME` from module scope, which
+   `multiprocessing`'s spawn path re-executes in every child because under
+   `python -m` the entry module *is* `__main__`. No executor rule follows, and
+   none should be recorded.
 9. **Providers sit behind one `ProviderAdapter` Protocol; handles are opaque
    strings.** Provider choice is config; provider-native state vocabularies and
    result field names are normalized at the seam; a fan-out provider returns ONE
@@ -111,8 +117,10 @@ are config.
 
 Negative / work this commits us to:
 
-- **The in-process executor pin is load-bearing.** Any job added without it
-  silently corrupts instance state on this platform.
+- **In-process execution is a performance choice, not a safety one.** Do not
+  generalize it into a rule: the executor has no bearing on instance integrity.
+  (The original claim to the contrary was a misdiagnosis of a spike-harness bug;
+  see decision 8 and the S1 correction in the spike `FINDINGS.md`.)
 - **The failure check rests on an invariant that must be tested**: a failed item
   must NEVER be conformed. If that rule breaks, the anti-join empties and the
   andon passes while failures accumulate — the worst available failure mode. It
