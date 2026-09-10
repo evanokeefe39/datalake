@@ -378,7 +378,7 @@ footer a{color:var(--ld-accent)}
 </section>
 
 <!-- ============ 6 THE ASYNC SEAM ============ -->
-<section id="seam2" class="reveal">
+<section id="seam" class="reveal">
   <h2>The async seam: submit, poll, harvest</h2>
   <p class="lede">One shared job ledger sits between our pipeline and the AI providers. Every pass, whatever its engine, rides the same three-step lifecycle.</p>
   <p><strong>Submit</strong> writes one job into the shared <code>external_jobs</code> ledger. It is sub-second, just a database insert plus an HTTP call; it never does AI work itself. <strong>Poll</strong>: a background check asks the provider whether the job reached a terminal state (done, failed, or empty). <strong>Harvest</strong>: when a job is done, we retrieve the results and write them into gold with an idempotent upsert (re-running writes the same rows again, never duplicates). Failures are loud: a bad item is surfaced and re-discoverable, never silently marked done.</p>
@@ -635,7 +635,7 @@ footer a{color:var(--ld-accent)}
 <section id="more" class="reveal">
   <h2>Where to learn more</h2>
   <ul class="bullets">
-    <li><a href="enrichment-design.md">docs/enrichment-design.md</a> — the canonical v2 spec this page teaches. Where the two disagree, the spec wins.</li>
+    <li><a href="../enrichment-design.md">docs/enrichment-design.md</a> — the canonical v2 spec this page teaches. Where the two disagree, the spec wins.</li>
     <li><a href="../adr/0010-enrichment-naming-and-provenance.md">docs/adr/0010-enrichment-naming-and-provenance.md</a> — the reasoning behind the naming and provenance rules, including why <code>_bound</code> columns were rejected.</li>
     <li><a href="../../tasks/epics/">tasks/epics/</a> — the epic directory where this design is being implemented.</li>
     <li><a href="dagster-medallion-and-async-enrichment.html">dagster-medallion-and-async-enrichment.html</a> — the companion explainer for Dagster primitives (assets, schedules, sensors) and dev/test playbooks.</li>
