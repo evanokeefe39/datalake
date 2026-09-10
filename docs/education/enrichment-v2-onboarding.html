@@ -365,6 +365,10 @@ footer a{color:var(--ld-accent)}
   <h2>Who waits for whom: the dependency DAG</h2>
   <p class="lede">A DAG (directed acyclic graph) is just a drawing of "this cannot start until that is done." Arrows point from inputs to outputs.</p>
   <p>The media itself (images, video frames, audio) feeds the three per-channel passes. The text passes cannot run until the transcript exists, because they read it. Classification runs last because it reads the most.</p>
+  <div class="callout">
+    <span class="tag">Possible future change: classification grounding</span>
+    <p>Classification reads the caption, the transcript, and the visual summaries today. It could also read <code>silver_text_summaries.transcript_summary</code> (the "what is said" condensation) to help ground the labelling. Deferred, not a current dependency — the raw transcript is already an input.</p>
+  </div>
 
   <figure>
     <div class="diag-title">The enrichment dependency DAG</div>

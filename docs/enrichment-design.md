@@ -259,6 +259,15 @@ Dependencies are **declared per asset**. Text passes wait on
 on the silver tables they join. Re-running an upstream invalidates
 downstream — the staged/derived deps are declared, not emergent.
 
+> **Possible future enhancement — classification grounding (NOT a current
+> dependency).** Classification today reads the caption + transcript +
+> `silver_visual_summaries`. It could additionally read
+> `silver_text_summaries.transcript_summary` (the "what is SAID"
+> condensation), and/or the `silver_text_annotations` facets, to help ground
+> the labelling. Deliberately deferred: the raw transcript is already an
+> input, so the summary is largely redundant today; revisit if classification
+> quality (or transcript-reading cost) warrants it.
+
 **Layer order (enforced):** `bronze_enrichment_raw` → `silver_*` →
 `v_post_detail` → canonical metric views (21) → gold marts (4). The canonical
 views are UPSTREAM of the marts and are never re-pointed at them — no cycle.
