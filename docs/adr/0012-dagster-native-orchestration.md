@@ -1,7 +1,7 @@
 # ADR-0012: Orchestration state is Dagster-native — retire the ops.sqlite queue and dead_letter
 
-- Status: Proposed
-- Decided: 2026-09-10
+- Status: Accepted
+- Decided: 2026-09-10 (ratified by the owner 2026-09-10)
 - Related: ADR-0007 (enrichment is Dagster-native async batch), ADR-0008
   (hermetic transforms with one explicit API seam), ADR-0009 (qwen batch
   service), ADR-0011 (enrichment layered model: bronze landing → silver

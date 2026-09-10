@@ -34,7 +34,7 @@ deliberately separate from `docs/ARCHITECTURE.md`, which describes the
 | [0009](0009-qwen-batch-service.md) | Enrichment backend is a standalone qwen batch service (replaces gemini-batch) | Accepted | 2026-09-09 |
 | [0010](0010-enrichment-naming-and-provenance.md) | Enrichment naming (`gold_<channel>_<artifact>`) and per-pass provenance (structural table split) | Superseded by [ADR-0011](0011-enrichment-layered-model.md) (naming scope) | 2026-09-09 |
 | [0011](0011-enrichment-layered-model.md) | Enrichment layered model: bronze landing (`bronze_enrichment_raw`) → silver conform (`silver_*`, key `platform`) → gold marts | Accepted | 2026-09-10 |
-| [0012](0012-dagster-native-orchestration.md) | Orchestration state is Dagster-native — retire the ops.sqlite queue and dead_letter | **Proposed** | 2026-09-10 |
+| [0012](0012-dagster-native-orchestration.md) | Orchestration state is Dagster-native — retire the ops.sqlite queue and dead_letter | Accepted | 2026-09-10 |
 
 ## Template
 
