@@ -59,7 +59,8 @@ already own them.
 
 - **Keys:** `post_id`, `domain`.
 - **Metadata (provenance, every enrichment table):** `provider`, `model`,
-  `prompt_hash`, `schema_version`, `input_modality`, `content_mime_type`,
+  `prompt_hash` (NULL on `gold_audio_transcripts` — ASR has no prompt),
+  `schema_version`, `input_modality`, `content_mime_type`,
   `sampling_params_json`, `run_id`, `analysed_at`.
 
 Per-pass provenance is structural: each pass owns its table, so its
@@ -159,6 +160,10 @@ gemini executor): **the seam is the lifecycle, not the scheduler.**
 2. **Parser enum violations are all-or-nothing** (yield loss, not false
    signal) — noted as a follow-up to relax recovery. Do NOT invent `_bound`
    flags to solve it (ADR-0010).
+3. **`asr_model` vs the envelope `model`** on `gold_audio_transcripts` — the
+   ASR model is nameable both as a body column (`asr_model`) and in the shared
+   metadata (`model`). Candidate redundancy; recommendation: keep the envelope
+   `model` and drop `asr_model`. Pending — do not resolve silently.
 
 ## 9. Replaces (history)
 

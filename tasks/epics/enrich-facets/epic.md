@@ -40,8 +40,9 @@ registry, referenced by `schema_version`; there are NO `_bound` columns.
 
 **Provenance requirement (audit P0-4), reconciled:** the old shared
 `gold_growth_facets` table with ONE `prompt_hash` for TWO writers is retired —
-`gold_growth_facets` splits into `gold_visual_annotations` (visual pass) and
-`gold_text_annotations` (text pass), each with its OWN provenance
+`gold_growth_facets` splits into four tables — `gold_visual_annotations` +
+`gold_visual_summaries` (visual pass) and `gold_text_annotations` +
+`gold_text_summaries` (text pass) — each with its OWN provenance
 (`prompt_hash`, `model`, `schema_version`, `run_id`, …), so each pass's output
 is attributable and stale-detectable independently; the `model`-as-done-marker
 hack retires with it. Expressed here as a requirement; the DDL lands with the
@@ -51,7 +52,7 @@ Posts carry validated, additive enrichment outputs split per channel:
 `gold_visual_annotations` (face_present, value_medium, brand_logos,
 text_overlay_present, on_screen_claim) and `gold_text_annotations` (hooks,
 sponsorship, claims, CTA, audience/value depth, hashtag strategy, an explicit
-brand-safety set, evidence) — cross-modal facets judged across every channel
+`brand_safety_json` field, evidence) — cross-modal facets judged across every channel
 that carries their evidence (caption, ASR transcript from
 `gold_audio_transcripts`, on-screen OCR, imagery) — so creator-growth
 analytics can split "what works" by observable content mechanics.
