@@ -90,6 +90,71 @@ that a field is single-channel.
 "Form" should live once — the recommendation is to drop `format` from
 classification. **OPEN** — do not resolve silently (§8).
 
+## Why enrichment lands in gold (not silver)
+
+Enrichment output is deliberately kept out of the silver layer.
+
+- **Silver is hermetic and deterministic** (ADR-0003: no LLM/API calls in the
+  transform layer; silver is a pure, replayable function of bronze — same
+  input, same output, free to re-run). Enrichment is the opposite: stochastic,
+  paid, external, rate-limited. AI output in silver would mean re-running
+  silver re-calls (and re-pays for) the model, or silently serves stale cached
+  results.
+- **Semantics:** silver *conforms domain entities* cleaned from the source;
+  gold *adds analytics-ready meaning*. Facets, topics, summaries,
+  classification are added meaning → gold.
+- ADR-0001 names enrichment "an ingested source" — a durable, versioned
+  dataset — and the analytics-facing enriched layer is gold.
+
+### Raw capture + deterministic remap (the missing piece)
+
+Two artifacts per enrichment, not one:
+
+1. **Raw provider response** — verbatim, immutable, as-observed (keyed by
+   job/item + provider/model/prompt_hash/analysed_at). Literal ADR-0001:
+   ingest the response first.
+2. **Mapped columns** — a *deterministic* transform (validate, apply enums,
+   split into the six tables) → gold.
+
+The payoff: a schema/mapping change re-derives the mapped columns WITHOUT
+re-calling the paid model; you can audit what the model actually said; and
+true WAP is possible (write raw → audit → publish mapped). Today
+`gold_analyses.result_json` / `gold_growth_facets.growth_facets_json` are the
+half-version (parsed JSON inside gold, merged per-row). Layer naming: the
+verbatim response is the bronze-of-enrichment (as-observed, ingested); the
+mapped columns are gold. Principle: **raw is immutable and separate from
+mapped**, so a remap is a deterministic replay. This is an OPEN decision —
+§8, item 4; not implemented.
+
+### Provider metadata placement
+
+Provenance (`provider`, `model`, `prompt_hash`, `schema_version`,
+`input_modality`, `content_mime_type`, `sampling_params_json`, `run_id`,
+`analysed_at`) is *lineage*: stamp it on the raw record AND carry it into
+gold. Both, not either/or. It is not a reason to move mapped columns into
+silver.
+
+## The seam, end to end
+
+The boundary between Dagster and everything outside it:
+
+- **Dagster (our orchestrator):** discovery, batching, `submit`
+  (sub-second), `harvest` (idempotent gold upsert). It owns orchestration,
+  lineage, quality. **It never calls a provider directly.**
+- **The Seam:** the shared `external_jobs` ledger plus the
+  `submit / poll-to-terminal / retrieve` verbs. This is the ONLY coupling
+  between Dagster and the outside.
+- **External infra (separate processes/containers, own durable state):**
+  `qwen-batch-service` (FastAPI + its own SQLite job store; drains jobs
+  against OpenRouter/qwen; server-side ffmpeg frame-sampling for reels) and
+  `whisper` (faster-whisper ASR, the service's `whisper_local` executor).
+- **Providers (outside our infra):** OpenRouter → qwen (vision + text). ASR
+  is local (no vendor).
+
+**Separation of concerns:** Dagster owns orchestration/lineage/quality; the
+service owns durability/retry/backoff/dead-letter/media handling; the ledger
+is the contract between them.
+
 ## 5. Dependency DAG
 
 ```
@@ -164,6 +229,16 @@ gemini executor): **the seam is the lifecycle, not the scheduler.**
    ASR model is nameable both as a body column (`asr_model`) and in the shared
    metadata (`model`). Candidate redundancy; recommendation: keep the envelope
    `model` and drop `asr_model`. Pending — do not resolve silently.
+4. **Raw provider-response landing + deterministic remap** — recommendation:
+   land the verbatim provider response as an ingested, immutable artifact
+   (keyed by job/item + provider/model/prompt_hash/analysed_at), then map it
+   to the gold columns via a deterministic transform (validate, apply enums,
+   split into the six tables), stamping provenance on both the raw record and
+   the mapped columns. Payoff: mapping/schema changes re-derive columns
+   without re-calling the paid model; the model's actual output stays
+   auditable; true WAP (write raw → audit → publish mapped). Today
+   `gold_analyses.result_json` / `gold_growth_facets.growth_facets_json` are
+   the half-version. **PENDING — NOT implemented.** Do not resolve silently.
 
 ## 9. Replaces (history)
 

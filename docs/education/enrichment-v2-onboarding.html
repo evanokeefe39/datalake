@@ -80,8 +80,8 @@ ul.bullets{margin:0 0 1.2em 1.2em;max-width:72ch}
 ul.bullets li{margin:.35em 0}
 
 /* figures — inline SVG diagrams */
-figure{margin:2.2em 0;max-width:1000px}
-figure svg{width:100%;height:auto;display:block}
+figure{margin:2.2em 0;max-width:1000px;overflow-x:auto}
+figure svg{width:100%;height:auto;display:block;min-width:680px}
 figcaption{font-size:13px;color:var(--ld-ink-faint);margin-top:12px;max-width:84ch;line-height:1.6}
 .diag-title{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ld-ink-faint);margin-bottom:14px}
 .diag-title::before{content:"> ";color:var(--ld-accent)}
@@ -168,7 +168,9 @@ footer a{color:var(--ld-accent)}
     <a href="#tables">The six gold tables</a>
     <a href="#dag">The dependency DAG</a>
     <a href="#seam">The async seam</a>
+    <a href="#seam-e2e">Seam, end to end</a>
     <a href="#fanout">One submit fans out</a>
+    <a href="#why-gold">Why gold, not silver</a>
     <a href="#naming">Naming &amp; provenance</a>
     <a href="#forms">Content forms</a>
     <a href="#glossary">Glossary</a>
@@ -322,56 +324,60 @@ footer a{color:var(--ld-accent)}
 
   <figure>
     <div class="diag-title">The enrichment dependency DAG</div>
-    <svg viewBox="0 0 920 470" role="img" aria-label="media feeds visual annotations, visual summaries and audio transcripts; text annotations and text summaries depend on audio transcripts; content classification depends on audio transcripts and visual summaries">
+    <svg viewBox="0 0 920 520" role="img" aria-label="Stage layout: media feeds visual annotations, visual summaries and audio transcripts; audio transcripts feed text annotations, text summaries and content classification; visual summaries also feed content classification. Arrows flow left to right and no edges cross.">
       <defs>
         <marker id="d1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#64748b"/></marker>
         <marker id="d2" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0e7490"/></marker>
         <marker id="d3" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0055A4"/></marker>
       </defs>
-      <!-- input node -->
-      <rect x="330" y="16" width="260" height="58" rx="10" fill="#f1f5f9" stroke="#45525e" stroke-width="2"/>
-      <text x="460" y="40" text-anchor="middle" font-family="monospace" font-size="13" fill="#1c2733">media (per post)</text>
-      <text x="460" y="58" text-anchor="middle" font-size="11" fill="#45525e">images / video frames / audio track</text>
-      <!-- level 1: three channel passes -->
-      <rect x="40" y="150" width="256" height="74" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
-      <text x="168" y="176" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0e7490">gold_visual_annotations</text>
-      <text x="168" y="196" text-anchor="middle" font-size="10.5" fill="#45525e">facets: face, logos, overlay,</text>
-      <text x="168" y="210" text-anchor="middle" font-size="10.5" fill="#45525e">value medium, on-screen claim</text>
-      <rect x="332" y="150" width="256" height="74" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
-      <text x="460" y="176" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0e7490">gold_visual_summaries</text>
-      <text x="460" y="196" text-anchor="middle" font-size="10.5" fill="#45525e">overall content_summary,</text>
-      <text x="460" y="212" text-anchor="middle" font-size="10.5" fill="#45525e">per-image image_summaries_json</text>
-      <rect x="624" y="150" width="256" height="74" rx="10" fill="#eef2f6" stroke="#45525e" stroke-width="2"/>
-      <text x="752" y="176" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#1c2733">gold_audio_transcripts</text>
-      <text x="752" y="196" text-anchor="middle" font-size="10.5" fill="#45525e">transcript + transcript_status,</text>
-      <text x="752" y="212" text-anchor="middle" font-size="10.5" fill="#45525e">audio_present, asr_model, language</text>
-      <!-- media arrows -->
-      <path d="M360 74 C 250 100 168 118 168 146" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#d1)"/>
-      <line x1="460" y1="74" x2="460" y2="146" stroke="#64748b" stroke-width="2" marker-end="url(#d1)"/>
-      <path d="M560 74 C 670 100 752 118 752 146" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#d1)"/>
-      <!-- level 2: text passes -->
-      <rect x="40" y="292" width="256" height="74" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
-      <text x="168" y="318" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0055A4">gold_text_annotations</text>
-      <text x="168" y="338" text-anchor="middle" font-size="10.5" fill="#45525e">hook, sponsorship, cta,</text>
-      <text x="168" y="354" text-anchor="middle" font-size="10.5" fill="#45525e">value_depth, evidence, safety</text>
-      <rect x="332" y="292" width="256" height="74" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
-      <text x="460" y="318" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0055A4">gold_text_summaries</text>
-      <text x="460" y="338" text-anchor="middle" font-size="10.5" fill="#45525e">transcript_summary:</text>
-      <text x="460" y="354" text-anchor="middle" font-size="10.5" fill="#45525e">what is said, in one field</text>
-      <!-- transcript -> text passes -->
-      <path d="M752 224 C 752 262 500 262 476 288" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#d2)"/>
-      <path d="M700 224 C 600 260 220 268 184 288" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#d2)"/>
-      <text x="620" y="252" text-anchor="middle" font-size="10.5" fill="#0e7490">text passes wait for the transcript</text>
-      <!-- level 3: classification -->
-      <rect x="330" y="400" width="260" height="58" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2.5"/>
-      <text x="460" y="424" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0055A4">gold_content_classification</text>
-      <text x="460" y="444" text-anchor="middle" font-size="10.5" fill="#45525e">domain, topic, is_educational, style...</text>
-      <path d="M420 366 L440 396" fill="none" stroke="#0055A4" stroke-width="2" marker-end="url(#d3)"/>
-      <path d="M500 366 L480 396" fill="none" stroke="#0055A4" stroke-width="2" marker-end="url(#d3)"/>
-      <path d="M752 224 C 752 350 640 400 594 422" fill="none" stroke="#0055A4" stroke-width="2" marker-end="url(#d3)"/>
-      <path d="M168 224 C 168 370 300 408 326 424" fill="none" stroke="#0055A4" stroke-width="2" marker-end="url(#d3)"/>
-      <text x="150" y="392" text-anchor="middle" font-size="10.5" fill="#0055A4">visual summaries feed it too</text>
-      <text x="460" y="497" text-anchor="middle" font-size="12" fill="#64748b">Dependencies are declared per asset, not discovered by accident. Re-running an upstream pass invalidates its downstream.</text>
+      <!-- stage labels -->
+      <text x="130" y="22" text-anchor="middle" font-family="monospace" font-size="11" letter-spacing="1" fill="#64748b">MEDIA</text>
+      <text x="435" y="22" text-anchor="middle" font-family="monospace" font-size="11" letter-spacing="1" fill="#64748b">PER-CHANNEL PASSES</text>
+      <text x="765" y="22" text-anchor="middle" font-family="monospace" font-size="11" letter-spacing="1" fill="#64748b">DOWNSTREAM PASSES</text>
+      <!-- column 1: input -->
+      <rect x="30" y="180" width="200" height="90" rx="10" fill="#f1f5f9" stroke="#45525e" stroke-width="2"/>
+      <text x="130" y="212" text-anchor="middle" font-family="monospace" font-size="13" fill="#1c2733">media (per post)</text>
+      <text x="130" y="232" text-anchor="middle" font-size="10.5" fill="#45525e">images / video frames / audio,</text>
+      <text x="130" y="248" text-anchor="middle" font-size="10.5" fill="#45525e">plus the caption</text>
+      <!-- column 2: per-channel passes -->
+      <rect x="300" y="44" width="270" height="80" rx="10" fill="#eef2f6" stroke="#45525e" stroke-width="2"/>
+      <text x="435" y="70" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#1c2733">gold_audio_transcripts</text>
+      <text x="435" y="90" text-anchor="middle" font-size="10.5" fill="#45525e">transcript + transcript_status,</text>
+      <text x="435" y="106" text-anchor="middle" font-size="10.5" fill="#45525e">audio_present, asr_model, language</text>
+      <rect x="300" y="224" width="270" height="80" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+      <text x="435" y="250" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0e7490">gold_visual_summaries</text>
+      <text x="435" y="270" text-anchor="middle" font-size="10.5" fill="#45525e">overall content_summary,</text>
+      <text x="435" y="286" text-anchor="middle" font-size="10.5" fill="#45525e">per-image image_summaries_json</text>
+      <rect x="300" y="388" width="270" height="80" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+      <text x="435" y="414" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0e7490">gold_visual_annotations</text>
+      <text x="435" y="434" text-anchor="middle" font-size="10.5" fill="#45525e">facets: face, logos, overlay,</text>
+      <text x="435" y="450" text-anchor="middle" font-size="10.5" fill="#45525e">value medium, on-screen claim</text>
+      <!-- media arrows (fan, no crossings) -->
+      <path d="M230 210 C 266 200 264 94 296 84" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#d1)"/>
+      <path d="M230 236 C 262 242 264 258 296 264" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#d1)"/>
+      <path d="M230 244 C 270 256 264 416 296 428" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#d1)"/>
+      <!-- column 3: downstream passes -->
+      <rect x="640" y="44" width="250" height="80" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
+      <text x="765" y="70" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0055A4">gold_text_annotations</text>
+      <text x="765" y="90" text-anchor="middle" font-size="10.5" fill="#45525e">hook, sponsorship, cta,</text>
+      <text x="765" y="106" text-anchor="middle" font-size="10.5" fill="#45525e">value_depth, evidence, safety</text>
+      <rect x="640" y="224" width="250" height="80" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
+      <text x="765" y="250" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0055A4">gold_text_summaries</text>
+      <text x="765" y="270" text-anchor="middle" font-size="10.5" fill="#45525e">transcript_summary:</text>
+      <text x="765" y="286" text-anchor="middle" font-size="10.5" fill="#45525e">what is said, in one field</text>
+      <rect x="640" y="388" width="250" height="80" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2.5"/>
+      <text x="765" y="414" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0055A4">gold_content_classification</text>
+      <text x="765" y="434" text-anchor="middle" font-size="10.5" fill="#45525e">domain, topic, is_educational,</text>
+      <text x="765" y="450" text-anchor="middle" font-size="10.5" fill="#45525e">style, format...</text>
+      <!-- transcript -> downstream (teal) -->
+      <line x1="570" y1="84" x2="636" y2="84" stroke="#0e7490" stroke-width="2" marker-end="url(#d2)"/>
+      <path d="M570 94 C 602 108 602 248 636 264" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#d2)"/>
+      <path d="M570 104 C 614 140 612 380 636 402" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#d2)"/>
+      <!-- visual summaries -> classification (french blue) -->
+      <path d="M570 268 C 608 300 606 428 636 430" fill="none" stroke="#0055A4" stroke-width="2" marker-end="url(#d3)"/>
+      <text x="130" y="340" text-anchor="middle" font-size="10.5" fill="#0e7490">text passes wait for the transcript</text>
+      <text x="765" y="360" text-anchor="middle" font-size="10.5" fill="#0055A4">visual summaries feed classification too</text>
+      <text x="460" y="502" text-anchor="middle" font-size="12" fill="#64748b">Dependencies are declared per asset, not discovered by accident. Re-running an upstream pass invalidates its downstream.</text>
     </svg>
     <figcaption>Media feeds the three channel passes directly. The text passes wait on <code>gold_audio_transcripts</code> (they read what was said). Classification waits on transcripts AND visual summaries, because it judges the whole post. These edges are declared in the asset graph, so the order is guaranteed, never lucky.</figcaption>
   </figure>
@@ -384,7 +390,7 @@ footer a{color:var(--ld-accent)}
   <p><strong>Submit</strong> writes one job into the shared <code>external_jobs</code> ledger. It is sub-second, just a database insert plus an HTTP call; it never does AI work itself. <strong>Poll</strong>: a background check asks the provider whether the job reached a terminal state (done, failed, or empty). <strong>Harvest</strong>: when a job is done, we retrieve the results and write them into gold with an idempotent upsert (re-running writes the same rows again, never duplicates). Failures are loud: a bad item is surfaced and re-discoverable, never silently marked done.</p>
 
   <figure>
-    <div class="diag-title">The seam, end to end</div>
+    <div class="diag-title">The submit-poll-harvest lifecycle</div>
     <svg viewBox="0 0 920 300" role="img" aria-label="silver posts go to submit, which records in the external jobs ledger and calls the provider; poll checks status; harvest writes gold tables">
       <defs>
         <marker id="s1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0e7490"/></marker>
@@ -438,11 +444,102 @@ footer a{color:var(--ld-accent)}
   <div class="key"><p><strong>The seam is the lifecycle, not the scheduler.</strong> Executors are pluggable: <code>qwen-vision</code>, <code>whisper</code>, and <code>text-LLM</code> all ride this same submit-poll-harvest pattern over the one shared ledger. Whether a run is triggered by the CLI or by a Dagster sensor, the lifecycle is identical. A provider swap is a metadata change; the seam does not move.</p></div>
 </section>
 
+<!-- ============ 6b THE SEAM, END TO END ============ -->
+<section id="seam-e2e" class="reveal">
+  <h2>The seam, end to end</h2>
+  <p class="lede">The lifecycle above is only half the story. This is the full boundary: who talks to whom, and who owns what.</p>
+  <p>Four zones, left to right. <strong>Dagster</strong> (our orchestrator) owns discovery, batching, the sub-second <code>submit</code>, and the idempotent gold <code>harvest</code>. It owns orchestration, lineage, and quality &mdash; and it <strong>never calls a provider directly</strong>. The only thing it ever touches is <strong>the seam</strong>: the shared <code>external_jobs</code> ledger plus the three verbs <code>submit</code>, <code>poll-to-terminal</code>, and <code>retrieve</code>. That ledger is the ONLY coupling between Dagster and the outside world.</p>
+
+  <figure>
+    <div class="diag-title">Boundary: Dagster &rarr; the seam &rarr; external infra &rarr; providers</div>
+    <svg viewBox="0 0 920 320" role="img" aria-label="Dagster talks only to the external_jobs ledger; the ledger hands jobs to qwen-batch-service and whisper; qwen-batch-service drains jobs against providers via OpenRouter; whisper runs locally with no vendor">
+      <defs>
+        <marker id="e1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0e7490"/></marker>
+        <marker id="e2" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#64748b"/></marker>
+      </defs>
+      <!-- stage labels -->
+      <text x="105" y="22" text-anchor="middle" font-family="monospace" font-size="11" letter-spacing="1" fill="#64748b">DAGSTER (OURS)</text>
+      <text x="315" y="22" text-anchor="middle" font-family="monospace" font-size="11" letter-spacing="1" fill="#64748b">THE SEAM</text>
+      <text x="555" y="22" text-anchor="middle" font-family="monospace" font-size="11" letter-spacing="1" fill="#64748b">OUR EXTERNAL INFRA</text>
+      <text x="805" y="22" text-anchor="middle" font-family="monospace" font-size="11" letter-spacing="1" fill="#64748b">PROVIDERS</text>
+      <!-- Dagster -->
+      <rect x="20" y="48" width="170" height="110" rx="10" fill="#eef2f6" stroke="#45525e" stroke-width="2"/>
+      <g stroke="#45525e" stroke-width="2" fill="none">
+        <circle cx="98" cy="66" r="5"/><circle cx="112" cy="66" r="5"/><circle cx="105" cy="82" r="5"/>
+        <path d="M102 70 L104 78 M108 70 L106 78 M103 66 L107 66"/>
+      </g>
+      <text x="105" y="108" text-anchor="middle" font-family="monospace" font-size="13" fill="#1c2733">dagster</text>
+      <text x="105" y="126" text-anchor="middle" font-size="10.5" fill="#45525e">discovery, batching,</text>
+      <text x="105" y="142" text-anchor="middle" font-size="10.5" fill="#45525e">submit, harvest</text>
+      <line x1="192" y1="103" x2="216" y2="103" stroke="#0e7490" stroke-width="2" marker-end="url(#e1)"/>
+      <!-- the seam ledger -->
+      <rect x="220" y="48" width="190" height="110" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5 4"/>
+      <g stroke="#64748b" stroke-width="2" fill="none">
+        <rect x="303" y="60" width="24" height="26" rx="3"/>
+        <line x1="308" y1="68" x2="322" y2="68"/>
+        <line x1="308" y1="74" x2="322" y2="74"/>
+        <line x1="308" y1="80" x2="318" y2="80"/>
+      </g>
+      <text x="315" y="108" text-anchor="middle" font-family="monospace" font-size="13" fill="#45525e">external_jobs</text>
+      <text x="315" y="126" text-anchor="middle" font-size="10.5" fill="#64748b">the shared ledger</text>
+      <text x="315" y="142" text-anchor="middle" font-size="10.5" fill="#64748b">submit / poll / retrieve</text>
+      <!-- arrows to services -->
+      <line x1="412" y1="80" x2="436" y2="80" stroke="#0e7490" stroke-width="2" marker-end="url(#e1)"/>
+      <path d="M280 158 C 280 190 380 190 436 190" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#e1)"/>
+      <!-- qwen-batch-service -->
+      <rect x="440" y="40" width="230" height="80" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+      <g stroke="#0e7490" stroke-width="2" fill="none">
+        <rect x="452" y="60" width="22" height="34" rx="3"/>
+        <line x1="452" y1="72" x2="474" y2="72"/>
+        <circle cx="458" cy="78" r="1.5" fill="#0e7490"/>
+        <circle cx="458" cy="88" r="1.5" fill="#0e7490"/>
+      </g>
+      <text x="565" y="66" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0e7490">qwen-batch-service</text>
+      <text x="565" y="84" text-anchor="middle" font-size="10.5" fill="#45525e">FastAPI + its own SQLite job store;</text>
+      <text x="565" y="100" text-anchor="middle" font-size="10.5" fill="#45525e">ffmpeg frame-sampling for reels</text>
+      <!-- whisper -->
+      <rect x="440" y="150" width="230" height="80" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+      <g stroke="#0e7490" stroke-width="2.5" stroke-linecap="round">
+        <line x1="452" y1="186" x2="452" y2="194"/>
+        <line x1="458" y1="182" x2="458" y2="198"/>
+        <line x1="464" y1="180" x2="464" y2="200"/>
+        <line x1="470" y1="184" x2="470" y2="196"/>
+      </g>
+      <text x="565" y="176" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0e7490">whisper</text>
+      <text x="565" y="194" text-anchor="middle" font-size="10.5" fill="#45525e">faster-whisper ASR, run as the</text>
+      <text x="565" y="210" text-anchor="middle" font-size="10.5" fill="#45525e">service's whisper_local executor</text>
+      <!-- providers -->
+      <path d="M670 80 C 692 82 690 100 706 104" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#e1)"/>
+      <rect x="710" y="48" width="190" height="110" rx="10" fill="#fff" stroke="#64748b" stroke-width="1.5"/>
+      <g stroke="#64748b" stroke-width="2" fill="none">
+        <path d="M792 72 a7 7 0 0 1 2-13 a9 9 0 0 1 17-1 a7 7 0 0 1 3 14 z"/>
+      </g>
+      <text x="805" y="100" text-anchor="middle" font-family="monospace" font-size="13" fill="#45525e">providers</text>
+      <text x="805" y="118" text-anchor="middle" font-size="10.5" fill="#64748b">OpenRouter &rarr; qwen</text>
+      <text x="805" y="134" text-anchor="middle" font-size="10.5" fill="#64748b">vision + text</text>
+      <text x="805" y="150" text-anchor="middle" font-size="10.5" fill="#64748b">ASR stays local, no vendor</text>
+      <!-- separation-of-concerns strip -->
+      <text x="130" y="236" text-anchor="middle" font-size="10.5" fill="#45525e">Dagster owns orchestration,</text>
+      <text x="130" y="252" text-anchor="middle" font-size="10.5" fill="#45525e">lineage, quality;</text>
+      <text x="130" y="268" text-anchor="middle" font-size="10.5" fill="#45525e">never calls a provider directly</text>
+      <text x="315" y="236" text-anchor="middle" font-size="10.5" fill="#45525e">the ledger is the</text>
+      <text x="315" y="252" text-anchor="middle" font-size="10.5" fill="#45525e">contract between them</text>
+      <text x="555" y="262" text-anchor="middle" font-size="10.5" fill="#45525e">services own durability, retry, backoff,</text>
+      <text x="555" y="278" text-anchor="middle" font-size="10.5" fill="#45525e">dead-letter, media handling</text>
+      <text x="805" y="262" text-anchor="middle" font-size="10.5" fill="#45525e">outside our infra entirely;</text>
+      <text x="805" y="278" text-anchor="middle" font-size="10.5" fill="#45525e">separate processes/containers</text>
+    </svg>
+    <figcaption>Dagster's only coupling is the ledger and its three verbs. The services are separate processes with their own durable state: they drain jobs, retry, and handle media, and report back through the ledger. Vision and text go out through OpenRouter to qwen; transcription never leaves our infra.</figcaption>
+  </figure>
+
+  <div class="key"><p><strong>Separation of concerns, in one line each.</strong> Dagster owns orchestration, lineage, and quality, and never calls a provider directly. The external services own durability, retry, backoff, dead-letter, and media handling. The ledger is the contract between them: both sides read and write it, and nothing else crosses the boundary.</p></div>
+</section>
+
 <!-- ============ 7 ONE SUBMIT FANS OUT ============ -->
 <section id="fanout" class="reveal">
-  <h2>One submit fans out to two tables</h2>
-  <p class="lede">The cost rule that shapes the whole graph: one AI request returns more than one table's worth of output.</p>
-  <p>The qwen vision call returns annotations AND summaries in a single response. The text LLM call returns text annotations AND the transcript summary in a single response. Drawing one submit per <em>table</em> would send the same media to the provider twice and <strong>double the bill</strong>. So the graph has one visual submit whose harvest fans out to both visual tables, and one text submit whose harvest fans out to both text tables. Classification is its own submit, because it consumes extra inputs.</p>
+  <h2>One submit can fan out to many tables</h2>
+  <p class="lede">The cost rule that shapes the whole graph: one AI request can return more than one table's worth of output, so one submit's harvest can fan out to any number of tables.</p>
+  <p>The rule is general: whatever a single AI response contains, its harvest writes into every table that response serves &mdash; two tables, three, or one. Today's examples: the qwen vision call returns annotations AND summaries in a single response, so its harvest fans out to both visual tables. The text LLM call returns text annotations AND the transcript summary in a single response, so its harvest fans out to both text tables. Drawing one submit per <em>table</em> instead would send the same media to the provider twice and <strong>double the bill</strong>. Classification is its own separate submit, because it consumes extra inputs.</p>
 
   <figure>
     <div class="diag-title">Three submits produce six tables</div>
@@ -501,10 +598,27 @@ footer a{color:var(--ld-accent)}
       <text x="725" y="300" text-anchor="middle" font-family="monospace" font-size="12" fill="#0055A4">gold_text_summaries</text>
       <text x="725" y="316" text-anchor="middle" font-size="10" fill="#45525e">harvest writes the summary half</text>
     </svg>
-    <figcaption>Three submits, six tables. The visual submit fans out to two visual tables at harvest; the text submit fans out to two text tables. Whisper is one-to-one. Classification is deliberately its own submit because it consumes transcripts AND visual summaries, inputs the other text call does not take.</figcaption>
+    <figcaption>Three submits, six tables today. The visual submit fans out to two visual tables at harvest; the text submit fans out to two text tables; whisper is one-to-one. The rule itself is any number of tables: the harvest writes whatever the one response contained. Classification is deliberately its own submit because it consumes transcripts AND visual summaries, inputs the other text call does not take.</figcaption>
   </figure>
 
   <div class="key"><p><strong>Why this matters to the bill.</strong> Every submit is a paid API call. If the graph drew one submit per table, the visual pass would run twice and the text pass would run twice, doubling cost for identical answers. One-submit-fans-out is not an optimization we hope to do later; it is the shape of the graph.</p></div>
+</section>
+
+<!-- ============ 7b WHY GOLD, NOT SILVER ============ -->
+<section id="why-gold" class="reveal">
+  <h2>Why gold, not silver</h2>
+  <p class="lede">Enrichment output can look like an ordinary transform, so why does it land in gold? Because silver has a property enrichment can never have: determinism.</p>
+  <ul class="bullets">
+    <li><strong>Silver is hermetic and deterministic</strong> (ADR-0003: no LLM or API calls in the transform layer). Silver is a pure, replayable function of bronze: same input, same output, free to re-run. Enrichment is the opposite: stochastic, paid, external, rate-limited. AI output in silver would mean re-running silver re-calls (and re-pays for) the model, or silently serving stale cached results.</li>
+    <li><strong>Semantics.</strong> Silver <em>conforms</em> domain entities cleaned from the source; gold <em>adds analytics-ready meaning</em>. Facets, topics, summaries, and classification are added meaning, so they belong in gold.</li>
+    <li><strong>The spec says so.</strong> ADR-0001 names enrichment "an ingested source": a durable, versioned dataset. The analytics-facing enriched layer of our lake is gold.</li>
+  </ul>
+  <div class="callout">
+    <span class="tag">Open decision: raw capture + deterministic remap (pending, not implemented)</span>
+    <p>The missing piece is two artifacts per enrichment, not one. First, the <strong>raw provider response</strong>: the verbatim, immutable, as-observed output, keyed by job/item plus provider, model, prompt hash, and analysis time. Ingest the response first (ADR-0001's own rule). Second, the <strong>mapped columns</strong>: a deterministic transform that validates, applies enums, and splits the response into the gold tables.</p>
+    <p>The payoff: a schema or mapping change re-derives the columns without re-calling the paid model; you can audit what the model actually said; and the write becomes a true raw-then-audit-then-publish. Today <code>gold_analyses.result_json</code> and <code>gold_growth_facets.growth_facets_json</code> are the half-version of this: parsed JSON stored inside gold, merged per row. Provenance (<code>provider</code>, <code>model</code>, <code>prompt_hash</code>, <code>schema_version</code>, <code>input_modality</code>, <code>content_mime_type</code>, <code>sampling_params_json</code>, <code>run_id</code>, <code>analysed_at</code>) is lineage: stamp it on the raw record AND carry it into gold. It is not a reason to move mapped columns into silver.</p>
+    <p>This is a recommendation recorded as an open decision in the spec (section 8). It is not implemented.</p>
+  </div>
 </section>
 
 <!-- ============ 8 NAMING & PROVENANCE ============ -->
@@ -607,11 +721,13 @@ footer a{color:var(--ld-accent)}
     <dt><code>facet</code></dt>
     <dd>One structured observation the AI records about a post, like <code>face_present</code> or <code>hook_type</code>. A table of facets is a table of answers to fixed questions.</dd>
     <dt><code>fan-out</code></dt>
-    <dd>One input producing several outputs. Here: one paid AI request fills two gold tables at harvest.</dd>
+    <dd>One input producing several outputs. Here: one paid AI request's harvest fills one or more gold tables (today two each for the visual and text passes).</dd>
     <dt><code>harvest</code></dt>
     <dd>The step that retrieves finished results from the provider and writes them into gold with an idempotent upsert.</dd>
     <dt><code>idempotent upsert</code></dt>
     <dd>Writing that is safe to repeat: re-running the harvest for the same job produces the same rows, never duplicates.</dd>
+    <dt><code>ledger</code></dt>
+    <dd>The shared <code>external_jobs</code> table: the single contract between Dagster and the outside services. Dagster writes submits; the services drain jobs and report status; nothing else crosses the boundary.</dd>
     <dt><code>materialization</code></dt>
     <dd>Running the code that produces (or refreshes) an asset. "Materialize the table" means "recompute it now".</dd>
     <dt><code>medallion</code></dt>
@@ -620,6 +736,8 @@ footer a{color:var(--ld-accent)}
     <dd>The recorded origin of a value: which provider, which model, which prompt version, which run, when. Stored in the metadata envelope.</dd>
     <dt><code>prompt_hash</code></dt>
     <dd>A fingerprint of the exact prompt version used. NULL on transcripts, because transcription involves no prompt.</dd>
+    <dt><code>qwen-batch-service</code></dt>
+    <dd>Our own external service (FastAPI + its own SQLite job store) that drains enrichment jobs against qwen via OpenRouter and does ffmpeg frame-sampling for reels. Separate process, separate durable state.</dd>
     <dt><code>seam</code></dt>
     <dd>The boundary where our pipeline hands work to an outside service and takes results back: submit, poll, harvest.</dd>
     <dt><code>serving views</code></dt>
