@@ -169,6 +169,7 @@ footer a{color:var(--ld-accent)}
     <a href="#dag">The dependency DAG</a>
     <a href="#seam">The async seam</a>
     <a href="#seam-e2e">Seam, end to end</a>
+    <a href="#machinery">What runs the poll loop</a>
     <a href="#fanout">One submit fans out</a>
     <a href="#gold-marts">The gold marts</a>
     <a href="#why-gold">Silver vs gold</a>
@@ -587,6 +588,37 @@ footer a{color:var(--ld-accent)}
   </figure>
 
   <div class="key"><p><strong>Separation of concerns, in one line each.</strong> Dagster owns orchestration, lineage, and quality, and never calls a provider directly. The external services own durability, retry, backoff, dead-letter, and media handling. The ledger is the contract between them: both sides read and write it, and nothing else crosses the boundary.</p></div>
+</section>
+
+<!-- ============ 6c WHAT RUNS THE POLL LOOP ============ -->
+<section id="machinery" class="reveal">
+  <h2>What runs the poll loop: Dagster's machinery vs our own services</h2>
+  <p class="lede">The submit-poll-harvest pattern is identical on every path. What differs is <em>which machinery</em> runs it &mdash; Dagster's native jobs and sensors, or code we wrote ourselves.</p>
+  <p>The pattern needs four things to exist somewhere: something that submits a job, something that polls until the job is terminal, something that retrieves the result, and something durable enough to survive a crash mid-flight. Which of those live inside Dagster and which live in a service is the whole difference between our two paths.</p>
+  <p>On the <strong>gemini-batch</strong> path, Dagster supplies all four out of its own box. Three <code>@job</code>s (<code>media_upload_pending_batches_job</code>, <code>submit_gemini_batches_job</code>, <code>gemini_batch_harvest</code>) do the work, a <code>@sensor</code> watches the provider for finished batches and fires a harvest run, and the shared ledger is <code>ops.sqlite</code>. Run history, retries, lineage and the sensor's cursor come for free, because the poller <em>is</em> a Dagster run.</p>
+  <p>On the <strong>qwen</strong> path, Dagster's primitives were not enough, because qwen is synchronous: it returns results in-request and holds nothing server-side, so somebody has to hold the queue, run the slow work and remember how far it got. That somebody is our own service.</p>
+
+  <div class="tgrid">
+    <div class="tcard">
+      <span class="tname">Dagster-native &mdash; the gemini-batch path</span>
+      <span class="art">Dagster owns submit, poll, retrieve and the crash-recovery, using its own primitives</span>
+      <p class="cols">three <code>@job</code>s (upload, submit, harvest) &middot; one <code>@sensor</code> &middot; an <code>AssetSpec</code> plus <code>@asset_check</code>s for the result table</p>
+      <p class="prod">ledger: <b>ops.sqlite</b> &middot; run history, retries, lineage and the sensor&#8217;s cursor are Dagster&#8217;s own</p>
+    </div>
+    <div class="tcard">
+      <span class="tname">Ours &mdash; the qwen path</span>
+      <span class="art">Our own service owns the queue and the crash-recovery; we own only submit and harvest</span>
+      <p class="cols"><code>POST /jobs</code> &middot; <code>GET /jobs/{id}</code> &middot; <code>GET /jobs/{id}/results</code>, backed by a service-side SQLite store with lease, backoff, dead-letter and resume</p>
+      <p class="prod">ledger: <b>facets_batch_jobs</b> &middot; driver: <code>scripts/enrich_facets_batch.py</code>, over the verbs in <code>qwen_client.py</code></p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <span class="tag">The harvest sensor ships stopped</span>
+    <p>The sensor is declared <code>default_status=DefaultSensorStatus.STOPPED</code>, and both schedules ship stopped for the same reason. So it watches nothing until somebody starts it in the Dagster UI or the CLI &mdash; <strong>enabling it is a required deploy step</strong>, not something Dagster does for you. The sensor is still a real fix for the old &#8220;finished batch sat unharvested overnight&#8221; bug, but it is armed by hand. Left stopped, it behaves exactly like the one-shot poller it replaced.</p>
+  </div>
+
+  <div class="key"><p><strong>The pattern is the invariant; the machinery is the variable.</strong> Both paths run the same contract: one shared ledger, the verbs <code>submit</code>, <code>poll-to-terminal</code> and <code>retrieve</code>, an idempotent landing, and loud per-item failure. Only the queue and the crash-recovery moved, and they moved into a service of our own because qwen is synchronous. One open item, flagged in ADR-0007&#8217;s own amendment: the two harvest implementations are still unshared and should converge on one module before a third workload forks the pattern again.</p></div>
 </section>
 
 <!-- ============ 7 ONE SUBMIT FANS OUT ============ -->
