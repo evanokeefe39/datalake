@@ -408,7 +408,12 @@ class TestWholeCorpusAdmission:
         assert "p1" in pids
         assert "p2" not in pids  # skip-labeled stays out by default
 
-    def test_whole_corpus_includes_skip_posts(self, tmp_path):
+    def test_whole_corpus_includes_skip_posts(self, tmp_path, monkeypatch):
+        # Pin the tier: ig_posts_gen_batches picks the job mode from
+        # GeminiTierConfig.detect(), which reads GEMINI_TIER. Unset, the tier
+        # resolves to FREE (supports_batch False) and the job is tagged
+        # 'interactive', so this assertion would depend on ambient env.
+        monkeypatch.setenv("GEMINI_TIER", "tier1")
         from datalake.defs.instagram.assets import ig_posts_gen_batches
         from datalake.defs.instagram.config import GoldConfig
 
