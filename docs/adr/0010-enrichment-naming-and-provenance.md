@@ -1,6 +1,7 @@
 # ADR-0010: Enrichment naming (`gold_<channel>_<artifact>`) and per-pass provenance
 
-- Status: Accepted
+- Status: Superseded by [ADR-0011](0011-enrichment-layered-model.md)
+  (naming scope; layer model + platform key)
 - Decided: 2026-09-09 (settled enrichment design v2 contract,
   `data/dev/enrichment-final-design.md`)
 - Related: ADR-0001 (enrichment output is an ingested source), ADR-0007
@@ -126,4 +127,9 @@ decisions of ADR-0001/0007/0009 stand):
 - The audit-era "per-pass hash columns" resolution of P0-4 → the structural
   table split.
 
-Superseded by: none yet.
+Superseded by: [ADR-0011](0011-enrichment-layered-model.md) — the six
+enrichment tables move from gold to silver as `silver_<channel>_<artifact>`
+(key `platform`, not `domain`), gold becomes the mart layer, and the verbatim
+response lands in `bronze_enrichment_raw`. The per-pass structural table
+split, the no-`_bound` rule, and the one-seam/one-submit-per-pass decisions
+stand unchanged.

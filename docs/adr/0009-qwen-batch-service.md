@@ -114,3 +114,7 @@ whisper audio workload → `gold_audio_transcripts`, `openrouter_text` = the
 text-LLM workload (qwen default; provider swappable via metadata — never in
 table names) → `gold_text_annotations` + `gold_text_summaries`, and the
 classification submit → `gold_content_classification`.
+**Superseded (2026-09-10):** these gold names are superseded by
+[ADR-0011](0011-enrichment-layered-model.md) — the conformed tables are now
+`silver_<channel>_<artifact>` under a verbatim `bronze_enrichment_raw`
+landing, with gold as the analytic marts.

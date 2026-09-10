@@ -42,17 +42,19 @@ New feature epics: **enrich-facets**, **enrich-summaries**, **enrich-transcripts
 | 3 | Transcripts: backend + incremental + backfill | enrich-transcripts · US-ETR-1..4 | ffmpeg→whisper incremental + resumable overnight backfill; **US-ETR-4 pluggable backend** gives a fast GCP-spot burst for dev/test slices |
 | 4 | Universal video call (visual facets + folded summaries) | enrich-facets · US-EFAC-3 + enrich-summaries · US-ESUM-1 | Single additive call; smoke on temp/isolated DB; carousel index-alignment validated |
 | 5 | Text-layer facets (caption-only first, transcript later) | enrich-facets · US-EFAC-4 | Re-runnable cheap text call; video input never re-sent on schema change |
-| 6 | (Deferred) visual-faithfulness gate | enrich-summaries · US-ESUM-2 | ONLY if a summary becomes decision-grade |
+| 6 | Gold marts shaped to the owner's three questions | serving-analytics · US-ESA-1 | Four marts (`gold_post_enrichment`, `gold_creator_performance`, `gold_content_shape_performance`, `gold_top_posts`) materialized from the six SILVER tables (enrichment landing: `bronze_enrichment_raw`; key = `platform`, `domain` = content niche); idempotent, row-count reconciled |
+| 7 | (Deferred) visual-faithfulness gate | enrich-summaries · US-ESUM-2 | ONLY if a summary becomes decision-grade |
 
 ### Quality & completeness gates (all work)
 - Schema catalog + readiness green for any new column/table.
 - `seam_violations()==[]` holds (defs untouched by harnesses).
-- Scoped `uv run pytest` (enrichment + unit/scripts) green; no regression to gold
-  path.
-- Validator tests: rejects reserved gold keys / missing required fields;
-  carousel `image_summaries` length == n_media.
+- Scoped `uv run pytest` (enrichment + unit/scripts) green; no regression to
+  the silver/gold path.
+- Validator tests: rejects reserved classification keys (`silver_content_classification`
+  body) / missing required fields;
 - Additive + `prompt_hash` self-versioning; single-pass guard (adding a text
-  facet never re-sends video).
+  facet never re-sends video). Enrichment validation/quality contract lives in
+  SILVER (deterministic from `bronze_enrichment_raw`); gold is marts only.
 - Smoke on a temp DB before any production wiring; production enablement
   reviewed.
 - Engagement-utility report committed artifact (numbers grounded in lake state,

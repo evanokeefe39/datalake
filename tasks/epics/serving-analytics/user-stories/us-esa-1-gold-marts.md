@@ -1,0 +1,79 @@
+---
+id: US-ESA-1
+epic: E-SERVING-ANALYTICS
+persona: P7
+status: Open
+---
+# US-ESA-1 — Four gold marts shaped to the owner's three questions
+
+- **Epic:** E-SERVING-ANALYTICS
+- **Status:** Open
+- **Relates to:** E-ENRICH-ENGINE (bronze landing + six silver channel tables),
+  E-ENRICH-FACETS (facet facets), E-ENRICH-LABELS (standout labels),
+  E-IDENTITY (creator linkage), E-DASHBOARD (consumer)
+- **Source:** strict-medallion re-layering of enrichment (2026-09-10); owner's
+  content-strategy goal
+
+## Story
+
+**As a** growth analyst (the owner), **I want** the enrichment outputs joined
+and aggregated into four gold marts — `gold_post_enrichment`,
+`gold_creator_performance`, `gold_content_shape_performance`,
+`gold_top_posts` — **so that** I can directly answer: (Q1) who is performing
+well in X domain, (Q2) what is the shape of the content that performs well in X
+domain / X topic / for X follower count, and (Q3) what posts are doing well
+across all domains and what is the shape of their content — without hand-rolling
+joins over six channel tables.
+
+## Contract
+
+- Strict medallion: gold is analytic marts, NOT per-channel mirrors of silver.
+  All joins/aggregations happen here; serving views derive from gold.
+- Keys are `(post_id, platform)` / `(creator_id, platform)` — `platform`
+  matches `profiles.platform`; `domain` means the CONTENT niche
+  (dev/AI/tech/indie/data/AI-engineer), never the platform. This resolves the
+  old duplicate-`domain` bug (enrichment tables keyed on platform 'instagram'
+  vs `gold_content_classification.domain` = content niche).
+- Gold reads SILVER only (deterministic, ZERO API calls); silver carries the
+  validation/quality contract.
+
+## Acceptance criteria (binary)
+
+- AC1: `gold_post_enrichment` — the wide per-post shape: all six silver channel
+      outputs (`silver_visual_annotations`, `silver_visual_summaries`,
+      `silver_audio_transcripts`, `silver_text_annotations`,
+      `silver_text_summaries`, `silver_content_classification`) joined +
+      engagement metrics + provenance. PK `(post_id, platform)`.
+- AC2: `gold_creator_performance` (Q1) — PK `(creator_id, platform)`:
+      follower_count, follower_tier, post_count, median_engagement_score,
+      avg_engagement_score, standout_rate, momentum_ratio, is_rising,
+      dominant_domain; filterable by domain (content niche).
+- AC3: `gold_content_shape_performance` (Q2) — LONG table, PK
+      `(domain, topic, follower_tier, facet_name, facet_value)`: n_posts,
+      avg_engagement_z, standout_rate, lift_vs_slice_baseline; long form so
+      facet-schema evolution does not break the mart.
+- AC4: `gold_top_posts` (Q3) — PK `(post_id, platform)`: rank/percentile
+      across ALL domains, joined to the full content shape + summary/transcript
+      for qualitative reading.
+- AC5: Marts are additive-only, idempotent on their PKs (re-run produces
+      identical output), and derived purely from silver + existing serving
+      metrics (no API calls, no aggregation in `server.py`).
+
+## Definition of done
+
+- [ ] All four marts materialized on a sample slice first (temp/isolated DB
+      smoke), then production wiring reviewed.
+- [ ] Schema catalog + readiness green for the four marts.
+- [ ] A query per owner question runs against real rows and returns
+      sensible output (spot-checked against the underlying silver tables).
+- [ ] Dashboards/consumers that read silver channel tables directly are
+      enumerated and re-pointed (or intentionally left), recorded in the PR.
+
+## Tests
+
+- Re-running the mart build twice yields identical rows (idempotency).
+- Row-count reconciliation: every post with silver enrichment rows appears in
+  `gold_post_enrichment` (no silent drops); counts match the silver sources.
+- `gold_content_shape_performance` facet cells sum back to the slice's post
+  count (no double-counting across facet values).
+- Q1/Q2/Q3 example queries return rows grounded in the fixture dataset.

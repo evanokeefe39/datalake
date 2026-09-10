@@ -17,6 +17,14 @@ reads.
   (never re-stamped), media_count/media_files.
 - Generic `watermarks(name, timestamp)` replacing per-pipeline progress tables.
 - Schema catalog (`defs/common/schemas.py`) + drift detection / readiness tests.
+- Enrichment responses (all external model workloads) land verbatim in
+  `bronze_enrichment_raw` (Parquet, append-only, idempotent on
+  `(post_id, platform, workload, prompt_hash, run_id)`); the
+  validation/quality contract (parse-ability, required fields, enum
+  conformance via `schema_version`, length bounds, cross-field checks,
+  completeness; quarantine/dead-letter on failure — never a silent NULL or
+  dropped row) lives in SILVER, as a deterministic pure function of bronze.
+  Owned by E-ENRICH-ENGINE; recorded here as the bronze/silver foundation.
 - State split: DuckDB analytical, SQLite operational.
 
 ## Cross-cutting

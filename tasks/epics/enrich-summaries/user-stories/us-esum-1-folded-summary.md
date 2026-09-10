@@ -9,8 +9,8 @@ status: Open
 - **Epic:** E-ENRICH-SUMMARIES
 - **Status:** Open
 - **Relates to:** E-ENRICH-FACETS (US-EFAC-3 — same single visual call; ONE
-  submit fans out at harvest to `gold_visual_annotations` +
-  `gold_visual_summaries`),
+  submit fans out at harvest to `silver_visual_annotations` +
+  `silver_visual_summaries`),
   E-SERVING-ANALYTICS
 - **Source:** `docs/enrichment-enhancement-design.md` §6; fold spike
 
@@ -18,7 +18,7 @@ status: Open
 **As a** growth analyst, **I want** a visual-first `content_summary` per video,
 an **overall summary of the images** per carousel, and one short summary per
 carousel image — emitted in the same single visual call as the visual facets
-and written to `gold_visual_summaries` — **so that** I get a
+and written to `silver_visual_summaries` — **so that** I get a
 searchable/embeddable visual narrative without a second (expensive) visual
 round-trip. For a single image the overall summary IS the individual summary
 (one output, not two).
@@ -32,9 +32,9 @@ round-trip. For a single image the overall summary IS the individual summary
       carousels — `defs/enrichment/prompts.py:110-124` — so the overall is NEW.)
 - AC2: Carousel `image_summaries` length == number of images sent (index
       alignment validated, mismatches surfaced not silent).
-- AC3: Summaries are free-text — written to `gold_visual_summaries`
+- AC3: Summaries are free-text — written to `silver_visual_summaries`
       (`content_summary`, `image_summaries_json`), NOT part of the
-      reliability-gated facet JSON in `gold_visual_annotations`.
+      reliability-gated facet JSON in `silver_visual_annotations`.
 - AC4: No second visual call for summaries (regression guard on single-pass).
 
 ## Definition of done

@@ -25,12 +25,15 @@ machine.
 - AC3: Music-only / near-silent clips yield `transcript_status = empty_audio`
       with an empty/low-confidence transcript — a status, not a bare empty
       NULL, so consumers can distinguish "no speech" from "not yet done".
-- AC4: Output persisted as an additive `gold_audio_transcripts` table (keys
-      `post_id`, `domain`; `transcript`, `transcript_status`, `audio_present`,
+- AC4: Output first lands verbatim in `bronze_enrichment_raw` (workload =
+      `whisper`, immutable, idempotent on
+      `(post_id, platform, workload, prompt_hash, run_id)`) and persists as an
+      additive `silver_audio_transcripts` table (keys `post_id`, `platform`;
+      `transcript`, `transcript_status`, `audio_present`,
       `asr_model`, `language`, plus the shared envelope metadata (`analysed_at`,
       `provider`, `model`, … — `prompt_hash` NULL for ASR; per ADR-0010 §4);
       provider mapping: audio = whisper). No Gemini/qwen schema keys
-      touched; no `gold_visual_annotations` / `gold_text_annotations` change.
+      touched; no `silver_visual_annotations` / `silver_text_annotations` change.
 - AC5: Image/carousel posts get `transcript_status = no_audio_source` (no
       ffmpeg decode attempted) — audio-absence is explicit, never recorded as
       an empty result.

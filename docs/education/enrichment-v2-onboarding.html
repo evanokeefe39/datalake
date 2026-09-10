@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>How our data enrichment works: the medallion lake, six gold tables, and the async seam (design v2)</title>
-<meta name="description" content="A visual onboarding one-pager for junior engineers with no Dagster experience: the medallion lake, what AI enrichment is and why it is async, the six target-state gold tables, the dependency DAG, the submit-poll-harvest seam, the one-submit-fans-out cost rule, and naming/provenance rules.">
+<title>How our data enrichment works: the medallion lake, six silver tables, and the async seam (design v2)</title>
+<meta name="description" content="A visual onboarding one-pager for junior engineers with no Dagster experience: the medallion lake, what AI enrichment is and why it is async, the bronze_enrichment_raw landing zone, the six target-state silver tables, the dependency DAG, the submit-poll-harvest seam, the one-submit-fans-out cost rule, the four gold marts, and naming/provenance rules.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&family=VT323&display=swap" rel="stylesheet">
@@ -102,7 +102,7 @@ figcaption{font-size:13px;color:var(--ld-ink-faint);margin-top:12px;max-width:84
 .key{background:var(--ld-accent-soft);border-left:4px solid var(--ld-accent);padding:14px 18px;margin:1.5em 0;max-width:900px}
 .key p{margin:0;max-width:80ch}
 
-/* six gold-table cards */
+/* six silver-table and four gold-mart cards */
 .tgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin:1.8em 0;max-width:1000px}
 @media(max-width:760px){.tgrid{grid-template-columns:1fr}}
 .tcard{background:var(--ld-bg);border:1px solid var(--ld-card-border);padding:16px 18px}
@@ -156,7 +156,7 @@ footer a{color:var(--ld-accent)}
 <div class="masthead">
   <div class="wrap">
     <span class="kicker">datalake &rsaquo; enrichment design v2 &rsaquo; onboarding</span>
-    <span class="kicker">settled 2026-09-09 &middot; spec: docs/enrichment-design.md</span>
+    <span class="kicker">re-layered 2026-09-10 &middot; spec: docs/enrichment-design.md</span>
   </div>
 </div>
 
@@ -165,12 +165,13 @@ footer a{color:var(--ld-accent)}
     <a href="#answer">The answer</a>
     <a href="#lake">The lake</a>
     <a href="#enrichment">Enrichment &amp; why async</a>
-    <a href="#tables">The six gold tables</a>
+    <a href="#tables">The six silver tables</a>
     <a href="#dag">The dependency DAG</a>
     <a href="#seam">The async seam</a>
     <a href="#seam-e2e">Seam, end to end</a>
     <a href="#fanout">One submit fans out</a>
-    <a href="#why-gold">Why gold, not silver</a>
+    <a href="#gold-marts">The gold marts</a>
+    <a href="#why-gold">Silver vs gold</a>
     <a href="#naming">Naming &amp; provenance</a>
     <a href="#forms">Content forms</a>
     <a href="#glossary">Glossary</a>
@@ -181,7 +182,7 @@ footer a{color:var(--ld-accent)}
 <header class="hero">
   <div class="wrap">
     <h1>What AI enrichment<br>does to our lake.<br><span class="hl">Read this first.</span></h1>
-    <p class="dek">Our lake is a three-layer pipeline: bronze holds raw scraped posts, silver holds cleaned ones, and <span class="n">gold is where AI adds meaning</span>: what the post shows, says, and is about. Enrichment is slow, paid, and external, so it does not run like a normal data transform. It rides an async seam: submit, wait, harvest. This page teaches the whole design in pictures.</p>
+    <p class="dek">Our lake is a strict three-layer pipeline: bronze holds everything raw (scraped posts <em>and</em> verbatim AI responses), silver holds cleaned posts and the <span class="n">six conformed AI tables</span>, and gold holds the four analytic marts that answer the owner's questions. Enrichment is slow, paid, and external, so it does not run like a normal data transform. It rides an async seam: submit, wait, harvest. This page teaches the whole design in pictures.</p>
     <p class="meta">Audience: junior engineers, no Dagster experience required &middot; every term is defined inline or in the glossary</p>
   </div>
 </header>
@@ -191,14 +192,14 @@ footer a{color:var(--ld-accent)}
 <!-- ============ 1 THE ANSWER ============ -->
 <section id="answer" class="reveal">
   <h2>The answer up front</h2>
-  <div class="lede">Six AI-written tables sit in gold. Three outside AI passes produce them: a vision model reads images and video frames, a transcription model reads audio, a text model reads captions and transcripts. Each pass is slow, paid, and non-deterministic, so it runs through one async seam with one shared job ledger instead of a normal pipeline step.</div>
+  <div class="lede">Six AI-conformed tables sit in silver. Three outside AI passes produce them: a vision model reads images and video frames, a transcription model reads audio, a text model reads captions and transcripts. Each pass is slow, paid, and non-deterministic, so it runs through one async seam with one shared job ledger instead of a normal pipeline step. Every raw response lands verbatim in <code>bronze_enrichment_raw</code> first; silver's deterministic conform step turns it into the tables below.</div>
   <p>The three passes and their tables:</p>
   <ul class="bullets">
-    <li><span class="chip visual">visual pass</span> qwen vision reads the media. One submit fills <code>gold_visual_annotations</code> AND <code>gold_visual_summaries</code>.</li>
-    <li><span class="chip audio">audio pass</span> whisper (runs locally) transcribes reel audio into <code>gold_audio_transcripts</code>.</li>
-    <li><span class="chip text">text pass</span> a text LLM reads caption plus transcript. One submit fills <code>gold_text_annotations</code> AND <code>gold_text_summaries</code>. A second, separate submit fills <code>gold_content_classification</code>.</li>
+    <li><span class="chip visual">visual pass</span> qwen vision reads the media. One submit's response is mapped into <code>silver_visual_annotations</code> AND <code>silver_visual_summaries</code>.</li>
+    <li><span class="chip audio">audio pass</span> whisper (runs locally) transcribes reel audio into <code>silver_audio_transcripts</code>.</li>
+    <li><span class="chip text">text pass</span> a text LLM reads caption plus transcript. One submit fills <code>silver_text_annotations</code> AND <code>silver_text_summaries</code>. A second, separate submit fills <code>silver_content_classification</code>.</li>
   </ul>
-  <p>The rest of this page earns that summary: first the lake it lives in, then each piece in order.</p>
+  <p>Gold then joins all of it into four marts that answer the owner's three questions. The rest of this page earns that summary: first the lake it lives in, then each piece in order.</p>
 </section>
 
 <!-- ============ 2 THE LAKE ============ -->
@@ -209,43 +210,86 @@ footer a{color:var(--ld-accent)}
 
   <figure>
     <div class="diag-title">The medallion layers</div>
-    <svg viewBox="0 0 920 190" role="img" aria-label="bronze raw posts, then silver cleaned posts, then gold AI enrichment, then serving views for dashboards">
+    <svg viewBox="0 0 920 190" role="img" aria-label="bronze raw posts and raw AI responses, then silver cleaned posts and conformed enrichment tables, then gold analytic marts, then serving views for dashboards">
       <defs>
         <marker id="m1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#64748b"/></marker>
       </defs>
       <!-- bronze -->
       <rect x="10" y="42" width="180" height="66" rx="10" fill="#f1f5f9" stroke="#45525e" stroke-width="2"/>
       <text x="100" y="68" text-anchor="middle" font-family="monospace" font-size="14" fill="#1c2733">bronze</text>
-      <text x="100" y="88" text-anchor="middle" font-size="11" fill="#45525e">raw scraped posts,</text>
-      <text x="100" y="102" text-anchor="middle" font-size="11" fill="#45525e">as they arrived</text>
+      <text x="100" y="88" text-anchor="middle" font-size="11" fill="#45525e">raw scraped posts and</text>
+      <text x="100" y="102" text-anchor="middle" font-size="11" fill="#45525e">raw AI responses, verbatim</text>
       <line x1="194" y1="75" x2="230" y2="75" stroke="#64748b" stroke-width="2" marker-end="url(#m1)"/>
       <rect x="234" y="42" width="180" height="66" rx="10" fill="#eef2f6" stroke="#45525e" stroke-width="2"/>
       <text x="324" y="68" text-anchor="middle" font-family="monospace" font-size="14" fill="#1c2733">silver</text>
-      <text x="324" y="88" text-anchor="middle" font-size="11" fill="#45525e">cleaned, deduped,</text>
-      <text x="324" y="102" text-anchor="middle" font-size="11" fill="#45525e">normalized posts</text>
+      <text x="324" y="88" text-anchor="middle" font-size="11" fill="#45525e">cleaned posts + six</text>
+      <text x="324" y="102" text-anchor="middle" font-size="11" fill="#45525e">conformed AI tables</text>
       <line x1="418" y1="75" x2="454" y2="75" stroke="#0e7490" stroke-width="2.5" marker-end="url(#m1)"/>
       <rect x="458" y="42" width="200" height="66" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2.5"/>
-      <text x="558" y="68" text-anchor="middle" font-family="monospace" font-size="14" fill="#0e7490">gold (enrichment)</text>
-      <text x="558" y="88" text-anchor="middle" font-size="11" fill="#0e7490">meaning added by AI:</text>
-      <text x="558" y="102" text-anchor="middle" font-size="11" fill="#45525e">facets, summaries, transcripts</text>
+      <text x="558" y="68" text-anchor="middle" font-family="monospace" font-size="14" fill="#0e7490">gold (marts)</text>
+      <text x="558" y="88" text-anchor="middle" font-size="11" fill="#0e7490">joins + aggregates:</text>
+      <text x="558" y="102" text-anchor="middle" font-size="11" fill="#45525e">four marts, three questions</text>
       <line x1="662" y1="75" x2="698" y2="75" stroke="#64748b" stroke-width="2" marker-end="url(#m1)"/>
       <rect x="702" y="42" width="180" height="66" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
       <text x="792" y="68" text-anchor="middle" font-family="monospace" font-size="14" fill="#0055A4">serving</text>
       <text x="792" y="88" text-anchor="middle" font-size="11" fill="#0055A4">thin views built for</text>
-      <text x="792" y="102" text-anchor="middle" font-size="11" fill="#0055A4">dashboards to query</text>
-      <text x="460" y="160" text-anchor="middle" font-size="12" fill="#64748b">bronze and silver are deterministic code. Gold enrichment is the one layer that calls outside AI services.</text>
+      <text x="792" y="102" text-anchor="middle" font-size="11" fill="#45525e">dashboards to query</text>
+      <text x="460" y="160" text-anchor="middle" font-size="12" fill="#64748b">Bronze and silver are deterministic code. Only the seam step of the flow calls outside AI services.</text>
     </svg>
-    <figcaption>Raw posts land in bronze. Code cleans them into silver. The gold enrichment layer is where an AI reads each post and writes structured meaning. Serving views join it all for dashboards.</figcaption>
+    <figcaption>Raw posts land in bronze, and now raw AI responses land there too, in <code>bronze_enrichment_raw</code>. Code cleans posts into silver and deterministically conforms the raw responses into the six silver tables. Gold joins and aggregates them into the four analytic marts. Serving views shape it all for dashboards.</figcaption>
   </figure>
 
-  <div class="key"><p><strong>Why three layers?</strong> Separation of concerns. Scraping mistakes are fixed in bronze without touching analysis. Cleaning rules change in silver without re-scraping. AI enrichment lives in gold so it can be re-run, audited, and paid for separately from everything else.</p></div>
+  <figure>
+    <div class="diag-title">Where enrichment flows</div>
+    <svg viewBox="0 0 920 160" role="img" aria-label="Flow left to right: silver_ig_posts enters the async seam, which lands verbatim responses in bronze_enrichment_raw, which silver conforms into the six silver tables, which gold aggregates into marts">
+      <defs>
+        <marker id="w1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0e7490"/></marker>
+        <marker id="w2" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#64748b"/></marker>
+      </defs>
+      <!-- silver_ig_posts -->
+      <rect x="15" y="45" width="140" height="90" rx="10" fill="#eef2f6" stroke="#45525e" stroke-width="2"/>
+      <text x="85" y="72" text-anchor="middle" font-family="monospace" font-size="12" fill="#1c2733">silver_ig_posts</text>
+      <text x="85" y="92" text-anchor="middle" font-size="10" fill="#45525e">cleaned posts, keyed</text>
+      <text x="85" y="108" text-anchor="middle" font-size="10" fill="#45525e">by post_id + platform</text>
+      <line x1="155" y1="90" x2="185" y2="90" stroke="#0e7490" stroke-width="2" marker-end="url(#w1)"/>
+      <!-- seam -->
+      <rect x="189" y="45" width="120" height="90" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2" stroke-dasharray="5 4"/>
+      <text x="249" y="72" text-anchor="middle" font-family="monospace" font-size="11.5" fill="#0e7490">the seam</text>
+      <text x="249" y="92" text-anchor="middle" font-size="10" fill="#45525e">submit / poll /</text>
+      <text x="249" y="108" text-anchor="middle" font-size="10" fill="#45525e">harvest (async)</text>
+      <line x1="309" y1="90" x2="339" y2="90" stroke="#0e7490" stroke-width="2" marker-end="url(#w1)"/>
+      <!-- bronze_enrichment_raw -->
+      <rect x="343" y="45" width="170" height="90" rx="10" fill="#f1f5f9" stroke="#45525e" stroke-width="2"/>
+      <text x="428" y="66" text-anchor="middle" font-family="monospace" font-size="11" fill="#1c2733">bronze_enrichment_raw</text>
+      <text x="428" y="88" text-anchor="middle" font-size="10" fill="#45525e">verbatim response body,</text>
+      <text x="428" y="104" text-anchor="middle" font-size="10" fill="#45525e">any workload (vision,</text>
+      <text x="428" y="120" text-anchor="middle" font-size="10" fill="#45525e">whisper, text-LLM), immutable</text>
+      <line x1="513" y1="90" x2="543" y2="90" stroke="#64748b" stroke-width="2" marker-end="url(#w2)"/>
+      <!-- six silver tables -->
+      <rect x="547" y="45" width="160" height="90" rx="10" fill="#eef2f6" stroke="#45525e" stroke-width="2"/>
+      <text x="627" y="66" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#1c2733">silver_visual_* | silver_audio_*</text>
+      <text x="627" y="82" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#1c2733">silver_text_* | silver_content_*</text>
+      <text x="627" y="104" text-anchor="middle" font-size="10" fill="#45525e">conform + validate,</text>
+      <text x="627" y="120" text-anchor="middle" font-size="10" fill="#45525e">zero API calls</text>
+      <line x1="707" y1="90" x2="737" y2="90" stroke="#64748b" stroke-width="2" marker-end="url(#w2)"/>
+      <!-- gold -->
+      <rect x="741" y="45" width="160" height="90" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+      <text x="821" y="72" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">gold marts</text>
+      <text x="821" y="92" text-anchor="middle" font-size="10" fill="#45525e">joins + aggregates</text>
+      <text x="821" y="108" text-anchor="middle" font-size="10" fill="#45525e">for the three questions</text>
+      <text x="460" y="155" text-anchor="middle" font-size="10.5" fill="#64748b">Only the seam box talks to a provider. bronze -> silver -> gold is deterministic code, free to re-run.</text>
+    </svg>
+    <figcaption>The enrichment flow end to end: cleaned posts enter the async seam; the harvest lands each verbatim response in <code>bronze_enrichment_raw</code>; silver's conform step maps it into the six tables; gold joins them into marts. Remapping is free, because the raw response never has to be re-purchased.</figcaption>
+  </figure>
+
+  <div class="key"><p><strong>Why three layers?</strong> Separation of concerns. Scraping mistakes are fixed in bronze without touching analysis. Cleaning and conforming rules change in silver without re-scraping or re-calling the paid model, because the verbatim responses stay in <code>bronze_enrichment_raw</code>. Gold stays analytic, so marts can be reshaped for new questions without touching either layer below.</p></div>
 </section>
 
 <!-- ============ 3 ENRICHMENT & WHY ASYNC ============ -->
 <section id="enrichment" class="reveal">
   <h2>What enrichment is, and why it refuses to be a normal step</h2>
   <p class="lede">Enrichment means an outside AI service looks at a post and writes down what it sees and hears, in structured columns.</p>
-  <p>Concretely: for each post, an AI pass reads the media (images, video frames, audio) and the caption, and answers structured questions. Is a face present? Which brand logos appear? What does the person claim out loud? What kind of hook starts the caption? The answers land as columns in gold tables. This is different from silver's cleaning: silver applies fixed rules to every row identically. Enrichment produces <em>judgments</em>, and the same post can yield a different answer next week.</p>
+  <p>Concretely: for each post, an AI pass reads the media (images, video frames, audio) and the caption, and answers structured questions. Is a face present? Which brand logos appear? What does the person claim out loud? What kind of hook starts the caption? The raw answers land verbatim in <code>bronze_enrichment_raw</code>, and silver's conform step turns them into columns in the six silver tables. This is different from silver's post cleaning: that applies fixed rules to every row identically. Enrichment produces <em>judgments</em>, and the same post can yield a different answer next week.</p>
   <p>Three facts force a different architecture than a normal transform:</p>
   <ul class="bullets">
     <li><strong>Slow.</strong> A full-corpus enrichment pass takes hours. A normal transform takes seconds to minutes.</li>
@@ -261,45 +305,45 @@ footer a{color:var(--ld-accent)}
   <p>A pipeline that modeled enrichment as a normal step would freeze for hours on every run. Dagster (our orchestration tool: it tracks which tables depend on which, and runs steps in the right order) must never wait. The seam below is how we keep the hours outside the pipeline while keeping the results inside the graph.</p>
 </section>
 
-<!-- ============ 4 THE SIX GOLD TABLES ============ -->
+<!-- ============ 4 THE SIX SILVER TABLES ============ -->
 <section id="tables" class="reveal">
-  <h2>The six gold tables</h2>
-  <p class="lede">Each AI pass writes its own table. Every table is keyed by <code>post_id</code> and <code>domain</code>, and carries the same provenance envelope.</p>
-  <p>Read each card as: the table name, what artifact it holds, the columns, and who produces it. The visual pass and the text pass each fill <em>two</em> tables from one AI call; the "same AI call" notes mark those pairs.</p>
+  <h2>The six silver tables</h2>
+  <p class="lede">Each AI pass's output is conformed into its own silver table. Every table is keyed by <code>post_id</code> and <code>platform</code>, and carries the same provenance envelope.</p>
+  <p>Read each card as: the table name, what artifact it holds, the columns, and who produces it. The visual pass and the text pass each fill <em>two</em> tables from one AI call; the "same AI call" notes mark those pairs. Validation (parse-ability, required fields, enum conformance, length bounds, cross-field checks) lives in this silver conform step: unparseable or invalid output is quarantined loudly, never a silent NULL and never a dropped row.</p>
 
   <div class="tgrid">
     <div class="tcard">
-      <span class="tname">gold_visual_annotations</span>
+      <span class="tname">silver_visual_annotations</span>
       <span class="art">artifact: visual facets (structured observations about what the media shows)</span>
       <p class="cols"><code>face_present</code> &middot; <code>value_medium</code> &middot; <code>brand_logos</code> &middot; <code>text_overlay_present</code> &middot; <code>on_screen_claim</code></p>
       <p class="prod">producer: <b>qwen vision</b> (reads images / video frames)</p>
     </div>
     <div class="tcard same">
-      <span class="tname">gold_visual_summaries</span>
+      <span class="tname">silver_visual_summaries</span>
       <span class="art">artifact: visual summaries</span>
       <p class="cols"><code>content_summary</code> (overall, for every content form) &middot; <code>image_summaries_json</code> (per image, carousel posts only)</p>
       <p class="prod">producer: <b>qwen vision</b> &middot; same call as the annotations table</p>
     </div>
     <div class="tcard">
-      <span class="tname">gold_audio_transcripts</span>
+      <span class="tname">silver_audio_transcripts</span>
       <span class="art">artifact: raw speech-to-text transcript</span>
       <p class="cols"><code>transcript</code> &middot; <code>transcript_status</code> (<code>no_audio_source</code> | <code>pending</code> | <code>done</code> | <code>empty_audio</code>) &middot; <code>audio_present</code> &middot; <code>asr_model</code> &middot; <code>language</code></p>
       <p class="prod">producer: <b>whisper</b>, run locally</p>
     </div>
     <div class="tcard">
-      <span class="tname">gold_text_annotations</span>
+      <span class="tname">silver_text_annotations</span>
       <span class="art">artifact: text-layer facets (what the words do)</span>
       <p class="cols"><code>hook_content</code> &middot; <code>hook_type</code> &middot; <code>is_sponsored</code> &middot; <code>sponsorship_signal</code> &middot; <code>claimed_results</code> &middot; <code>cta_type</code> &middot; <code>audience_named</code> &middot; <code>value_depth</code> &middot; <code>replicable_tactic</code> &middot; <code>hashtag_strategy</code> &middot; <code>evidence</code> &middot; <code>brand_safety_json</code></p>
       <p class="prod">producer: <b>text LLM</b> (reads caption + transcript)</p>
     </div>
     <div class="tcard same">
-      <span class="tname">gold_text_summaries</span>
+      <span class="tname">silver_text_summaries</span>
       <span class="art">artifact: what the post says, summarized</span>
       <p class="cols"><code>transcript_summary</code></p>
       <p class="prod">producer: <b>text LLM</b> &middot; same call as the text annotations table</p>
     </div>
     <div class="tcard">
-      <span class="tname">gold_content_classification</span>
+      <span class="tname">silver_content_classification</span>
       <span class="art">artifact: taxonomy and audience-usefulness labels</span>
       <p class="cols"><code>domain</code> &middot; <code>subdomain</code> &middot; <code>topic</code> &middot; <code>subtopic</code> &middot; <code>is_educational</code> &middot; <code>is_actionable</code> &middot; <code>admiralty</code> &middot; <code>content_type</code> &middot; <code>style</code> &middot; <code>format</code></p>
       <p class="prod">producer: <b>text LLM</b>, its own downstream submit</p>
@@ -308,12 +352,12 @@ footer a{color:var(--ld-accent)}
 
   <div class="callout">
     <span class="tag">The metadata envelope: provenance on every row</span>
-    <p>Every enrichment table carries the same envelope of metadata columns next to its body columns: <code>provider</code>, <code>model</code>, <code>prompt_hash</code>, <code>schema_version</code>, <code>input_modality</code>, <code>content_mime_type</code>, <code>sampling_params_json</code>, <code>run_id</code>, <code>analysed_at</code>.</p>
-    <p>Because AI output is non-deterministic, the envelope is how we answer "which model, prompted how, on which run, produced this?" later. One honest exception: <code>prompt_hash</code> is NULL on <code>gold_audio_transcripts</code>, because transcription has no prompt; whisper converts speech to text, it is not instructed with a prompt.</p>
+    <p>Every silver enrichment table carries the same envelope of metadata columns next to its body columns: <code>provider</code>, <code>model</code>, <code>prompt_hash</code>, <code>schema_version</code>, <code>input_modality</code>, <code>content_mime_type</code>, <code>sampling_params_json</code>, <code>run_id</code>, <code>analysed_at</code>.</p>
+    <p>Because AI output is non-deterministic, the envelope is how we answer "which model, prompted how, on which run, produced this?" later. One honest exception: <code>prompt_hash</code> is NULL on <code>silver_audio_transcripts</code>, because transcription has no prompt; whisper converts speech to text, it is not instructed with a prompt.</p>
     <p>Each pass owns its own table, so one pass's provenance can never be overwritten by another pass writing the same row. That defect is exactly what killed the previous single-table facet store.</p>
   </div>
 
-  <p><strong>Two constant keys.</strong> Every enrichment table is keyed by <code>post_id</code> and <code>domain</code>. That pair is how a gold row joins back to its silver post, and how the same post can be enriched independently per domain context.</p>
+  <p><strong>Two constant keys.</strong> Every silver enrichment table is keyed by <code>post_id</code> and <code>platform</code>. That pair is how a silver row joins back to its <code>silver_ig_posts</code> row, and it matches the repo's existing <code>profiles.platform</code> convention. The word <code>domain</code> is reserved for the content niche (what the owner calls "X domain", like dev/AI); it is a body column of <code>silver_content_classification</code>, never a key. That collision (a <code>domain</code> column meaning "instagram" in one table and "dev/AI" in another) is exactly the naming bug this model fixes.</p>
 </section>
 
 <!-- ============ 5 THE DEPENDENCY DAG ============ -->
@@ -341,15 +385,15 @@ footer a{color:var(--ld-accent)}
       <text x="130" y="248" text-anchor="middle" font-size="10.5" fill="#45525e">plus the caption</text>
       <!-- column 2: per-channel passes -->
       <rect x="300" y="44" width="270" height="80" rx="10" fill="#eef2f6" stroke="#45525e" stroke-width="2"/>
-      <text x="435" y="70" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#1c2733">gold_audio_transcripts</text>
+      <text x="435" y="70" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#1c2733">silver_audio_transcripts</text>
       <text x="435" y="90" text-anchor="middle" font-size="10.5" fill="#45525e">transcript + transcript_status,</text>
       <text x="435" y="106" text-anchor="middle" font-size="10.5" fill="#45525e">audio_present, asr_model, language</text>
       <rect x="300" y="224" width="270" height="80" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
-      <text x="435" y="250" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0e7490">gold_visual_summaries</text>
+      <text x="435" y="250" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0e7490">silver_visual_summaries</text>
       <text x="435" y="270" text-anchor="middle" font-size="10.5" fill="#45525e">overall content_summary,</text>
       <text x="435" y="286" text-anchor="middle" font-size="10.5" fill="#45525e">per-image image_summaries_json</text>
       <rect x="300" y="388" width="270" height="80" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
-      <text x="435" y="414" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0e7490">gold_visual_annotations</text>
+      <text x="435" y="414" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0e7490">silver_visual_annotations</text>
       <text x="435" y="434" text-anchor="middle" font-size="10.5" fill="#45525e">facets: face, logos, overlay,</text>
       <text x="435" y="450" text-anchor="middle" font-size="10.5" fill="#45525e">value medium, on-screen claim</text>
       <!-- media arrows (fan, no crossings) -->
@@ -358,15 +402,15 @@ footer a{color:var(--ld-accent)}
       <path d="M230 244 C 270 256 264 416 296 428" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#d1)"/>
       <!-- column 3: downstream passes -->
       <rect x="640" y="44" width="250" height="80" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
-      <text x="765" y="70" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0055A4">gold_text_annotations</text>
+      <text x="765" y="70" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0055A4">silver_text_annotations</text>
       <text x="765" y="90" text-anchor="middle" font-size="10.5" fill="#45525e">hook, sponsorship, cta,</text>
       <text x="765" y="106" text-anchor="middle" font-size="10.5" fill="#45525e">value_depth, evidence, safety</text>
       <rect x="640" y="224" width="250" height="80" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
-      <text x="765" y="250" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0055A4">gold_text_summaries</text>
+      <text x="765" y="250" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0055A4">silver_text_summaries</text>
       <text x="765" y="270" text-anchor="middle" font-size="10.5" fill="#45525e">transcript_summary:</text>
       <text x="765" y="286" text-anchor="middle" font-size="10.5" fill="#45525e">what is said, in one field</text>
       <rect x="640" y="388" width="250" height="80" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2.5"/>
-      <text x="765" y="414" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0055A4">gold_content_classification</text>
+      <text x="765" y="414" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0055A4">silver_content_classification</text>
       <text x="765" y="434" text-anchor="middle" font-size="10.5" fill="#45525e">domain, topic, is_educational,</text>
       <text x="765" y="450" text-anchor="middle" font-size="10.5" fill="#45525e">style, format...</text>
       <!-- transcript -> downstream (teal) -->
@@ -379,7 +423,7 @@ footer a{color:var(--ld-accent)}
       <text x="765" y="360" text-anchor="middle" font-size="10.5" fill="#0055A4">visual summaries feed classification too</text>
       <text x="460" y="502" text-anchor="middle" font-size="12" fill="#64748b">Dependencies are declared per asset, not discovered by accident. Re-running an upstream pass invalidates its downstream.</text>
     </svg>
-    <figcaption>Media feeds the three channel passes directly. The text passes wait on <code>gold_audio_transcripts</code> (they read what was said). Classification waits on transcripts AND visual summaries, because it judges the whole post. These edges are declared in the asset graph, so the order is guaranteed, never lucky.</figcaption>
+    <figcaption>Media feeds the three channel passes directly. The text passes wait on <code>silver_audio_transcripts</code> (they read what was said). Classification waits on transcripts AND visual summaries, because it judges the whole post. These edges are declared in the asset graph, so the order is guaranteed, never lucky.</figcaption>
   </figure>
 </section>
 
@@ -387,11 +431,11 @@ footer a{color:var(--ld-accent)}
 <section id="seam" class="reveal">
   <h2>The async seam: submit, poll, harvest</h2>
   <p class="lede">One shared job ledger sits between our pipeline and the AI providers. Every pass, whatever its engine, rides the same three-step lifecycle.</p>
-  <p><strong>Submit</strong> writes one job into the shared <code>external_jobs</code> ledger. It is sub-second, just a database insert plus an HTTP call; it never does AI work itself. <strong>Poll</strong>: a background check asks the provider whether the job reached a terminal state (done, failed, or empty). <strong>Harvest</strong>: when a job is done, we retrieve the results and write them into gold with an idempotent upsert (re-running writes the same rows again, never duplicates). Failures are loud: a bad item is surfaced and re-discoverable, never silently marked done.</p>
+  <p><strong>Submit</strong> writes one job into the shared <code>external_jobs</code> ledger. It is sub-second, just a database insert plus an HTTP call; it never does AI work itself. <strong>Poll</strong>: a background check asks the provider whether the job reached a terminal state (done, failed, or empty). <strong>Harvest</strong>: when a job is done, we retrieve the results and land the verbatim response in <code>bronze_enrichment_raw</code>, append-only and idempotent on its natural key (re-running writes the same rows again, never duplicates). Silver's conform step then maps them into the six tables. Failures are loud: a bad item is surfaced and re-discoverable, never silently marked done.</p>
 
   <figure>
     <div class="diag-title">The submit-poll-harvest lifecycle</div>
-    <svg viewBox="0 0 920 300" role="img" aria-label="silver posts go to submit, which records in the external jobs ledger and calls the provider; poll checks status; harvest writes gold tables">
+    <svg viewBox="0 0 920 300" role="img" aria-label="silver posts go to submit, which records in the external jobs ledger and calls the provider; poll checks status; harvest lands verbatim responses in bronze_enrichment_raw">
       <defs>
         <marker id="s1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0e7490"/></marker>
         <marker id="s2" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#64748b"/></marker>
@@ -431,14 +475,15 @@ footer a{color:var(--ld-accent)}
       <rect x="260" y="248" width="170" height="40" rx="10" fill="#dcfce7" stroke="#15803d" stroke-width="2"/>
       <text x="345" y="273" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#15803d">3. harvest</text>
       <path d="M460 216 C 448 244 442 268 426 268" fill="none" stroke="#15803d" stroke-width="2" marker-end="url(#s1)"/>
-      <!-- gold -->
+      <!-- bronze landing -->
       <rect x="30" y="248" width="200" height="40" rx="10" fill="#dcfce7" stroke="#15803d" stroke-width="2"/>
-      <text x="130" y="273" text-anchor="middle" font-family="monospace" font-size="12" fill="#15803d">gold tables (upsert)</text>
+      <text x="130" y="273" text-anchor="middle" font-family="monospace" font-size="11" fill="#15803d">bronze_enrichment_raw</text>
       <line x1="256" y1="268" x2="234" y2="268" stroke="#15803d" stroke-width="2" marker-end="url(#s1)"/>
+      <text x="130" y="300" text-anchor="middle" font-size="10" fill="#64748b">verbatim, append-only; silver conforms next</text>
       <text x="760" y="262" text-anchor="middle" font-size="10.5" fill="#64748b">Dagster only schedules and orchestrates;</text>
       <text x="760" y="278" text-anchor="middle" font-size="10.5" fill="#64748b">the hours-long work runs in the async backend</text>
     </svg>
-    <figcaption>Submit is fast and in-graph. The provider drains for hours. Poll checks the ledger and provider status. Harvest applies finished results into gold, once per completed job, with per-item failures surfaced loudly.</figcaption>
+    <figcaption>Submit is fast and in-graph. The provider drains for hours. Poll checks the ledger and provider status. Harvest lands finished results verbatim into <code>bronze_enrichment_raw</code>, once per completed job, with per-item failures surfaced loudly; silver's deterministic conform step then maps them into the six tables.</figcaption>
   </figure>
 
   <div class="key"><p><strong>The seam is the lifecycle, not the scheduler.</strong> Executors are pluggable: <code>qwen-vision</code>, <code>whisper</code>, and <code>text-LLM</code> all ride this same submit-poll-harvest pattern over the one shared ledger. Whether a run is triggered by the CLI or by a Dagster sensor, the lifecycle is identical. A provider swap is a metadata change; the seam does not move.</p></div>
@@ -448,7 +493,7 @@ footer a{color:var(--ld-accent)}
 <section id="seam-e2e" class="reveal">
   <h2>The seam, end to end</h2>
   <p class="lede">The lifecycle above is only half the story. This is the full boundary: who talks to whom, and who owns what.</p>
-  <p>Four zones, left to right. <strong>Dagster</strong> (our orchestrator) owns discovery, batching, the sub-second <code>submit</code>, and the idempotent gold <code>harvest</code>. It owns orchestration, lineage, and quality &mdash; and it <strong>never calls a provider directly</strong>. The only thing it ever touches is <strong>the seam</strong>: the shared <code>external_jobs</code> ledger plus the three verbs <code>submit</code>, <code>poll-to-terminal</code>, and <code>retrieve</code>. That ledger is the ONLY coupling between Dagster and the outside world.</p>
+  <p>Four zones, left to right. <strong>Dagster</strong> (our orchestrator) owns discovery, batching, the sub-second <code>submit</code>, and the idempotent bronze <code>harvest</code>. It owns orchestration, lineage, and quality &mdash; and it <strong>never calls a provider directly</strong>. The only thing it ever touches is <strong>the seam</strong>: the shared <code>external_jobs</code> ledger plus the three verbs <code>submit</code>, <code>poll-to-terminal</code>, and <code>retrieve</code>. That ledger is the ONLY coupling between Dagster and the outside world. Harvested rows are keyed by <code>(post_id, platform, workload, prompt_hash, run_id)</code>, so re-running the same job re-lands the same rows instead of duplicating them.</p>
 
   <figure>
     <div class="diag-title">Boundary: Dagster &rarr; the seam &rarr; external infra &rarr; providers</div>
@@ -538,12 +583,12 @@ footer a{color:var(--ld-accent)}
 <!-- ============ 7 ONE SUBMIT FANS OUT ============ -->
 <section id="fanout" class="reveal">
   <h2>One submit can fan out to many tables</h2>
-  <p class="lede">The cost rule that shapes the whole graph: one AI request can return more than one table's worth of output, so one submit's harvest can fan out to any number of tables.</p>
-  <p>The rule is general: whatever a single AI response contains, its harvest writes into every table that response serves &mdash; two tables, three, or one. Today's examples: the qwen vision call returns annotations AND summaries in a single response, so its harvest fans out to both visual tables. The text LLM call returns text annotations AND the transcript summary in a single response, so its harvest fans out to both text tables. Drawing one submit per <em>table</em> instead would send the same media to the provider twice and <strong>double the bill</strong>. Classification is its own separate submit, because it consumes extra inputs.</p>
+  <p class="lede">The cost rule that shapes the whole graph: one AI request can return more than one table's worth of output, so one submit's response can map to any number of silver tables.</p>
+  <p>The rule is general: whatever a single AI response contains, its harvest lands verbatim in <code>bronze_enrichment_raw</code>, and silver's conform step maps it into every table that response serves &mdash; two tables, three, or one. Today's examples: the qwen vision call returns annotations AND summaries in a single response, so its conform maps to both visual tables. The text LLM call returns text annotations AND the transcript summary in a single response, so its conform maps to both text tables. Drawing one submit per <em>table</em> instead would send the same media to the provider twice and <strong>double the bill</strong>. Classification is its own separate submit, because it consumes extra inputs.</p>
 
   <figure>
-    <div class="diag-title">Three submits produce six tables</div>
-    <svg viewBox="0 0 920 330" role="img" aria-label="silver fans out to three submits: one visual submit harvests into both visual tables, one whisper submit harvests into audio transcripts, one text submit harvests into both text tables, and classification is its own submit">
+    <div class="diag-title">Three submits produce six silver tables</div>
+    <svg viewBox="0 0 920 330" role="img" aria-label="silver fans out to three submits: one visual submit lands in bronze_enrichment_raw and conforms into both visual tables, one whisper submit lands and conforms into audio transcripts, one text submit lands and conforms into both text tables, and classification is its own submit">
       <defs>
         <marker id="f1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0e7490"/></marker>
         <marker id="f2" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#45525e"/></marker>
@@ -551,9 +596,9 @@ footer a{color:var(--ld-accent)}
       </defs>
       <!-- silver -->
       <rect x="30" y="120" width="150" height="90" rx="10" fill="#eef2f6" stroke="#45525e" stroke-width="2"/>
-      <text x="125" y="158" text-anchor="middle" font-family="monospace" font-size="13" fill="#1c2733">silver</text>
-      <text x="125" y="178" text-anchor="middle" font-size="10.5" fill="#45525e">posts + media +</text>
-      <text x="125" y="192" text-anchor="middle" font-size="10.5" fill="#45525e">captions</text>
+      <text x="105" y="158" text-anchor="middle" font-family="monospace" font-size="13" fill="#1c2733">silver</text>
+      <text x="105" y="178" text-anchor="middle" font-size="10.5" fill="#45525e">posts + media +</text>
+      <text x="105" y="192" text-anchor="middle" font-size="10.5" fill="#45525e">captions</text>
       <!-- visual submit -->
       <rect x="250" y="26" width="180" height="74" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
       <text x="340" y="48" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">submit: qwen-vision</text>
@@ -577,47 +622,119 @@ footer a{color:var(--ld-accent)}
       <path d="M430 56 L556 56" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#f1)"/>
       <path d="M430 56 L505 56 L505 120 L556 120" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#f1)"/>
       <rect x="560" y="30" width="330" height="52" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
-      <text x="725" y="52" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">gold_visual_annotations</text>
-      <text x="725" y="70" text-anchor="middle" font-size="10" fill="#45525e">harvest writes the facets half</text>
+      <text x="725" y="52" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">silver_visual_annotations</text>
+      <text x="725" y="70" text-anchor="middle" font-size="10" fill="#45525e">conform maps the facets half</text>
       <rect x="560" y="94" width="330" height="52" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
-      <text x="725" y="116" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">gold_visual_summaries</text>
-      <text x="455" y="75" text-anchor="middle" font-size="10" fill="#0e7490">one harvest,</text>
+      <text x="725" y="116" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">silver_visual_summaries</text>
+      <text x="455" y="75" text-anchor="middle" font-size="10" fill="#0e7490">one response,</text>
       <text x="455" y="90" text-anchor="middle" font-size="10" fill="#0e7490">two tables</text>
       <!-- audio -->
       <line x1="430" y1="166" x2="556" y2="166" stroke="#45525e" stroke-width="2" marker-end="url(#f2)"/>
       <rect x="560" y="164" width="330" height="52" rx="10" fill="#f1f5f9" stroke="#45525e" stroke-width="2"/>
-      <text x="725" y="186" text-anchor="middle" font-family="monospace" font-size="12" fill="#1c2733">gold_audio_transcripts</text>
+      <text x="725" y="186" text-anchor="middle" font-family="monospace" font-size="12" fill="#1c2733">silver_audio_transcripts</text>
       <text x="725" y="204" text-anchor="middle" font-size="10" fill="#45525e">one job, one table</text>
       <!-- text fan-out -->
       <path d="M430 273 L510 273 L510 251 L556 251" fill="none" stroke="#0055A4" stroke-width="2" marker-end="url(#f3)"/>
       <path d="M430 273 L510 273 L510 304 L556 304" fill="none" stroke="#0055A4" stroke-width="2" marker-end="url(#f3)"/>
       <rect x="560" y="228" width="330" height="46" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
-      <text x="725" y="246" text-anchor="middle" font-family="monospace" font-size="12" fill="#0055A4">gold_text_annotations</text>
-      <text x="725" y="262" text-anchor="middle" font-size="10" fill="#45525e">harvest writes the facets half</text>
+      <text x="725" y="246" text-anchor="middle" font-family="monospace" font-size="12" fill="#0055A4">silver_text_annotations</text>
+      <text x="725" y="262" text-anchor="middle" font-size="10" fill="#45525e">conform maps the facets half</text>
       <rect x="560" y="282" width="330" height="44" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
-      <text x="725" y="300" text-anchor="middle" font-family="monospace" font-size="12" fill="#0055A4">gold_text_summaries</text>
-      <text x="725" y="316" text-anchor="middle" font-size="10" fill="#45525e">harvest writes the summary half</text>
+      <text x="725" y="300" text-anchor="middle" font-family="monospace" font-size="12" fill="#0055A4">silver_text_summaries</text>
+      <text x="725" y="316" text-anchor="middle" font-size="10" fill="#45525e">conform maps the summary half</text>
     </svg>
-    <figcaption>Three submits, six tables today. The visual submit fans out to two visual tables at harvest; the text submit fans out to two text tables; whisper is one-to-one. The rule itself is any number of tables: the harvest writes whatever the one response contained. Classification is deliberately its own submit because it consumes transcripts AND visual summaries, inputs the other text call does not take.</figcaption>
+    <figcaption>Three submits, six silver tables today. The harvest lands each response verbatim in <code>bronze_enrichment_raw</code>; the conform step then maps the visual response into two visual tables and the text response into two text tables; whisper is one-to-one. The rule itself is any number of tables: conform writes whatever the one response contained. Classification is deliberately its own submit because it consumes transcripts AND visual summaries, inputs the other text call does not take.</figcaption>
   </figure>
 
   <div class="key"><p><strong>Why this matters to the bill.</strong> Every submit is a paid API call. If the graph drew one submit per table, the visual pass would run twice and the text pass would run twice, doubling cost for identical answers. One-submit-fans-out is not an optimization we hope to do later; it is the shape of the graph.</p></div>
 </section>
 
-<!-- ============ 7b WHY GOLD, NOT SILVER ============ -->
+<!-- ============ 7c GOLD: FOUR MARTS ============ -->
+<section id="gold-marts" class="reveal">
+  <h2>Gold: four marts, three questions</h2>
+  <p class="lede">The six silver tables are still per-channel pieces. Gold is where they get joined into analytic marts. The whole warehouse exists to answer the owner's three questions about which creators perform well and why, so each mart maps to one of them.</p>
+
+  <figure>
+    <div class="diag-title">The wide per-post shape feeds the three question-marts</div>
+    <svg viewBox="0 0 920 330" role="img" aria-label="gold_post_enrichment, the wide per-post table joining every channel output with engagement metrics and provenance, feeds three marts: gold_creator_performance answers who performs in a domain, gold_content_shape_performance answers what shape performs per domain, topic and follower tier, and gold_top_posts answers which posts do well across all domains">
+      <defs>
+        <marker id="g1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0e7490"/></marker>
+        <marker id="g2" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#64748b"/></marker>
+        <marker id="g3" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0055A4"/></marker>
+      </defs>
+      <!-- wide table -->
+      <rect x="30" y="115" width="215" height="110" rx="10" fill="#eef2f6" stroke="#45525e" stroke-width="2"/>
+      <text x="137" y="145" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#1c2733">gold_post_enrichment</text>
+      <text x="137" y="168" text-anchor="middle" font-size="10" fill="#45525e">the wide per-post shape:</text>
+      <text x="137" y="186" text-anchor="middle" font-size="10" fill="#45525e">every channel output joined,</text>
+      <text x="137" y="202" text-anchor="middle" font-size="10" fill="#45525e">plus engagement + provenance</text>
+      <text x="137" y="218" text-anchor="middle" font-size="10" fill="#64748b">keyed by post_id + platform</text>
+      <!-- Q1 mart -->
+      <rect x="600" y="20" width="290" height="86" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+      <text x="745" y="44" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">gold_creator_performance</text>
+      <text x="745" y="64" text-anchor="middle" font-size="10" fill="#45525e">Q1: who performs in domain X?</text>
+      <text x="745" y="80" text-anchor="middle" font-size="10" fill="#45525e">followers, standout rate, momentum</text>
+      <!-- Q2 mart -->
+      <rect x="600" y="122" width="290" height="86" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
+      <text x="745" y="146" text-anchor="middle" font-family="monospace" font-size="12" fill="#0055A4">gold_content_shape_performance</text>
+      <text x="745" y="166" text-anchor="middle" font-size="10" fill="#45525e">Q2: what shape performs, per</text>
+      <text x="745" y="182" text-anchor="middle" font-size="10" fill="#45525e">domain, topic, follower tier?</text>
+      <!-- Q3 mart -->
+      <rect x="600" y="224" width="290" height="86" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+      <text x="745" y="248" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">gold_top_posts</text>
+      <text x="745" y="268" text-anchor="middle" font-size="10" fill="#45525e">Q3: posts doing well across all</text>
+      <text x="745" y="284" text-anchor="middle" font-size="10" fill="#45525e">domains, joined to their shape</text>
+      <!-- arrows -->
+      <path d="M245 140 C 430 140 470 63 596 63" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#g1)"/>
+      <line x1="245" y1="170" x2="596" y2="170" stroke="#0055A4" stroke-width="2" marker-end="url(#g3)"/>
+      <path d="M245 200 C 430 200 470 267 596 267" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#g2)"/>
+      <text x="420" y="310" text-anchor="middle" font-size="11" fill="#64748b">Every mart is a join or aggregate over gold_post_enrichment. No question requires re-calling the AI.</text>
+    </svg>
+    <figcaption><code>gold_post_enrichment</code> is the wide per-post table: every channel output joined on <code>(post_id, platform)</code>, plus engagement metrics and provenance. The three question-marts aggregate from it: creators in a domain, content shapes per domain/topic/follower tier, and top posts everywhere, each joined back to its full shape for qualitative reading. Serving views derive from these marts.</figcaption>
+  </figure>
+
+  <div class="tgrid">
+    <div class="tcard">
+      <span class="tname">gold_post_enrichment</span>
+      <span class="art">mart 0: the wide per-post shape</span>
+      <p class="cols">all channel outputs joined on <code>(post_id, platform)</code> &middot; engagement metrics &middot; provenance envelope</p>
+      <p class="prod">shape of: <b>one post, everything we know about it</b></p>
+    </div>
+    <div class="tcard">
+      <span class="tname">gold_creator_performance</span>
+      <span class="art">mart for Q1: who is performing well in X domain?</span>
+      <p class="cols">keyed by <code>(creator_id, platform)</code>: <code>follower_count</code> &middot; <code>follower_tier</code> &middot; <code>post_count</code> &middot; <code>median_engagement_score</code> &middot; <code>avg_engagement_score</code> &middot; <code>standout_rate</code> &middot; <code>momentum_ratio</code> &middot; <code>is_rising</code> &middot; <code>dominant_domain</code></p>
+      <p class="prod">answers: <b>who performs, filterable by domain</b></p>
+    </div>
+    <div class="tcard">
+      <span class="tname">gold_content_shape_performance</span>
+      <span class="art">mart for Q2: what shape of content performs in X domain / X topic / for X follower count?</span>
+      <p class="cols">LONG table keyed by <code>(domain, topic, follower_tier, facet_name, facet_value)</code>: <code>n_posts</code> &middot; <code>avg_engagement_z</code> &middot; <code>standout_rate</code> &middot; <code>lift_vs_slice_baseline</code></p>
+      <p class="prod">answers: <b>which facets lift engagement, and by how much</b></p>
+    </div>
+    <div class="tcard">
+      <span class="tname">gold_top_posts</span>
+      <span class="art">mart for Q3: what posts do well across all domains, and what is their shape?</span>
+      <p class="cols">keyed by <code>(post_id, platform)</code>: rank + percentile across all domains &middot; joined to the full shape + summary/transcript for qualitative reading</p>
+      <p class="prod">answers: <b>the leaderboard, with the why attached</b></p>
+    </div>
+  </div>
+
+  <div class="key"><p><strong>Why "shape" is a long table.</strong> Facet schemas evolve: next month's model pass may add a new facet. Storing one row per <code>(facet_name, facet_value)</code> means a new facet is new rows, not a new column, so the mart survives schema evolution without a migration.</p></div>
+</section>
+
+<!-- ============ 7b WHY SILVER, NOT GOLD ============ -->
 <section id="why-gold" class="reveal">
-  <h2>Why gold, not silver</h2>
-  <p class="lede">Enrichment output can look like an ordinary transform, so why does it land in gold? Because silver has a property enrichment can never have: determinism.</p>
+  <h2>Why the map lives in silver, and gold joins</h2>
+  <p class="lede">Enrichment output can look like an ordinary transform, so which layer owns it? The rule is the determinism boundary: whatever is a pure function of raw data belongs in silver; whatever joins and aggregates belongs in gold.</p>
   <ul class="bullets">
-    <li><strong>Silver is hermetic and deterministic</strong> (ADR-0003: no LLM or API calls in the transform layer). Silver is a pure, replayable function of bronze: same input, same output, free to re-run. Enrichment is the opposite: stochastic, paid, external, rate-limited. AI output in silver would mean re-running silver re-calls (and re-pays for) the model, or silently serving stale cached results.</li>
-    <li><strong>Semantics.</strong> Silver <em>conforms</em> domain entities cleaned from the source; gold <em>adds analytics-ready meaning</em>. Facets, topics, summaries, and classification are added meaning, so they belong in gold.</li>
-    <li><strong>The spec says so.</strong> ADR-0001 names enrichment "an ingested source": a durable, versioned dataset. The analytics-facing enriched layer of our lake is gold.</li>
+    <li><strong>The raw-to-conformed map is silver's job.</strong> ADR-0003 keeps silver hermetic and deterministic: no LLM or API calls in the transform layer. Mapping a verbatim response onto columns is a pure, replayable function of bronze &mdash; same input, same output, free to re-run. That is exactly what silver is for.</li>
+    <li><strong>The verbatim response is bronze's job.</strong> ADR-0001 names enrichment output "an ingested source": a durable, versioned dataset observed from outside. Its as-observed landing is bronze, so <code>bronze_enrichment_raw</code> stores the verbatim response, immutable and append-only. A schema or mapping change re-derives the silver columns without re-calling the paid model.</li>
+    <li><strong>Gold is the join and aggregate layer.</strong> Facets, transcripts, and classification per channel are conformed facts. The owner's three questions are answered by joining and aggregating them &mdash; the wide per-post shape, creator rollups, facet lift, and top-post ranks. That analytic work is gold's whole job, and reshaping a mart never touches silver or bronze.</li>
   </ul>
   <div class="callout">
-    <span class="tag">Open decision: raw capture + deterministic remap (pending, not implemented)</span>
-    <p>The missing piece is two artifacts per enrichment, not one. First, the <strong>raw provider response</strong>: the verbatim, immutable, as-observed output, keyed by job/item plus provider, model, prompt hash, and analysis time. Ingest the response first (ADR-0001's own rule). Second, the <strong>mapped columns</strong>: a deterministic transform that validates, applies enums, and splits the response into the gold tables.</p>
-    <p>The payoff: a schema or mapping change re-derives the columns without re-calling the paid model; you can audit what the model actually said; and the write becomes a true raw-then-audit-then-publish. Today <code>gold_analyses.result_json</code> and <code>gold_growth_facets.growth_facets_json</code> are the half-version of this: parsed JSON stored inside gold, merged per row. Provenance (<code>provider</code>, <code>model</code>, <code>prompt_hash</code>, <code>schema_version</code>, <code>input_modality</code>, <code>content_mime_type</code>, <code>sampling_params_json</code>, <code>run_id</code>, <code>analysed_at</code>) is lineage: stamp it on the raw record AND carry it into gold. It is not a reason to move mapped columns into silver.</p>
-    <p>This is a recommendation recorded as an open decision in the spec (section 8). It is not implemented.</p>
+    <span class="tag">What changed in the re-layer</span>
+    <p>The previous design put the six AI tables directly in gold, with the raw-response capture recorded as an open decision and the mapping implicit in the harvest. The re-layered design settles it: the harvest lands verbatim responses in <code>bronze_enrichment_raw</code>, the raw-to-conformed map runs deterministically in silver (validation included), and gold keeps only the four analytic marts. The raw-then-conform-then-aggregate chain is now the model, not a pending recommendation.</p>
   </div>
 </section>
 
@@ -628,11 +745,11 @@ footer a{color:var(--ld-accent)}
 
   <figure>
     <div class="diag-title">How the names are built</div>
-    <svg viewBox="0 0 920 190" role="img" aria-label="table name pattern gold, channel token visual text or audio, artifact token annotations summaries transcripts or classification; provider lives in metadata not the name">
+    <svg viewBox="0 0 920 190" role="img" aria-label="table name pattern silver, channel token visual text or audio, artifact token annotations summaries transcripts or classification; provider lives in metadata not the name">
       <defs><marker id="n1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0e7490"/></marker></defs>
       <!-- pattern blocks -->
       <rect x="60" y="30" width="140" height="56" rx="10" fill="#eef2f6" stroke="#45525e" stroke-width="2"/>
-      <text x="130" y="56" text-anchor="middle" font-family="monospace" font-size="13" fill="#1c2733">gold_</text>
+      <text x="130" y="56" text-anchor="middle" font-family="monospace" font-size="13" fill="#1c2733">silver_</text>
       <text x="130" y="74" text-anchor="middle" font-size="10" fill="#45525e">layer, always first</text>
       <line x1="204" y1="58" x2="232" y2="58" stroke="#64748b" stroke-width="2" marker-end="url(#n1)"/>
       <rect x="236" y="30" width="190" height="56" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
@@ -647,15 +764,19 @@ footer a{color:var(--ld-accent)}
       <rect x="120" y="120" width="680" height="50" rx="10" fill="#fff" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="6 4"/>
       <text x="450" y="142" text-anchor="middle" font-size="12" fill="#b91c1c">The provider is NEVER in the table name.</text>
       <text x="450" y="160" text-anchor="middle" font-size="10.5" fill="#45525e">qwen and whisper live in the metadata columns, so swapping providers never renames a table.</text>
-      <text x="450" y="14" text-anchor="middle" font-size="10.5" fill="#64748b">gold_visual_annotations, gold_audio_transcripts, gold_content_classification</text>
+      <text x="450" y="14" text-anchor="middle" font-size="10.5" fill="#64748b">silver_visual_annotations, silver_audio_transcripts, silver_content_classification</text>
     </svg>
-    <figcaption>The channel token is <code>visual | text | audio</code>, never "video": the visual pass covers images AND video frames, so "video" would be the wrong word. The one cross-channel table is content-scoped: <code>gold_content_classification</code>.</figcaption>
+    <figcaption>The channel token is <code>visual | text | audio</code>, never "video": the visual pass covers images AND video frames, so "video" would be the wrong word. The one cross-channel table is content-scoped: <code>silver_content_classification</code>.</figcaption>
   </figure>
 
   <div class="rules">
     <div class="row">
+      <span class="k">The key is <code>platform</code>, not <code>domain</code>.</span>
+      <span class="v">Every silver enrichment table is keyed by <code>(post_id, platform)</code>, matching the repo's existing <code>profiles.platform</code>. <code>domain</code> means the content niche ("dev/AI") and is a body column of <code>silver_content_classification</code>. The old design used <code>domain</code> for both meanings at once; that collision is a hard bug this model removes.</span>
+    </div>
+    <div class="row">
       <span class="k">Provider never appears in the name.</span>
-      <span class="v">Vision happens to run on qwen and audio on whisper, but the names stay <code>gold_visual_*</code> and <code>gold_audio_*</code>. A provider swap is a metadata change, never a migration. The table keeps its name; the envelope records who produced each row.</span>
+      <span class="v">Vision happens to run on qwen and audio on whisper, but the names stay <code>silver_visual_*</code> and <code>silver_audio_*</code>. A provider swap is a metadata change, never a migration. The table keeps its name; the envelope records who produced each row.</span>
     </div>
     <div class="row">
       <span class="k">Channel is <code>visual | text | audio</code>, not "video".</span>
@@ -698,7 +819,7 @@ footer a{color:var(--ld-accent)}
     </div>
   </div>
 
-  <div class="key"><p><strong>No silent NULLs, no missing rows.</strong> An image post has no audio, but its <code>gold_audio_transcripts</code> row still exists with the explicit status <code>no_audio_source</code>. A query never has to guess whether NULL means "no audio" or "transcription failed or has not run yet". The same status column separates <code>pending</code>, <code>done</code>, and <code>empty_audio</code> (audio existed but contained no speech).</p></div>
+  <div class="key"><p><strong>No silent NULLs, no missing rows.</strong> An image post has no audio, but its <code>silver_audio_transcripts</code> row still exists with the explicit status <code>no_audio_source</code>. A query never has to guess whether NULL means "no audio" or "transcription failed or has not run yet". The same status column separates <code>pending</code>, <code>done</code>, and <code>empty_audio</code> (audio existed but contained no speech).</p></div>
 </section>
 
 <!-- ============ 10 GLOSSARY ============ -->
@@ -712,8 +833,10 @@ footer a{color:var(--ld-accent)}
     <dd>Automatic speech recognition: turning spoken audio into text. Whisper is our ASR engine. Also called speech-to-text (STT).</dd>
     <dt><code>async</code></dt>
     <dd>Work that starts and finishes at different times, so the caller does not wait for it. Our enrichment submits a job and harvests results later.</dd>
+    <dt><code>bronze_enrichment_raw</code></dt>
+    <dd>The bronze landing zone for every raw AI response, whatever workload produced it (vision, transcription, text LLM). Verbatim, immutable, append-only, idempotent on its natural key. Because it keeps what the model actually said, a schema or mapping change re-derives silver without re-calling the paid model.</dd>
     <dt><code>bronze / silver / gold</code></dt>
-    <dd>The medallion layers: bronze = raw as-scraped, silver = cleaned, gold = enriched with meaning. Serving views sit on top for dashboards.</dd>
+    <dd>The medallion layers: bronze = raw as-observed (scraped posts and verbatim AI responses), silver = cleaned posts and conformed enrichment tables, gold = the four analytic marts. Serving views sit on top for dashboards.</dd>
     <dt><code>DAG</code></dt>
     <dd>Directed acyclic graph: a drawing of dependencies where arrows mean "needs first". Acyclic means no circular waits.</dd>
     <dt><code>Dagster</code></dt>
@@ -721,9 +844,11 @@ footer a{color:var(--ld-accent)}
     <dt><code>facet</code></dt>
     <dd>One structured observation the AI records about a post, like <code>face_present</code> or <code>hook_type</code>. A table of facets is a table of answers to fixed questions.</dd>
     <dt><code>fan-out</code></dt>
-    <dd>One input producing several outputs. Here: one paid AI request's harvest fills one or more gold tables (today two each for the visual and text passes).</dd>
+    <dd>One input producing several outputs. Here: one paid AI request's response maps to one or more silver tables (today two each for the visual and text passes).</dd>
+    <dt><code>gold marts</code></dt>
+    <dd>The four analytic tables gold holds: <code>gold_post_enrichment</code> (the wide per-post shape), <code>gold_creator_performance</code>, <code>gold_content_shape_performance</code>, and <code>gold_top_posts</code>. Each of the latter three answers one of the owner's three questions.</dd>
     <dt><code>harvest</code></dt>
-    <dd>The step that retrieves finished results from the provider and writes them into gold with an idempotent upsert.</dd>
+    <dd>The step that retrieves finished results from the provider and lands them verbatim in <code>bronze_enrichment_raw</code>, idempotently.</dd>
     <dt><code>idempotent upsert</code></dt>
     <dd>Writing that is safe to repeat: re-running the harvest for the same job produces the same rows, never duplicates.</dd>
     <dt><code>ledger</code></dt>
@@ -741,7 +866,7 @@ footer a{color:var(--ld-accent)}
     <dt><code>seam</code></dt>
     <dd>The boundary where our pipeline hands work to an outside service and takes results back: submit, poll, harvest.</dd>
     <dt><code>serving views</code></dt>
-    <dd>Thin, read-only SQL views (like <code>v_post_metrics</code>) built on top of gold, shaped for dashboards rather than for storage.</dd>
+    <dd>Thin, read-only SQL views (like <code>v_post_metrics</code>) built on top of the gold marts, shaped for dashboards rather than for storage.</dd>
     <dt><code>submit</code></dt>
     <dd>The sub-second step that records an enrichment job in the shared ledger and sends it to the provider. No AI work happens in the submit.</dd>
     <dt><code>terminal status</code></dt>
@@ -763,7 +888,7 @@ footer a{color:var(--ld-accent)}
 </main>
 
 <footer>
-  <p>Companion onboarding page for the datalake repo, aimed at engineers new to the enrichment design. Content facts verified against <code>docs/enrichment-design.md</code> (settled 2026-09-09); open decisions (form-taxonomy overlap, <code>asr_model</code> vs envelope <code>model</code>) are flagged in the spec, not resolved here.</p>
+  <p>Companion onboarding page for the datalake repo, aimed at engineers new to the enrichment design. Content facts verified against <code>docs/enrichment-design.md</code>; re-layered 2026-09-10 to the strict-medallion model (raw responses in <code>bronze_enrichment_raw</code>, conform in silver, four analytic marts in gold). Open decisions (form-taxonomy overlap, <code>asr_model</code> vs envelope <code>model</code>) are flagged in the spec, not resolved here.</p>
   <p>Diagrams are hand-authored inline SVG. The page is self-contained and renders offline; Google Fonts load when online, with system fallbacks otherwise.</p>
 </footer>
 
