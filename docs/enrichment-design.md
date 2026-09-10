@@ -215,7 +215,10 @@ full shape + summary/transcript for qualitative reading.
 hands work to an outside system and takes results back — an interface, not a
 component. Nothing runs "in" the seam. Its contract is realized by exactly two
 things: one shared `external_jobs` ledger (a table BOTH sides read and write)
-and three verbs — `submit`, `poll-to-terminal`, `retrieve`.
+and three verbs — `submit`, `poll-to-terminal`, `retrieve`. Those three are the
+seam verbs, and they are the whole contract. `harvest` is Dagster's own step,
+not a seam verb: it composes `poll-to-terminal` + `retrieve` + the idempotent
+verbatim landing.
 
 What sits on each side of that boundary:
 
@@ -300,10 +303,11 @@ silver ─┬─(submit qwen-vision)─► visual job ─(harvest)─┬─► b
 
 Pattern per enrichment asset (the ADR-0007 bridge over ONE shared ledger):
 
-- **`submit`** — sub-second; workload executor = `qwen-vision` | `whisper` |
-  `text-LLM`; records the job in the shared `external_jobs` ledger with the
-  provider in metadata.
-- **`harvest`** — poll to terminal → retrieve → idempotent verbatim landing
+- **`submit`** (a seam verb, and Dagster's step that calls it) — sub-second;
+  workload executor = `qwen-vision` | `whisper` | `text-LLM`; records the job
+  in the shared `external_jobs` ledger with the provider in metadata.
+- **`harvest`** (Dagster's step; composes the seam verbs `poll-to-terminal` and
+  `retrieve`) — poll to terminal → retrieve → idempotent verbatim landing
   into `bronze_enrichment_raw`, per-pass provenance, loud per-item failure
   (an item-level invalid result is surfaced and re-discoverable, never marked
   done, never silent). Silver conform/validate runs downstream of the landing,

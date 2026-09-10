@@ -435,11 +435,11 @@ footer a{color:var(--ld-accent)}
 <section id="seam" class="reveal">
   <h2>The async seam: submit, poll, harvest</h2>
   <p class="lede">The seam is <strong>not a service and not a component</strong> &mdash; it is the <strong>boundary</strong> where our pipeline hands work to an outside system and takes results back. Nothing runs "in" the seam. Its contract is two things: one shared <code>external_jobs</code> ledger (a table both sides read and write) and three verbs. Every pass, whatever its engine, rides the same three-step lifecycle over that one ledger.</p>
-  <p><strong>Submit</strong> writes one job into the shared <code>external_jobs</code> ledger. It is sub-second, just a database insert plus an HTTP call; it never does AI work itself. <strong>Poll</strong>: a background check asks the provider whether the job reached a terminal state (done, failed, or empty). <strong>Harvest</strong>: when a job is done, we retrieve the results and land the verbatim response in <code>bronze_enrichment_raw</code>, append-only and idempotent on its natural key (re-running writes the same rows again, never duplicates). Silver's conform step then maps them into the six tables. Failures are loud: a bad item is surfaced and re-discoverable, never silently marked done.</p>
+  <p><strong>Submit</strong> writes one job into the shared <code>external_jobs</code> ledger. It is sub-second, just a database insert plus an HTTP call; it never does AI work itself. <strong>Poll-to-terminal</strong> (<code>poll</code> for short) asks the provider whether the job reached a terminal state (done, failed, or empty). <strong>Retrieve</strong> fetches the finished results. Those three are the <em>seam verbs</em>, and they are the whole contract. <strong>Harvest</strong> is Dagster's step that composes them: poll to terminal, retrieve, then land the verbatim response in <code>bronze_enrichment_raw</code>, append-only and idempotent on its natural key (re-running writes the same rows again, never duplicates). Silver's conform step then maps them into the six tables. Failures are loud: a bad item is surfaced and re-discoverable, never silently marked done.</p>
 
   <figure>
     <div class="diag-title">The submit-poll-harvest lifecycle</div>
-    <svg viewBox="0 0 920 300" role="img" aria-label="silver posts go to submit, which records in the external jobs ledger and calls the provider; poll checks status; harvest lands verbatim responses in bronze_enrichment_raw">
+    <svg viewBox="0 0 920 300" role="img" aria-label="silver posts go to submit, which records in the external jobs ledger and calls the provider; poll-to-terminal checks status until the job is terminal; harvest (a Dagster step) retrieves the results and lands them verbatim in bronze_enrichment_raw">
       <defs>
         <marker id="s1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0e7490"/></marker>
         <marker id="s2" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#64748b"/></marker>
@@ -471,7 +471,7 @@ footer a{color:var(--ld-accent)}
       <text x="600" y="84" text-anchor="middle" font-size="10.5" fill="#0e7490">job sent to provider</text>
       <!-- poll -->
       <rect x="460" y="160" width="150" height="56" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
-      <text x="535" y="184" text-anchor="middle" font-family="monospace" font-size="13" fill="#0e7490">2. poll</text>
+      <text x="535" y="184" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">2. poll-to-terminal</text>
       <text x="535" y="152" text-anchor="middle" font-size="10.5" fill="#64748b">until terminal</text>
       <line x1="434" y1="188" x2="456" y2="188" stroke="#64748b" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#s2)"/>
       <path d="M610 182 C 622 182 626 182 636 182" fill="none" stroke="#64748b" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#s2)"/>
@@ -489,6 +489,11 @@ footer a{color:var(--ld-accent)}
     </svg>
     <figcaption>Submit is fast and in-graph. The provider drains for hours. Poll checks the ledger and provider status. Harvest lands finished results verbatim into <code>bronze_enrichment_raw</code>, once per completed job, with per-item failures surfaced loudly; silver's deterministic conform step then maps them into the six tables.</figcaption>
   </figure>
+
+  <div class="callout">
+    <span class="tag">Vocabulary: three seam verbs, two Dagster steps</span>
+    <p>The <strong>seam verbs</strong> are <code>submit</code>, <code>poll-to-terminal</code>, and <code>retrieve</code> &mdash; the contract, and the whole of it. Dagster's <strong>steps</strong> are <code>submit</code> (which calls that verb) and <code>harvest</code> (which runs the other two verbs in sequence and lands the bytes). So <code>poll</code> in this page is shorthand for <code>poll-to-terminal</code>, and <code>harvest</code> is always a Dagster step &mdash; never a verb you call on the seam.</p>
+  </div>
 
   <div class="key"><p><strong>The seam is the lifecycle, not the scheduler.</strong> Executors are pluggable: <code>qwen-vision</code>, <code>whisper</code>, and <code>text-LLM</code> all ride this same submit-poll-harvest pattern over the one shared ledger. Whether a run is triggered by the CLI or by a Dagster sensor, the lifecycle is identical. A provider swap is a metadata change; the seam does not move.</p></div>
 </section>
@@ -864,7 +869,7 @@ footer a{color:var(--ld-accent)}
     <dt><code>gold marts</code></dt>
     <dd>The four analytic tables gold holds: <code>gold_post_enrichment</code> (the wide per-post shape), <code>gold_creator_performance</code>, <code>gold_content_shape_performance</code>, and <code>gold_top_posts</code>. Each of the latter three answers one of the owner's three questions.</dd>
     <dt><code>harvest</code></dt>
-    <dd>The step that retrieves finished results from the provider and lands them verbatim in <code>bronze_enrichment_raw</code>, idempotently.</dd>
+    <dd>Dagster's step &mdash; not a seam verb. It polls to terminal, retrieves the finished results, and lands them verbatim in <code>bronze_enrichment_raw</code>, idempotently: it composes the seam verbs <code>poll-to-terminal</code> and <code>retrieve</code>.</dd>
     <dt><code>idempotent upsert</code></dt>
     <dd>Writing that is safe to repeat: re-running the harvest for the same job produces the same rows, never duplicates.</dd>
     <dt><code>ledger</code></dt>
@@ -873,6 +878,8 @@ footer a{color:var(--ld-accent)}
     <dd>Running the code that produces (or refreshes) an asset. "Materialize the table" means "recompute it now".</dd>
     <dt><code>medallion</code></dt>
     <dd>The bronze-to-silver-to-gold layering pattern for lakes. Quality and meaning are added progressively, layer by layer.</dd>
+    <dt><code>poll-to-terminal</code></dt>
+    <dd>One of the three seam verbs: asking whether a job has reached a terminal state (done, failed, or empty). <code>poll</code> is shorthand for it.</dd>
     <dt><code>provenance</code></dt>
     <dd>The recorded origin of a value: which provider, which model, which prompt version, which run, when. Stored in the metadata envelope.</dd>
     <dt><code>prompt_hash</code></dt>
@@ -880,11 +887,11 @@ footer a{color:var(--ld-accent)}
     <dt><code>qwen-batch-service</code></dt>
     <dd>Our own external service (FastAPI + its own SQLite job store) that drains enrichment jobs against qwen via OpenRouter and does ffmpeg frame-sampling for reels. Separate process, separate durable state.</dd>
     <dt><code>seam</code></dt>
-    <dd>The boundary where our pipeline hands work to an outside service and takes results back: submit, poll, harvest.</dd>
+    <dd>The boundary where our pipeline hands work to an outside service and takes results back. Its whole contract is three verbs: <code>submit</code>, <code>poll-to-terminal</code>, and <code>retrieve</code>.</dd>
     <dt><code>serving views</code></dt>
     <dd>Thin, read-only SQL views (like <code>v_post_metrics</code>) shaped for dashboards rather than storage. They are built on the serving base <code>v_post_detail</code> and stay upstream of the gold marts, which compose them.</dd>
     <dt><code>submit</code></dt>
-    <dd>The sub-second step that records an enrichment job in the shared ledger and sends it to the provider. No AI work happens in the submit.</dd>
+    <dd>Both a seam verb and Dagster's step that calls it: sub-second, it records an enrichment job in the shared ledger and sends it to the provider. No AI work happens in the submit.</dd>
     <dt><code>terminal status</code></dt>
     <dd>A job state that will not change again: done, failed, or empty. Polling stops once a job is terminal.</dd>
   </dl>
