@@ -162,9 +162,16 @@ resolve silently (§9).
 
 ## 5. Gold — analytic marts
 
-Gold is NOT a per-channel mirror of the passes. It joins/aggregates the
-silver channel outputs into marts that answer the owner's three questions.
-Serving views derive from gold.
+Gold is NOT a per-channel mirror of the passes. It joins the silver channel
+outputs into marts that answer the owner's three questions.
+
+**Dependency direction (metrics-centralization):** the canonical metric
+views (`v_creator_profile`, `v_post_follower_context`, `v_post_metrics`,
+`v_creator_metrics`) are the SINGLE definition of every metric. The gold
+marts COMPOSE those views together with the silver enrichment outputs; they
+never restate tier buckets, momentum constants/windows, or engagement
+baselines. Only thin analytics projections derive from the marts — the marts
+are NOT upstream of the metric views.
 
 ### 5.1 `gold_post_enrichment` — the wide per-post shape
 
@@ -173,7 +180,16 @@ All channel outputs joined + engagement metrics + provenance. PK
 
 ### 5.2 `gold_creator_performance` — Q1: who is performing well in X domain?
 
-PK `(creator_id, platform)`: `follower_count`, `follower_tier`,
+PK `(creator_id, platform)`. This mart COMPOSES the canonical views —
+`v_creator_profile` (momentum_ratio, is_rising, avg_engagement_score,
+dominant_domain, total_posts) and `v_post_follower_context`
+(follower_tier, strictly at-post-time) — as its upstream, and adds ONLY the
+enrichment-derived content profile (domain slicing over the silver
+classification). It does NOT derive or restate `follower_tier`,
+`momentum_ratio`, `is_rising`, `avg_engagement_score`, or `dominant_domain`:
+the momentum windows/gates (28d/84d, ≥3 posts, ≥1.25, ≥5.0) and the tier
+buckets each have exactly one definition, in the canonical views (WATCHDOG
+metrics-centralization). Columns: `follower_count`, `follower_tier`,
 `post_count`, `median_engagement_score`, `avg_engagement_score`,
 `standout_rate`, `momentum_ratio`, `is_rising`, `dominant_domain`.
 
@@ -182,7 +198,11 @@ PK `(creator_id, platform)`: `follower_count`, `follower_tier`,
 LONG table, PK `(domain, topic, follower_tier, facet_name, facet_value)`:
 `n_posts`, `avg_engagement_z`, `standout_rate`, `lift_vs_slice_baseline`.
 "Shape" = the enrichment facets + metadata; the long form survives
-facet-schema evolution (a new facet is new rows, not a migration).
+facet-schema evolution (a new facet is new rows, not a migration). It groups
+the enrichment facets by `follower_tier` taken from `v_post_follower_context`
+and measures performance via `v_post_metrics` (engagement z / standout) —
+both canonical views, referenced as upstream; NO metric is re-derived here
+and the tier buckets are never restated.
 
 ### 5.4 `gold_top_posts` — Q3: what posts are doing well across all domains?
 
@@ -226,9 +246,10 @@ caption + bronze transcript ─► (submit text-LLM) ─► bronze_enrichment_ra
 caption + transcript + visual summaries ─► (submit text-LLM) ─► bronze_enrichment_raw
                                                             └─► silver_content_classification
 
-silver_* ─► gold_post_enrichment ─► gold_creator_performance
-                                 ├─► gold_content_shape_performance
-                                 └─► gold_top_posts
+canonical views (v_creator_profile, v_post_follower_context, v_post_metrics)
+─► gold_creator_performance
+canonical views + silver_* ─► gold_content_shape_performance
+gold_post_enrichment + canonical views ─► gold_top_posts
 ```
 
 Dependencies are **declared per asset**. Text passes wait on

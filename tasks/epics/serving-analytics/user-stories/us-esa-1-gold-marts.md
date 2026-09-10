@@ -28,7 +28,12 @@ joins over six channel tables.
 ## Contract
 
 - Strict medallion: gold is analytic marts, NOT per-channel mirrors of silver.
-  All joins/aggregations happen here; serving views derive from gold.
+  Dependency direction: the canonical metric views (`v_creator_profile`,
+  `v_post_follower_context`, `v_post_metrics`, `v_creator_metrics`) are the
+  SINGLE metric definition; the marts COMPOSE those views together with the
+  silver enrichment outputs and MUST NOT restate tier buckets or momentum
+  constants (single definition — WATCHDOG metrics-centralization); only thin
+  analytics projections derive from the marts.
 - Keys are `(post_id, platform)` / `(creator_id, platform)` — `platform`
   matches `profiles.platform`; `domain` means the CONTENT niche
   (dev/AI/tech/indie/data/AI-engineer), never the platform. This resolves the
@@ -44,14 +49,22 @@ joins over six channel tables.
       `silver_audio_transcripts`, `silver_text_annotations`,
       `silver_text_summaries`, `silver_content_classification`) joined +
       engagement metrics + provenance. PK `(post_id, platform)`.
-- AC2: `gold_creator_performance` (Q1) — PK `(creator_id, platform)`:
-      follower_count, follower_tier, post_count, median_engagement_score,
+- AC2: `gold_creator_performance` (Q1) — PK `(creator_id, platform)`;
+      COMPOSES `v_creator_profile` (momentum_ratio, is_rising,
+      avg_engagement_score, dominant_domain, total_posts) and
+      `v_post_follower_context` (follower_tier) as upstream, adding ONLY the
+      enrichment-derived content profile; columns: follower_count,
+      follower_tier, post_count, median_engagement_score,
       avg_engagement_score, standout_rate, momentum_ratio, is_rising,
-      dominant_domain; filterable by domain (content niche).
+      dominant_domain; filterable by domain (content niche). Does NOT
+      re-derive any of those metrics.
 - AC3: `gold_content_shape_performance` (Q2) — LONG table, PK
       `(domain, topic, follower_tier, facet_name, facet_value)`: n_posts,
-      avg_engagement_z, standout_rate, lift_vs_slice_baseline; long form so
-      facet-schema evolution does not break the mart.
+      avg_engagement_z, standout_rate, lift_vs_slice_baseline; groups the
+      enrichment facets by `follower_tier` from `v_post_follower_context`
+      and measures performance via `v_post_metrics` (engagement z /
+      standout); NO metric re-derived. Long form so facet-schema evolution
+      does not break the mart.
 - AC4: `gold_top_posts` (Q3) — PK `(post_id, platform)`: rank/percentile
       across ALL domains, joined to the full content shape + summary/transcript
       for qualitative reading.

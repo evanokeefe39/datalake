@@ -673,13 +673,13 @@ footer a{color:var(--ld-accent)}
       <rect x="600" y="20" width="290" height="86" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
       <text x="745" y="44" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">gold_creator_performance</text>
       <text x="745" y="64" text-anchor="middle" font-size="10" fill="#45525e">Q1: who performs in domain X?</text>
-      <text x="745" y="80" text-anchor="middle" font-size="10" fill="#45525e">followers, standout rate, momentum</text>
+      <text x="745" y="80" text-anchor="middle" font-size="10" fill="#45525e">composes v_creator_profile, v_post_follower_context</text>
       <!-- Q2 mart -->
       <rect x="600" y="122" width="290" height="86" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
       <text x="745" y="146" text-anchor="middle" font-family="monospace" font-size="12" fill="#0055A4">gold_content_shape_performance</text>
-      <text x="745" y="166" text-anchor="middle" font-size="10" fill="#45525e">Q2: what shape performs, per</text>
-      <text x="745" y="182" text-anchor="middle" font-size="10" fill="#45525e">domain, topic, follower tier?</text>
-      <!-- Q3 mart -->
+      <text x="745" y="166" text-anchor="middle" font-size="10" fill="#45525e">Q2: what shape performs, per domain,</text>
+      <text x="745" y="182" text-anchor="middle" font-size="10" fill="#45525e">topic, and follower tier?</text>
+      <text x="745" y="198" text-anchor="middle" font-size="10" fill="#45525e">tiers via v_post_follower_context; z via v_post_metrics</text>
       <rect x="600" y="224" width="290" height="86" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
       <text x="745" y="248" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">gold_top_posts</text>
       <text x="745" y="268" text-anchor="middle" font-size="10" fill="#45525e">Q3: posts doing well across all</text>
@@ -688,9 +688,9 @@ footer a{color:var(--ld-accent)}
       <path d="M245 140 C 430 140 470 63 596 63" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#g1)"/>
       <line x1="245" y1="170" x2="596" y2="170" stroke="#0055A4" stroke-width="2" marker-end="url(#g3)"/>
       <path d="M245 200 C 430 200 470 267 596 267" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#g2)"/>
-      <text x="420" y="310" text-anchor="middle" font-size="11" fill="#64748b">Every mart is a join or aggregate over gold_post_enrichment. No question requires re-calling the AI.</text>
+      <text x="420" y="322" text-anchor="middle" font-size="11" fill="#64748b">Every mart joins the canonical serving views (one metric definition) with the enrichment facets. No metric logic is restated.</text>
     </svg>
-    <figcaption><code>gold_post_enrichment</code> is the wide per-post table: every channel output joined on <code>(post_id, platform)</code>, plus engagement metrics and provenance. The three question-marts aggregate from it: creators in a domain, content shapes per domain/topic/follower tier, and top posts everywhere, each joined back to its full shape for qualitative reading. Serving views derive from these marts.</figcaption>
+    <figcaption><code>gold_post_enrichment</code> is the wide per-post table: every channel output joined on <code>(post_id, platform)</code>, plus engagement metrics and provenance. The three question-marts are built from it: creators in a domain, content shapes per domain/topic/follower tier, and top posts everywhere, each joined back to its full shape for qualitative reading. The marts compose the canonical serving views; only thin analytics projections derive from the marts.</figcaption>
   </figure>
 
   <div class="tgrid">
@@ -704,12 +704,14 @@ footer a{color:var(--ld-accent)}
       <span class="tname">gold_creator_performance</span>
       <span class="art">mart for Q1: who is performing well in X domain?</span>
       <p class="cols">keyed by <code>(creator_id, platform)</code>: <code>follower_count</code> &middot; <code>follower_tier</code> &middot; <code>post_count</code> &middot; <code>median_engagement_score</code> &middot; <code>avg_engagement_score</code> &middot; <code>standout_rate</code> &middot; <code>momentum_ratio</code> &middot; <code>is_rising</code> &middot; <code>dominant_domain</code></p>
+      <p class="cols">composes <code>v_creator_profile</code> (momentum_ratio, is_rising, avg_engagement_score, dominant_domain) and <code>v_post_follower_context</code> (follower_tier) &middot; defines no metric logic itself</p>
       <p class="prod">answers: <b>who performs, filterable by domain</b></p>
     </div>
     <div class="tcard">
       <span class="tname">gold_content_shape_performance</span>
       <span class="art">mart for Q2: what shape of content performs in X domain / X topic / for X follower count?</span>
       <p class="cols">LONG table keyed by <code>(domain, topic, follower_tier, facet_name, facet_value)</code>: <code>n_posts</code> &middot; <code>avg_engagement_z</code> &middot; <code>standout_rate</code> &middot; <code>lift_vs_slice_baseline</code></p>
+      <p class="cols">groups the facets by <code>follower_tier</code> taken from <code>v_post_follower_context</code>, measured with <code>v_post_metrics</code> (engagement z, standout) &middot; re-derives no metric</p>
       <p class="prod">answers: <b>which facets lift engagement, and by how much</b></p>
     </div>
     <div class="tcard">
@@ -719,6 +721,8 @@ footer a{color:var(--ld-accent)}
       <p class="prod">answers: <b>the leaderboard, with the why attached</b></p>
     </div>
   </div>
+
+  <div class="key"><p><strong>One definition per metric.</strong> The serving views own the metric logic: <code>v_post_follower_context</code> defines <code>follower_tier</code>, <code>v_creator_profile</code> defines <code>momentum_ratio</code>, <code>is_rising</code>, <code>avg_engagement_score</code>, and <code>dominant_domain</code>, and <code>v_post_metrics</code> defines engagement z and standout. The gold marts only join and compose these views with the enrichment facets; they never restate the tier buckets or the momentum constants, so a metric changes in exactly one place.</p></div>
 
   <div class="key"><p><strong>Why "shape" is a long table.</strong> Facet schemas evolve: next month's model pass may add a new facet. Storing one row per <code>(facet_name, facet_value)</code> means a new facet is new rows, not a new column, so the mart survives schema evolution without a migration.</p></div>
 </section>

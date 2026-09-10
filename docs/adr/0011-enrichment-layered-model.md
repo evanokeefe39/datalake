@@ -72,21 +72,30 @@ Six tables — `silver_visual_annotations`, `silver_visual_summaries`,
 1. `gold_post_enrichment` — the wide per-post shape: all channel outputs
    joined + engagement metrics + provenance. PK `(post_id, platform)`.
 2. `gold_creator_performance` — Q1 ("who is performing well in X domain?").
-   PK `(creator_id, platform)`: `follower_count`, `follower_tier`,
-   `post_count`, `median_engagement_score`, `avg_engagement_score`,
-   `standout_rate`, `momentum_ratio`, `is_rising`, `dominant_domain`.
+   PK `(creator_id, platform)`. COMPOSES the canonical views
+   (`v_creator_profile` for momentum_ratio/is_rising/avg_engagement_score/
+   dominant_domain/total_posts; `v_post_follower_context` for follower_tier)
+   as its upstream and adds ONLY the enrichment-derived content profile —
+   it does NOT derive or restate the tier buckets or the momentum
+   windows/gates (each has exactly one definition, in the canonical views).
+   Columns: `follower_count`, `follower_tier`, `post_count`,
+   `median_engagement_score`, `avg_engagement_score`, `standout_rate`,
+   `momentum_ratio`, `is_rising`, `dominant_domain`.
 3. `gold_content_shape_performance` — Q2 ("what is the shape of content that
    performs well in X domain / X topic / for X follower count?"). LONG table,
    PK `(domain, topic, follower_tier, facet_name, facet_value)`:
    `n_posts`, `avg_engagement_z`, `standout_rate`, `lift_vs_slice_baseline`.
-   ("Shape" = the enrichment facets + metadata; long form survives
-   facet-schema evolution.)
-4. `gold_top_posts` — Q3 ("what posts are doing well across all domains, and
-   what is the shape of their content?"). PK `(post_id, platform)`;
-   rank/percentile across all domains, joined to the full shape +
-   summary/transcript for qualitative reading.
+   Groups the enrichment facets by `follower_tier` from
+   `v_post_follower_context` and measures performance via `v_post_metrics`
+   (engagement z / standout); no metric is re-derived and tier buckets are
+   never restated. ("Shape" = the enrichment facets + metadata; long form
+   survives facet-schema evolution.)
 
-Serving views derive from gold.
+**Dependency direction (metrics-centralization):** the canonical metric
+views are the SINGLE metric definition; the gold marts COMPOSE them together
+with the silver enrichment outputs; only thin analytics projections derive
+from the marts. The marts MUST NOT restate tier buckets or momentum
+constants — they reference the canonical views.
 
 ## Why the raw→conformed map is silver (supersedes ADR-0010's layering)
 
