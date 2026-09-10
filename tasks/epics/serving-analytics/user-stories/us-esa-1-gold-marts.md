@@ -81,7 +81,10 @@ joins over six channel tables.
       `v_quality_trend`, `v_domain_coverage`, `v_profile_metrics`,
       `v_overview`, `v_standout_calendar`, `dim_profile`, `dim_date`) still
       exist and still resolve over `v_post_detail`. None is dropped, renamed,
-      or re-pointed at a mart (no cycle).
+      or re-pointed at a mart (no cycle). Authoritative list: `DUCKDB_VIEWS`
+      (`src/datalake/defs/common/schemas.py`); enforced by
+      `tests/operational/test_state_compatibility.py` (parametrized over
+      `EXPECTED_DUCKDB_VIEWS` against the live DB).
 
 ## Definition of done
 
