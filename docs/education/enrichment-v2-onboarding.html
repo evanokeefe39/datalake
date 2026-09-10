@@ -613,6 +613,10 @@ footer a{color:var(--ld-accent)}
     </div>
   </div>
 
+  <p>A caution about the word <em>ledger</em>: it is easy to read it as &#8220;the place the job&#8217;s status lives&#8221;, and that reading is wrong. The status of an external job only ever lives with whoever is running it &mdash; Google holds a gemini batch&#8217;s state, the qwen service holds its own. What the ledger holds is ours and only ours: which domain items went into which external job, the payload each item carried, how many attempts it has had, what has permanently failed, and the guard that stops the same item being submitted twice. The provider has no idea what a <code>post_id</code> is &mdash; the qwen service is deliberately domain-agnostic, so it stays reusable &mdash; which means that mapping has to live on our side somewhere.</p>
+
+  <p>And <code>ops.sqlite</code> is not only an enrichment ledger. It also carries the scrape-time media byte cache, the creator and profile registry, and the dead-letter triage table &mdash; none of which have a Dagster equivalent. It is the pipeline&#8217;s operational store that happens to also hold the enrichment ledger, not a purpose-built enrichment queue.</p>
+
   <div class="callout">
     <span class="tag">The harvest sensor ships stopped</span>
     <p>The sensor is declared <code>default_status=DefaultSensorStatus.STOPPED</code>, and both schedules ship stopped for the same reason. So it watches nothing until somebody starts it in the Dagster UI or the CLI &mdash; <strong>enabling it is a required deploy step</strong>, not something Dagster does for you. The sensor is still a real fix for the old &#8220;finished batch sat unharvested overnight&#8221; bug, but it is armed by hand. Left stopped, it behaves exactly like the one-shot poller it replaced.</p>
