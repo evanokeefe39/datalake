@@ -2,8 +2,6 @@
 
 import json
 
-import pytest
-
 from datalake.defs.enrichment.facets import parse_universal_response
 from datalake.defs.enrichment.growth_facets_schema import (
     GROWTH_FACETS_JSON_SCHEMA,

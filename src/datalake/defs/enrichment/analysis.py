@@ -31,7 +31,6 @@ import random
 from datetime import datetime, timedelta, timezone
 
 from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLiteResource
-
 from datalake.defs.common.schemas import sqlite_ddl
 from datalake.defs.enrichment.batch import (
     MAX_ATTEMPTS,

@@ -49,7 +49,7 @@ import uuid
 
 from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.enrichment import analysis as ew
-from datalake.defs.enrichment import facets
+from datalake.defs.enrichment import facets, qwen_client
 from datalake.defs.enrichment.growth_facets_schema import (
     GROWTH_FACETS_SCHEMA_VERSION,
     VISUAL_FACET_FIELDS,
@@ -59,13 +59,11 @@ from datalake.defs.enrichment.media_paths import (
     media_urls_to_local_paths,
 )
 from datalake.defs.enrichment.prompts import (
-    CURRENT_FACETS_PROMPT_HASH,
-    CURRENT_TEXT_FACETS_PROMPT_HASH,
     _DEFAULT_QWEN_MODEL,
+    CURRENT_TEXT_FACETS_PROMPT_HASH,
     build_growth_facets_prompt,
     build_text_facets_prompt,
 )
-from datalake.defs.enrichment import qwen_client
 
 logger = logging.getLogger("enrichment.facets_batch")
 

@@ -35,7 +35,6 @@ import logging
 from dagster import (
     AssetMaterialization,
     DefaultSensorStatus,
-    OpExecutionContext,
     RunRequest,
     SensorEvaluationContext,
     SensorResult,
@@ -46,6 +45,7 @@ from dagster import (
 
 from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLiteResource
 from datalake.defs.enrichment import gemini_batch
+from datalake.defs.enrichment.analysis import write_gold
 from datalake.defs.enrichment.assets import ensure_gold_analyses
 from datalake.defs.enrichment.batch import (
     MAX_ATTEMPTS,
@@ -57,7 +57,6 @@ from datalake.defs.enrichment.batch import (
     mark_complete,
     set_gemini_batch_status,
 )
-from datalake.defs.enrichment.analysis import write_gold
 
 logger = logging.getLogger("enrichment.harvest")
 

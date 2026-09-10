@@ -74,9 +74,7 @@ from datalake.defs.enrichment.growth_facets_schema import (  # noqa: E402
     CTA_TYPES,
     GROWTH_FACETS_SCHEMA_VERSION,
     HOOK_TYPES,
-    TEXT_FACET_FIELDS,
     VALUE_DEPTHS,
-    VALUE_MEDIUM_EXAMPLES,
 )
 
 _VISUAL_CODEBOOK = """\

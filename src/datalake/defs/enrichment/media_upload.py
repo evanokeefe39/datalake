@@ -26,11 +26,11 @@ import json
 import logging
 import pkgutil
 
-from dagster import AssetMaterialization, OpDefinition, op, job
+from dagster import AssetMaterialization, OpDefinition, job, op
 
 from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLiteResource
-from datalake.defs.enrichment.batch import _ensure_schema
 from datalake.defs.enrichment.analysis import _SILVER_TABLES  # single source of truth
+from datalake.defs.enrichment.batch import _ensure_schema
 from datalake.defs.enrichment.media_cache import lookup_or_upload_all
 
 logger = logging.getLogger("enrichment.media_upload")
