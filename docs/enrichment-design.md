@@ -211,20 +211,25 @@ full shape + summary/transcript for qualitative reading.
 
 ## 6. The seam, end to end
 
-The boundary between Dagster and everything outside it:
+**The seam is not infrastructure.** It is the BOUNDARY where our pipeline
+hands work to an outside system and takes results back — an interface, not a
+component. Nothing runs "in" the seam. Its contract is realized by exactly two
+things: one shared `external_jobs` ledger (a table BOTH sides read and write)
+and three verbs — `submit`, `poll-to-terminal`, `retrieve`.
 
-- **Dagster (our orchestrator):** discovery, batching, `submit`
-  (sub-second), `harvest` (idempotent bronze landing). It owns orchestration,
-  lineage, quality. **It never calls a provider directly.**
-- **The Seam:** the shared `external_jobs` ledger plus the
-  `submit / poll-to-terminal / retrieve` verbs. This is the ONLY coupling
-  between Dagster and the outside.
-- **External infra (separate processes/containers, own durable state):**
-  `qwen-batch-service` (FastAPI + its own SQLite job store; drains jobs
-  against OpenRouter/qwen; server-side ffmpeg frame-sampling for reels) and
-  `whisper` (faster-whisper ASR, the service's `whisper_local` executor).
-- **Providers (outside our infra):** OpenRouter → qwen (vision + text). ASR
-  is local (no vendor).
+What sits on each side of that boundary:
+
+- **Dagster (our orchestrator, INSIDE the boundary):** discovery, batching,
+  `submit` (sub-second), `harvest` (idempotent bronze landing). It owns
+  orchestration, lineage, quality. **It never calls a provider directly** —
+  the ledger is the only thing that crosses the boundary.
+- **External infra (OUTSIDE the boundary; separate processes/containers, own
+  durable state):** `qwen-batch-service` (FastAPI + its own SQLite job store;
+  drains jobs against OpenRouter/qwen; server-side ffmpeg frame-sampling for
+  reels) and `whisper` (faster-whisper ASR, the service's `whisper_local`
+  executor).
+- **Providers (outside our infra entirely):** OpenRouter → qwen (vision +
+  text). ASR is local (no vendor).
 
 **Separation of concerns:** Dagster owns orchestration/lineage/quality; the
 service owns durability/retry/backoff/dead-letter/media handling; the ledger
