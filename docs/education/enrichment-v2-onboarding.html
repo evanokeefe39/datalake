@@ -434,7 +434,7 @@ footer a{color:var(--ld-accent)}
 <!-- ============ 6 THE ASYNC SEAM ============ -->
 <section id="seam" class="reveal">
   <h2>The async seam: submit, poll, harvest</h2>
-  <p class="lede">One shared job ledger sits between our pipeline and the AI providers. Every pass, whatever its engine, rides the same three-step lifecycle.</p>
+  <p class="lede">The seam is <strong>not a service and not a component</strong> &mdash; it is the <strong>boundary</strong> where our pipeline hands work to an outside system and takes results back. Nothing runs "in" the seam. Its contract is two things: one shared <code>external_jobs</code> ledger (a table both sides read and write) and three verbs. Every pass, whatever its engine, rides the same three-step lifecycle over that one ledger.</p>
   <p><strong>Submit</strong> writes one job into the shared <code>external_jobs</code> ledger. It is sub-second, just a database insert plus an HTTP call; it never does AI work itself. <strong>Poll</strong>: a background check asks the provider whether the job reached a terminal state (done, failed, or empty). <strong>Harvest</strong>: when a job is done, we retrieve the results and land the verbatim response in <code>bronze_enrichment_raw</code>, append-only and idempotent on its natural key (re-running writes the same rows again, never duplicates). Silver's conform step then maps them into the six tables. Failures are loud: a bad item is surfaced and re-discoverable, never silently marked done.</p>
 
   <figure>
@@ -497,18 +497,18 @@ footer a{color:var(--ld-accent)}
 <section id="seam-e2e" class="reveal">
   <h2>The seam, end to end</h2>
   <p class="lede">The lifecycle above is only half the story. This is the full boundary: who talks to whom, and who owns what.</p>
-  <p>Four zones, left to right. <strong>Dagster</strong> (our orchestrator) owns discovery, batching, the sub-second <code>submit</code>, and the idempotent bronze <code>harvest</code>. It owns orchestration, lineage, and quality &mdash; and it <strong>never calls a provider directly</strong>. The only thing it ever touches is <strong>the seam</strong>: the shared <code>external_jobs</code> ledger plus the three verbs <code>submit</code>, <code>poll-to-terminal</code>, and <code>retrieve</code>. That ledger is the ONLY coupling between Dagster and the outside world. Harvested rows are keyed by <code>(post_id, platform, workload, prompt_hash, run_id)</code>, so re-running the same job re-lands the same rows instead of duplicating them.</p>
+  <p>Read the diagram as <strong>one boundary, not four tiers</strong>. The seam is the dashed line: a boundary and a contract, with nothing running inside it. <strong>Dagster</strong> (our orchestrator) sits <em>inside</em> the boundary and owns discovery, batching, the sub-second <code>submit</code>, and the idempotent bronze <code>harvest</code> &mdash; orchestration, lineage, quality &mdash; and it <strong>never calls a provider directly</strong>. The only thing that crosses the boundary is the contract: the shared <code>external_jobs</code> ledger (a table <em>both</em> sides read and write) plus the three verbs <code>submit</code>, <code>poll-to-terminal</code>, and <code>retrieve</code>. Everything to the right of the line &mdash; the services and the providers &mdash; is outside our orchestrator. Harvested rows are keyed by <code>(post_id, platform, workload, prompt_hash, run_id)</code>, so re-running the same job re-lands the same rows instead of duplicating them.</p>
 
   <figure>
-    <div class="diag-title">Boundary: Dagster &rarr; the seam &rarr; external infra &rarr; providers</div>
-    <svg viewBox="0 0 920 320" role="img" aria-label="Dagster talks only to the external_jobs ledger; the ledger hands jobs to qwen-batch-service and whisper; qwen-batch-service drains jobs against providers via OpenRouter; whisper runs locally with no vendor">
+    <div class="diag-title">The seam is a boundary, not a tier</div>
+    <svg viewBox="0 0 920 320" role="img" aria-label="A dashed vertical boundary labelled the seam separates Dagster (inside) from the external services and providers (outside). The shared external_jobs ledger straddles the boundary as the contract both sides read and write: Dagster submits jobs into it and harvests results back out; the services drain it and write status back">
       <defs>
         <marker id="e1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0e7490"/></marker>
         <marker id="e2" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#64748b"/></marker>
       </defs>
       <!-- stage labels -->
-      <text x="105" y="22" text-anchor="middle" font-family="monospace" font-size="11" letter-spacing="1" fill="#64748b">DAGSTER (OURS)</text>
-      <text x="315" y="22" text-anchor="middle" font-family="monospace" font-size="11" letter-spacing="1" fill="#64748b">THE SEAM</text>
+      <text x="110" y="22" text-anchor="middle" font-family="monospace" font-size="11" letter-spacing="1" fill="#64748b">DAGSTER (OURS)</text>
+      <text x="340" y="22" text-anchor="middle" font-family="monospace" font-size="11" letter-spacing="1" fill="#64748b">THE SEAM (A BOUNDARY)</text>
       <text x="555" y="22" text-anchor="middle" font-family="monospace" font-size="11" letter-spacing="1" fill="#64748b">OUR EXTERNAL INFRA</text>
       <text x="805" y="22" text-anchor="middle" font-family="monospace" font-size="11" letter-spacing="1" fill="#64748b">PROVIDERS</text>
       <!-- Dagster -->
@@ -520,21 +520,21 @@ footer a{color:var(--ld-accent)}
       <text x="105" y="108" text-anchor="middle" font-family="monospace" font-size="13" fill="#1c2733">dagster</text>
       <text x="105" y="126" text-anchor="middle" font-size="10.5" fill="#45525e">discovery, batching,</text>
       <text x="105" y="142" text-anchor="middle" font-size="10.5" fill="#45525e">submit, harvest</text>
-      <line x1="192" y1="103" x2="216" y2="103" stroke="#0e7490" stroke-width="2" marker-end="url(#e1)"/>
-      <!-- the seam ledger -->
-      <rect x="220" y="48" width="190" height="110" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5 4"/>
-      <g stroke="#64748b" stroke-width="2" fill="none">
-        <rect x="303" y="60" width="24" height="26" rx="3"/>
-        <line x1="308" y1="68" x2="322" y2="68"/>
-        <line x1="308" y1="74" x2="322" y2="74"/>
-        <line x1="308" y1="80" x2="318" y2="80"/>
-      </g>
-      <text x="315" y="108" text-anchor="middle" font-family="monospace" font-size="13" fill="#45525e">external_jobs</text>
-      <text x="315" y="126" text-anchor="middle" font-size="10.5" fill="#64748b">the shared ledger</text>
-      <text x="315" y="142" text-anchor="middle" font-size="10.5" fill="#64748b">submit / poll / retrieve</text>
-      <!-- arrows to services -->
-      <line x1="412" y1="80" x2="436" y2="80" stroke="#0e7490" stroke-width="2" marker-end="url(#e1)"/>
-      <path d="M280 158 C 280 190 380 190 436 190" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#e1)"/>
+      <!-- the seam: a boundary, not a box -->
+      <line x1="340" y1="34" x2="340" y2="266" stroke="#64748b" stroke-width="1.5" stroke-dasharray="6 5"/>
+      <!-- the ledger straddles the boundary: the contract both sides touch -->
+      <rect x="278" y="150" width="124" height="60" rx="8" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5 4"/>
+      <text x="340" y="172" text-anchor="middle" font-family="monospace" font-size="11.5" fill="#45525e">external_jobs</text>
+      <text x="340" y="190" text-anchor="middle" font-size="9.5" fill="#64748b">the shared contract</text>
+      <text x="340" y="203" text-anchor="middle" font-size="9.5" fill="#64748b">both sides read + write</text>
+      <!-- Dagster submits into the contract, harvests back out -->
+      <path d="M190 92 L274 158" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#e1)"/>
+      <text x="212" y="84" font-size="10" fill="#0e7490">submit</text>
+      <path d="M274 196 L186 150" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#e1)"/>
+      <text x="212" y="220" font-size="10" fill="#0e7490">harvest</text>
+      <!-- the services drain the contract -->
+      <path d="M402 162 C 424 162 424 84 436 84" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#e1)"/>
+      <path d="M402 196 C 424 196 424 190 436 190" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#e1)"/>
       <!-- qwen-batch-service -->
       <rect x="440" y="40" width="230" height="80" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
       <g stroke="#0e7490" stroke-width="2" fill="none">
@@ -571,14 +571,14 @@ footer a{color:var(--ld-accent)}
       <text x="130" y="236" text-anchor="middle" font-size="10.5" fill="#45525e">Dagster owns orchestration,</text>
       <text x="130" y="252" text-anchor="middle" font-size="10.5" fill="#45525e">lineage, quality;</text>
       <text x="130" y="268" text-anchor="middle" font-size="10.5" fill="#45525e">never calls a provider directly</text>
-      <text x="315" y="236" text-anchor="middle" font-size="10.5" fill="#45525e">the ledger is the</text>
-      <text x="315" y="252" text-anchor="middle" font-size="10.5" fill="#45525e">contract between them</text>
+      <text x="340" y="286" text-anchor="middle" font-size="10.5" fill="#45525e">the contract: one ledger + three verbs</text>
+      <text x="340" y="300" text-anchor="middle" font-size="10.5" fill="#45525e">&mdash; nothing runs in the seam</text>
       <text x="555" y="262" text-anchor="middle" font-size="10.5" fill="#45525e">services own durability, retry, backoff,</text>
       <text x="555" y="278" text-anchor="middle" font-size="10.5" fill="#45525e">dead-letter, media handling</text>
       <text x="805" y="262" text-anchor="middle" font-size="10.5" fill="#45525e">outside our infra entirely;</text>
       <text x="805" y="278" text-anchor="middle" font-size="10.5" fill="#45525e">separate processes/containers</text>
     </svg>
-    <figcaption>Dagster's only coupling is the ledger and its three verbs. The services are separate processes with their own durable state: they drain jobs, retry, and handle media, and report back through the ledger. Vision and text go out through OpenRouter to qwen; transcription never leaves our infra.</figcaption>
+    <figcaption>The dashed line is the seam: a boundary and a contract, not a service &mdash; nothing runs inside it. The <code>external_jobs</code> ledger is the shared artifact that straddles it, and it is the only thing that crosses: Dagster writes jobs into it and harvests results out; the services read jobs from it, retry, handle media, and write status back. They are separate processes with their own durable state. Vision and text go out through OpenRouter to qwen; transcription never leaves our infra.</figcaption>
   </figure>
 
   <div class="key"><p><strong>Separation of concerns, in one line each.</strong> Dagster owns orchestration, lineage, and quality, and never calls a provider directly. The external services own durability, retry, backoff, dead-letter, and media handling. The ledger is the contract between them: both sides read and write it, and nothing else crosses the boundary.</p></div>
