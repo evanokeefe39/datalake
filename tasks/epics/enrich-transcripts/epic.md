@@ -1,17 +1,39 @@
-# Epic E-ENRICH-TRANSCRIPTS — ASR transcript capture (local default + cloud burst)
+# Epic E-ENRICH-TRANSCRIPTS — ASR transcripts (local default + cloud burst)
 
 - **Theme:** Richer media-grounded enrichment (new)
 - **Owner:** dlc-worker
 - **Status:** Open (design) — feasibility confirmed, no build
-- **Depends on:** E-MEDIA (cached video bytes)
 - **Feeds:** E-ENRICH-FACETS (text-layer), E-SERVING-ANALYTICS (search/embeddings)
-- **Relates to:** (none — deliberately **independent of the Gemini batch engine**)
-
+- **Relates to:** E-ENRICH-FACETS (US-EFAC-4 text call consumes transcripts —
+  DAG: `gold_text_annotations` depends on `gold_audio_transcripts`),
+  E-ENRICH-SUMMARIES (US-ESUM-3 transcript summary; DAG:
+  `gold_text_summaries` and `gold_content_classification` also depend on
+  `gold_audio_transcripts`). Deliberately independent
+  of the remote-async enrichment engine (no Gemini/qwen dependency).
 ## Outcome
-A `transcript` text column per video, produced **locally and offline** (ffmpeg
+A durable transcript per video in `gold_audio_transcripts`, produced **locally
+and offline** (ffmpeg
 audio-extract from the cached video → faster-whisper) at ~$0/min — giving the
 text-layer facets their spoken channel and enabling search, with **no Gemini
 dependency and no scrape-time expiry race**.
+## Workload + storage contract (audit 2026-09-09; reconciled to the settled
+## contract 2026-09-10)
+- **Workload mapping:** audio → STT (whisper / faster-whisper). STT is a LOCAL
+  resumable-job pattern, NOT the remote-async ingest seam (ledger → poll →
+  retrieve): there is no remote terminal state to poll. Its pluggability sits
+  at the EXECUTOR level (`local` | `gcp-spot`, US-ETR-4) — see
+  `data/dev/dlc-enrichment-audit.md` §4.
+- **Home table:** `gold_audio_transcripts` — keys `post_id`, `domain`;
+  `transcript`, `transcript_status` (`no_audio_source` | `pending` | `done` |
+  `empty_audio`), `audio_present`, `asr_model`, `language`, `transcribed_at` —
+  own provenance (ASR model version, not a prompt hash). The transcript is a
+  durable derived artifact, not a facet and not a summary; it does not ride
+  `gold_visual_annotations` / `gold_text_annotations`.
+- **Audio-absent explicitness (product intent):** images/carousels have no
+  audio, so their rows carry `transcript_status = no_audio_source` — the
+  schema must distinguish that from "not yet transcribed" (`pending`) and
+  "transcribed but empty (music-only)" (`empty_audio`). Consumers
+  (US-EFAC-4, US-ESUM-3, `gold_content_classification`) route on this status.
 
 ## Why this is load-bearing and independent
 - **No `audioUrl` dependency:** the scrape-time byte cache already persists the
@@ -27,9 +49,10 @@ dependency and no scrape-time expiry race**.
 `ops.sqlite` + ffprobe (2026-09-07).
 
 ## Epic DoD (draft)
-- [ ] ffmpeg audio-extract → faster-whisper job; `transcript` additive column.
-- [ ] Incremental-at-scrape + resumable overnight backfill; music-only clips yield
-      near-empty transcripts (no pre-filter needed).
+- [ ] ffmpeg audio-extract → faster-whisper job; `gold_audio_transcripts`
+      additive table with transcript_status (audio-absent explicit per above).
+- [ ] Incremental-at-scrape + resumable overnight backfill; music-only clips
+      yield `empty_audio` (a status, not a bare empty NULL).
 - [ ] **Pluggable transcript backend** (US-ETR-4): `local` faster-whisper is the
       default ($0; incremental + prod overnight); an on-demand **GCP spot GPU
       burst** in the SAME region as the media bucket runs the SAME model for

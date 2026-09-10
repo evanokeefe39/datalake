@@ -28,6 +28,10 @@ silently skip enrichment.
       non-zero exit from scripts/enrich_facets_batch.py), never a completed
       run with zero items.
 - AC4: Health/readiness state is visible in the enrichment logs at run start.
+- AC5 (workload-agnostic health): The health gate covers ALL workloads the
+      service hosts (vision, text, whisper-STT) — one dependent service, one
+      `/health` contract, one loud-failure rule; no workload may bypass the
+      health check or fail quietly.
 
 ## Definition of done
 

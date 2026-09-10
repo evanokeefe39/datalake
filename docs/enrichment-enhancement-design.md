@@ -1,6 +1,17 @@
 # Enrichment enhancement design: facets + transcripts + video/carousel summaries
 
 Date: 2026-09-07. Consolidated from the facet-design work (see `tasks/plans/facet-list-experiment-design.md`) plus this session's transcript and summary additions. Companion: `docs/refactor-research/migration-batch-native-enrichment.md` (the current batch-native baseline this builds on).
+> **Reconciled to the settled enrichment design v2 (2026-09-09).** The
+> definitive spec is `docs/enrichment-design.md` (tables, columns, DAG, asset
+> graph, naming) with [ADR-0010](adr/0010-enrichment-naming-and-provenance.md);
+> this document remains the rationale/experiment record — where they differ,
+> the v2 spec wins. Terminology note: the "universal video call" and "Gemini"
+> references below reflect the 2026-09-07/08 baseline; under the settled
+> contract the visual workload executes on qwen (ADR-0009) and every
+> table/column name follows the final scheme (`gold_visual_annotations`,
+> `gold_visual_summaries`, `gold_text_annotations`, `gold_text_summaries`,
+> `gold_audio_transcripts`, `gold_content_classification`). Legacy names
+> appear only as explicit replaced-history.
 
 ## 1. Executive summary
 
@@ -36,9 +47,48 @@ Each post produces an **evidence bundle** that any pass may read:
 **Passes** (all additive columns/tables; own `prompt_hash`; structural exclusion of reserved keys):
 
 1. **Gold pass** (existing, unchanged): text-derived classification.
-2. **Universal video→Gemini call** (new, media posts, ONCE per post): visual-necessary facets (§4 → `growth_facets_json`) + bounded `content_summary` + per-image carousel summaries (§6) in ONE call at 4096 output — the video input is paid once, then never re-sent.
+2. **Universal video→Gemini call** (new, media posts, ONCE per post): visual-necessary facets (§4 → stored as `gold_visual_annotations`) + bounded `content_summary` + per-image carousel summaries (§6 → stored as `gold_visual_summaries`) in ONE call at 4096 output — the video input is paid once, then never re-sent.
 3. **Text facet call** (new): text-derivable facets (§5 list) over caption + transcript — cheap, re-runnable on schema change; never touches video.
 4. **Transcript capture** (new, upstream): §5 — independent of Gemini, $0.
+
+### Workload mapping (audit 2026-09-09)
+External workloads map by capability — **audio→STT, pixels→vision LLM,
+text→text LLM**:
+
+| Workload | Reads | Engine | Feeds |
+|---|---|---|---|
+| Transcription (STT) | audio | faster-whisper (local default; gcp-spot burst) | `gold_audio_transcripts` → text pass input |
+| Visual facets + visual summaries | frames / images | qwen vision (batch service) | `gold_visual_annotations` (visual facets) + `gold_visual_summaries` (`content_summary` / `image_summaries_json`) |
+| Text facets + transcript/overall summaries | caption + transcript text | qwen text (Gemini batch = executor option) | `gold_text_annotations` (text facets) + `gold_text_summaries` (`transcript_summary`) |
+
+All enrichment workloads — qwen-vision, whisper, text-LLM — ingest through ONE
+shared async seam (workload-keyed `external_jobs` ledger → submit →
+poll-to-terminal → retrieve → idempotent upsert, per-pass provenance, loud
+per-item failure) with the workload as a pluggable executor plugin. The
+2026-09-09 audit's "STT outside the seam" carve-out is superseded by the
+settled v2 asset graph: whisper submit → audio job → harvest rides the same
+lifecycle (`docs/enrichment-design.md` §6, ADR-0010).
+
+### Summary semantics by content form (audit 2026-09-09)
+`content_summary` = the **OVERALL visual summary for every content form**:
+video → sampled frames; single image → the individual summary (overall ==
+individual); **carousel → overall summary of the images** (new requirement —
+today the prompt asks per-image summaries only for carousels,
+`defs/enrichment/prompts.py:110-124`). `image_summaries_json` stays per-image,
+carousel-only. Videos additionally get a `transcript_summary` (what is SAID)
+folded into the cheap text call; image/carousel posts are **audio-absent**,
+recorded via `gold_audio_transcripts.transcript_status = no_audio_source`, never a
+silent NULL.
+
+### Transcript store (audit 2026-09-09; settled v2 naming)
+Transcripts persist in their own `gold_audio_transcripts` table — keys
+`post_id`, `domain`; body `transcript`, `transcript_status`
+(`no_audio_source|pending|done|empty_audio`), `audio_present`, `asr_model`,
+`language`; plus the shared provenance metadata set (`docs/enrichment-design.md`
+§4). A durable derived artifact with ASR provenance, not a facet/summary
+column on the legacy single-table facet store (`gold_growth_facets`, replaced
+by the four-way annotations/summaries split).
+
 
 Facet model (corrected during design): facets are **modality-agnostic** — a facet is judged across every channel that can carry its evidence (caption, transcript, on-screen text, imagery). Facets differ only in which channels are *necessary* (face_present needs imagery; sponsorship can be satisfied by text). This is the response to the naive "text layer vs visual layer" split, which was wrong (hooks, profanity, CTA, brand-safety are cross-modal).
 
@@ -143,11 +193,18 @@ The pipeline runs locally today (ETL local; only Apify actor + Gemini batch exte
 
 ## 10. Decision points / open questions
 
-1. Confirm the V3 facet schema + cross-modal model + explicit brand-safety set as the target `growth_facets_json`.
+1. Confirm the V3 facet schema + cross-modal model + explicit brand-safety set as the target facet field set (stored across `gold_visual_annotations` + `gold_text_annotations`).
 2. Fold `content_summary` + per-image carousel summaries into the single universal video call at 4096 output (prototype ~10 posts first to check quality + index-alignment).
 3. Build transcript capture (ffmpeg→faster-whisper) — incremental-at-scrape + overnight backfill; store transcript column.
 4. Infrastructure: stay local (A) vs burst to cx33 (B) vs move media to GCS / GCP (C) — C gated on re-enrich frequency.
 5. Where the scrape runs (local vs box) determines where transcript capture lives.
+6. (audit 2026-09-09) Overall summary for carousels + transcript summary for
+   videos + `gold_audio_transcripts` with transcript_status — see §3 subsections.
+7. (audit 2026-09-09) Unify the remote-async ingest pattern (one ledger +
+   submit/poll/retrieve + per-pass provenance) before a third workload forks
+   it. SETTLED (2026-09-09, ADR-0010): one shared `external_jobs` seam with
+   per-workload executor plugins (qwen-vision | whisper | text-LLM); whisper
+   rides the same lifecycle in the settled asset graph.
 
 ## Sources / evidence
 `tasks/plans/facet-list-experiment-design.md` (facet experiments + research agenda + literature incl. ContentBench 2602.19467, Variance-Aware LLM Annotation 2601.02370, WASSA 2026 facet/claim papers, PARSE 2510.08623, ScrapeGraphAI-100k 2602.15189, LLMStructBench 2602.14743). Experiment artifacts: `data/facet_menu.duckdb`, `data/facet_experiment.duckdb`. ASR: Self-Hosted Whisper guide (2026-06-29), faster-whisper, Open ASR Leaderboard (Parakeet). Media/transcript facts measured from `ops.sqlite`/`state.duckdb` + ffprobe (2026-09-07).

@@ -36,3 +36,5 @@ data/backups/
 data/_tmp_*/
 scripts/_diag_*
 scripts/pilot_*
+
+data/dev/

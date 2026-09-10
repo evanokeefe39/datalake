@@ -21,10 +21,17 @@ machine.
       upload.
 - AC2: Model choice configurable (`base.en` ≈ ~10–14 h, `small.en` ≈ ~25–35 h for
       full 7,029 backfill on CPU).
-- AC3: Music-only / near-silent clips yield empty/low-confidence transcripts
-      quickly — no separate pre-filter required.
-- AC4: Transcript stored as an additive `transcript` text column (no Gemini
-      schema keys touched).
+- AC3: Music-only / near-silent clips yield `transcript_status = empty_audio`
+      with an empty/low-confidence transcript — a status, not a bare empty
+      NULL, so consumers can distinguish "no speech" from "not yet done".
+- AC4: Output persisted as an additive `gold_audio_transcripts` table (keys
+      `post_id`, `domain`; `transcript`, `transcript_status`, `audio_present`,
+      `asr_model`, `language`, `transcribed_at` — audit 2026-09-09 contract in
+      the epic; provider mapping: audio = whisper). No Gemini/qwen schema keys
+      touched; no `gold_visual_annotations` / `gold_text_annotations` change.
+- AC5: Image/carousel posts get `transcript_status = no_audio_source` (no
+      ffmpeg decode attempted) — audio-absence is explicit, never recorded as
+      an empty result.
 
 ## Definition of done
 - [ ] Micro-benchmark run (one ~35 s cached reel) to pin real RTF before the full

@@ -115,3 +115,57 @@ volume grows.
 ## Supersedes / Superseded by
 
 Supersedes (for this scope): none (new direction). Superseded by: none yet.
+
+## Amendment (2026-09-09 — enrichment data-domain audit)
+
+The ingested-source canon stands. What changed since this ADR: the worker seam
+became Dagster-native batch (ADR-0007) and the media/vision backend moved to
+the standalone qwen batch service (ADR-0009). Consequence on the ground: the
+ingest pattern (local ledger → submit → poll-to-terminal → retrieve →
+idempotent gold upsert with ordering guard) is now implemented TWICE with no
+shared code — the Gemini batch path (`defs/enrichment/{gemini_batch,submit,
+harvest}.py`) and the qwen facets path with its own `facets_batch_jobs` ledger
+(`defs/enrichment/facets_batch.py:92-126`, carrying a `gemini_batch_name →
+job_id` rename as fossil evidence of the clone).
+
+Position (data-domain): converge the remote-async workloads (qwen-vision,
+qwen-text, gemini-batch-text) on ONE shared ingest seam — generic ledger +
+submit/poll/retrieve verbs + per-workload request-builder/parser/validator/
+gold-writer plugins + shared crash semantics (placeholder-before-POST) and
+loud per-item failure. STT is a distinct LOCAL resumable-job pattern with a
+pluggable executor and stays outside that seam. Gemini batch either becomes an
+executor behind the seam or a frozen exception that receives no new workloads;
+the ~50% batch discount is ~$5–20-scale noise against the cost of maintaining
+a second poll/harvest path. Additionally, canon items (a)/(d) are violated on
+`gold_growth_facets` (one shared prompt_hash for two writer passes; `model`
+conscripted as a done-marker) — per-pass provenance is required (E-ENRICH-FACETS
+epic, audit P0-4). Full analysis: `data/dev/dlc-enrichment-audit.md`.
+Decision ownership for the seam module and the classification executor choice
+(the `gold_analyses` workload — final table name `gold_content_classification`,
+ADR-0010):
+E-ENRICH-ENGINE (ADR-0009).
+
+## Amendment 2 (2026-09-09 — settled enrichment design v2: naming + provenance)
+
+The final naming for every table this ADR references is set by
+[ADR-0010](0010-enrichment-naming-and-provenance.md)
+(`gold_<channel>_<artifact>`, channel ∈ `visual`/`text`/`audio`; provider
+never in table names):
+
+- `gold_analyses` (this ADR's 2026-09-03 subject table; the name above is
+  kept as then-current history) → **`gold_content_classification`**.
+- `gold_growth_facets` (named in Amendment 1) → replaced by the four-way
+  split `gold_visual_annotations` / `gold_visual_summaries` /
+  `gold_text_annotations` / `gold_text_summaries`.
+- Amendment 1's per-pass provenance requirement (P0-4) is SETTLED as the
+  structural table split: each pass owns its table and its full metadata set
+  (`provider`, `model`, `prompt_hash`, `schema_version`, `input_modality`,
+  `content_mime_type`, `sampling_params_json`, `run_id`, `analysed_at`) — the
+  shared-`prompt_hash` defect and the model-as-done-marker hack die with the
+  single-table store. No `_bound` columns: enum definitions live in the
+  versioned schema registry, referenced by `schema_version`.
+- The one-ingest-seam position is codified in ADR-0010: one shared
+  `external_jobs` ledger, per-workload executor plugins (qwen-vision |
+  whisper | text-LLM), one submit per pass with harvest fanning out to every
+  table that pass produced. Amendment 1's "STT outside the seam" carve-out is
+  superseded — whisper rides the same lifecycle as an executor plugin.

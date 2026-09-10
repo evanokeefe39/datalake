@@ -89,3 +89,39 @@ deliberately.
 Supersedes: ADR-0002. Related: ADR-0001 (this resolves the "ingested source vs
 graph-produced" framing toward a graph-native enrichment seam), ADR-0008
 (reinterprets the API boundary), ADR-0004 (coordination store).
+
+## Amendment (2026-09-09 — enrichment data-domain audit)
+
+This ADR's orchestration shape (Dagster owns submit/poll/harvest; no worker)
+is intact. Data-domain consequence of the qwen pivot: the harvest side now
+exists as two unshared implementations (Gemini batch path vs the qwen
+`facets_batch_jobs` ledger in `defs/enrichment/facets_batch.py`). Any future
+harvest must satisfy the unified ingest contract — generic ledger with
+placeholder-before-POST submit, poll-to-terminal, retrieve, idempotent MERGE
+upsert keyed on the natural key, per-pass provenance, loud per-item failure
+(`data/dev/dlc-enrichment-audit.md` §2) — and the existing two should converge
+on one shared module before a third workload (e.g. the transcript-summary text
+workload) forks the pattern again. The pattern history matters: the qwen ledger
+was cloned from this ADR's Gemini-era ledger (`gemini_batch_name` → `job_id`
+rename, `facets_batch.py:114-125`), so the shared shape is already proven.
+
+## Amendment 2 (2026-09-09 — settled enrichment design v2: naming + fan-out)
+
+- **Naming.** `gold_analyses` — this ADR's orchestrated writer target in the
+  Decision above (name kept as then-current history) — is renamed
+  **`gold_content_classification`** under
+  [ADR-0010](0010-enrichment-naming-and-provenance.md).
+- **Fan-out cost rule.** The submit/harvest bridge generalizes: ONE submit
+  per pass, harvest fans out to every table that pass produced — the visual
+  submit lands `gold_visual_annotations` + `gold_visual_summaries`; the text
+  submit lands `gold_text_annotations` + `gold_text_summaries`; audio submit
+  lands `gold_audio_transcripts`; classification is its own submit (it
+  additionally consumes transcripts + visual summaries). Never one submit per
+  table — that would double the bill for a call that returns multiple
+  artifacts.
+- **Seam.** The unified ingest contract named in Amendment 1 is codified in
+  ADR-0010: one shared `external_jobs` ledger, per-workload executor plugins
+  (qwen-vision | whisper | text-LLM), placeholder-before-POST, idempotent
+  upsert, per-pass provenance via the table split, loud per-item failure. The
+  two orchestration triggers (CLI for the qwen path, Dagster sensor for the
+  gemini executor) both remain — the seam is the lifecycle, not the scheduler.

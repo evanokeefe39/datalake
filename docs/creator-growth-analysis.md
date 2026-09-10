@@ -52,10 +52,24 @@ Q11. End-state: for any creator, produce an audit of their channel compared to
   at observation points → which posts took off fast.
 - **Profile snapshot** (`silver_ig_profiles`): `followers_count` — **single
   point in time, PK overwrites on each scrape**. No history.
-- **Gold content analysis** (`gold_analyses` / `result_json`): per-post domain,
+- **Gold content analysis** (`gold_content_classification` — enrichment-v2
+  name; exists today as legacy `gold_analyses.result_json`): per-post domain,
   educational/actionable classification → content-type drift over time.
 
-### Critical gaps
+> **2026-09-09 audit note (reconciled to enrichment design v2 / ADR-0010):**
+> a second gold output now exists alongside the classification table (legacy
+> `gold_analyses`, renamed `gold_content_classification`) — the facet store
+> `gold_growth_facets` (visual + text-layer facets, content_summary /
+> image_summaries; `defs/common/schemas.py:101-114`), which v2 replaces with
+> the split tables `gold_visual_annotations`, `gold_visual_summaries`,
+> `gold_text_annotations`, `gold_text_summaries`. Once the enrichment epics
+> land, answerability improves: Q2 formats via `value_medium`
+> (`gold_visual_annotations`) + per-form summaries (`gold_visual_summaries`);
+> Q7 CTA via `cta_type` (`gold_text_annotations`; structured, not
+> caption-classification); Q6 gains spoken-channel evidence via
+> `gold_audio_transcripts` + `gold_text_summaries.transcript_summary`. The
+> critical gaps in this section (follower series, early history, cohort) are
+> unchanged by the enrichment work.
 1. **Follower-count time series (the #1 gap).** `silver_ig_profiles` holds one
    snapshot per `owner_id`. Q5 and the entire growth-velocity side of Q11 are
    unanswerable without a series: a `profile_observations` table (mirroring
@@ -208,8 +222,8 @@ Cost/Feasibility (Apify/Gemini dollars). Converged on the same priorities.
 | GAP-1 | `silver_ig_profile_observations` (owner_id, observed_at, followers/follows/posts_count, source_dataset) + scheduled profile re-scrape. Keep `silver_ig_profiles` as latest-state snapshot (dim_profile depends on it); add the series as a NEW table. Clone the existing post-observations + watermark pattern. | Q5, Q8, Q9, Q10, Q11 |
 | GAP-2 | Early-history (oldest-posts) Apify backfill into `silver_ig_posts` with distinct `source_dataset='ig_early_backfill'` (must NOT mix with recent-window in cadence). One depth-limited pass per curated creator, bounded by cohort not census. | Q1, Q4, Q6, part of Q7 |
 | GAP-3 | `cohort_labels` + matched-ladder baseline recruitment. Labels on `ops.sqlite creators` (person-level, platform-agnostic), NOT silver_ig_profiles (account-level, overwritten). | Q9, Q10, Q11, strengthens Q8 |
-| GAP-4 | `gold_creator_domain` — standardized creator-level domain rollup (majority/weighted vote over per-post gold_analyses, constrained to a taxonomy enum, not Gemini free-form). | Q10, Q11 |
-| GAP-5 | `gold_analyses` result_json extension: structured CTA fields (`cta_present`, `cta_type`) (+ optional explicit format). Rides existing Gemini enrichment. | Q7, Q2 robustness |
+| GAP-4 | `gold_creator_domain` — standardized creator-level domain rollup (majority/weighted vote over per-post `gold_content_classification` rows — legacy `gold_analyses` — constrained to a taxonomy enum, not Gemini free-form). | Q10, Q11 |
+| GAP-5 | SUPERSEDED by enrichment design v2 (2026-09-09): structured CTA now lands as `gold_text_annotations.cta_type` and format via `gold_visual_annotations.value_medium` — no result_json extension needed (the panel's original idea was a `gold_analyses` result_json extension). | Q7, Q2 robustness |
 | GAP-6 | Second-platform sources + cross-platform identity. Explicitly deferred; ops schema already anticipates it (creators/profiles/domain). | Q3 |
 
 ### Value, method, and cohort dependency per question
