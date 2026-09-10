@@ -317,7 +317,7 @@ Executors: **one seam, pluggable** — `qwen-vision`, `whisper`, `text-LLM`
 (qwen default; Gemini batch a pluggable alternative — provider recorded in
 metadata, decision per workload by quality/throughput benchmark). The two
 orchestration triggers remain (CLI for the qwen path, Dagster sensor for the
-gemini executor): **the seam is the lifecycle, not the scheduler.**
+gemini executor): **the lifecycle is the same, whatever the scheduler.**
 
 ## Preserved serving surface (no-regression)
 

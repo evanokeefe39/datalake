@@ -495,7 +495,7 @@ footer a{color:var(--ld-accent)}
     <p>The <strong>seam verbs</strong> are <code>submit</code>, <code>poll-to-terminal</code>, and <code>retrieve</code> &mdash; the contract, and the whole of it. Dagster's <strong>steps</strong> are <code>submit</code> (which calls that verb) and <code>harvest</code> (which runs the other two verbs in sequence and lands the bytes). So <code>poll</code> in this page is shorthand for <code>poll-to-terminal</code>, and <code>harvest</code> is always a Dagster step &mdash; never a verb you call on the seam.</p>
   </div>
 
-  <div class="key"><p><strong>The seam is the lifecycle, not the scheduler.</strong> Executors are pluggable: <code>qwen-vision</code>, <code>whisper</code>, and <code>text-LLM</code> all ride this same submit-poll-harvest pattern over the one shared ledger. Whether a run is triggered by the CLI or by a Dagster sensor, the lifecycle is identical. A provider swap is a metadata change; the seam does not move.</p></div>
+  <div class="key"><p><strong>The lifecycle is the same, whatever the scheduler.</strong> Executors are pluggable: <code>qwen-vision</code>, <code>whisper</code>, and <code>text-LLM</code> all ride this same submit-poll-harvest pattern over the one shared ledger. Whether a run is triggered by the CLI or by a Dagster sensor, the lifecycle is identical. A provider swap is a metadata change; the seam does not move.</p></div>
 </section>
 
 <!-- ============ 6b THE SEAM, END TO END ============ -->
