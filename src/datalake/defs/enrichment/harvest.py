@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 
 from dagster import (
     AssetMaterialization,
@@ -57,6 +58,14 @@ from datalake.defs.enrichment.batch import (
     mark_complete,
     set_gemini_batch_status,
 )
+from datalake.defs.enrichment.landing import (
+    WORKLOAD_CONTENT_CLASSIFICATION,
+    land_response,
+)
+from datalake.defs.enrichment.prompts import (
+    _DEFAULT_GEMINI_MODEL,
+    CURRENT_PROMPT_HASH,
+)
 
 logger = logging.getLogger("enrichment.harvest")
 
@@ -67,6 +76,85 @@ _HANDLED = {"RETRIEVED", "JOB_FAILED"}
 # Cheap-tick bound: at most this many remote polls per sensor tick; the cursor
 # caches each polled state so a chunk is polled once per state transition.
 _MAX_POLLS_PER_TICK = 25
+
+# ── Bronze landing provenance (ADR-0011) ────────────────────────────────────
+# Harvest = poll + retrieve + idempotent verbatim landing. The landing happens
+# BEFORE any parsing: the paid/stochastic part ends at bronze, so a schema or
+# mapping change is a bronze replay, never a re-bill. This path serves the
+# content-classification workload (gold_analyses).
+_PROVIDER = "gemini"
+_SCHEMA_VERSION = "1"
+
+
+def _land_verbatim(
+    root: str | os.PathLike[str] | None,
+    post_id: str,
+    platform: str,
+    run_id: str,
+    response_text: str | None,
+    ok: bool,
+    error_message: str | None,
+) -> int:
+    """Land ONE provider response (or failure) verbatim into bronze.
+
+    Preconditions: `response_text` is the raw provider body (None only for a
+    failure that produced no body, landed as an empty string); `ok=False`
+    carries a non-null, non-empty `error_message`.
+
+    Postconditions: returns 1 if appended, 0 if the natural key
+    ``(post_id, platform, workload, prompt_hash, run_id)`` was already
+    landed — idempotent, never a duplicate. The provider text reaches the
+    landing UNMODIFIED (no trimming, no re-serialization).
+    """
+    return land_response(
+        post_id=post_id,
+        platform=platform,
+        workload=WORKLOAD_CONTENT_CLASSIFICATION,
+        provider=_PROVIDER,
+        model=_DEFAULT_GEMINI_MODEL,
+        prompt_hash=CURRENT_PROMPT_HASH,
+        schema_version=_SCHEMA_VERSION,
+        run_id=run_id,
+        response_text=response_text if response_text is not None else "",
+        ok=ok,
+        error_message=error_message,
+        root=root,
+    )
+
+
+def _land_job_failure(
+    ops: SQLiteResource,
+    job_id: int,
+    run_id: str,
+    state: str,
+    error: str,
+    root: str | os.PathLike[str] | None,
+) -> None:
+    """Land an ``ok=False`` bronze row for every item affected by a terminally
+    failed chunk, so ``landed ∖ conformed`` can distinguish "ran and failed"
+    from "never ran" (ADR-0011).
+    """
+    conn = ops.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT payload FROM batch_items "
+            "WHERE job_id = ? AND status IN ('pending', 'processing')",
+            [job_id],
+        ).fetchall()
+    finally:
+        conn.close()
+    message = error or f"gemini batch chunk reached terminal state {state}"
+    for (payload,) in rows:
+        item = json.loads(payload)
+        _land_verbatim(
+            root,
+            item["post_id"],
+            item["domain"],
+            run_id,
+            None,
+            False,
+            message,
+        )
 
 
 # ── Gold upsert ──────────────────────────────────────────────────────────────
@@ -112,12 +200,19 @@ def apply_retrieved(
     ops: SQLiteResource,
     duckdb: DuckDBResource,
     results: dict[str, dict],
+    *,
+    run_id: str,
+    root: str | os.PathLike[str] | None = None,
 ) -> tuple[int, int]:
-    """Write retrieved responses to gold and close their batch items.
+    """Land retrieved responses verbatim to bronze, write to gold, close items.
 
-    Custom key is
-    ``batch_items.id``; per-item errors route through ``fail_item`` (retry
-    with backoff) and ``dead_letter`` at ``MAX_ATTEMPTS``.
+    Per item (keyed by ``batch_items.id``): the response is landed VERBATIM
+    into ``bronze_enrichment_raw`` via ``land_response`` BEFORE any parsing
+    (idempotent by the natural key, ``run_id`` = the batch chunk name), then
+    the current gold behavior runs unchanged. Per-item errors route through
+    ``fail_item`` (retry with backoff) and ``dead_letter`` at ``MAX_ATTEMPTS``
+    — and land as ``ok=False`` bronze rows with a populated ``error_message``
+    so failures are visible to the ``landed ∖ conformed`` anti-join.
     """
     ensure_gold_analyses(duckdb)
     processed = failed = 0
@@ -135,13 +230,27 @@ def apply_retrieved(
         payload = json.loads(row[0])
         post_id = payload["post_id"]
         domain = payload["domain"]
-        if not res.get("ok"):
-            attempts = fail_item(ops, custom_key, res.get("error") or "unknown error")
+        text = res.get("text")
+        ok = bool(res.get("ok"))
+        error = res.get("error")
+        # 1) Verbatim bronze landing FIRST — before any parsing of the
+        # provider body. No trimming, no re-serialization, no field extraction.
+        _land_verbatim(
+            root,
+            post_id,
+            domain,
+            run_id,
+            text,
+            ok,
+            error if not ok and error else None,
+        )
+        if not ok:
+            attempts = fail_item(ops, custom_key, error or "unknown error")
             if attempts >= MAX_ATTEMPTS:
-                _dead_letter_insert(ops, post_id, domain, res.get("error") or "", attempts)
+                _dead_letter_insert(ops, post_id, domain, error or "", attempts)
             failed += 1
             continue
-        text = res["text"]
+        # 2) The pre-existing downstream behaviour: validate + write gold.
         try:
             json.loads(text)
         except json.JSONDecodeError:
@@ -163,14 +272,17 @@ def harvest_gemini_batches(
     ops: SQLiteResource,
     duckdb: DuckDBResource,
     gemini: GeminiResource,
+    *,
+    root: str | os.PathLike[str] | None = None,
 ) -> dict:
     """Poll + retrieve every submitted Gemini chunk that reached a terminal
-    state, and apply results to gold.
+    state, land each response verbatim to bronze, and apply results to gold.
 
-    One pass over the submitted chunks: retrieve terminal state, apply
-    results to gold (the op emits an ``AssetMaterialization`` for
-    ``gold_analyses`` inside Dagster), and close the bookkeeping. Bounded
-    and short; the sensor re-triggers whenever more chunks terminate.
+    One pass over the submitted chunks: retrieve terminal state, land the
+    raw provider body (idempotent, BEFORE any parsing), apply results to
+    gold (the op emits an ``AssetMaterialization`` for ``gold_analyses``
+    inside Dagster), and close the bookkeeping. Bounded and short; the
+    sensor re-triggers whenever more chunks terminate.
     """
     _ensure_schema(ops)
     ensure_gold_analyses(duckdb)
@@ -213,6 +325,7 @@ def harvest_gemini_batches(
                 logger.error("Gemini batch job %s %s: %s", name, state, error[:200])
                 statuses[i] = "JOB_FAILED"
                 job_error = error[:500]
+                _land_job_failure(ops, job_id, name, state, error[:500], root)
                 _resubmit_items_preserve_attempts(ops, job_id, error)
                 continue
 
@@ -224,7 +337,9 @@ def harvest_gemini_batches(
                 all_terminal = False
                 continue
 
-            processed, failed = apply_retrieved(ops, duckdb, results)
+            processed, failed = apply_retrieved(
+                ops, duckdb, results, run_id=name, root=root
+            )
             total_completed += processed
             total_failed += failed
             statuses[i] = "RETRIEVED"

@@ -24,6 +24,7 @@ from types import SimpleNamespace
 import pytest
 from dagster import build_sensor_context
 
+from datalake.defs.common import lake
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
 from datalake.defs.enrichment import gemini_batch
 from datalake.defs.enrichment.batch import (
@@ -43,8 +44,11 @@ JOB_NAME = "batches/abc123"
 
 
 @pytest.fixture()
-def env(tmp_path):
+def env(tmp_path, monkeypatch):
     """Ops db with a submitted gemini-batch job + a temp DuckDB gold table."""
+    # Harvest now lands verbatim responses into bronze; point the landing
+    # root at the temp dir so tests never touch the real lake.
+    monkeypatch.setattr(lake, "BRONZE_LAKE", tmp_path / "bronze")
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
     _ensure_schema(ops)
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))

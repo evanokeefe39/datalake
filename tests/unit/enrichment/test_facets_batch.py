@@ -8,8 +8,10 @@ Covers:
 - parse + validate (visual + text) incl. rejection cases
 - write/merge semantics into gold_growth_facets on a TEMP duckdb
   (never data/state.duckdb)
-- ledger resume state (job_id keyed, SUBMITTED → RETRIEVED/JOB_FAILED)
 - driver --plan offline mode (no spend, no prod writes)
+
+Job state comes from a seam-shaped fake adapter (ADR-0013: NO ledger — the
+service owns its job store); nothing here touches a network or ops.sqlite.
 """
 
 from __future__ import annotations
@@ -38,6 +40,8 @@ from datalake.defs.enrichment.prompts import (  # noqa: E402
     CURRENT_TEXT_FACETS_PROMPT_HASH,
     build_text_facets_prompt,
 )
+from datalake.defs.enrichment.qwen_client import QwenServiceError  # noqa: E402
+from datalake.defs.enrichment.seam import Result  # noqa: E402
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -60,7 +64,7 @@ def state_conn(tmp_path):
 
 
 def _sqlite(tmp_path):
-    """A throwaway ops.sqlite for the ledger (never data/ops.sqlite)."""
+    """A throwaway ops.sqlite for media-cache lookups (never data/ops.sqlite)."""
     return SQLiteResource(database=str(tmp_path / "test_ops.sqlite"))
 
 
@@ -81,6 +85,52 @@ def cached_media(tmp_path):
         side_effect=_fake,
     ):
         yield files
+
+
+class _FakeAdapter:
+    """Seam-shaped double for the service-backed adapter (NO network).
+
+    Job docs/results are dicts keyed by job id — the service's own job
+    store, exactly what ADR-0013 says we poll instead of a ledger.
+    """
+    name = "service_backed"
+    model = _DEFAULT_QWEN_MODEL
+
+    def __init__(self):
+        self.docs: dict[str, dict] = {}
+        self.results: dict[str, list[Result]] = {}
+
+    def poll(self, handle):
+        doc = self.docs.get(handle)
+        if doc is None:
+            raise QwenServiceError(
+                f"unknown job {handle!r}", base_url="fake://service"
+            )
+        return doc
+
+    def normalize_state(self, raw):
+        return str(raw.get("state", ""))
+
+    def is_terminal(self, state):
+        return state in {"completed", "failed"}
+
+    def retrieve(self, handle):
+        return self.results.get(handle, [])
+
+
+def _fake_service(monkeypatch, adapter) -> None:
+    monkeypatch.setattr(
+        facets_batch, "_service_adapter", lambda base_url, model: adapter
+    )
+
+
+def _result(custom_key, ok=True, output=None, error=None,
+            model=_DEFAULT_QWEN_MODEL) -> Result:
+    return Result(
+        custom_key=custom_key, ok=ok, response_text=output, error=error,
+        model=model, provider="qwen",
+    )
+
 
 # ── Request builder ─────────────────────────────────────────────────────────
 
@@ -133,16 +183,10 @@ class TestBuildRequests:
 class TestEstimation:
     def test_media_tokens_included_at_qwen_prices(self):
         text_req = {"custom_key": "t", "prompt": "x" * 4000, "images": []}
-        img_req = {
-            "custom_key": "i",
-            "prompt": "x" * 4000,
-            "images": ["/tmp/a.jpg"],
-        }
-        vid_req = {
-            "custom_key": "v",
-            "prompt": "x" * 4000,
-            "images": ["/tmp/b.mp4"],
-        }
+        img_req = {"custom_key": "i", "prompt": "x" * 4000,
+                   "images": ["/tmp/a.jpg"]}
+        vid_req = {"custom_key": "v", "prompt": "x" * 4000,
+                   "images": ["/tmp/a.mp4"]}
         in_t, cost = facets_batch.estimate_facets_cost(
             [text_req, img_req, vid_req]
         )
@@ -222,82 +266,72 @@ class TestParseValidate:
 # ── Submit / wait / harvest on the qwen service ─────────────────────────────
 
 
-def _completed_job():
-    return {"job_id": "job1", "state": "completed", "total": 1,
-            "completed": 1, "failed": 0, "error": None}
-
-
-def _failed_job():
-    return {"job_id": "job1", "state": "failed", "total": 1,
-            "completed": 0, "failed": 1, "error": "boom"}
-
-
 class TestSubmitWait:
-    def test_submit_health_checks_then_posts_one_job(self, tmp_path):
-        ops = _sqlite(tmp_path)
+    def test_submit_health_checks_then_posts_one_job(self):
         items = [{"custom_key": "p1", "prompt": "p", "images": []}]
         with patch.object(
             facets_batch.qwen_client, "check_health", return_value={}
         ) as health, patch.object(
             facets_batch.qwen_client, "submit_job", return_value="svc-1"
         ) as sub:
-            job_id = facets_batch.submit_facets_batch(ops, items, "text")
+            job_id = facets_batch.submit_facets_batch(items, "text")
         assert job_id == "svc-1"
         health.assert_called_once()
         sub.assert_called_once()
         assert sub.call_args.kwargs["model"] == _DEFAULT_QWEN_MODEL
         assert sub.call_args.args[1] == items
-        # ledger row recorded SUBMITTED
-        assert [p["job_id"] for p in facets_batch.pending_ledger_jobs(ops)] == [
-            "svc-1"
-        ]
+        # ADR-0013: NO ledger row — the returned job id IS the in-flight
+        # record; the service owns the job store.
 
-    def test_submit_empty_items_raises(self, tmp_path):
+    def test_submit_empty_items_raises(self):
         with pytest.raises(ValueError):
-            facets_batch.submit_facets_batch(_sqlite(tmp_path), [], "text")
+            facets_batch.submit_facets_batch([], "text")
 
-    def test_wait_polls_to_terminal(self):
-        with patch.object(
-            facets_batch.qwen_client, "get_job", return_value=_completed_job()
-        ):
-            out = facets_batch.wait_for_facets_batches(
-                ["job1"], poll_seconds=0, timeout_seconds=5
+    def test_submit_unknown_mode_raises(self):
+        with pytest.raises(ValueError, match="unknown mode"):
+            facets_batch.submit_facets_batch(
+                [{"custom_key": "p1", "prompt": "p", "images": []}], "nope"
             )
+
+    def test_wait_polls_to_terminal(self, monkeypatch):
+        adapter = _FakeAdapter()
+        adapter.docs["job1"] = {"state": "completed"}
+        _fake_service(monkeypatch, adapter)
+        out = facets_batch.wait_for_facets_batches(
+            ["job1"], poll_seconds=0, timeout_seconds=5
+        )
         assert out == {"job1": "completed"}
 
-    def test_wait_raises_on_timeout(self):
-        with patch.object(
-            facets_batch.qwen_client, "get_job",
-            return_value={"state": "processing"},
-        ), pytest.raises(RuntimeError, match="Timed out"):
+    def test_wait_raises_on_timeout(self, monkeypatch):
+        adapter = _FakeAdapter()
+        adapter.docs["job1"] = {"state": "processing"}
+        _fake_service(monkeypatch, adapter)
+        with pytest.raises(RuntimeError, match="Timed out"):
             facets_batch.wait_for_facets_batches(
                 ["job1"], poll_seconds=0, timeout_seconds=0
             )
 
 
 class TestHarvestAndMerge:
-    def test_harvest_maps_custom_key_and_merges(self, state_conn, tmp_path):
-        ops = _sqlite(tmp_path)
+    def test_harvest_maps_custom_key_and_merges(self, state_conn, tmp_path,
+                                                monkeypatch):
+        adapter = _FakeAdapter()
+        adapter.docs["job1"] = {"state": "completed"}
+        adapter.results["job1"] = [
+            _result("p_img", output=json.dumps(_visual_payload())),
+        ]
+        _fake_service(monkeypatch, adapter)
         # pre-seed a text-only row (text pass ran first)
         write_gold_facets_pass_conn(
             state_conn, "p_img", "instagram",
             {"hook_type": "question", "is_sponsored": False},
             prompt_hash=CURRENT_TEXT_FACETS_PROMPT_HASH,
         )
-        facets_batch._record_jobs(
-            ops, "visual", _DEFAULT_QWEN_MODEL, ["job1"], 1, 0,
-            {"n_media": {"p_img": 1}},
+        root = str(tmp_path / "bronze")
+        out = facets_batch.harvest_facets_batches(
+            state_conn, ["job1"], "visual", root=root
         )
-        results = [
-            {"custom_key": "p_img", "ok": True,
-             "output": json.dumps(_visual_payload()), "error": None},
-        ]
-        with patch.object(facets_batch.qwen_client, "get_job",
-                          return_value=_completed_job()), \
-             patch.object(facets_batch.qwen_client, "get_results",
-                          return_value=results):
-            out = facets_batch.harvest_facets_batches(ops, state_conn)
-        assert out["written"] == 1
+        assert out["written"] == 1 and out["landed"] == 1
         row = state_conn.execute(
             "SELECT growth_facets_json, content_summary, model "
             "FROM gold_growth_facets WHERE post_id = 'p_img'"
@@ -308,41 +342,48 @@ class TestHarvestAndMerge:
         assert stored["face_present"] is False
         assert row[1] == "a demo"
         assert row[2] == _DEFAULT_QWEN_MODEL
-
-    def test_harvest_invalid_response_not_written(self, state_conn, tmp_path):
-        ops = _sqlite(tmp_path)
-        facets_batch._record_jobs(
-            ops, "visual", _DEFAULT_QWEN_MODEL, ["job1"], 1, 0,
-            {"n_media": {"p_img": 1}},
+        # the response was LANDED verbatim (workload = this pass's workload)
+        from datalake.defs.enrichment.landing import (
+            WORKLOAD_GROWTH_FACETS_VISUAL,
+            read_responses,
         )
-        results = [
-            {"custom_key": "p_img", "ok": True, "output": "not json",
-             "error": None},
-        ]
-        with patch.object(facets_batch.qwen_client, "get_job",
-                          return_value=_completed_job()), \
-             patch.object(facets_batch.qwen_client, "get_results",
-                          return_value=results):
-            out = facets_batch.harvest_facets_batches(ops, state_conn)
+
+        df = read_responses(root)
+        assert df.height == 1
+        assert df["workload"][0] == WORKLOAD_GROWTH_FACETS_VISUAL
+        assert df["run_id"][0] == "job1"
+        assert df["response_text"][0] == json.dumps(_visual_payload())
+
+    def test_harvest_invalid_response_not_written(self, state_conn, tmp_path,
+                                                  monkeypatch):
+        adapter = _FakeAdapter()
+        adapter.docs["job1"] = {"state": "completed"}
+        adapter.results["job1"] = [_result("p_img", output="not json")]
+        _fake_service(monkeypatch, adapter)
+        root = str(tmp_path / "bronze")
+        out = facets_batch.harvest_facets_batches(
+            state_conn, ["job1"], "visual", root=root
+        )
         assert out["written"] == 0 and out["invalid"] == 1
         assert state_conn.execute(
             "SELECT count(*) FROM gold_growth_facets"
         ).fetchone()[0] == 0
+        # ...but the verbatim body is IN bronze — parsing never gates landing
+        from datalake.defs.enrichment.landing import read_responses
 
-    def test_text_harvest_writes_text_pass(self, state_conn, tmp_path):
-        ops = _sqlite(tmp_path)
-        facets_batch._record_jobs(
-            ops, "text", _DEFAULT_QWEN_MODEL, ["job2"], 1, 0, {}
-        )
-        results = [
-            {"custom_key": "p_caption", "ok": True,
-             "output": json.dumps(_text_payload()), "error": None},
+        assert read_responses(root)["response_text"].to_list() == ["not json"]
+
+    def test_text_harvest_writes_text_pass(self, state_conn, tmp_path,
+                                           monkeypatch):
+        adapter = _FakeAdapter()
+        adapter.docs["job2"] = {"state": "completed"}
+        adapter.results["job2"] = [
+            _result("p_caption", output=json.dumps(_text_payload())),
         ]
-        with patch.object(facets_batch.qwen_client, "get_job",
-                          return_value=_completed_job()), \
-             patch.object(facets_batch.qwen_client, "get_results",
-                          return_value=results):
-            out = facets_batch.harvest_facets_batches(ops, state_conn)
+        _fake_service(monkeypatch, adapter)
+        out = facets_batch.harvest_facets_batches(
+            state_conn, ["job2"], "text", root=str(tmp_path / "bronze")
+        )
         assert out["written"] == 1
         stored = json.loads(state_conn.execute(
             "SELECT growth_facets_json FROM gold_growth_facets "
@@ -350,94 +391,50 @@ class TestHarvestAndMerge:
         ).fetchone()[0])
         assert stored["cta_type"] == "comment"
 
-    def test_failed_job_flips_ledger_no_writes(self, state_conn, tmp_path):
-        ops = _sqlite(tmp_path)
-        facets_batch._record_jobs(
-            ops, "visual", _DEFAULT_QWEN_MODEL, ["job3"], 1, 0, {}
+    def test_failed_job_lands_nothing(self, state_conn, tmp_path, monkeypatch):
+        adapter = _FakeAdapter()
+        adapter.docs["job3"] = {"state": "failed"}
+        _fake_service(monkeypatch, adapter)
+        out = facets_batch.harvest_facets_batches(
+            state_conn, ["job3"], "visual", root=str(tmp_path / "bronze")
         )
-        with patch.object(facets_batch.qwen_client, "get_job",
-                          return_value=_failed_job()):
-            out = facets_batch.harvest_facets_batches(ops, state_conn)
-        assert out["written"] == 0
-        assert facets_batch.pending_ledger_jobs(ops) == []
-
-    def test_failed_item_surfaced_not_written(self, state_conn, tmp_path):
-        ops = _sqlite(tmp_path)
-        facets_batch._record_jobs(
-            ops, "visual", _DEFAULT_QWEN_MODEL, ["job1"], 1, 0,
-            {"n_media": {"p_img": 1}},
-        )
-        results = [
-            {"custom_key": "p_img", "ok": False, "output": None,
-             "error": "unreadable file"},
-        ]
-        with patch.object(facets_batch.qwen_client, "get_job",
-                          return_value=_completed_job()), \
-             patch.object(facets_batch.qwen_client, "get_results",
-                          return_value=results):
-            out = facets_batch.harvest_facets_batches(ops, state_conn)
-        assert out["written"] == 0 and out["failed_items"] == 1
+        assert out["written"] == 0 and out["failed_jobs"] == 1
         assert state_conn.execute(
             "SELECT count(*) FROM gold_growth_facets"
         ).fetchone()[0] == 0
 
-    def test_non_terminal_job_skipped(self, state_conn, tmp_path):
-        ops = _sqlite(tmp_path)
-        facets_batch._record_jobs(
-            ops, "visual", _DEFAULT_QWEN_MODEL, ["job4"], 1, 0, {}
-        )
-        with patch.object(
-            facets_batch.qwen_client, "get_job",
-            return_value={"state": "processing"},
-        ):
-            out = facets_batch.harvest_facets_batches(ops, state_conn)
-        assert out["written"] == 0
-        assert facets_batch.pending_ledger_jobs(ops)[0]["job_id"] == "job4"
-
-
-# ── Ledger (resume-safe state) ──────────────────────────────────────────────
-
-
-class TestLedger:
-    def test_record_and_pending(self, state_conn, tmp_path):
-        ops = _sqlite(tmp_path)
-        facets_batch._record_jobs(
-            ops, "visual", "m", ["jobA", "jobB"], 2, 100,
-            {"n_media": {"p": 1}},
-        )
-        pending = facets_batch.pending_ledger_jobs(ops)
-        assert [p["job_id"] for p in pending] == ["jobA", "jobB"]
-        assert pending[0]["meta"]["n_media"] == {"p": 1}
-        facets_batch._set_ledger_status(ops, "jobA", "RETRIEVED")
-        assert [p["job_id"] for p in facets_batch.pending_ledger_jobs(ops)] == [
-            "jobB"
+    def test_failed_item_surfaced_not_written(self, state_conn, tmp_path,
+                                              monkeypatch):
+        adapter = _FakeAdapter()
+        adapter.docs["job1"] = {"state": "completed"}
+        adapter.results["job1"] = [
+            _result("p_img", ok=False, output=None, error="unreadable file"),
         ]
-
-    def test_gemini_column_migrated(self, tmp_path):
-        """A pre-existing Gemini-era ledger migrates gemini_batch_name → job_id."""
-        import sqlite3
-
-        db = tmp_path / "legacy_ops.sqlite"
-        con = sqlite3.connect(str(db))
-        con.execute(
-            "CREATE TABLE facets_batch_jobs (id INTEGER PRIMARY KEY, "
-            "mode VARCHAR NOT NULL, model VARCHAR NOT NULL, "
-            "gemini_batch_name VARCHAR NOT NULL, status VARCHAR NOT NULL, "
-            "n_requests INTEGER NOT NULL, est_tokens INTEGER NOT NULL, "
-            "meta_json VARCHAR NOT NULL DEFAULT '{}', "
-            "created_at VARCHAR NOT NULL, updated_at VARCHAR NOT NULL)"
+        _fake_service(monkeypatch, adapter)
+        root = str(tmp_path / "bronze")
+        out = facets_batch.harvest_facets_batches(
+            state_conn, ["job1"], "visual", root=root
         )
-        con.execute(
-            "INSERT INTO facets_batch_jobs (mode, model, gemini_batch_name, "
-            "status, n_requests, est_tokens, created_at, updated_at) "
-            "VALUES ('visual', 'gemini-3.5-flash-lite', 'old-chunk', "
-            "'SUBMITTED', 1, 0, 't', 't')"
+        assert out["written"] == 0 and out["failed_items"] == 1
+        assert state_conn.execute(
+            "SELECT count(*) FROM gold_growth_facets"
+        ).fetchone()[0] == 0
+        # failure is READ from a bronze column, never inferred from a
+        # missing conformed row (ADR-0013)
+        from datalake.defs.enrichment.landing import read_responses
+
+        df = read_responses(root)
+        assert df["ok"].to_list() == [False]
+        assert df["error_message"][0] == "unreadable file"
+
+    def test_non_terminal_job_skipped(self, state_conn, tmp_path, monkeypatch):
+        adapter = _FakeAdapter()
+        adapter.docs["job4"] = {"state": "processing"}
+        _fake_service(monkeypatch, adapter)
+        out = facets_batch.harvest_facets_batches(
+            state_conn, ["job4"], "visual", root=str(tmp_path / "bronze")
         )
-        con.commit()
-        con.close()
-        ops = SQLiteResource(database=str(db))
-        pending = facets_batch.pending_ledger_jobs(ops)
-        assert [p["job_id"] for p in pending] == ["old-chunk"]
+        assert out["written"] == 0 and out["skipped"] == 1
 
 
 class TestVisualDoneDetection:
@@ -469,6 +466,7 @@ class TestVisualDoneDetection:
         )
         targets = facets_batch.enumerate_targets(state_conn, "visual")
         assert "p_img" in {t["post_id"] for t in targets}
+
     def test_superseded_engine_row_is_reenqueued(self, state_conn):
         # A gemini-era row (all visual fields under schema v3, but model =
         # gemini) must NOT count as done under qwen — it is re-enqueued so the
@@ -483,30 +481,38 @@ class TestVisualDoneDetection:
         assert "p_video" in {t["post_id"] for t in targets}
 
 
-class TestHarvestLedgerGuards:
-    def test_unknown_explicit_job_id_raises(self, state_conn, tmp_path):
-        ops = _sqlite(tmp_path)
-        with pytest.raises(ValueError, match="not in the facets ledger"):
+class TestHarvestGuards:
+    def test_empty_job_ids_raises(self, state_conn, tmp_path):
+        """No ledger to consult (ADR-0013) — the caller MUST supply ids."""
+        with pytest.raises(ValueError, match="no job ids"):
             facets_batch.harvest_facets_batches(
-                ops, state_conn, job_ids=["never-submitted"]
+                state_conn, [], "visual", root=str(tmp_path / "bronze")
             )
 
-    def test_ledger_model_stamps_gold_rows(self, state_conn, tmp_path):
-        ops = _sqlite(tmp_path)
-        facets_batch._record_jobs(
-            ops, "text", "m-submit-time", ["jobM"], 1, 0, {}
-        )
-        results = [
-            {"custom_key": "p_caption", "ok": True,
-             "output": json.dumps(_text_payload()), "error": None},
-        ]
-        with patch.object(facets_batch.qwen_client, "get_job",
-                          return_value=_completed_job()), \
-             patch.object(facets_batch.qwen_client, "get_results",
-                          return_value=results):
-            out = facets_batch.harvest_facets_batches(
-                ops, state_conn, model=_DEFAULT_QWEN_MODEL
+    def test_unknown_job_id_raises_loudly(self, state_conn, tmp_path,
+                                          monkeypatch):
+        """An unknown job id surfaces the service's error — never a quiet
+        skip, never a ledger lookup."""
+        adapter = _FakeAdapter()  # no docs at all
+        _fake_service(monkeypatch, adapter)
+        with pytest.raises(QwenServiceError):
+            facets_batch.harvest_facets_batches(
+                state_conn, ["never-submitted"], "visual",
+                root=str(tmp_path / "bronze"),
             )
+
+    def test_model_param_stamps_gold_rows(self, state_conn, tmp_path,
+                                          monkeypatch):
+        adapter = _FakeAdapter()
+        adapter.docs["jobM"] = {"state": "completed"}
+        adapter.results["jobM"] = [
+            _result("p_caption", output=json.dumps(_text_payload()),
+                    model="m-submit-time"),
+        ]
+        _fake_service(monkeypatch, adapter)
+        out = facets_batch.harvest_facets_batches(
+            state_conn, ["jobM"], "text", root=str(tmp_path / "bronze")
+        )
         assert out["written"] == 1
         assert state_conn.execute(
             "SELECT model FROM gold_growth_facets WHERE post_id = 'p_caption'"
@@ -554,7 +560,9 @@ class TestResumeAfterMidRunFailure:
     def test_rerun_skips_gold_and_retries_failed(self, state_conn, tmp_path,
                                                  cached_media, monkeypatch):
         ops = _sqlite(tmp_path)
-        submitted: list[list[dict]] = []
+        adapter = _FakeAdapter()
+        _fake_service(monkeypatch, adapter)
+        submitted: list[list[str]] = []
 
         def fake_submit(*args, **kwargs):
             submitted.append(
@@ -562,38 +570,38 @@ class TestResumeAfterMidRunFailure:
             )
             return f"svc-{len(submitted)}"
 
-        # Cycle 1: p_img ok, p_video fails server-side (credits outage).
+        monkeypatch.setattr(facets_batch.qwen_client, "check_health",
+                            lambda *_: {})
+        monkeypatch.setattr(facets_batch.qwen_client, "submit_job",
+                            fake_submit)
+        root = str(tmp_path / "bronze")
+
+        def run_cycle(results_payload):
+            targets = facets_batch.enumerate_targets(state_conn, "visual")
+            items = facets_batch.build_facets_batch_requests(
+                ops, state_conn, targets, "visual"
+            )
+            if not items:
+                return None
+            job_id = facets_batch.submit_facets_batch(items, "visual")
+            adapter.docs[job_id] = {"state": "completed"}
+            adapter.results[job_id] = [
+                _result(r["custom_key"], ok=r["ok"], output=r["output"],
+                        error=r["error"])
+                for r in results_payload
+            ]
+            return facets_batch.harvest_facets_batches(
+                state_conn, [job_id], "visual", root=root
+            )
+
+        # ── Cycle 1 ──
         cycle1_results = [
             {"custom_key": "p_img", "ok": True,
              "output": json.dumps(_visual_payload()), "error": None},
             {"custom_key": "p_video", "ok": False, "output": None,
              "error": "out of credits"},
         ]
-        results_by_cycle = [cycle1_results]
-
-        def fake_get_results(*a, **k):
-            return results_by_cycle.pop(0)
-
-        monkeypatch.setattr(facets_batch.qwen_client, "check_health",
-                            lambda *_: {})
-        monkeypatch.setattr(facets_batch.qwen_client, "submit_job",
-                            fake_submit)
-        monkeypatch.setattr(facets_batch.qwen_client, "get_job",
-                            lambda *a, **k: _completed_job())
-        monkeypatch.setattr(facets_batch.qwen_client, "get_results",
-                            fake_get_results)
-
-        def run_cycle():
-            targets = facets_batch.enumerate_targets(state_conn, "visual")
-            items = facets_batch.build_facets_batch_requests(
-                ops, state_conn, targets, "visual"
-            )
-            if items:
-                facets_batch.submit_facets_batch(ops, items, "visual")
-            return facets_batch.harvest_facets_batches(ops, state_conn)
-
-        # ── Cycle 1 ──
-        out1 = run_cycle()
+        out1 = run_cycle(cycle1_results)
         assert out1["written"] == 1 and out1["failed_items"] == 1
         assert submitted[-1] == ["p_img", "p_video"]
         assert state_conn.execute(
@@ -610,15 +618,14 @@ class TestResumeAfterMidRunFailure:
         assert "p_img" not in {t["post_id"] for t in targets2}
         assert "p_video" in {t["post_id"] for t in targets2}
 
-        # Cycle 2: both items now succeed; the ledger is reused so the
-        # harvest picks up the resubmitted batch.
+        # Cycle 2: both items now succeed; the resubmitted job is harvested
+        # from its service-owned id (no ledger involved).
         cycle2_results = [
             dict(r, ok=True, output=json.dumps(_visual_payload()),
                  error=None)
             for r in cycle1_results
         ]
-        results_by_cycle.append(cycle2_results)
-        out2 = run_cycle()
+        out2 = run_cycle(cycle2_results)
         assert submitted[-1] == ["p_video"]  # ONLY the failed post retried
         assert "p_img" not in submitted[-1]
         assert out2["written"] == 2  # both cycle-2 items land (UPSERT)
