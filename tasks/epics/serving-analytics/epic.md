@@ -70,9 +70,15 @@ domains and what is their shape).
   dropped, renamed, or restated.
 
 ## Source of truth
-`tasks/plans/phase-4-serving.md`, `metrics-centralization.md`,
+Canonical spec: `docs/architecture/pipelines/enrichment.md` (v3 — the four gold marts, and the
+"Preserved serving surface" no-regression contract).
+
+Plans: `tasks/plans/content-classification-migration.md` (Phase 5 — migrate the
+live `gold_analyses` to `silver_content_classification` with no serving
+regression), `tasks/plans/phase-4-serving.md`, `metrics-centralization.md`,
 `creator-metrics.md`, `creator-ranking-rising-creators.md`,
 `follower-observations-underperformer-eda.md`, `serving-test-and-docs-repair.md`.
+Coordination: `tasks/plans/enrichment-v3-migration-master.md`.
 
 ## Epic DoD
 - [x] Views mirror the metric semantics; no aggregation in `server.py`

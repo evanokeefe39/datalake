@@ -58,8 +58,15 @@ executor (qwen text default, Gemini pluggable) is an E-ENRICH-ENGINE decision,
 not this epic's; the provider lives in metadata, never in the table name.
 
 ## Source of truth
-`docs/enrichment-enhancement-design.md` §6, `scripts/facet_summary_spike.py`,
+Canonical spec: `docs/architecture/pipelines/enrichment.md` (v3 — `silver_visual_summaries` and
+`silver_text_summaries`; supersedes `docs/architecture/enrichment-design-v1-superseded.md`
+section 6, retained as rationale), `scripts/facet_summary_spike.py`,
 `data/facet_summary_spike.duckdb`.
+
+Plans: `tasks/plans/silver-conform-tables.md` (Phase 4 — the summary tables
+conform from the SAME visual/text submit, never a second call),
+`tasks/plans/inference-service-seam.md` (Phase 1 — the one-submit-fans-out rule).
+Coordination: `tasks/plans/enrichment-v3-migration-master.md`.
 
 ## Epic DoD (draft)
 - [ ] `content_summary` (overall, ALL forms incl. carousel overall) +

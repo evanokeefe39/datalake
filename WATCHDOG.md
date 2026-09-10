@@ -77,7 +77,7 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
   bypasses the watermark + dedup path — the duplicate codepath rots and the
   data sits outside incremental discovery. If the target layer has a producer
   contract (bronze does: Parquet + `.parquet.meta`), add a producer to it.
-  See `docs/BRONZE_SCHEMA.md` (Bronze Layer Contract) and ISSUES.md #16.
+  See `docs/architecture/bronze-schema.md` (Bronze Layer Contract) and ISSUES.md #16.
 - **Write-once is load-bearing for bronze discovery.** Silver globs all
   `*.parquet` and filters on `mtime > watermarks['silver_ig']`. Rewriting an
   existing bronze file (fixing rows, recompressing, re-running a producer)
@@ -151,3 +151,46 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
   `v_post_detail` for `gold_topic`; `perf_score` = mean member-post
   `engagement_score` (unscored posts drop out of the mean). Top-5 by EITHER rank;
   `RANK` ties share a rank, so a creator can expose up to 10 rows.
+
+## v3 enrichment / orchestration / seam — accepted, NOT yet live (added 2026-09-10)
+
+ADR-0011 (layered enrichment), ADR-0012 (Dagster-native orchestration), and the
+inference-service seam (ADR-0008/0009) are **accepted but not implemented** — the
+code still runs the old model (`gold_analyses`, `gold_growth_facets`,
+`batch_jobs`/`batch_items`/`dead_letter`, two independent provider lifecycles).
+Review against the TARGET while keeping claims about CURRENT behavior accurate.
+Canonical facts: `docs/architecture/pipelines/enrichment.md` (v3, supersedes
+`docs/architecture/enrichment-design-v1-superseded.md` v1), `docs/architecture/adr/`.
+
+- **Layering trap (ADR-0011):** the join key is `platform`, never `domain` —
+  `domain`/`subdomain`/`topic` mean ONLY the content niche. This fixes a live
+  bug: `gold_analyses.domain` today holds `'instagram'` (a platform) while the
+  same word means the niche in the body. A `domain` join key in new code is the
+  duplicate-name bug reborn. Validation (parse, enums, bounds) belongs in
+  **silver**, never in the write path of a paid gold table.
+- **Re-billing trap:** the whole point of the bronze landing
+  (`bronze_enrichment_raw`, verbatim + append-only) is that schema/mapping
+  changes become deterministic silver replays. If a review sees silver re-derive
+  from the provider (or bronze skipped), every mapping change re-calls — and
+  re-pays — the paid model.
+- **Double-submit trap (ADR-0012):** retiring `batch_items` removes the
+  discovery drain's in-flight guard. `ig_posts_gen_batches` currently derives
+  in-flight state from `batch_items WHERE status IN ('pending','processing')`
+  (`src/datalake/defs/instagram/assets.py:1142-1145`); once the queue dies, the
+  guard must come from the Dagster instance or the drain re-enqueues in-flight
+  work — double submit, double bill.
+- **Provenance trap:** one shared enrichment table with one `prompt_hash` for
+  two writers (e.g. visual annotations + summaries from one submit, or text
+  annotations + summaries) lets one pass overwrite another's staleness signal.
+  Per-pass tables (`silver_visual_annotations` vs `silver_visual_summaries`, …)
+  are structural, not stylistic — do not consolidate them.
+- **Silent-failure traps:** a terminal/unparseable result must dead-letter (or
+  quarantine) **loudly** — never a silent NULL, never a dropped row. The qwen
+  service health gate (`GET /health` before submit, US-EENG-2) must fail loudly
+  when the service is down — never report a quiet "nothing to do".
+- **Seam trap:** never one submit per table. One visual submit returns both
+  annotations and summaries; one text submit returns both annotations and
+  summaries — per-table submits double the bill for a call that returns multiple
+  artifacts. One submit per pass, harvest fans out to every table the pass
+  produced. Adapters swap only via `build_adapter(name)` — no provider named
+  anywhere else.

@@ -12,7 +12,7 @@
 > domain-agnostic **qwen batch service** (`~/repos/qwen-batch-service`) that holds
 > its own job/item state, because qwen is synchronous and the Gemini File-API path
 > caps at 20 GiB. Media becomes client-side frame-sampling (no File-API upload, no
-> GCS mirror). See `docs/adr/0009-qwen-batch-service.md`.
+> GCS mirror). See `docs/architecture/adr/0009-qwen-batch-service.md`.
 
 ## Context
 

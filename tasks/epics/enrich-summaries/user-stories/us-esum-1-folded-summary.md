@@ -12,7 +12,7 @@ status: Open
   submit fans out at harvest to `silver_visual_annotations` +
   `silver_visual_summaries`),
   E-SERVING-ANALYTICS
-- **Source:** `docs/enrichment-enhancement-design.md` §6; fold spike
+- **Source:** `docs/architecture/enrichment-design-v1-superseded.md` §6; fold spike
 
 ## Story
 **As a** growth analyst, **I want** a visual-first `content_summary` per video,

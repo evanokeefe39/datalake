@@ -80,9 +80,17 @@ analytics can split "what works" by observable content mechanics.
   underperformer, from lake data).
 
 ## Source of truth
-`docs/enrichment-enhancement-design.md` §3–§4,
-`tasks/plans/facet-list-experiment-design.md` (experiments + literature),
-spikes `data/facet_menu.duckdb`, `data/facet_experiment.duckdb`,
+Canonical spec: `docs/architecture/pipelines/enrichment.md` (v3 layered model, the "Naming rules"
+and "Silver" sections — supersedes `docs/architecture/enrichment-design-v1-superseded.md`
+sections 3-4, retained as rationale), `docs/architecture/growth-facets-schema.md` (V3 schema).
+
+Plans: `tasks/plans/silver-conform-tables.md` (Phase 4 — the conform layer for
+`silver_visual_*` and `silver_text_*`), `tasks/plans/inference-service-seam.md`
+(Phase 1 — the visual submit), `tasks/plans/facet-list-experiment-design.md`
+(experiments + literature), `tasks/plans/facet-batch-native.md`.
+Coordination: `tasks/plans/enrichment-v3-migration-master.md`.
+
+Spikes: `data/facet_menu.duckdb`, `data/facet_experiment.duckdb`,
 `data/facet_caption.duckdb`.
 
 ## Epic DoD (draft)

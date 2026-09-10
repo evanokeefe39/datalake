@@ -18,10 +18,28 @@ uv run dg dev
 
 Open http://localhost:3000.
 
-## Architecture
+## Architecture (current state)
 
 Medallion lakehouse with async enrichment batches:
 bronze (raw ingest) → silver (dedup) → batch creation → gold (Dagster enrichment jobs) → serving (views).
+
+Note: the accepted target design (ADR-0011 layered enrichment with
+`bronze_enrichment_raw` → six `silver_*` tables → four gold marts, and
+ADR-0012 Dagster-native orchestration replacing the ops.sqlite queue) is **not
+yet implemented** — the code above is what runs today.
+
+**Key documents:**
+- Canonical enrichment spec: `docs/architecture/pipelines/enrichment.md` (v3 layered model —
+  supersedes `docs/architecture/enrichment-design-v1-superseded.md`, kept as rationale only)
+- Architecture decision records: `docs/architecture/adr/` (index: `docs/architecture/adr/README.md`;
+  ADR-0011 = layered enrichment, ADR-0012 = Dagster-native orchestration)
+- Reviewer traps and invariants: `WATCHDOG.md`; backlog: `ISSUES.md`
+
+**The inference seam (target).** External model work rides one seam — a shared
+job ledger plus three verbs (`submit`, `poll-to-terminal`, `retrieve`) — with a
+swappable `ProviderAdapter` behind it, so replacing the qwen-batch service with
+another provider (or Gemini batch) is a config change. Today the repo runs two
+independent lifecycles instead; convergence is `tasks/plans/inference-service-seam.md`.
 
 ```
 src/datalake/defs/

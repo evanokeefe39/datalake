@@ -86,7 +86,8 @@ queue and dead_letter are retired; the rest of ops.sqlite is untouched.**
     Verified by endpoint tracing, not by reading source (S6).
 
 **`ops.sqlite` retains** the state that is genuinely not orchestration:
-`media_metadata`, `media_cache`, `creators`, `profiles`, `creator_merges`.
+`media_metadata`, `media_cache`, `creators`, `profiles`, `creator_merges`,
+`prompt_registry` (the prompt-hash provenance store).
 
 ## Alternatives considered
 

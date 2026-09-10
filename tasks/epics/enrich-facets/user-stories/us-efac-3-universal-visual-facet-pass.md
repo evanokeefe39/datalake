@@ -11,7 +11,7 @@ status: Open
 - **Relates to:** E-ENRICH-SUMMARIES (ONE visual submit fans out at harvest to
   `silver_visual_annotations` AND `silver_visual_summaries` — same request, not two
   submits), E-ENRICH-ENGINE (backend = qwen batch service, ADR-0009)
-- **Source:** `docs/enrichment-enhancement-design.md` §3
+- **Source:** `docs/architecture/enrichment-design-v1-superseded.md` §3
 - **Backend note (2026-09-10, reconciled to the settled contract):** media
   transport = **client-side ffmpeg frame-sampling** → image parts on the qwen
   service (the pass is "visual" — images AND video frames — not "video").

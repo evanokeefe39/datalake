@@ -212,3 +212,37 @@ script. Full behavioral contracts in `tasks/plans/ig-local-ingestion.md`.
 - **Ad-hoc sentinel:** `profiles.results_limit = -1` marks a profile as ad
   hoc (already ingested, not continuously scraped). `creators.py` accepts
   -1; `enabled_profiles` treats it as don't-schedule.
+
+## Producer 3: bronze_enrichment_raw (external model responses) — TARGET, not built
+
+The third bronze producer: the **landing zone for ALL external model
+responses**, whatever the workload. Recorded in
+[ADR-0011](adr/0011-enrichment-layered-model.md); enrichment output is an
+ingested source ([ADR-0001](adr/0001-enrichment-as-ingested-source.md)), so its
+verbatim landing is bronze, exactly like a scrape.
+
+**Status: NOT IMPLEMENTED.** Today no enrichment response is landed — both the
+Gemini path (`harvest.apply_retrieved`, `analysis.py`) and the qwen path
+(`facets_batch.harvest_facets_batches`) parse the response in flight and discard
+it. This section documents the contract the producer must satisfy; it is not a
+description of current behaviour.
+
+- **Storage:** Parquet, immutable, append-only. No transformation is applied —
+  this is as-observed capture.
+- **Source:** the harvest step of the enrichment seam, which lands the verbatim
+  response body after poll-to-terminal and retrieve. One general pattern for
+  every workload, not one per API.
+- **Idempotency key:** `(post_id, platform, workload, prompt_hash, run_id)`.
+- **`workload`:** `qwen-vision` | `whisper` | `text-LLM`. Provider is metadata,
+  never part of a table name.
+- **Columns:** `post_id`, `platform`, `workload`, `provider`, `model`,
+  `prompt_hash`, `schema_version`, `run_id`, `analysed_at`, `input_modality`,
+  `sampling_params_json`, `response_text` (verbatim), `request_echo_json`.
+- **Consumer:** the silver conform layer derives the six `silver_*` tables from
+  this table **deterministically, with zero API calls**.
+
+**Why this producer matters economically.** Because the raw response is landed,
+a schema or mapping change is a deterministic replay of silver rather than a
+re-call of the paid model. Re-running silver never re-bills. Without this
+landing that property does not hold, and the whole layering argument in
+ADR-0011 collapses.

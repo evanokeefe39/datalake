@@ -50,8 +50,15 @@ dependency and no scrape-time expiry race**.
   ~1–2 h via Parakeet; not needed for a one-time backfill.
 
 ## Source of truth
-`docs/enrichment-enhancement-design.md` §5, §7–§8; media facts measured from
+Canonical spec: `docs/architecture/pipelines/enrichment.md` (v3 — `silver_audio_transcripts` and
+the `transcript_status` enum; supersedes `docs/architecture/enrichment-design-v1-superseded.md`
+sections 5 and 7-8, retained as rationale); media facts measured from
 `ops.sqlite` + ffprobe (2026-09-07).
+
+Plans: `tasks/plans/silver-conform-tables.md` (Phase 4 — the audio pass),
+`tasks/plans/inference-service-seam.md` (Phase 1 — the whisper executor is a seam
+workload, so it rides the same submit/poll/retrieve lifecycle).
+Coordination: `tasks/plans/enrichment-v3-migration-master.md`.
 
 ## Epic DoD (draft)
 - [ ] ffmpeg audio-extract → faster-whisper job; `silver_audio_transcripts`

@@ -1,5 +1,11 @@
 # ADR-0010: Enrichment naming (`gold_<channel>_<artifact>`) and per-pass provenance
 
+**Generation: v2** (2026-09-09) — superseded by v3 (ADR-0011). What v2 settled
+(naming, per-pass provenance, no-`_bound` columns, schema registry,
+one-submit-per-pass) still stands; only its **naming and layer** were replaced.
+Full lineage and the authoritative numbering: `docs/architecture/pipelines/enrichment.md`
+("Version history").
+
 - Status: Superseded by [ADR-0011](0011-enrichment-layered-model.md)
   (naming scope; layer model + platform key)
 - Decided: 2026-09-09 (settled enrichment design v2 contract,
@@ -75,7 +81,7 @@ service era (ADR-0009):
    the scheduler.
 
 The full table/column/DAG/asset-graph spec built on these decisions lives in
-`docs/enrichment-design.md`.
+`docs/architecture/pipelines/enrichment.md`.
 
 ## Alternatives considered
 

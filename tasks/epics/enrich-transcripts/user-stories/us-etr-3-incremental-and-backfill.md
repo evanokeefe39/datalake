@@ -10,7 +10,7 @@ status: Open
 - **Status:** Open
 - **Relates to:** E-ENRICH-FACETS (US-EFAC-4 text-layer consumes transcript),
   infra decision (local laptop vs cx33 box)
-- **Source:** `docs/enrichment-enhancement-design.md` §5, §8, §9
+- **Source:** `docs/architecture/enrichment-design-v1-superseded.md` §5, §8, §9
 
 ## Story
 **As a** pipeline operator, **I want** new videos transcribed incrementally at

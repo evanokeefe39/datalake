@@ -9,7 +9,7 @@ column produced by the universal video→Gemini call (design doc §4). It is
 PURE/hermetic under the ADR-0008 seam: no media, API, or DB imports, no
 Dagster ops — only the schema dict, constants, and a stdlib validator.
 
-Design notes (documented in ``docs/growth-facets-schema.md``):
+Design notes (documented in ``docs/architecture/growth-facets-schema.md``):
 
 - Keep-bias: the field set is BROAD. Only structurally excluded things are
   the reserved gold keys (``RESERVED_GOLD_KEYS``) — the gold pass owns them.

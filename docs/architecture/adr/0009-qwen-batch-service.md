@@ -105,7 +105,7 @@ vision/text caller, vision-typed `images` field). Decision recorded here:
 
 ### Addendum note (2026-09-09, enrichment design v2)
 
-The settled v2 contract (`docs/enrichment-design.md`,
+The settled v2 contract (`docs/architecture/pipelines/enrichment.md`,
 [ADR-0010](0010-enrichment-naming-and-provenance.md)) codifies this service as
 the executor host behind ONE shared async ingest seam: `openrouter_vision` =
 the `qwen-vision` workload (one submit; harvest fans out to

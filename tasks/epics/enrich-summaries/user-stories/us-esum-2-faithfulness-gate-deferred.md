@@ -8,7 +8,7 @@ status: Deferred
 
 - **Epic:** E-ENRICH-SUMMARIES
 - **Status:** Deferred — no scheduled work
-- **Source:** `docs/enrichment-enhancement-design.md` §6 (methodological boundary)
+- **Source:** `docs/architecture/enrichment-design-v1-superseded.md` §6 (methodological boundary)
 
 ## Story
 **As a** reviewer/auditor, **I want** visual faithfulness of the folded summary

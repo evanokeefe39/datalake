@@ -1,17 +1,47 @@
-# Enrichment enhancement design: facets + transcripts + video/carousel summaries
+# SUPERSEDED (v1) — Enrichment enhancement design: facets + transcripts + video/carousel summaries
 
-Date: 2026-09-07. Consolidated from the facet-design work (see `tasks/plans/facet-list-experiment-design.md`) plus this session's transcript and summary additions. Companion: `docs/refactor-research/migration-batch-native-enrichment.md` (the current batch-native baseline this builds on).
-> **Reconciled to the settled enrichment design v2 (2026-09-09).** The
-> definitive spec is `docs/enrichment-design.md` (tables, columns, DAG, asset
-> graph, naming) with [ADR-0010](adr/0010-enrichment-naming-and-provenance.md);
-> this document remains the rationale/experiment record — where they differ,
-> the v2 spec wins. Terminology note: the "universal video call" and "Gemini"
-> references below reflect the 2026-09-07/08 baseline; under the settled
-> contract the visual workload executes on qwen (ADR-0009) and every
-> table/column name follows the final scheme (`gold_visual_annotations`,
-> `gold_visual_summaries`, `gold_text_annotations`, `gold_text_summaries`,
-> `gold_audio_transcripts`, `gold_content_classification`). Legacy names
-> appear only as explicit replaced-history.
+> **This document is superseded twice over and is scheduled for removal.**
+>
+> It is kept only so the *reasoning* behind the current design remains
+> recoverable — the experiments, the rejected alternatives, and the measured
+> facts that drove it. It describes nothing that runs. For the current design
+> read [`enrichment.md`](pipelines/enrichment.md).
+>
+> **Scheduled removal.** This file will be deleted on a dedicated branch
+> (`chore/retire-enrichment-v1-design`) once nothing links to it. Removing it
+> keeps a two-generations-old design out of agent context, where it otherwise
+> reads as current. **Before deleting, confirm the branch above is recorded in
+> the commit message and that the content remains recoverable from git history**
+> (`git show <branch>:docs/architecture/enrichment-design-v1-superseded.md`) —
+> the point is to drop it from the working tree, not to lose it.
+>
+> Anything still genuinely useful here should be lifted into
+> [`enrichment.md`](pipelines/enrichment.md) or the relevant ADR *before* deletion; this
+> is the last chance to notice what that is.
+
+Date: 2026-09-07. Consolidated from the facet-design work (see `tasks/plans/facet-list-experiment-design.md`) plus this session's transcript and summary additions. Companion: `docs/refactor-research/migration-batch-native-enrichment.md` (the batch-native baseline this built on).
+**Generation: v1** (2026-09-07) — the first enrichment design generation.
+Superseded by v2 (ADR-0010) and then v3 (ADR-0011). Retained purely as the
+rationale and experiment record; full lineage: `docs/architecture/pipelines/enrichment.md`
+("Version history").
+
+> **SUPERSEDED — rationale and experiment record only (updated 2026-09-10).**
+> The definitive spec is **`docs/architecture/pipelines/enrichment.md`** (v3 layered model),
+> recorded in [ADR-0011](adr/0011-enrichment-layered-model.md), which supersedes
+> [ADR-0010](adr/0010-enrichment-naming-and-provenance.md) in its **naming and
+> layer** scope. Where this document differs from the v3 spec, the v3 spec wins.
+>
+> Terminology note: the "universal video call" and "Gemini" references below
+> reflect the 2026-09-07/08 baseline. Under the settled contract the visual
+> workload executes on qwen (ADR-0009), and every table name follows the v3
+> scheme — the conformed tables are **`silver_*`, not `gold_*`**
+> (`silver_visual_annotations`, `silver_visual_summaries`,
+> `silver_text_annotations`, `silver_text_summaries`,
+> `silver_audio_transcripts`, `silver_content_classification`), keyed on
+> `platform` (never `domain`), with gold reserved for the four analytic marts.
+> The older `gold_<channel>_<artifact>` names below are superseded history.
+> Orchestration is Dagster-native per [ADR-0012](adr/0012-dagster-native-orchestration.md).
+> Legacy names appear only as explicit replaced-history.
 
 ## 1. Executive summary
 
@@ -67,7 +97,7 @@ poll-to-terminal → retrieve → idempotent upsert, per-pass provenance, loud
 per-item failure) with the workload as a pluggable executor plugin. The
 2026-09-09 audit's "STT outside the seam" carve-out is superseded by the
 settled v2 asset graph: whisper submit → audio job → harvest rides the same
-lifecycle (`docs/enrichment-design.md` §6, ADR-0010).
+lifecycle (`docs/architecture/pipelines/enrichment.md` §6, ADR-0010).
 
 ### Summary semantics by content form (audit 2026-09-09)
 `content_summary` = the **OVERALL visual summary for every content form**:
@@ -84,7 +114,7 @@ silent NULL.
 Transcripts persist in their own `gold_audio_transcripts` table — keys
 `post_id`, `domain`; body `transcript`, `transcript_status`
 (`no_audio_source|pending|done|empty_audio`), `audio_present`, `asr_model`,
-`language`; plus the shared provenance metadata set (`docs/enrichment-design.md`
+`language`; plus the shared provenance metadata set (`docs/architecture/pipelines/enrichment.md`
 §4). A durable derived artifact with ASR provenance, not a facet/summary
 column on the legacy single-table facet store (`gold_growth_facets`, replaced
 by the four-way annotations/summaries split).
