@@ -5,7 +5,7 @@ This repo is operated by Claude. Keep this file current — Claude reads it on e
 ## Key rules
 
 - Never use `pip`. Always use `uv` for Python package management.
-- Work on `feat/*`, `fix/*`, `chore/*` branches; squash-merge to `main` via PR.
+- Work on `feat/*`, `fix/*`, `docs/*`, `chore/*` branches; squash-merge to `main` via PR.
 - Conventional commits only: `type(scope): summary`.
 - No direct pushes to `main`.
 - Never use PowerShell.
@@ -114,10 +114,11 @@ code still runs the model described in the sections below.
   marts. See the Architecture section below. This supersedes the v1 spec
   `docs/architecture/enrichment-design-v1-superseded.md` (retained as rationale/experiment
   record only — not canonical).
-- **Inference seam (ADR-0008/0009).** One seam, not two lifecycles: a single
-  job ledger plus three verbs (`submit` / `poll-to-terminal` / `retrieve`);
-  harvest composes poll + retrieve + an idempotent verbatim landing. A
-  `ProviderAdapter` Protocol with one canonical state vocabulary
+- **Inference seam (ADR-0008/0009).** One seam, not two lifecycles: three
+  verbs (`submit` / `poll-to-terminal` / `retrieve`) over an HTTP contract;
+  harvest composes poll + retrieve + an idempotent verbatim landing. **No
+  ledger: ADR-0013 — the service owns its job store and Dagster polls it.**
+  A `ProviderAdapter` Protocol with one canonical state vocabulary
   (`pending`/`processing`/`completed`/`failed`) lets `ServiceBackedAdapter`
   (qwen-batch-service — the service is what makes the synchronous OpenRouter/qwen
   provider async) and `DirectBatchAdapter` (Gemini, natively async) swap by
@@ -201,9 +202,11 @@ table above describes what runs today; this is the target:
   `gold_growth_facets` → the four visual/text silver tables;
   proposed-but-never-built `gold_transcripts` → `silver_audio_transcripts`.
 
-**Inference seam (ADR-0008/0009):** one boundary where the pipeline hands work
-to an outside system — one shared job ledger plus three verbs
-(`submit` / `poll-to-terminal` / `retrieve`). `ProviderAdapter` swaps by config
+**Inference seam (ADR-0008/0009, amended by ADR-0013):** one boundary where the
+pipeline hands work to an outside system — three verbs
+(`submit` / `poll-to-terminal` / `retrieve`) over an HTTP contract, with each
+side owning its own state. **There is no shared `external_jobs` ledger.** The
+service owns its job store and Dagster polls it. `ProviderAdapter` swaps by config
 string via `build_adapter(name)`: `ServiceBackedAdapter` (qwen-batch-service —
 the service is what makes the synchronous OpenRouter/qwen provider async) and
 `DirectBatchAdapter` (Gemini, natively async). Not built in this repo; proven in
@@ -695,4 +698,5 @@ Set in `.env`:
 | 2026-08-14 | `creators` + `profiles` split (replaces `scrape_targets`) | Multi-platform enabler: creator (person/brand) owns 1..N profiles (account per platform). `dim_profile` carries `creator_id`/`creator_name` for click-through without cross-DB joins. Depth is per-profile. Backfill is 1:1 (IG-only today). |
 | 2026-09-10 | Enrichment layered model (ADR-0011) — bronze verbatim → six `silver_*` → four gold marts, keyed `(post_id, platform)` | Deterministic remap from `bronze_enrichment_raw` means schema/mapping changes are replays, not re-bills. ACCEPTED, NOT IMPLEMENTED. Spec: `docs/architecture/pipelines/enrichment.md` (v3) |
 | 2026-09-10 | Dagster-native orchestration (ADR-0012) | Retires the `ops.sqlite` queue (`batch_jobs`/`batch_items`/`dead_letter`/`facets_batch_jobs`); retains media/identity/prompt tables. ACCEPTED, NOT IMPLEMENTED |
-| 2026-09-10 | Inference seam (ADR-0008/0009): one ledger + `submit`/`poll-to-terminal`/`retrieve`, `ProviderAdapter` swap | One seam serves both the qwen-batch-service (async wrapper over a synchronous provider) and Gemini's native batch. Proven in the enrichment spike; not yet wired in |
+| 2026-09-10 | Inference seam (ADR-0008/0009): three verbs + `submit`/`poll-to-terminal`/`retrieve`, `ProviderAdapter` swap | One seam serves both the qwen-batch-service (async wrapper over a synchronous provider) and Gemini's native batch. Proven in the enrichment spike; not yet wired in |
+| 2026-09-10 | The seam keeps **no ledger** (ADR-0013) — the service owns its job store, Dagster polls it; Dagster state is instance-native | ADR-0007 Amd 1 / ADR-0010 dec 5 specified a shared `external_jobs` table; the spike's S5 negative assertion tested for it by name and found it unnecessary. Reconciles ADR-0012 with the seam. ACCEPTED, NOT IMPLEMENTED |
