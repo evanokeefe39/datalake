@@ -86,7 +86,9 @@ Coordination: `tasks/plans/enrichment-v3-migration-master.md`.
 - [ ] Serving views exposed for growth facets + summaries when they ship.
 - [ ] The four gold marts (`gold_post_enrichment`, `gold_creator_performance`,
       `gold_content_shape_performance`, `gold_top_posts`) materialized and
-      queryable for the owner's three questions (US-ESA-1).
+      queryable for the owner's three questions (US-ESA-1), and the Phase 5
+      migration of live classification off `gold_analyses` with no serving
+      regression (US-ESA-2).
 - [ ] No serving-surface regression: all 21 canonical views + 2 dims still
       exist and still resolve over `v_post_detail`; the existing serving +
       readiness tests stay green.
