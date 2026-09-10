@@ -150,7 +150,11 @@ landing) is the economic point of the seam work, not a nicety.
 1. **Where does `external_jobs` live** — `ops.sqlite`, or the Dagster instance?
    ADR-0012 says orchestration state is Dagster-native, but the seam contract
    requires *both sides* to read the ledger. Only the location is open; the name
-   is settled. Settle this before implementing.
+   is settled.
+   **Phase 1 gate — resolve before the ledger is created.** Phase 1 is what
+   introduces `external_jobs` and reconciles the `facets_batch_jobs` rows into
+   it, so the location cannot be deferred to Phase 2 (which retires the queue but
+   inherits the ledger). See `tasks/plans/enrichment-v3-migration-master.md`.
 2. **Retain the Gemini File-API media path** for the alternative adapter, or make
    client-side frame-sampling universal? ADR-0009 chose sampling for qwen;
    keeping the File-API path costs maintenance for a non-default provider.
