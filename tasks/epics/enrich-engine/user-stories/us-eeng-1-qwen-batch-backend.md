@@ -10,6 +10,11 @@ status: Open
 - **Status:** Open
 - **Relates to:** qwen-batch-service (dependent), US-EFAC-3 (visual pass rides it)
 - **Source:** `tasks/plans/qwen-batch-enrichment.md`, ADR-0009
+- **Settled contract (2026-09-10):** visual submits write
+  `gold_visual_annotations` + `gold_visual_summaries` via fan-out at harvest;
+  text submits fan out to `gold_text_annotations` + `gold_text_summaries`;
+  classification writes `gold_content_classification`. Provider is metadata,
+  never a table name.
 
 ## Story
 
@@ -23,9 +28,12 @@ resume-safety without the Gemini File-API storage cap or a domain-owned queue.
 - AC1: The facets SUBMIT PATH (scripts/enrich_facets_batch.py →
       facets_batch.submit_facets_batch) files candidates as a
       `qwen-batch-service` job (POST /jobs); orchestration is the one-shot CLI
-      driver, no Dagster op.
+      driver, no Dagster op. ONE visual job — at harvest it fans out to
+      `gold_visual_annotations` AND `gold_visual_summaries` (never one submit
+      per table).
 - AC2: facets_batch.harvest_facets_batches polls GET /jobs/{id}; on
-      `completed` it reads /results and writes `gold_growth_facets` keyed
+      `completed` it reads /results and writes the fan-out gold tables
+      (`gold_visual_annotations`, `gold_visual_summaries`) keyed
       `(post_id, domain)`.
 - AC3: Media = cached local file paths; the SERVICE frame-samples reels with
       ffmpeg on its own host + native images (the client never runs ffmpeg).
@@ -44,6 +52,20 @@ resume-safety without the Gemini File-API storage cap or a domain-owned queue.
       nor double-written (UPSERT idempotent). Proven by a client-level test
       that runs the discovery → submit cycle twice and asserts zero re-submits
       of done posts.
+- AC8 (workload pluggability): The service hosts the ≥3 enrichment workloads
+      (qwen-vision, text-LLM, Whisper STT) as pluggable job types — a
+      `workload` (executor) field on the job with an executor registry in the
+      worker (`openrouter_vision`, `openrouter_text`, `whisper_local`); the
+      store, lease/resume, dead-letter, and `/jobs` REST contract are
+      unchanged. A transcript job submits an audio path and harvests
+      transcript text via the same submit → poll → results flow. No second
+      service is created.
+- AC9 (one ingest seam): All workloads ingest via ONE shared async pattern —
+      local ledger (`workload`-keyed) → submit → poll-to-terminal → retrieve →
+      idempotent gold upsert with model/prompt_hash provenance. Gemini-batch
+      (now writing `gold_content_classification`, the retired `gold_analyses`
+      replaced) converges on the same lifecycle seam opportunistically;
+      its Dagster trigger may remain distinct.
 
 ## Definition of done
 

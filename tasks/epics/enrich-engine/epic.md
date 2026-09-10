@@ -16,6 +16,17 @@ transform layers** and never blocks a Dagster run. Dagster owns orchestration
 backend whose job state Dagster polls and harvests. Media is resolved client-side
 to frames (images) and sent in-request, so no upload/storage cap binds the corpus.
 
+The qwen-batch service is the **general async external-workload runner** for
+the ≥3 enrichment workloads (Whisper STT transcription →
+`gold_audio_transcripts`, qwen-vision → `gold_visual_annotations` +
+`gold_visual_summaries`, text-LLM → `gold_text_annotations` +
+`gold_text_summaries` + `gold_content_classification`) as pluggable job types,
+and all results ingest back into features via **ONE shared async pattern**:
+local ledger → submit → poll-to-terminal → retrieve → idempotent gold upsert
+with ordering guard. Gemini-batch (now `gold_content_classification`, replacing
+the retired `gold_analyses`) converges on the same lifecycle seam
+opportunistically (its own executor + Dagster trigger may stay).
+
 ## Backend pivot (ADR-0009)
 
 The enrichment backend moves from Google's `gemini-batch` (Developer API, File-API
@@ -45,6 +56,27 @@ Why (recorded in ADR-0009):
   store), so the corpus run is resume-safe without an `ops.sqlite` queue.
 - Incremental follow-on runs via stateless discovery (posts lacking a current
   gold row resubmit).
+- Multi-workload seam: the service gains a `workload` (executor) field —
+  `openrouter_vision`, `openrouter_text`, `whisper_local` (faster-whisper
+  subprocess over audio paths) — plus a generalized media list; the store,
+  lease/resume, and REST contract are unchanged. Datalake side: one shared
+  external-jobs ledger + submit/poll/retrieve seam across workloads
+  (facets first; gemini-batch migrates opportunistically). Audit:
+  `data/dev/sdlc-service-audit.md`.
+- **One-submit-fans-out (settled contract):** ONE visual submit fans out at
+  harvest to `gold_visual_annotations` AND `gold_visual_summaries`; ONE text
+  submit fans out to `gold_text_annotations` AND `gold_text_summaries`;
+  `gold_content_classification` is its own submit (it additionally consumes
+  visual summaries + transcripts). Never one submit per table — that would
+  double the bill.
+- **Provider mapping (recorded, not in table names):** vision = qwen,
+  audio = whisper, text = swappable (qwen default; Gemini batch a pluggable
+  alternative). Provider/model live in per-row metadata
+  (`provider`, `model`, `prompt_hash`, `schema_version`, …); there are NO
+  `_bound` columns — enum definitions live in the versioned schema registry.
+  DAG: `gold_text_annotations`/`gold_text_summaries` depend on
+  `gold_audio_transcripts`; `gold_content_classification` depends on
+  `gold_audio_transcripts` + `gold_visual_summaries`.
 
 ## Cross-cutting
 

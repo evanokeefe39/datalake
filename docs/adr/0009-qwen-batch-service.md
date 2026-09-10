@@ -76,3 +76,41 @@ ADR-0002 removed.
   for ~7% reasoning-model flakes.
 - The GCS media mirror is unused and can be retired. The local byte cache remains
   the media source for frame-sampling.
+
+## Addendum (2026-09-09, service-layer audit): the service is the general multi-workload async job runner
+
+Audit (`data/dev/sdlc-service-audit.md`) confirmed the store/lease/resume core
+is workload-agnostic, but the execution path is single-workload (one OpenRouter
+vision/text caller, vision-typed `images` field). Decision recorded here:
+
+- **One service, not N.** The qwen-batch service hosts all enrichment external
+  workloads as pluggable job types: a `workload` (executor) field with an
+  executor registry — `openrouter_vision` (today's path incl. server-side
+  frame sampling), `openrouter_text`, and `whisper_local` (faster-whisper
+  subprocess over audio paths; ffmpeg already lives in the service). The
+  SQLite store, lease/reclaim, dead-letter, and `/jobs` REST contract are
+  unchanged. A separate STT service is rejected — it would duplicate
+  store/lease/resume/HTTP for zero benefit.
+- **One ingest seam.** All workloads ingest results via ONE shared pattern:
+  local ledger (`workload`-keyed) → submit → poll-to-terminal → retrieve →
+  idempotent gold upsert with model/prompt_hash provenance. The qwen facets
+  path (`facets_batch_jobs` ledger + `qwen_client`) is the canonical
+  implementation and should be promoted into a shared seam module; gemini-batch
+  (the classification workload — `gold_analyses`, renamed
+  `gold_content_classification` under
+  [ADR-0010](0010-enrichment-naming-and-provenance.md)) converges on the same
+  lifecycle opportunistically — it is
+  an executor exception (Google batch API + Dagster sensor trigger), not a
+  pattern exception.
+
+### Addendum note (2026-09-09, enrichment design v2)
+
+The settled v2 contract (`docs/enrichment-design.md`,
+[ADR-0010](0010-enrichment-naming-and-provenance.md)) codifies this service as
+the executor host behind ONE shared async ingest seam: `openrouter_vision` =
+the `qwen-vision` workload (one submit; harvest fans out to
+`gold_visual_annotations` + `gold_visual_summaries`), `whisper_local` = the
+whisper audio workload → `gold_audio_transcripts`, `openrouter_text` = the
+text-LLM workload (qwen default; provider swappable via metadata — never in
+table names) → `gold_text_annotations` + `gold_text_summaries`, and the
+classification submit → `gold_content_classification`.

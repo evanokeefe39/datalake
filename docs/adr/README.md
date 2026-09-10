@@ -32,6 +32,7 @@ deliberately separate from `docs/ARCHITECTURE.md`, which describes the
 | [0007](0007-batch-native-enrichment-deprecate-worker.md) | Enrichment is Dagster-native async batch (submit + harvest sensor); deprecate the external worker | Accepted | 2026-09-06 |
 | [0008](0008-hermetic-with-explicit-api-seam.md) | Hermetic transforms with one explicit API seam (batch submit + harvest) | Accepted | 2026-09-06 |
 | [0009](0009-qwen-batch-service.md) | Enrichment backend is a standalone qwen batch service (replaces gemini-batch) | Accepted | 2026-09-09 |
+| [0010](0010-enrichment-naming-and-provenance.md) | Enrichment naming (`gold_<channel>_<artifact>`) and per-pass provenance (structural table split) | Accepted | 2026-09-09 |
 
 ## Template
 

@@ -12,6 +12,14 @@ Source: `docs/enrichment-enhancement-design.md` §4,
 `tasks/epics/enrich-facets/user-stories/us-efac-1-lock-v3-facet-schema.md`.
 This locks the schema only — extraction/enrichment wiring lands in later PRs.
 
+> **Settled v2 mapping (2026-09-09).** The locked V3 field set is unchanged;
+> its storage homes are final: cross-modal fields → `gold_text_annotations`
+> (with `brand_safety` stored as the `brand_safety_json` column),
+> visual-necessary fields → `gold_visual_annotations`, and the non-facet
+> summary outputs → `gold_visual_summaries`. Naming + provenance per
+> ADR-0010; the legacy single-table store `gold_growth_facets` is replaced
+> (see §Channel availability & provenance below).
+
 ## Field inventory
 
 ### Cross-modal (evidence may come from caption, transcript, or imagery)
@@ -54,12 +62,15 @@ channel; a sponsor picks its own risk subset downstream.
 
 ### Structurally excluded
 
-- **Reserved gold keys** (gold pass owns them; validator rejects):
+- **Reserved gold keys** (the classification pass owns them — its table is
+  `gold_content_classification`, renamed from legacy `gold_analyses`; the
+  validator rejects):
   `is_educational`, `is_actionable`, `admiralty`, `domain`, `subdomain`,
   `content_type`, `format`, `educational_json`, `actionable_json`.
-- **`content_summary` / `image_summaries`**: NOT facets — separate additive
-  columns riding the same universal video call (design §6). The validator
-  rejects them here as unknown fields.
+- **`content_summary` / `image_summaries`**: NOT facets — they live in
+  `gold_visual_summaries` (produced by the same visual submit, separate
+  table; design §6, `docs/enrichment-design.md`). The validator rejects them
+  here as unknown fields.
 
 ## Validator behavior
 
@@ -92,6 +103,27 @@ many posts carry no notable hashtag pattern and the field is descriptive
 padding, not decision-grade. Enums always require a value — `none_clear`,
 `none`, and `other` are the explicit "nothing" escapes, so there is no need
 for nullability.
+
+## Channel availability & provenance (audit 2026-09-09, no schema change)
+
+The locked V3 field set needs NO change for the transcript/audio-absent
+product intent:
+- The schema is deliberately channel-blind; `evidence` records which channels
+  grounded each judgment. When transcripts land, the text call feeds the same
+  fields with more evidence — no field, enum, or validator change.
+- **Audio-absent is a data condition, not a schema condition.** Image/carousel
+  posts are marked in the transcript store
+  (`gold_audio_transcripts.transcript_status = no_audio_source`,
+  E-ENRICH-TRANSCRIPTS), never by nulling facet fields.
+- **Per-pass provenance is a storage concern, not this schema's:** the facet
+  JSON carries `GROWTH_FACETS_SCHEMA_VERSION`. SETTLED (2026-09-09): the fix
+  is structural — the legacy single-table store (`gold_growth_facets`, where
+  the text pass overwrote the visual pass's hash,
+  `defs/enrichment/facets_batch.py:250-256`) is replaced by the four-table
+  split (`gold_visual_annotations` / `gold_visual_summaries` /
+  `gold_text_annotations` / `gold_text_summaries`), each row carrying its own
+  full provenance metadata set — per-pass provenance by construction
+  (ADR-0010).
 
 ## Resolved design points (flagged for review, not silently guessed)
 
