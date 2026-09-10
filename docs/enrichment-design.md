@@ -246,10 +246,11 @@ caption + bronze transcript ─► (submit text-LLM) ─► bronze_enrichment_ra
 caption + transcript + visual summaries ─► (submit text-LLM) ─► bronze_enrichment_raw
                                                             └─► silver_content_classification
 
-canonical views (v_creator_profile, v_post_follower_context, v_post_metrics)
-─► gold_creator_performance
+silver_ig_posts + silver_* ─► v_post_detail            (the serving base)
+v_post_detail ─► 21 canonical metric views + dims      (own every metric definition)
+canonical views ─► gold_creator_performance            (composes them)
 canonical views + silver_* ─► gold_content_shape_performance
-gold_post_enrichment + canonical views ─► gold_top_posts
+canonical views + silver_* ─► gold_post_enrichment ─► gold_top_posts
 ```
 
 Dependencies are **declared per asset**. Text passes wait on
@@ -257,6 +258,10 @@ Dependencies are **declared per asset**. Text passes wait on
 `silver_audio_transcripts` + `silver_visual_summaries`; all gold marts wait
 on the silver tables they join. Re-running an upstream invalidates
 downstream — the staged/derived deps are declared, not emergent.
+
+**Layer order (enforced):** `bronze_enrichment_raw` → `silver_*` →
+`v_post_detail` → canonical metric views (21) → gold marts (4). The canonical
+views are UPSTREAM of the marts and are never re-pointed at them — no cycle.
 
 ## 8. Asset graph — one async seam, one submit per pass
 
@@ -295,6 +300,34 @@ Executors: **one seam, pluggable** — `qwen-vision`, `whisper`, `text-LLM`
 metadata, decision per workload by quality/throughput benchmark). The two
 orchestration triggers remain (CLI for the qwen path, Dagster sensor for the
 gemini executor): **the seam is the lifecycle, not the scheduler.**
+
+## Preserved serving surface (no-regression)
+
+The re-layer is ADDITIVE to the serving layer; it replaces nothing.
+`v_post_detail` is the serving base — silver posts joined with the silver
+enrichment tables and the dims. The 21 canonical metric views + dims are built
+on it and are the SINGLE definition of every metric. The gold marts sit
+downstream and compose them.
+
+**Must not regress** — every surface below keeps its canonical definition,
+stays built on `v_post_detail`, and is never dropped, renamed, or restated:
+
+| Surface | Serves |
+|---|---|
+| `v_post_detail` | per-post detail (the serving base) |
+| `v_recent_hot_posts` | hot posts (recent 28-day) |
+| `v_outlier_posts`, `v_engagement_outliers`, `v_creator_outlier_rate` | standout / outlier posts |
+| `v_underperformer_posts`, `v_creator_underperformer_rate` | underperformers |
+| `v_rising_creators`, `v_creator_profile` | rising creators + momentum |
+| `v_post_metrics`, `v_post_baselines` | per-post metrics + point-in-time baselines |
+| `v_creator_metrics`, `v_creator_quality`, `v_creator_topics` | creator detail |
+| `v_post_follower_context` | follower tier at post time |
+| `v_signal`, `v_quality_trend`, `v_domain_coverage`, `v_profile_metrics`, `v_overview`, `v_standout_calendar` | signal / trend / coverage / overview |
+| `dim_profile`, `dim_date` | dims |
+
+**No cycle.** The canonical views are upstream of the gold marts and are never
+re-pointed at them. A projection built on a mart is a NEW, additive surface,
+not a redefinition of any view above.
 
 ## 9. Open decisions (flagged, not silently resolved)
 
