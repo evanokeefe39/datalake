@@ -372,7 +372,7 @@ footer a{color:var(--ld-accent)}
       <!-- transcript -> downstream (teal) -->
       <line x1="570" y1="84" x2="636" y2="84" stroke="#0e7490" stroke-width="2" marker-end="url(#d2)"/>
       <path d="M570 94 C 602 108 602 248 636 264" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#d2)"/>
-      <path d="M570 104 C 614 140 612 380 636 402" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#d2)"/>
+      <path d="M570 104 C 616 142 620 380 628 400 Q 632 402 636 402" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#d2)"/>
       <!-- visual summaries -> classification (french blue) -->
       <path d="M570 268 C 608 300 606 428 636 430" fill="none" stroke="#0055A4" stroke-width="2" marker-end="url(#d3)"/>
       <text x="130" y="340" text-anchor="middle" font-size="10.5" fill="#0e7490">text passes wait for the transcript</text>
@@ -419,7 +419,7 @@ footer a{color:var(--ld-accent)}
       <text x="760" y="184" text-anchor="middle" font-family="monospace" font-size="12" fill="#45525e">qwen-vision | whisper | text-LLM</text>
       <text x="760" y="202" text-anchor="middle" font-size="10.5" fill="#64748b">hours of work happen here, not in Dagster</text>
       <!-- submit -> provider -->
-      <path d="M430 80 C 560 66 660 100 724 156" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#s1)"/>
+      <path d="M430 80 C 560 66 660 92 724 138 L724 156" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#s1)"/>
       <text x="600" y="84" text-anchor="middle" font-size="10.5" fill="#0e7490">job sent to provider</text>
       <!-- poll -->
       <rect x="460" y="160" width="150" height="56" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
@@ -430,7 +430,7 @@ footer a{color:var(--ld-accent)}
       <!-- harvest -->
       <rect x="260" y="248" width="170" height="40" rx="10" fill="#dcfce7" stroke="#15803d" stroke-width="2"/>
       <text x="345" y="273" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#15803d">3. harvest</text>
-      <path d="M460 216 C 420 232 380 240 352 244" fill="none" stroke="#15803d" stroke-width="2" marker-end="url(#s1)"/>
+      <path d="M460 216 C 448 244 442 268 426 268" fill="none" stroke="#15803d" stroke-width="2" marker-end="url(#s1)"/>
       <!-- gold -->
       <rect x="30" y="248" width="200" height="40" rx="10" fill="#dcfce7" stroke="#15803d" stroke-width="2"/>
       <text x="130" y="273" text-anchor="middle" font-family="monospace" font-size="12" fill="#15803d">gold tables (upsert)</text>
@@ -559,13 +559,14 @@ footer a{color:var(--ld-accent)}
       <text x="340" y="48" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">submit: qwen-vision</text>
       <text x="340" y="66" text-anchor="middle" font-size="10.5" fill="#45525e">ONE request: media in,</text>
       <text x="340" y="82" text-anchor="middle" font-size="10.5" fill="#45525e">facets + summaries out</text>
-      <path d="M180 140 C 220 120 230 80 246 62" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#f1)"/>
+      <path d="M180 140 C 216 130 226 112 231 92 L231 62 L246 62" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#f1)"/>
       <!-- whisper submit -->
       <rect x="250" y="136" width="180" height="74" rx="10" fill="#f1f5f9" stroke="#45525e" stroke-width="2"/>
       <text x="340" y="158" text-anchor="middle" font-family="monospace" font-size="12" fill="#1c2733">submit: whisper</text>
       <text x="340" y="176" text-anchor="middle" font-size="10.5" fill="#45525e">ONE request: audio in,</text>
       <text x="340" y="192" text-anchor="middle" font-size="10.5" fill="#45525e">transcript out</text>
       <line x1="200" y1="166" x2="246" y2="166" stroke="#64748b" stroke-width="2" marker-end="url(#f2)"/>
+      <path d="M180 196 L210 196 L210 280 L246 280" fill="none" stroke="#45525e" stroke-width="2" marker-end="url(#f2)"/>
       <!-- text submit -->
       <rect x="250" y="236" width="180" height="88" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
       <text x="340" y="258" text-anchor="middle" font-family="monospace" font-size="12" fill="#0055A4">submit: text-LLM (x2)</text>
@@ -573,24 +574,23 @@ footer a{color:var(--ld-accent)}
       <text x="340" y="292" text-anchor="middle" font-size="10.5" fill="#45525e">+ summary; a SECOND submit</text>
       <text x="340" y="306" text-anchor="middle" font-size="10.5" fill="#45525e">drives classification</text>
       <!-- fan-out arrows visual -->
-      <path d="M430 56 L510 56 L540 82 L540 96" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#f1)"/>
-      <path d="M430 56 L540 56 L540 120" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#f1)"/>
+      <path d="M430 56 L556 56" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#f1)"/>
+      <path d="M430 56 L505 56 L505 120 L556 120" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#f1)"/>
       <rect x="560" y="30" width="330" height="52" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
       <text x="725" y="52" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">gold_visual_annotations</text>
       <text x="725" y="70" text-anchor="middle" font-size="10" fill="#45525e">harvest writes the facets half</text>
       <rect x="560" y="94" width="330" height="52" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
       <text x="725" y="116" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">gold_visual_summaries</text>
-      <text x="725" y="134" text-anchor="middle" font-size="10" fill="#45525e">harvest writes the summaries half</text>
-      <text x="500" y="76" text-anchor="middle" font-size="10" fill="#0e7490">one harvest,</text>
-      <text x="500" y="88" text-anchor="middle" font-size="10" fill="#0e7490">two tables</text>
+      <text x="455" y="75" text-anchor="middle" font-size="10" fill="#0e7490">one harvest,</text>
+      <text x="455" y="90" text-anchor="middle" font-size="10" fill="#0e7490">two tables</text>
       <!-- audio -->
       <line x1="430" y1="166" x2="556" y2="166" stroke="#45525e" stroke-width="2" marker-end="url(#f2)"/>
       <rect x="560" y="164" width="330" height="52" rx="10" fill="#f1f5f9" stroke="#45525e" stroke-width="2"/>
       <text x="725" y="186" text-anchor="middle" font-family="monospace" font-size="12" fill="#1c2733">gold_audio_transcripts</text>
       <text x="725" y="204" text-anchor="middle" font-size="10" fill="#45525e">one job, one table</text>
       <!-- text fan-out -->
-      <path d="M430 273 L510 273 L540 246" fill="none" stroke="#0055A4" stroke-width="2" marker-end="url(#f3)"/>
-      <path d="M430 273 L560 273" fill="none" stroke="#0055A4" stroke-width="2" marker-end="url(#f3)"/>
+      <path d="M430 273 L510 273 L510 251 L556 251" fill="none" stroke="#0055A4" stroke-width="2" marker-end="url(#f3)"/>
+      <path d="M430 273 L510 273 L510 304 L556 304" fill="none" stroke="#0055A4" stroke-width="2" marker-end="url(#f3)"/>
       <rect x="560" y="228" width="330" height="46" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
       <text x="725" y="246" text-anchor="middle" font-family="monospace" font-size="12" fill="#0055A4">gold_text_annotations</text>
       <text x="725" y="262" text-anchor="middle" font-size="10" fill="#45525e">harvest writes the facets half</text>
