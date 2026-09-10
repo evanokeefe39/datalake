@@ -157,6 +157,10 @@ never in table names):
 - `gold_growth_facets` (named in Amendment 1) → replaced by the four-way
   split `gold_visual_annotations` / `gold_visual_summaries` /
   `gold_text_annotations` / `gold_text_summaries`.
+- **Superseded (2026-09-10):** these names are superseded by
+  [ADR-0011](0011-enrichment-layered-model.md) — the conformed tables are now
+  `silver_<channel>_<artifact>` under a verbatim `bronze_enrichment_raw`
+  landing, with gold as the analytic marts.
 - Amendment 1's per-pass provenance requirement (P0-4) is SETTLED as the
   structural table split: each pass owns its table and its full metadata set
   (`provider`, `model`, `prompt_hash`, `schema_version`, `input_modality`,

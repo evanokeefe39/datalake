@@ -28,9 +28,10 @@ reusable by downstream analytics and audit.
 - AC4: Brand-safety is the explicit 6-flag set (profanity, sexualized_content,
   political, medical_claims, financial_guarantees, violence_trauma); the vague
   `sensitive_adjacency` is gone.
-- AC5: Reserved gold keys (is_educational/actionable, admiralty, domain,
-  content_type, format, *_json) structurally excluded; a post-parse validator
-  rejects any reserved key or missing required field.
+- AC5: Reserved classification keys (the `silver_content_classification`
+  body: is_educational/actionable, admiralty, domain — CONTENT niche,
+  content_type, format, *_json) structurally excluded from facet output; a
+  post-parse validator rejects any reserved key or missing required field.
 - AC6: Prompt is versioned (own `prompt_hash`) so staleness is detectable.
 
 ## Definition of done
@@ -41,5 +42,5 @@ reusable by downstream analytics and audit.
 
 ## Tests
 - Validator rejects a crafted JSON containing `domain` / `format` / a bogus
-  `_json` key.
-- Every enum field's allowed values match the schema; out-of-domain value → fail.
+  `_json` key (reserved for `silver_content_classification`).
+- Every enum field's allowed values match the schema; out-of-enum value → fail.

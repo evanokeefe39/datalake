@@ -42,5 +42,5 @@ silently skip enrichment.
 ## Tests
 
 - Stop the service → trigger enrichment → step errors with the startup remedy,
-      and no gold writes occur.
+      and no bronze/silver writes occur.
 - Start the service → same trigger → enrichment proceeds.

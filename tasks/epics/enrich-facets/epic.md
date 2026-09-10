@@ -17,44 +17,45 @@ Workloads map by capability — pixels→vision, audio→STT (whisper), text→t
 (`provider`, `model`), so a provider swap never renames a table (vision is
 locked to qwen and audio to whisper in practice, but names stay
 provider-agnostic; text is swappable — qwen default, Gemini pluggable):
-- **Visual facets** = qwen VISION workload (`gold_visual_annotations`) — the
+- **Visual facets** = qwen VISION workload (`silver_visual_annotations`) — the
   **visual** pass (images AND video frames — the pass is "visual", not "video";
   media is client-side ffmpeg frame-sampled, sent as image parts to the qwen
   batch service — not Gemini File-API URIs / `MEDIA_RESOLUTION_LOW`).
-- **Text facets** = qwen TEXT workload (`gold_text_annotations`) over caption
-  (+ transcript from `gold_audio_transcripts` once E-ENRICH-TRANSCRIPTS lands —
-  the DAG declares text_* as DEPENDENT on `gold_audio_transcripts`).
-The facets schema, prompt hashing, and additive gold-column semantics are
-unchanged by backend choice; only the transport changed. Harvest into gold
-obeys the repo's ONE remote-async ingest pattern (ledger → submit → poll →
-retrieve → idempotent MERGE with loud per-item failure) —
+- **Text facets** = qwen TEXT workload (`silver_text_annotations`) over caption
+  (+ transcript from `silver_audio_transcripts` once E-ENRICH-TRANSCRIPTS lands —
+  the DAG declares text_* as DEPENDENT on `silver_audio_transcripts`).
+The facets schema, prompt hashing, and additive silver-column semantics are
+unchanged by backend choice; only the transport changed. Harvest lands the
+verbatim response in `bronze_enrichment_raw` and conforms it to silver with
+ZERO API calls (repo's ONE remote-async ingest pattern: ledger → submit →
+poll → retrieve → idempotent MERGE with loud per-item failure) —
 `data/dev/dlc-enrichment-audit.md` §2.
 
 **One-submit-fans-out (settled contract):** the visual submit returns
 annotations AND summaries in ONE request → ONE job fans out at harvest to
-`gold_visual_annotations` AND `gold_visual_summaries` (E-ENRICH-SUMMARIES).
-The text submit likewise fans out to `gold_text_annotations` AND
-`gold_text_summaries` (US-ESUM-3). NOT one submit per table — that would
+`silver_visual_annotations` AND `silver_visual_summaries` (E-ENRICH-SUMMARIES).
+The text submit likewise fans out to `silver_text_annotations` AND
+`silver_text_summaries` (US-ESUM-3). NOT one submit per table — that would
 double the bill. Enum/bounded-field definitions live in the versioned schema
 registry, referenced by `schema_version`; there are NO `_bound` columns.
 
 **Provenance requirement (audit P0-4), reconciled:** the old shared
 `gold_growth_facets` table with ONE `prompt_hash` for TWO writers is retired —
-`gold_growth_facets` splits into four tables — `gold_visual_annotations` +
-`gold_visual_summaries` (visual pass) and `gold_text_annotations` +
-`gold_text_summaries` (text pass) — each with its OWN provenance
+`gold_growth_facets` splits into four tables — `silver_visual_annotations` +
+`silver_visual_summaries` (visual pass) and `silver_text_annotations` +
+`silver_text_summaries` (text pass) — each with its OWN provenance
 (`prompt_hash`, `model`, `schema_version`, `run_id`, …), so each pass's output
 is attributable and stale-detectable independently; the `model`-as-done-marker
 hack retires with it. Expressed here as a requirement; the DDL lands with the
 implementing story.
 
 Posts carry validated, additive enrichment outputs split per channel:
-`gold_visual_annotations` (face_present, value_medium, brand_logos,
-text_overlay_present, on_screen_claim) and `gold_text_annotations` (hooks,
+`silver_visual_annotations` (face_present, value_medium, brand_logos,
+text_overlay_present, on_screen_claim) and `silver_text_annotations` (hooks,
 sponsorship, claims, CTA, audience/value depth, hashtag strategy, an explicit
 `brand_safety_json` field, evidence) — cross-modal facets judged across every channel
 that carries their evidence (caption, ASR transcript from
-`gold_audio_transcripts`, on-screen OCR, imagery) — so creator-growth
+`silver_audio_transcripts`, on-screen OCR, imagery) — so creator-growth
 analytics can split "what works" by observable content mechanics.
 
 ## Design state (evidence)
@@ -69,8 +70,9 @@ analytics can split "what works" by observable content mechanics.
 - **V3 prompt (enum categoricals + codebook decision-rules + exemplars)** is the
   winner (95 posts × 4 presentations × 2 runs): audience_named 1.00, face_present
   1.00, value_depth 0.95, cta_type 0.97, hook_type 0.84 (directional-grade), etc.
-- Reserved gold keys (is_educational/actionable, admiralty, domain + *_json)
-  structurally excluded; two-pass additive (own table + hash per pass).
+- Reserved classification keys (the `silver_content_classification` body:
+  is_educational/actionable, admiralty, domain — CONTENT niche, + *_json)
+  structurally excluded from facet output; two-pass additive (own table + hash per pass).
 - **No `_bound` columns** — enum/bounded-field definitions are versioned in the
   schema registry and referenced per-row by `schema_version`.
 - **No human gold** (user decision). Validity = V3 agreement gate +
@@ -87,12 +89,12 @@ spikes `data/facet_menu.duckdb`, `data/facet_experiment.duckdb`,
 - [ ] V3 facet schema locked; reserved-key + post-parse validator exists;
       enum definitions versioned in the schema registry (`schema_version`) —
       no `_bound` columns.
-- [ ] Universal visual-facet pass additive into `gold_visual_annotations` (own
-      per-pass provenance); schema-catalog + readiness green;
-      engagement-utility report shows which facets discriminate.
-- [ ] Per-pass provenance split: `gold_visual_annotations` and
-      `gold_text_annotations` each carry their own prompt_hash + model — no
+- [ ] Universal visual-facet pass additive into `silver_visual_annotations` (own
+- [ ] Per-pass provenance split: `silver_visual_annotations` and
+      `silver_text_annotations` each carry their own prompt_hash + model — no
       shared-hash overwrite, no `model`-as-done-marker.
-- [ ] Text-layer facet call (caption + `gold_audio_transcripts` transcript,
-      status-routed; DAG: `gold_text_annotations` depends on
-      `gold_audio_transcripts`) cheap and re-runnable.
+- [ ] Per-pass provenance schema-catalog + readiness green; the
+      engagement-utility report shows which facets discriminate.
+- [ ] Text-layer facet call (caption + `silver_audio_transcripts` transcript,
+      status-routed; DAG: `silver_text_annotations` depends on
+      `silver_audio_transcripts`) cheap and re-runnable.

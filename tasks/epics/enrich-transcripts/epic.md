@@ -5,13 +5,13 @@
 - **Status:** Open (design) — feasibility confirmed, no build
 - **Feeds:** E-ENRICH-FACETS (text-layer), E-SERVING-ANALYTICS (search/embeddings)
 - **Relates to:** E-ENRICH-FACETS (US-EFAC-4 text call consumes transcripts —
-  DAG: `gold_text_annotations` depends on `gold_audio_transcripts`),
+  DAG: `silver_text_annotations` depends on `silver_audio_transcripts`),
   E-ENRICH-SUMMARIES (US-ESUM-3 transcript summary; DAG:
-  `gold_text_summaries` and `gold_content_classification` also depend on
-  `gold_audio_transcripts`). Rides the shared submit/harvest seam as the local `whisper`
+  `silver_text_summaries` and `silver_content_classification` also depend on
+  `silver_audio_transcripts`). Rides the shared submit/harvest seam as the local `whisper`
   executor plugin (ADR-0010 decision 5) — no remote API call.
 ## Outcome
-A durable transcript per video in `gold_audio_transcripts`, produced **locally
+A durable transcript per video in `silver_audio_transcripts`, produced **locally
 and offline** (ffmpeg
 audio-extract from the cached video → faster-whisper) at ~$0/min — giving the
 text-layer facets their spoken channel and enabling search, with **no Gemini
@@ -24,19 +24,21 @@ dependency and no scrape-time expiry race**.
   local and offline ($0, no remote API call), but it is a seam job like any
   other. Pluggability sits at the EXECUTOR level (`local` | `gcp-spot`,
   US-ETR-4) — see `data/dev/dlc-enrichment-audit.md` §4.
-- **Home table:** `gold_audio_transcripts` — keys `post_id`, `domain`;
+- **Home table:** `silver_audio_transcripts` — keys `post_id`, `platform`;
   body `transcript`, `transcript_status` (`no_audio_source` | `pending` |
   `done` | `empty_audio`), `audio_present`, `asr_model`, `language`; plus the
   shared envelope metadata (ADR-0010 §4: `provider`, `model`, `prompt_hash`
-  — NULL for ASR, there is no prompt — `schema_version`, `input_modality`,
-  `content_mime_type`, `sampling_params_json`, `run_id`, `analysed_at`). The transcript is a
-  durable derived artifact, not a facet and not a summary; it does not ride
-  `gold_visual_annotations` / `gold_text_annotations`.
+  NULL for ASR, `schema_version`, `input_modality`, `sampling_params_json`,
+  `run_id`, `analysed_at`, `content_mime_type`). ASR output first lands
+  verbatim in `bronze_enrichment_raw` (workload = `whisper`), then
+  deterministically conforms into silver — the transcript is a durable
+  derived artifact, not a facet and not a summary; it does not ride
+  `silver_visual_annotations` / `silver_text_annotations`.
 - **Audio-absent explicitness (product intent):** images/carousels have no
   audio, so their rows carry `transcript_status = no_audio_source` — the
   schema must distinguish that from "not yet transcribed" (`pending`) and
   "transcribed but empty (music-only)" (`empty_audio`). Consumers
-  (US-EFAC-4, US-ESUM-3, `gold_content_classification`) route on this status.
+  (US-EFAC-4, US-ESUM-3, `silver_content_classification`) route on this status.
 
 ## Why this is load-bearing
 - **No `audioUrl` dependency:** the scrape-time byte cache already persists the
@@ -52,7 +54,7 @@ dependency and no scrape-time expiry race**.
 `ops.sqlite` + ffprobe (2026-09-07).
 
 ## Epic DoD (draft)
-- [ ] ffmpeg audio-extract → faster-whisper job; `gold_audio_transcripts`
+- [ ] ffmpeg audio-extract → faster-whisper job; `silver_audio_transcripts`
       additive table with transcript_status (audio-absent explicit per above).
 - [ ] Incremental-at-scrape + resumable overnight backfill; music-only clips
       yield `empty_audio` (a status, not a bare empty NULL).

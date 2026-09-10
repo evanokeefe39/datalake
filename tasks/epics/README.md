@@ -32,6 +32,18 @@ cost-lever, or consumer of that engine, not a disjoint feature.
 - **New user stories are authored here**, under their epic's `user-stories/`
   dir, with As-a/I-want/So-that + binary AC + DoD + tests. Existing epics point
   to their source plan until extracted.
+- **Canonical enrichment layer model (2026-09-10, strict medallion):** external
+  model responses land verbatim in `bronze_enrichment_raw` (immutable,
+  append-only); the six channel tables are SILVER
+  (`silver_visual_annotations`, `silver_visual_summaries`,
+  `silver_audio_transcripts`, `silver_text_annotations`,
+  `silver_text_summaries`, `silver_content_classification`) — deterministic
+  from bronze, zero API calls, and the validation/quality contract lives
+  THERE; gold is analytic marts only (`gold_post_enrichment`,
+  `gold_creator_performance`, `gold_content_shape_performance`,
+  `gold_top_posts`), shaped to the owner's three questions. Keys are
+  `(post_id, platform)` / `(creator_id, platform)`; `domain` means the
+  CONTENT niche (what the owner calls "X domain"), never the platform.
 - **Consolidation is a deliberate second step.** Similar epics may be merged;
   when they are, record the merge here and in the affected story `relates-to`.
 
@@ -46,7 +58,7 @@ cost-lever, or consumer of that engine, not a disjoint feature.
 | [`enrich-facets`](enrich-facets/epic.md) | E-ENRICH-FACETS | **NEW** cross-modal growth facets (V3) + engagement-utility | Open (design) | dlc-worker | E-ENRICH-ENGINE, E-MEDIA, E-SERVING-ANALYTICS | `docs/enrichment-enhancement-design.md`, `tasks/plans/facet-list-experiment-design.md` |
 | [`enrich-summaries`](enrich-summaries/epic.md) | E-ENRICH-SUMMARIES | **NEW** content_summary + per-image carousel summaries (folded call) | Open (design) | dlc-worker | E-ENRICH-ENGINE, E-MEDIA | `docs/enrichment-enhancement-design.md` §6 |
 | [`enrich-transcripts`](enrich-transcripts/epic.md) | E-ENRICH-TRANSCRIPTS | **NEW** ffmpeg audio-extract → faster-whisper, incremental + backfill | Open (design) | dlc-worker | E-MEDIA | `docs/enrichment-enhancement-design.md` §5 |
-| [`serving-analytics`](serving-analytics/epic.md) | E-SERVING-ANALYTICS | dims/views/metrics, creator analytics, observations | Active | dlc-worker | E-ENRICH-*, E-IDENTITY | `tasks/plans/phase-4`, `metrics-centralization`, `creator-*`, `follower-observations-*` |
+| [`serving-analytics`](serving-analytics/epic.md) | E-SERVING-ANALYTICS | dims/views/metrics, creator analytics, observations, **four gold marts (owner's three questions, US-ESA-1)** | Active | dlc-worker | E-ENRICH-*, E-IDENTITY | `tasks/plans/phase-4`, `metrics-centralization`, `creator-*`, `follower-observations-*` |
 | [`identity`](identity/epic.md) | E-IDENTITY | creators/profiles/merges + dim_profile creator linkage + UI | Active | dlc-worker / sdlc-worker | E-INGEST | `tasks/plans/creators-and-profiles`, `profile-management`, `curated-creator-consolidation` |
 | [`dashboard`](dashboard/epic.md) | E-DASHBOARD | Product UI: tables, filters, thin server, creators page | Active | sdlc-worker | E-SERVING-ANALYTICS | `tasks/plans/dashboard-tables-filtering`, `creators-ui-redesign` |
 

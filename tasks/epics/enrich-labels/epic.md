@@ -13,9 +13,9 @@ spend goes where it earns.
 
 **Split admission (audit 2026-09-09; reconciled to the settled contract
 2026-09-10):** triage-first now gates ONLY the deep classification pass
-(`gold_content_classification`, the table that replaces the retired
+(`silver_content_classification`, the table that replaces the retired
 `gold_analyses`). The universal qwen visual pass (facets + summaries →
-`gold_visual_annotations` + `gold_visual_summaries`, E-ENRICH-FACETS/
+`silver_visual_annotations` + `silver_visual_summaries`, E-ENRICH-FACETS/
 E-ENRICH-SUMMARIES) is deliberately admission-free corpus-wide — its visual
 input is paid for every media post anyway, so summaries/facets ride it as
 marginal output (`docs/enrichment-enhancement-design.md` §6; the fold decision
@@ -24,11 +24,11 @@ criterion for facets (US-EFAC-2) regardless of admission.
 
 ## Scope highlights
 - `ig_post_labels` with `label_version`; `enrich_decision` (gates the deep
-  classification pass into `gold_content_classification` only — see split
+  classification pass into `silver_content_classification` only — see split
   admission above); empty captions → `skip` (US-L6).
 - Self-versioning: any formula/schema change marks rows stale in the SAME
   commit (no silent-staleness trap).
-- Gold discovery is stateless over labels (watermark retired); re-enrichment on
+- Enrichment discovery is stateless over labels (watermark retired); re-enrichment on
   stale prompt / explicit post_ids bypass.
 - `v_engagement_outliers` rewire + negative-surface magnitude split (folds into
   E-SERVING-ANALYTICS delivery).
@@ -39,5 +39,5 @@ criterion for facets (US-EFAC-2) regardless of admission.
 driver), `post-performance-observations-implementation.md`.
 
 ## Epic DoD
-- [ ] Gold queue drains standouts/control/floor-fillers only; zero uniform deep
+- [ ] Enrichment queue drains standouts/control/floor-fillers only; zero uniform deep
       enrichment; staleness surfaced by `label_version` bump.

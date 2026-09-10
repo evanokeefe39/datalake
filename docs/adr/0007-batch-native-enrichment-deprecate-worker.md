@@ -111,6 +111,9 @@ rename, `facets_batch.py:114-125`), so the shared shape is already proven.
   Decision above (name kept as then-current history) — is renamed
   **`gold_content_classification`** under
   [ADR-0010](0010-enrichment-naming-and-provenance.md).
+- **Superseded (2026-09-10):** the table names in this amendment are
+  superseded by [ADR-0011](0011-enrichment-layered-model.md) — the conformed
+  tables are now `silver_<channel>_<artifact>`; gold is the analytic marts.
 - **Fan-out cost rule.** The submit/harvest bridge generalizes: ONE submit
   per pass, harvest fans out to every table that pass produced — the visual
   submit lands `gold_visual_annotations` + `gold_visual_summaries`; the text

@@ -18,13 +18,15 @@ to frames (images) and sent in-request, so no upload/storage cap binds the corpu
 
 The qwen-batch service is the **general async external-workload runner** for
 the ≥3 enrichment workloads (Whisper STT transcription →
-`gold_audio_transcripts`, qwen-vision → `gold_visual_annotations` +
-`gold_visual_summaries`, text-LLM → `gold_text_annotations` +
-`gold_text_summaries` + `gold_content_classification`) as pluggable job types,
-and all results ingest back into features via **ONE shared async pattern**:
-local ledger → submit → poll-to-terminal → retrieve → idempotent gold upsert
-with ordering guard. Gemini-batch (now `gold_content_classification`, replacing
-the retired `gold_analyses`) converges on the same lifecycle seam
+`silver_audio_transcripts`, qwen-vision → `silver_visual_annotations` +
+`silver_visual_summaries`, text-LLM → `silver_text_annotations` +
+`silver_text_summaries` + `silver_content_classification`) as pluggable job
+types, and all results ingest back into features via **ONE shared async
+pattern**: local ledger → submit → poll-to-terminal → retrieve → verbatim
+landing in `bronze_enrichment_raw` → deterministic conform + validation into
+idempotent silver upsert with ordering guard (ZERO API calls in transform
+layers — ADR-0003). Gemini-batch (now `silver_content_classification`,
+replacing the retired `gold_analyses`) converges on the same lifecycle seam
 opportunistically (its own executor + Dagster trigger may stay).
 
 ## Backend pivot (ADR-0009)
@@ -52,36 +54,43 @@ Why (recorded in ADR-0009):
   backend (dependent service). Loud failure (health check) if it is down.
 - Multimodal media: client-side ffmpeg frame-sampling for reels + native images →
   image parts; `max_tokens` ≥ 2500; retry-on-empty for reasoning-model flakes.
-- Per-item retry/backoff + terminal dead-letter live inside the service (its own
-  store), so the corpus run is resume-safe without an `ops.sqlite` queue.
 - Incremental follow-on runs via stateless discovery (posts lacking a current
-  gold row resubmit).
+  silver row resubmit).
 - Multi-workload seam: the service gains a `workload` (executor) field —
   `openrouter_vision`, `openrouter_text`, `whisper_local` (faster-whisper
   subprocess over audio paths) — plus a generalized media list; the store,
   lease/resume, and REST contract are unchanged. Datalake side: one shared
   external-jobs ledger + submit/poll/retrieve seam across workloads
-  (facets first; gemini-batch migrates opportunistically). Audit:
-  `data/dev/sdlc-service-audit.md`.
-- **One-submit-fans-out (settled contract):** ONE visual submit fans out at
-  harvest to `gold_visual_annotations` AND `gold_visual_summaries`; ONE text
-  submit fans out to `gold_text_annotations` AND `gold_text_summaries`;
-  `gold_content_classification` is its own submit (it additionally consumes
-  visual summaries + transcripts). Never one submit per table — that would
-  double the bill.
+- **One-submit-fans-out (settled contract):** ONE visual submit lands its
+  verbatim response in `bronze_enrichment_raw` and fans out at conform to
+  `silver_visual_annotations` AND `silver_visual_summaries`; ONE text submit
+  lands verbatim and fans out to `silver_text_annotations` AND
+  `silver_text_summaries`; `silver_content_classification` is its own submit
+  (it additionally consumes visual summaries + transcripts). Never one submit
+  per table — that would double the bill.
 - **Provider mapping (recorded, not in table names):** vision = qwen,
   audio = whisper, text = swappable (qwen default; Gemini batch a pluggable
   alternative). Provider/model live in per-row metadata
   (`provider`, `model`, `prompt_hash`, `schema_version`, …); there are NO
   `_bound` columns — enum definitions live in the versioned schema registry.
-  DAG: `gold_text_annotations`/`gold_text_summaries` depend on
-  `gold_audio_transcripts`; `gold_content_classification` depends on
-  `gold_audio_transcripts` + `gold_visual_summaries`.
+  DAG: `silver_text_annotations`/`silver_text_summaries` depend on
+  `silver_audio_transcripts`; `silver_content_classification` depends on
+  `silver_audio_transcripts` + `silver_visual_summaries`.
+- **Layering (strict medallion):** the harvest writes the verbatim response
+  body to `bronze_enrichment_raw` (immutable, append-only, idempotent on
+  `(post_id, platform, workload, prompt_hash, run_id)`, Parquet); silver is a
+  deterministic pure function of bronze — conform + validate (parse,
+  required fields, enum conformance via `schema_version`, length bounds,
+  cross-field checks like carousel `n == len(image_summaries)`); unparseable
+  or terminal-invalid output is quarantined/dead-lettered LOUDLY, never a
+  silent NULL, never a dropped row. Remapping bronze → silver is FREE (no
+  re-calling the paid model). Gold is analytic marts only (E-SERVING-ANALYTICS).
 
 ## Cross-cutting
-
+- The silver tables / prompt hashing / schema versioning are unchanged by the pivot.
+  Key is `(post_id, platform)` — `platform` matches `profiles.platform`;
+  `domain` means the CONTENT niche (dev/AI/…), never the platform.
 - The service is reachable and healthy before any submit (loud failure).
-- The gold table / prompt hashing / schema versioning are unchanged by the pivot.
 
 ## Source of truth
 
@@ -93,10 +102,10 @@ Why (recorded in ADR-0009):
 
 - [x] Batch submit/poll/harvest orchestration shape live (Gemini era).
 - [ ] Enrichment backend runs on the standalone qwen-batch service (US-EENG-1);
-      media = client-side frame-sampling; gold rows written per post.
+      media = client-side frame-sampling; bronze + silver rows written per post.
 - [ ] Service is a declared dependent service; enrichment fails loudly if it is
       down (US-EENG-2).
 - [ ] Full-corpus run resume-safe on the service; dead-letter is service-side.
 - [ ] Durability verified by tests (US-EENG-1 AC6/AC7): a service restart and an
       OpenRouter/credits outage resume without reprocessing completed items or
-      duplicating gold; transient outages recover; no job wedges in `processing`.
+      duplicating silver; transient outages recover; no job wedges in `processing`.
