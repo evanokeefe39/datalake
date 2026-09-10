@@ -65,6 +65,12 @@ service era (ADR-0009):
    table split** (one pass = one table = its own full metadata row), not by
    per-pass hash columns on a shared row. This retires the
    model-as-done-marker hack.
+5. **⚠️ Ledger clause superseded by [ADR-0013](0013-seam-keeps-no-ledger.md) —
+   there is no `external_jobs` table.** The service owns its job store and
+   Dagster polls it over HTTP; Dagster's orchestration state is instance-native.
+   Everything else in this decision stands (the verbs, per-workload executor
+   plugins, placeholder-before-POST semantics, one-submit-per-pass, loud
+   per-item failure). The original text follows, retained for history.
 5. **One shared async ingest seam.** A single workload-keyed `external_jobs`
    ledger with placeholder-before-POST submit; `submit → poll-to-terminal →
    retrieve → idempotent upsert` verbs; per-workload executor plugins

@@ -402,11 +402,13 @@ deploy step. Evidence: `~/repos/enrichment-spike` (S1–S6 + a live gate) and
 `FINDINGS.md`; plan:
 `tasks/plans/dagster-native-orchestration-implementation.md`.
 
-Pattern per enrichment asset (the ADR-0007 bridge over ONE shared ledger):
+Pattern per enrichment asset (the ADR-0007 bridge):
 
 - **`submit`** (a seam verb, and Dagster's step that calls it) — sub-second;
-  workload executor = `qwen-vision` | `whisper` | `text-LLM`; records the job
-  in the shared `external_jobs` ledger with the provider in metadata.
+  workload executor = `qwen-vision` | `whisper` | `text-LLM`; the provider is
+  recorded in metadata, never in a table name. **No ledger row is written** —
+  the service owns its own job store and Dagster polls it
+  ([ADR-0013](../adr/0013-seam-keeps-no-ledger.md)).
 - **`harvest`** (Dagster's step; composes the seam verbs `poll-to-terminal` and
   `retrieve`) — poll to terminal → retrieve → idempotent verbatim landing
   into `bronze_enrichment_raw`, per-pass provenance, loud per-item failure

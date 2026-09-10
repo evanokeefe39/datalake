@@ -18,12 +18,24 @@ the results become) · [ADR-0012](../adr/0012-dagster-native-orchestration.md)
 
 The seam is **not** a service, a class, or a process. Nothing runs "inside" it.
 It is the **boundary** where our pipeline hands work to an outside system and
-takes results back, and its entire contract is two things:
+takes results back, and its entire contract is two things: the verbs that cross
+it, and one explicit rule about who owns the state behind them.
 
-- **one shared job ledger** — `external_jobs`, a table both sides read and write
-  (name settled by [ADR-0010](../adr/0010-enrichment-naming-and-provenance.md); its
-  *location* is still open, see §6);
-- **three verbs** — `submit`, `poll-to-terminal`, `retrieve`.
+- **three verbs** — `submit`, `poll-to-terminal`, `retrieve` — carried over an
+  HTTP contract;
+- **no shared table.** Each side owns its own state, and the seam is the
+  contract between them, not a ledger:
+  - the **service** owns its job store (lease, retry, backoff, dead-letter,
+    resume) — we read it over HTTP;
+  - **Dagster** owns which partitions are submitted vs harvested — instance
+    state: `get_materialized_partitions(submitted) - get_materialized_partitions(harvested)`;
+  - the **lake** owns what actually succeeded — `landed(bronze) ∖ conformed(silver)`.
+
+  ([ADR-0013](../adr/0013-seam-keeps-no-ledger.md): ADR-0007 Amendment 1 and
+  ADR-0010 decision 5 specified a shared `external_jobs` ledger; the spike's S5
+  negative assertion tested for it by name and found it unnecessary. The
+  service's store is the service's internal state that we read — it is not our
+  orchestration state and does not belong in our warehouse.)
 
 Everything else is implementation. In particular, **`harvest` is not a seam
 verb**: it is our own step that *composes* `poll-to-terminal` + `retrieve` + an
@@ -131,7 +143,8 @@ deliberately does not name those tables.
 | submit | `submit.py` | `facets_batch.submit_facets_batch()` |
 | poll | `harvest.gemini_batch_harvest_sensor()` (**ships STOPPED**) | `facets_batch.wait_for_facets_batches()` |
 | retrieve | `gemini_batch.retrieve()` | `qwen_client.get_results()` |
-| ledger | `ops.sqlite` `batch_jobs` + `batch_items` | `ops.sqlite` `facets_batch_jobs` |
+| job state (today) | `ops.sqlite` `batch_jobs` + `batch_items` | `ops.sqlite` `facets_batch_jobs` |
+| job state (target) | the provider's own job model | the **service's** store, polled over HTTP — no table of ours |
 | landing | **none** | **none** |
 
 They share **no** submit/poll/harvest code — two wholly independent
@@ -147,14 +160,13 @@ landing) is the economic point of the seam work, not a nicety.
 
 ## 6. Open questions
 
-1. **Where does `external_jobs` live** — `ops.sqlite`, or the Dagster instance?
-   ADR-0012 says orchestration state is Dagster-native, but the seam contract
-   requires *both sides* to read the ledger. Only the location is open; the name
-   is settled.
-   **Phase 1 gate — resolve before the ledger is created.** Phase 1 is what
-   introduces `external_jobs` and reconciles the `facets_batch_jobs` rows into
-   it, so the location cannot be deferred to Phase 2 (which retires the queue but
-   inherits the ledger). See `tasks/plans/enrichment-v3-migration-master.md`.
+1. ~~Where does `external_jobs` live?~~ **RESOLVED — the question was wrong;
+   there is no ledger.** [ADR-0013](../adr/0013-seam-keeps-no-ledger.md): the
+   service owns its job store and Dagster polls it, so the seam needs no shared
+   table and no location. Phase 1 no longer creates `external_jobs`; its exit
+   criterion becomes reconciling the 4 `facets_batch_jobs` rows into the
+   **service's job store** (or accounting for them as in-flight work) before that
+   table drops. See `tasks/plans/enrichment-v3-migration-master.md`.
 2. **Retain the Gemini File-API media path** for the alternative adapter, or make
    client-side frame-sampling universal? ADR-0009 chose sampling for qwen;
    keeping the File-API path costs maintenance for a non-default provider.

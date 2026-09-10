@@ -2,11 +2,12 @@
 
 - Status: Accepted
 - Decided: 2026-09-10 (ratified by the owner 2026-09-10)
-- Related: ADR-0007 (enrichment is Dagster-native async batch), ADR-0008
-  (hermetic transforms with one explicit API seam), ADR-0009 (qwen batch
-  service), ADR-0011 (enrichment layered model: bronze landing → silver
-  conform → gold marts), ADR-0004 (ops/analytical split — **superseded in its
-  queue + dead_letter scope only**)
+  - Related: ADR-0007 (enrichment is Dagster-native async batch), ADR-0008
+    (hermetic transforms with one explicit API seam), ADR-0009 (qwen batch
+    service), ADR-0011 (enrichment layered model: bronze landing → silver
+    conform → gold marts), ADR-0004 (ops/analytical split — **superseded in its
+    queue + dead_letter scope only**), ADR-0013 (the seam keeps no ledger —
+    reconciles this decision with the seam)
 - Evidence: `~/repos/enrichment-spike/FINDINGS.md` (spikes S1–S6 + a live
   External Integration Gate)
 

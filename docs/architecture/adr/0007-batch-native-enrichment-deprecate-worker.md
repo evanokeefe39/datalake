@@ -122,6 +122,11 @@ rename, `facets_batch.py:114-125`), so the shared shape is already proven.
   additionally consumes transcripts + visual summaries). Never one submit per
   table — that would double the bill for a call that returns multiple
   artifacts.
+- **⚠️ Seam — ledger clause superseded by [ADR-0013](0013-seam-keeps-no-ledger.md).**
+  There is no `external_jobs` ledger table; the service owns its job store and
+  Dagster polls it. The remaining contract (verbs, per-workload executor plugins,
+  placeholder-before-POST *semantics*, one-submit-per-pass, loud per-item
+  failure) stands. The original text follows, retained for history.
 - **Seam.** The unified ingest contract named in Amendment 1 is codified in
   ADR-0010: one shared `external_jobs` ledger, per-workload executor plugins
   (qwen-vision | whisper | text-LLM), placeholder-before-POST, idempotent

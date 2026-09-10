@@ -31,15 +31,18 @@ Part of the [architecture documentation](../README.md).
 | [0004](0004-ops-sqlite-state-duckdb-deadletter.md) | SQLite for ops/coordination, DuckDB for analytical state | Accepted — queue + `dead_letter` scope superseded by [0012](0012-dagster-native-orchestration.md) | 2026-07 (backfilled 2026-09-03) |
 | [0005](0005-thin-projector-serving.md) | Metrics live in warehouse views; the dashboard is a thin projector | Accepted | 2026-08 (backfilled 2026-09-03) |
 | [0006](0006-point-in-time-metric-semantics.md) | Metrics are point-in-time (at-post-time baselines), never all-time averages | Accepted | 2026-08 (backfilled 2026-09-03) |
-| [0007](0007-batch-native-enrichment-deprecate-worker.md) | Enrichment is Dagster-native async batch (submit + harvest); the external worker is removed | Accepted | 2026-09-06 |
+| [0007](0007-batch-native-enrichment-deprecate-worker.md) | Enrichment is Dagster-native async batch (submit + harvest); the external worker is removed | Accepted — **ledger clause of Amendment 1 superseded by [0013](0013-seam-keeps-no-ledger.md)** | 2026-09-06 |
 | [0008](0008-hermetic-with-explicit-api-seam.md) | Transforms stay hermetic behind exactly one explicit API seam | Accepted | 2026-09-06 |
 | [0009](0009-qwen-batch-service.md) | The enrichment backend is a standalone, domain-agnostic qwen batch service (replaces gemini-batch) | Accepted | 2026-09-09 |
-| [0010](0010-enrichment-naming-and-provenance.md) | Name enrichment tables `gold_<channel>_<artifact>` with per-pass provenance (structural split) | Superseded by [0011](0011-enrichment-layered-model.md) (naming + layer) | 2026-09-09 |
+| [0010](0010-enrichment-naming-and-provenance.md) | Name enrichment tables `gold_<channel>_<artifact>` with per-pass provenance (structural split) | Superseded by [0011](0011-enrichment-layered-model.md) (naming + layer); **ledger clause superseded by [0013](0013-seam-keeps-no-ledger.md)** | 2026-09-09 |
 | [0011](0011-enrichment-layered-model.md) | **The v3 layer model**: bronze verbatim → six `silver_*` conform tables → four gold marts; key `platform` not `domain` | Accepted (**not yet implemented**) | 2026-09-10 |
 | [0012](0012-dagster-native-orchestration.md) | Orchestration state is Dagster-native; retire the `ops.sqlite` queue | Accepted (**not yet implemented**) | 2026-09-10 |
+| [0013](0013-seam-keeps-no-ledger.md) | The seam keeps **no ledger** — the service owns its job store (Dagster polls it), Dagster owns orchestration state | Accepted (**not yet implemented**) | 2026-09-10 |
 
-Two of these are the current target and are **not built yet** — read them
-alongside [`../README.md`](../README.md)'s current-vs-target table.
+These are the current target and are **not built yet** — read them alongside
+[`../README.md`](../README.md)'s current-vs-target table. ADR-0013 reconciles
+ADR-0012 with the seam by removing the one orchestration-shaped table it had
+left unspecified.
 
 ## Template
 
