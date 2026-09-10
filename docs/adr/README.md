@@ -26,7 +26,7 @@ deliberately separate from `docs/ARCHITECTURE.md`, which describes the
 | [0001](0001-enrichment-as-ingested-source.md) | Enrichment output is an ingested source, not a transform (LLM/API boundary) | **Proposed** | 2026-09-03 (pending build-vs-buy + ratification) |
 | [0002](0002-external-worker-rest-materialization.md) | External enrichment worker + gold as AssetSpec (REST materialization, not Pipes) | Superseded by [ADR-0007](0007-batch-native-enrichment-deprecate-worker.md) | 2026-07 (backfilled 2026-09-03) |
 | [0003](0003-no-api-in-transform-layer.md) | No LLM/API calls in the transform layer; network I/O confined to ingestion + external worker | Superseded by [ADR-0008](0008-hermetic-with-explicit-api-seam.md) | 2026-08 (backfilled 2026-09-03) |
-| [0004](0004-ops-sqlite-state-duckdb-deadletter.md) | SQLite (ops/coordination) vs DuckDB (analytical state) split; dead-letter + queue decoupling | Accepted | 2026-07 (backfilled 2026-09-03) |
+| [0004](0004-ops-sqlite-state-duckdb-deadletter.md) | SQLite (ops/coordination) vs DuckDB (analytical state) split; dead-letter + queue decoupling | Accepted — queue + `dead_letter` scope superseded by [ADR-0012](0012-dagster-native-orchestration.md) | 2026-07 (backfilled 2026-09-03) |
 | [0005](0005-thin-projector-serving.md) | Metrics computed in warehouse views; dashboard/API is a thin projector | Accepted | 2026-08 (backfilled 2026-09-03) |
 | [0006](0006-point-in-time-metric-semantics.md) | Point-in-time-only metric semantics (per-post baselines, not all-time averages) | Accepted | 2026-08 (backfilled 2026-09-03) |
 | [0007](0007-batch-native-enrichment-deprecate-worker.md) | Enrichment is Dagster-native async batch (submit + harvest sensor); deprecate the external worker | Accepted | 2026-09-06 |
@@ -34,6 +34,7 @@ deliberately separate from `docs/ARCHITECTURE.md`, which describes the
 | [0009](0009-qwen-batch-service.md) | Enrichment backend is a standalone qwen batch service (replaces gemini-batch) | Accepted | 2026-09-09 |
 | [0010](0010-enrichment-naming-and-provenance.md) | Enrichment naming (`gold_<channel>_<artifact>`) and per-pass provenance (structural table split) | Superseded by [ADR-0011](0011-enrichment-layered-model.md) (naming scope) | 2026-09-09 |
 | [0011](0011-enrichment-layered-model.md) | Enrichment layered model: bronze landing (`bronze_enrichment_raw`) → silver conform (`silver_*`, key `platform`) → gold marts | Accepted | 2026-09-10 |
+| [0012](0012-dagster-native-orchestration.md) | Orchestration state is Dagster-native — retire the ops.sqlite queue and dead_letter | **Proposed** | 2026-09-10 |
 
 ## Template
 
