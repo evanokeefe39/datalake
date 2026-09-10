@@ -52,6 +52,22 @@ domains and what is their shape).
   fix: enrichment keys are `(post_id, platform)` — `platform` matches
   `profiles.platform`; `domain` means the CONTENT niche (dev/AI/…), never
   the platform.
+- **Layer order (enforced):** `bronze_enrichment_raw` → `silver_*` →
+  `v_post_detail` (serving base: silver posts ⋈ silver enrichment ⋈ dims) →
+  21 canonical metric views + dims → the four gold marts. The canonical views
+  are UPSTREAM of the marts and are never re-pointed at them (no cycle).
+- **Preserved serving surface (no-regression):** the re-layer is additive —
+  every existing serving surface keeps its canonical definition over
+  `v_post_detail`: `v_recent_hot_posts` (hot posts); `v_outlier_posts` /
+  `v_engagement_outliers` / `v_creator_outlier_rate` (standout, outlier);
+  `v_underperformer_posts` / `v_creator_underperformer_rate` (underperformers);
+  `v_rising_creators` + `v_creator_profile` (rising creators, momentum);
+  `v_post_metrics` / `v_post_baselines`; `v_creator_metrics` /
+  `v_creator_quality` / `v_creator_topics` (creator detail);
+  `v_post_follower_context`; `v_signal` / `v_quality_trend` /
+  `v_domain_coverage` / `v_profile_metrics` / `v_overview` /
+  `v_standout_calendar`; and the dims `dim_profile` / `dim_date`. None may be
+  dropped, renamed, or restated.
 
 ## Source of truth
 `tasks/plans/phase-4-serving.md`, `metrics-centralization.md`,
@@ -65,3 +81,6 @@ domains and what is their shape).
 - [ ] The four gold marts (`gold_post_enrichment`, `gold_creator_performance`,
       `gold_content_shape_performance`, `gold_top_posts`) materialized and
       queryable for the owner's three questions (US-ESA-1).
+- [ ] No serving-surface regression: all 21 canonical views + 2 dims still
+      exist and still resolve over `v_post_detail`; the existing serving +
+      readiness tests stay green.

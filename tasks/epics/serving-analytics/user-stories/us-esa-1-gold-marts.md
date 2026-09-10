@@ -71,11 +71,24 @@ joins over six channel tables.
 - AC5: Marts are additive-only, idempotent on their PKs (re-run produces
       identical output), and derived purely from silver + existing serving
       metrics (no API calls, no aggregation in `server.py`).
+- AC6: No serving-surface regression — all 21 canonical metric views/dims
+      (`v_post_detail`, `v_recent_hot_posts`, `v_outlier_posts`,
+      `v_engagement_outliers`, `v_creator_outlier_rate`,
+      `v_underperformer_posts`, `v_creator_underperformer_rate`,
+      `v_rising_creators`, `v_creator_profile`, `v_post_metrics`,
+      `v_post_baselines`, `v_creator_metrics`, `v_creator_quality`,
+      `v_creator_topics`, `v_post_follower_context`, `v_signal`,
+      `v_quality_trend`, `v_domain_coverage`, `v_profile_metrics`,
+      `v_overview`, `v_standout_calendar`, `dim_profile`, `dim_date`) still
+      exist and still resolve over `v_post_detail`. None is dropped, renamed,
+      or re-pointed at a mart (no cycle).
 
 ## Definition of done
 
 - [ ] All four marts materialized on a sample slice first (temp/isolated DB
       smoke), then production wiring reviewed.
+- [ ] Every view in the preserved serving surface still exists and resolves
+      over `v_post_detail`; the existing serving tests stay green.
 - [ ] Schema catalog + readiness green for the four marts.
 - [ ] A query per owner question runs against real rows and returns
       sensible output (spot-checked against the underlying silver tables).

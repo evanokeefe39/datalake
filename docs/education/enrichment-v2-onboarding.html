@@ -652,52 +652,60 @@ footer a{color:var(--ld-accent)}
 <!-- ============ 7c GOLD: FOUR MARTS ============ -->
 <section id="gold-marts" class="reveal">
   <h2>Gold: four marts, three questions</h2>
-  <p class="lede">The six silver tables are still per-channel pieces. Gold is where they get joined into analytic marts. The whole warehouse exists to answer the owner's three questions about which creators perform well and why, so each mart maps to one of them.</p>
+  <p class="lede">The six silver tables are still per-channel pieces. <code>v_post_detail</code> joins them with the silver posts to form the serving base; the canonical metric views are built on that base; and gold composes those views into analytic marts. The whole warehouse exists to answer the owner's three questions about which creators perform well and why, so each mart maps to one of them.</p>
 
   <figure>
-    <div class="diag-title">The wide per-post shape feeds the three question-marts</div>
-    <svg viewBox="0 0 920 330" role="img" aria-label="gold_post_enrichment, the wide per-post table joining every channel output with engagement metrics and provenance, feeds three marts: gold_creator_performance answers who performs in a domain, gold_content_shape_performance answers what shape performs per domain, topic and follower tier, and gold_top_posts answers which posts do well across all domains">
+    <div class="diag-title">Layer order: silver to the serving base to the canonical views to the marts</div>
+    <svg viewBox="0 0 920 290" role="img" aria-label="Layer order: silver_ig_posts and the six conformed enrichment tables feed v_post_detail, the serving base; the 21 canonical metric views and dims are built on v_post_detail and own every metric definition; the four gold marts compose those canonical views and also join the enrichment facets directly. The direction never inverts: the views stay upstream of the marts.">
       <defs>
         <marker id="g1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0e7490"/></marker>
         <marker id="g2" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#64748b"/></marker>
         <marker id="g3" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0055A4"/></marker>
       </defs>
-      <!-- wide table -->
-      <rect x="30" y="115" width="215" height="110" rx="10" fill="#eef2f6" stroke="#45525e" stroke-width="2"/>
-      <text x="137" y="145" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#1c2733">gold_post_enrichment</text>
-      <text x="137" y="168" text-anchor="middle" font-size="10" fill="#45525e">the wide per-post shape:</text>
-      <text x="137" y="186" text-anchor="middle" font-size="10" fill="#45525e">every channel output joined,</text>
-      <text x="137" y="202" text-anchor="middle" font-size="10" fill="#45525e">plus engagement + provenance</text>
-      <text x="137" y="218" text-anchor="middle" font-size="10" fill="#64748b">keyed by post_id + platform</text>
-      <!-- Q1 mart -->
-      <rect x="600" y="20" width="290" height="86" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
-      <text x="745" y="44" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">gold_creator_performance</text>
-      <text x="745" y="64" text-anchor="middle" font-size="10" fill="#45525e">Q1: who performs in domain X?</text>
-      <text x="745" y="80" text-anchor="middle" font-size="10" fill="#45525e">composes v_creator_profile, v_post_follower_context</text>
-      <!-- Q2 mart -->
-      <rect x="600" y="122" width="290" height="86" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
-      <text x="745" y="146" text-anchor="middle" font-family="monospace" font-size="12" fill="#0055A4">gold_content_shape_performance</text>
-      <text x="745" y="166" text-anchor="middle" font-size="10" fill="#45525e">Q2: what shape performs, per domain,</text>
-      <text x="745" y="182" text-anchor="middle" font-size="10" fill="#45525e">topic, and follower tier?</text>
-      <text x="745" y="198" text-anchor="middle" font-size="10" fill="#45525e">tiers via v_post_follower_context; z via v_post_metrics</text>
-      <rect x="600" y="224" width="290" height="86" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
-      <text x="745" y="248" text-anchor="middle" font-family="monospace" font-size="12" fill="#0e7490">gold_top_posts</text>
-      <text x="745" y="268" text-anchor="middle" font-size="10" fill="#45525e">Q3: posts doing well across all</text>
-      <text x="745" y="284" text-anchor="middle" font-size="10" fill="#45525e">domains, joined to their shape</text>
-      <!-- arrows -->
-      <path d="M245 140 C 430 140 470 63 596 63" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#g1)"/>
-      <line x1="245" y1="170" x2="596" y2="170" stroke="#0055A4" stroke-width="2" marker-end="url(#g3)"/>
-      <path d="M245 200 C 430 200 470 267 596 267" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#g2)"/>
-      <text x="420" y="322" text-anchor="middle" font-size="11" fill="#64748b">Every mart joins the canonical serving views (one metric definition) with the enrichment facets. No metric logic is restated.</text>
+      <!-- layer 1: silver -->
+      <rect x="15" y="105" width="160" height="100" rx="10" fill="#eef2f6" stroke="#45525e" stroke-width="2"/>
+      <text x="95" y="131" text-anchor="middle" font-family="monospace" font-size="12" fill="#1c2733">silver_*</text>
+      <text x="95" y="153" text-anchor="middle" font-size="9.5" fill="#45525e">silver_ig_posts + the six</text>
+      <text x="95" y="171" text-anchor="middle" font-size="9.5" fill="#45525e">conformed enrichment tables</text>
+      <text x="95" y="189" text-anchor="middle" font-size="9" fill="#64748b">deterministic conform</text>
+      <line x1="175" y1="155" x2="206" y2="155" stroke="#0e7490" stroke-width="2" marker-end="url(#g1)"/>
+      <text x="191" y="146" text-anchor="middle" font-size="9.5" fill="#0e7490">reads</text>
+      <!-- layer 2: serving base -->
+      <rect x="210" y="105" width="180" height="100" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2.5"/>
+      <text x="300" y="131" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0e7490">v_post_detail</text>
+      <text x="300" y="153" text-anchor="middle" font-size="9.5" fill="#45525e">serving base: silver posts</text>
+      <text x="300" y="171" text-anchor="middle" font-size="9.5" fill="#45525e">joined with the silver</text>
+      <text x="300" y="189" text-anchor="middle" font-size="9.5" fill="#45525e">enrichment tables + dims</text>
+      <line x1="390" y1="155" x2="421" y2="155" stroke="#0e7490" stroke-width="2" marker-end="url(#g1)"/>
+      <text x="406" y="146" text-anchor="middle" font-size="9.5" fill="#0e7490">feeds</text>
+      <!-- layer 3: canonical metric views -->
+      <rect x="425" y="105" width="195" height="100" rx="10" fill="#e6edf8" stroke="#0055A4" stroke-width="2"/>
+      <text x="522" y="131" text-anchor="middle" font-family="monospace" font-size="11.5" fill="#0055A4">canonical metric views</text>
+      <text x="522" y="153" text-anchor="middle" font-size="9.5" fill="#45525e">21 views + dims read</text>
+      <text x="522" y="171" text-anchor="middle" font-size="9.5" fill="#45525e">v_post_detail; they own</text>
+      <text x="522" y="189" text-anchor="middle" font-size="9.5" fill="#45525e">every metric definition</text>
+      <line x1="620" y1="155" x2="651" y2="155" stroke="#0055A4" stroke-width="2" marker-end="url(#g3)"/>
+      <!-- layer 4: gold marts -->
+      <rect x="655" y="105" width="250" height="100" rx="10" fill="#e0f2fe" stroke="#0e7490" stroke-width="2"/>
+      <text x="780" y="131" text-anchor="middle" font-family="monospace" font-size="12.5" fill="#0e7490">gold marts</text>
+      <text x="780" y="153" text-anchor="middle" font-size="9.5" fill="#45525e">compose the canonical views</text>
+      <text x="780" y="171" text-anchor="middle" font-size="9.5" fill="#45525e">+ the enrichment facets;</text>
+      <text x="780" y="189" text-anchor="middle" font-size="9.5" fill="#45525e">four marts, three questions</text>
+      <!-- silver enrichment also joins the marts directly -->
+      <path d="M 95 205 C 95 240 780 240 780 205" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#g2)"/>
+      <text x="437" y="256" text-anchor="middle" font-size="9.5" fill="#64748b">the enrichment facets also join the marts directly</text>
+      <text x="460" y="276" text-anchor="middle" font-size="11" fill="#64748b">The direction never inverts: the canonical views stay upstream of the marts and are never re-pointed at them.</text>
     </svg>
-    <figcaption><code>gold_post_enrichment</code> is the wide per-post table: every channel output joined on <code>(post_id, platform)</code>, plus engagement metrics and provenance. The three question-marts are built from it: creators in a domain, content shapes per domain/topic/follower tier, and top posts everywhere, each joined back to its full shape for qualitative reading. The marts compose the canonical serving views; only thin analytics projections derive from the marts.</figcaption>
+    <figcaption>The serving base <code>v_post_detail</code> reads the silver posts and the six silver enrichment tables. The canonical metric views are built on that base and own every metric definition. The four gold marts sit downstream: they compose those views and join the enrichment facets; they never restate a metric, and the views are never re-pointed at the marts.</figcaption>
   </figure>
+
+  <div class="key"><p><strong>The dashboard's metrics are preserved.</strong> Every surface the dashboards use keeps its canonical definition, still built on <code>v_post_detail</code>: hot posts (<code>v_recent_hot_posts</code>), standout and outlier posts (<code>v_outlier_posts</code>, <code>v_engagement_outliers</code>), rising creators and momentum (<code>v_rising_creators</code>, <code>v_creator_profile</code>), post detail (<code>v_post_detail</code>), creator detail (<code>v_creator_profile</code>, <code>v_creator_metrics</code>, <code>v_creator_quality</code>, <code>v_creator_topics</code>), and underperformers (<code>v_underperformer_posts</code>). These views stay canonical and upstream of the marts; the marts only join them, and none is dropped, renamed, or restated.</p></div>
 
   <div class="tgrid">
     <div class="tcard">
       <span class="tname">gold_post_enrichment</span>
       <span class="art">mart 0: the wide per-post shape</span>
-      <p class="cols">all channel outputs joined on <code>(post_id, platform)</code> &middot; engagement metrics &middot; provenance envelope</p>
+      <p class="cols">all channel outputs joined on <code>(post_id, platform)</code> &middot; engagement metrics &middot; provenance envelope &middot; composed from the canonical views over <code>v_post_detail</code></p>
       <p class="prod">shape of: <b>one post, everything we know about it</b></p>
     </div>
     <div class="tcard">
@@ -870,7 +878,7 @@ footer a{color:var(--ld-accent)}
     <dt><code>seam</code></dt>
     <dd>The boundary where our pipeline hands work to an outside service and takes results back: submit, poll, harvest.</dd>
     <dt><code>serving views</code></dt>
-    <dd>Thin, read-only SQL views (like <code>v_post_metrics</code>) built on top of the gold marts, shaped for dashboards rather than for storage.</dd>
+    <dd>Thin, read-only SQL views (like <code>v_post_metrics</code>) shaped for dashboards rather than storage. They are built on the serving base <code>v_post_detail</code> and stay upstream of the gold marts, which compose them.</dd>
     <dt><code>submit</code></dt>
     <dd>The sub-second step that records an enrichment job in the shared ledger and sends it to the provider. No AI work happens in the submit.</dd>
     <dt><code>terminal status</code></dt>
