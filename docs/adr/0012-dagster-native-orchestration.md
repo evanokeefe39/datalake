@@ -61,16 +61,18 @@ queue and dead_letter are retired; the rest of ops.sqlite is untouched.**
    anti-join `landed(bronze) ∖ conformed(silver)`, and a Dagster asset check
    fails loudly with counts and the stuck post ids (S3). A failed item never
    fails its job, so the check is the *only* thing making it visible.
-8. **Jobs run in-process for measured overhead — NOT for safety.** On Windows the
-   compute-log tail added ~50 s to a harvest step under the default multiprocess
-   executor, so pinning `in_process_executor` is a reasonable default for these
-   jobs. It is explicitly **not** a correctness requirement. An earlier reading of
-   spike S1 blamed the multiprocess executor for destroying instance run state;
-   that attribution was **WRONG and has been retracted** — the loss came from the
-   spike harness wiping its own scratch `DAGSTER_HOME` from module scope, which
-   `multiprocessing`'s spawn path re-executes in every child because under
-   `python -m` the entry module *is* `__main__`. No executor rule follows, and
-   none should be recorded.
+8. **An op that writes DuckDB runs in-process.** DuckDB is single-writer, so under
+   a subprocess executor the op contends with any other open handle on the file
+   and fails outright (`Cannot open file … being used by another process`,
+   observed). Pin `in_process_executor` wherever such a handle may be open. This
+   is a **narrow, grounded** rule about the storage engine — it is NOT "the
+   multiprocess executor is unsafe". An earlier reading of spike S1 blamed the
+   executor for destroying instance run state; that attribution was **WRONG and
+   is retracted** — the loss came from the spike harness wiping its own scratch
+   `DAGSTER_HOME` from module scope, which `multiprocessing`'s spawn path
+   re-executes in every child because under `python -m` the entry module *is*
+   `__main__`. Windows compute-log tail overhead (~50 s/step) is a secondary,
+   performance-only reason for the pin.
 9. **Providers sit behind one `ProviderAdapter` Protocol; handles are opaque
    strings.** Provider choice is config; provider-native state vocabularies and
    result field names are normalized at the seam; a fan-out provider returns ONE
@@ -117,10 +119,11 @@ are config.
 
 Negative / work this commits us to:
 
-- **In-process execution is a performance choice, not a safety one.** Do not
-  generalize it into a rule: the executor has no bearing on instance integrity.
-  (The original claim to the contrary was a misdiagnosis of a spike-harness bug;
-  see decision 8 and the S1 correction in the spike `FINDINGS.md`.)
+- **The in-process pin is required for DuckDB-writing ops, and only for that
+  reason.** DuckDB is single-writer; a subprocess executor contends with any other
+  handle on the file. State the rule that way — never as "the executor corrupts
+  instance state", which was a misdiagnosis of a spike-harness bug (see decision
+  8 and the S1 correction in the spike `FINDINGS.md`).
 - **The failure check rests on an invariant that must be tested**: a failed item
   must NEVER be conformed. If that rule breaks, the anti-join empties and the
   andon passes while failures accumulate — the worst available failure mode. It
