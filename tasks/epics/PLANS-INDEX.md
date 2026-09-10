@@ -30,10 +30,10 @@ plans not yet cited by an epic are assigned by title and marked `[assign]`.
 ## E-ENRICH-ENGINE — qwen batch engine (ADR-0009; pre-pivot history kept)
 - `enrichment-v3-migration-master.md` — **the migration coordinator** (all seven
   phases, current → target; spans every epic below)
-- `inference-service-seam.md` → US-EENG-1/US-EENG-2 (Phase 1: the one seam, the
-  bronze landing, the provider swap)
-- `dagster-native-orchestration-implementation.md` → ADR-0012 (Phases 2-3:
-  Dagster-native orchestration, prompt identity)
+  - `inference-service-seam.md` → US-EENG-1/US-EENG-2/US-EENG-3 (Phase 1: the one
+    seam, the bronze landing, the provider swap, the seam convergence)
+  - `dagster-native-orchestration-implementation.md` → ADR-0012, US-EENG-4 (Phases
+    2-3: Dagster-native orchestration, the discovery in-flight guard, prompt identity)
 - `dagster-native-enrichment-spikes.md` → ADR-0012 evidence (spikes S1-S6)
 - `facet-batch-native.md` (qwen facets lifecycle, pre-consolidation)
 - `qwen-batch-enrichment.md` → US-EENG-1/US-EENG-2 (qwen-batch backend swap; pivot)
@@ -63,8 +63,9 @@ plans not yet cited by an epic are assigned by title and marked `[assign]`.
 - `docs/architecture/enrichment-design-v1-superseded.md` (§5) → US-ETR-1/2/3/4
 
 ## E-SERVING-ANALYTICS — dims/metrics/creator analytics
-- `content-classification-migration.md` → US-ESA-1 (Phase 5: migrate the live
-  `gold_analyses` to `silver_content_classification`, no serving regression)
+- `content-classification-migration.md` → US-ESA-1/US-ESA-2 (Phase 5: migrate the
+  live `gold_analyses` to `silver_content_classification`, no serving regression;
+  US-ESA-2 is the migration, US-ESA-1 the mart consumers)
 - `phase-4-serving.md`, `metrics-centralization.md`
 - `creator-metrics.md`, `creator-ranking-rising-creators.md`
 - `follower-observations-underperformer-eda.md`
