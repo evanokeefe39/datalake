@@ -23,15 +23,15 @@ import urllib.error
 import pytest
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
+from datalake.defs.enrichment.analysis import (
+    _item_attempts,
+    build_requests_for_items,
+)
 from datalake.defs.enrichment.batch import (
     MAX_ATTEMPTS,
     _ensure_schema,
     claim_pending_items,
     create_batch,
-)
-from datalake.defs.enrichment.analysis import (
-    _item_attempts,
-    build_requests_for_items,
 )
 
 

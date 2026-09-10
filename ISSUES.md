@@ -2,6 +2,17 @@
 
 Issue tracking is local — this file, not GitHub Issues.
 
+> **Before reading the entries below: the enrichment architecture they describe is
+> scheduled for retirement.** ADR-0011 (layered enrichment: `bronze_enrichment_raw`
+> → six `silver_*` tables → four gold marts) and ADR-0012 (Dagster-native
+> orchestration, retiring the `ops.sqlite` queue) are **accepted but not yet
+> implemented**. The entries in this file accurately describe the CURRENT world —
+> `gold_analyses`, `gold_growth_facets`, `batch_jobs`/`batch_items`, `dead_letter` —
+> so read them as current-state, not target-state. The target design and the traps
+> to watch for are in `WATCHDOG.md` (section "v3 enrichment / orchestration / seam
+> — accepted, NOT yet live") and `docs/architecture/pipelines/enrichment.md`. Work items for the
+> migration live in `tasks/epics/` and `tasks/plans/`, not in this backlog.
+
 ## Complete — `feat/media-and-entity-routing` (2026-08-12)
 
 ### 8, 9, 10: Media cache + entity-aware bronze routing
@@ -221,14 +232,14 @@ and the schema drift detector catches table mismatches.
 ### 14. Creator growth analysis — baseline cohort + follower history (Q9-Q11)
 
 **Status:** Proposed (2026-08-31) — design discussion in
-`docs/creator-growth-analysis.md`
+`docs/research/creator-growth-analysis.md`
 
 Goal: answer research questions about how successful creators start and grow
 (Q1-Q11 in the ref doc), and ultimately produce per-creator channel audits
 benchmarked against their domain. This is a data-acquisition + analysis-design
 issue, not code yet.
 
-**Reference:** `docs/creator-growth-analysis.md` (full design context).
+**Reference:** `docs/research/creator-growth-analysis.md` (full design context).
 
 #### What's needed
 - **Follower-count time series** (`profile_observations` table + scheduled
@@ -423,7 +434,7 @@ The repo has 10 local dataset ids (9,465 posts; 9,413 with media, 52 without)
 on local disk at
 `C:/Users/evano/repos/scrape-ig-saved-list/data/ingest/<dataset_id>/<post_id>/post_metadata.json`.
 Make local-disk ingestion a **second bronze producer** under the existing
-producer-agnostic bronze contract (`docs/BRONZE_SCHEMA.md`) — not a bootstrap
+producer-agnostic bronze contract (`docs/architecture/bronze-schema.md`) — not a bootstrap
 or one-off migration script. Silver already classifies by
 `input.results_type`, globs all `*.parquet` against the `silver_ig` watermark,
 and dedups via `DISTINCT ON(post_id) ... ORDER BY scraped_at DESC,
@@ -509,7 +520,7 @@ pending posts → 1,704 media items, 0 video.
 The current **image/text backlog is trivially cheap (~$1-3)**. The dominant
 cost driver is **video** (10-100× all scraping; a 10-min reel ≈ 174K tokens).
 If video enrichment is added, the one-off full-reel estimate from
-`docs/creator-growth-analysis.md` is **$50-300+** — mitigate via stratified
+`docs/research/creator-growth-analysis.md` is **$50-300+** — mitigate via stratified
 subsampling (top/bottom ~10 posts/creator, $10-60).
 
 #### Tier 1 → Tier 2 escalation triggers (numeric, from AGENTS.md)

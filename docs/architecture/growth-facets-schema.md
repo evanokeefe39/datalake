@@ -8,17 +8,25 @@ detectably stale).
 **Reserved keys:** `RESERVED_GOLD_KEYS` — structurally excluded; the validator
 rejects any of them by name.
 
-Source: `docs/enrichment-enhancement-design.md` §4,
+Source: `docs/architecture/pipelines/enrichment.md` (§2 naming rules, §4 silver tables) — the
+canonical v3 spec; `docs/architecture/enrichment-design-v1-superseded.md` §4 is retained as the
+rationale record only,
 `tasks/epics/enrich-facets/user-stories/us-efac-1-lock-v3-facet-schema.md`.
 This locks the schema only — extraction/enrichment wiring lands in later PRs.
 
-> **Settled v2 mapping (2026-09-09).** The locked V3 field set is unchanged;
-> its storage homes are final: cross-modal fields → `gold_text_annotations`
-> (with `brand_safety` stored as the `brand_safety_json` column),
-> visual-necessary fields → `gold_visual_annotations`, and the non-facet
-> summary outputs → `gold_visual_summaries`. Naming + provenance per
-> ADR-0010; the legacy single-table store `gold_growth_facets` is replaced
-> (see §Channel availability & provenance below).
+> **Settled mapping — UPDATED 2026-09-10 for the v3 layer model (ADR-0011).**
+> The locked V3 field set is unchanged; its storage homes are final:
+> cross-modal fields → **`silver_text_annotations`** (with `brand_safety` stored
+> as the `brand_safety_json` column), visual-necessary fields →
+> **`silver_visual_annotations`**, and the non-facet summary outputs →
+> **`silver_visual_summaries`**.
+>
+> **The `gold_*` names above are superseded.** [ADR-0011](adr/0011-enrichment-layered-model.md)
+> supersedes ADR-0010's naming and layer scope: these are **silver** conformed
+> tables, not gold, and the join key is **`platform`**, never `domain`. Gold is
+> reserved for the four analytic marts. The legacy single-table store
+> `gold_growth_facets` is replaced by the split above (see §Channel availability
+> & provenance below).
 
 ## Field inventory
 
@@ -62,14 +70,14 @@ channel; a sponsor picks its own risk subset downstream.
 
 ### Structurally excluded
 
-- **Reserved gold keys** (the classification pass owns them — its table is
-  `gold_content_classification`, renamed from legacy `gold_analyses`; the
-  validator rejects):
+- **Reserved classification keys** (the classification pass owns them — its
+  table is `silver_content_classification`, renamed from legacy `gold_analyses`;
+  the validator rejects):
   `is_educational`, `is_actionable`, `admiralty`, `domain`, `subdomain`,
   `content_type`, `format`, `educational_json`, `actionable_json`.
 - **`content_summary` / `image_summaries`**: NOT facets — they live in
-  `gold_visual_summaries` (produced by the same visual submit, separate
-  table; design §6, `docs/enrichment-design.md`). The validator rejects them
+  `silver_visual_summaries` (produced by the same visual submit, separate
+  table; design §6, `docs/architecture/pipelines/enrichment.md`). The validator rejects them
   here as unknown fields.
 
 ## Validator behavior
@@ -113,17 +121,18 @@ product intent:
   fields with more evidence — no field, enum, or validator change.
 - **Audio-absent is a data condition, not a schema condition.** Image/carousel
   posts are marked in the transcript store
-  (`gold_audio_transcripts.transcript_status = no_audio_source`,
+  (`silver_audio_transcripts.transcript_status = no_audio_source`,
   E-ENRICH-TRANSCRIPTS), never by nulling facet fields.
 - **Per-pass provenance is a storage concern, not this schema's:** the facet
-  JSON carries `GROWTH_FACETS_SCHEMA_VERSION`. SETTLED (2026-09-09): the fix
-  is structural — the legacy single-table store (`gold_growth_facets`, where
-  the text pass overwrote the visual pass's hash,
-  `defs/enrichment/facets_batch.py:250-256`) is replaced by the four-table
-  split (`gold_visual_annotations` / `gold_visual_summaries` /
-  `gold_text_annotations` / `gold_text_summaries`), each row carrying its own
-  full provenance metadata set — per-pass provenance by construction
-  (ADR-0010).
+  JSON carries `GROWTH_FACETS_SCHEMA_VERSION`. SETTLED (2026-09-09; layer and
+  naming updated 2026-09-10 for ADR-0011): the fix is structural — the legacy
+  single-table store (`gold_growth_facets`, where the text pass overwrote the
+  visual pass's hash, `defs/enrichment/facets_batch.py:250-256`) is replaced by
+  the four-table split (`silver_visual_annotations` /
+  `silver_visual_summaries` / `silver_text_annotations` /
+  `silver_text_summaries`), each row carrying its own full provenance metadata
+  set — per-pass provenance by construction (ADR-0010, re-homed into silver by
+  ADR-0011).
 
 ## Resolved design points (flagged for review, not silently guessed)
 

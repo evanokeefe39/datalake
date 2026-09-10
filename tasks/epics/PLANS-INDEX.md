@@ -28,33 +28,48 @@ plans not yet cited by an epic are assigned by title and marked `[assign]`.
 - `19-20-batch-multimodal-mime.md` (media_cache + mime fixes)
 
 ## E-ENRICH-ENGINE — qwen batch engine (ADR-0009; pre-pivot history kept)
+- `enrichment-v3-migration-master.md` — **the migration coordinator** (all seven
+  phases, current → target; spans every epic below)
+- `inference-service-seam.md` → US-EENG-1/US-EENG-2 (Phase 1: the one seam, the
+  bronze landing, the provider swap)
+- `dagster-native-orchestration-implementation.md` → ADR-0012 (Phases 2-3:
+  Dagster-native orchestration, prompt identity)
+- `dagster-native-enrichment-spikes.md` → ADR-0012 evidence (spikes S1-S6)
+- `facet-batch-native.md` (qwen facets lifecycle, pre-consolidation)
 - `qwen-batch-enrichment.md` → US-EENG-1/US-EENG-2 (qwen-batch backend swap; pivot)
 - Pre-pivot (Gemini era): `phase-3-gold-asset.md`, `enrichment-architecture-v2.md`,
   `migration-enrichment-v2.md`, `gold-enrichment-scaling.md`, `enrichment-exec-upgrade.md`,
   `multimodal-processing.md`, `pipeline-hardening-architecture-review.md`,
   `refactor-architecture-investigation.md`, `orchestration-investigation-opening.md`
-- Supporting: `docs/adr/0009`, `docs/adr/0007` (shape) + `0008`, `docs/adr/0002/0003`
+- Supporting: `docs/architecture/adr/0009`, `docs/architecture/adr/0007` (shape) + `0008`, `docs/architecture/adr/0002/0003`
 
 ## E-ENRICH-LABELS — triage labels
 - `post-performance-observations-workstreams.md` (Epic 3 — the value driver)
 - `post-performance-observations-implementation.md`
 
 ## E-ENRICH-FACETS — cross-modal facets (NEW)
+- `silver-conform-tables.md` → US-EFAC-1/3/4 (Phase 4: `silver_visual_annotations`,
+  `silver_text_annotations`)
 - `facet-list-experiment-design.md` → US-EFAC-1/2/3/4
-- `docs/enrichment-enhancement-design.md` (§3–§4)
+- `docs/architecture/enrichment-design-v1-superseded.md` (§3–§4)
 
 ## E-ENRICH-SUMMARIES — folded summaries (NEW)
-- `docs/enrichment-enhancement-design.md` (§6) → US-ESUM-1/2
+- `silver-conform-tables.md` → US-ESUM-1/3 (Phase 4: the summary tables conform
+  from the same visual/text submit)
+- `docs/architecture/enrichment-design-v1-superseded.md` (§6) → US-ESUM-1/2
 
 ## E-ENRICH-TRANSCRIPTS — ASR capture (NEW)
-- `docs/enrichment-enhancement-design.md` (§5) → US-ETR-1/2/3/4
+- `silver-conform-tables.md` → US-ETR-1/2/3 (Phase 4: the audio pass)
+- `docs/architecture/enrichment-design-v1-superseded.md` (§5) → US-ETR-1/2/3/4
 
 ## E-SERVING-ANALYTICS — dims/metrics/creator analytics
+- `content-classification-migration.md` → US-ESA-1 (Phase 5: migrate the live
+  `gold_analyses` to `silver_content_classification`, no serving regression)
 - `phase-4-serving.md`, `metrics-centralization.md`
 - `creator-metrics.md`, `creator-ranking-rising-creators.md`
 - `follower-observations-underperformer-eda.md`
 - `serving-test-and-docs-repair.md` (serving half)
-- `growth-research-report.md`, `docs/creator-growth-analysis.md` (research)
+- `growth-research-report.md`, `docs/research/creator-growth-analysis.md` (research)
 - `post-performance-observations-investigation.md`,
   `investigate-post-metrics-observations.md` (Epic 1–2 groundwork)
 - `post-performance-observations-workstreams.md` (Epics 1, 2, 4) — shared with E-ENRICH-LABELS

@@ -1,5 +1,11 @@
 # ADR-0010: Enrichment naming (`gold_<channel>_<artifact>`) and per-pass provenance
 
+**Generation: v2** (2026-09-09) — superseded by v3 (ADR-0011). What v2 settled
+(naming, per-pass provenance, no-`_bound` columns, schema registry,
+one-submit-per-pass) still stands; only its **naming and layer** were replaced.
+Full lineage and the authoritative numbering: `docs/architecture/pipelines/enrichment.md`
+("Version history").
+
 - Status: Superseded by [ADR-0011](0011-enrichment-layered-model.md)
   (naming scope; layer model + platform key)
 - Decided: 2026-09-09 (settled enrichment design v2 contract,
@@ -59,6 +65,12 @@ service era (ADR-0009):
    table split** (one pass = one table = its own full metadata row), not by
    per-pass hash columns on a shared row. This retires the
    model-as-done-marker hack.
+5. **⚠️ Ledger clause superseded by [ADR-0013](0013-seam-keeps-no-ledger.md) —
+   there is no `external_jobs` table.** The service owns its job store and
+   Dagster polls it over HTTP; Dagster's orchestration state is instance-native.
+   Everything else in this decision stands (the verbs, per-workload executor
+   plugins, placeholder-before-POST semantics, one-submit-per-pass, loud
+   per-item failure). The original text follows, retained for history.
 5. **One shared async ingest seam.** A single workload-keyed `external_jobs`
    ledger with placeholder-before-POST submit; `submit → poll-to-terminal →
    retrieve → idempotent upsert` verbs; per-workload executor plugins
@@ -75,7 +87,7 @@ service era (ADR-0009):
    the scheduler.
 
 The full table/column/DAG/asset-graph spec built on these decisions lives in
-`docs/enrichment-design.md`.
+`docs/architecture/pipelines/enrichment.md`.
 
 ## Alternatives considered
 

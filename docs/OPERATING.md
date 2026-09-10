@@ -6,6 +6,38 @@
 - `data/state.duckdb` and `data/ops.sqlite` exist (created automatically on first run)
 - DAGSTER_HOME set to `data/dagster_home` (set in `.env`)
 
+## Which world are you in (current vs target)
+
+This guide describes the CURRENT system. Two accepted ADRs describe a target
+state that is NOT yet implemented; do not expect their artifacts to exist:
+
+| Topic | Current (what runs) | Target (accepted, not built) |
+|---|---|---|
+| Enrichment model | `gold_analyses` + `gold_growth_facets` DuckDB tables, written by the standalone worker | ADR-0011 layered model: `bronze_enrichment_raw` → six `silver_*` conform tables → four gold marts ([`docs/architecture/pipelines/enrichment.md`](architecture/pipelines/enrichment.md)) |
+| Orchestration state | `ops.sqlite` queue: `batch_jobs` / `batch_items` / `dead_letter` (+ `facets_batch_jobs`) | ADR-0012: state lives in the Dagster instance + the lake; the queue tables are retired |
+| Provider integration | Two independent lifecycles (Gemini `submit.py`/`gemini_batch.py`/`harvest.py`; qwen `facets_batch.py`/`qwen_client.py`) | ADR-0008/0009 seam: one ledger, three verbs, `ProviderAdapter` swap via `build_adapter(name)` |
+
+Quick tell: if `uv run python -m datalake.cli batches` returns rows and the
+worker claims them, you are in the current world. If you see `silver_*`
+enrichment tables or `bronze_enrichment_raw` in the lake, v2 has shipped and
+this guide's batch sections are stale.
+
+## Run ledgers
+
+Today the run ledger is `ops.sqlite`:
+
+- Gemini enrichment: `batch_jobs` + `batch_items` (created by
+  `ig_posts_gen_batches`, claimed by the worker, terminal failures to
+  `dead_letter` — see [Dead letter triage](#dead-letter-triage)).
+- Growth facets: `facets_batch_jobs`.
+
+Target (ADR-0012, not yet implemented): the ledger is the Dagster instance
+itself — retry is a new partition key, failures surface via the anti-join
+`landed(bronze) ∖ conformed(silver)` plus a blocking asset check, and
+`ops.sqlite` retains only `media_cache`, `media_metadata`, `creators`,
+`profiles`, `creator_merges`, `prompt_registry`. When that lands, the
+`batches` CLI subcommands and the dead-letter workflow below are retired.
+
 ## Pipeline CLI
 
 The pipeline is operated via ``python -m datalake.cli`` (or the thin wrapper
@@ -37,6 +69,28 @@ consumes one pending `gemini-batch` batch per run, and the
 terminal state. Batch-native growth facets:
 `uv run python scripts/enrich_facets_batch.py` (interactive enrichment was
 removed 2026-09-08 — batch is the only path).
+
+> Sensors and schedules ship STOPPED BY DEFAULT. After (re)deploying or
+> recreating the code location, start them explicitly in the Dagster UI
+> (Automation → sensors/schedules) if you want automated triggering. Nothing
+> fires until you do.
+
+### qwen-batch-service (operational contract)
+
+The qwen path depends on the `qwen-batch-service` (`~/repos/qwen-batch-service`)
+— FastAPI with its own SQLite job store (lease, backoff, dead-letter, resume).
+Spin it up before any qwen enrichment run:
+
+```bash
+uv run uvicorn app.main:app --port 8000   # in ~/repos/qwen-batch-service
+curl -s http://localhost:8000/health
+```
+
+The submit path MUST ping `GET /health` first and **fails loudly** — never a
+quiet "nothing to do" — if the service is down. The service is deliberately
+domain-agnostic: it does not know what a `post_id` is; the `post_id ↔
+custom_key` mapping lives on our side. Endpoints: `POST /jobs`, `GET /jobs`,
+`GET /jobs/{id}`, `GET /jobs/{id}/results`, `GET /health`.
 
 ### Inspect batch state
 

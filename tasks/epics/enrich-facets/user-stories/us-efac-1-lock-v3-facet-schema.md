@@ -8,7 +8,7 @@ status: Open
 
 - **Epic:** E-ENRICH-FACETS
 - **Status:** Open
-- **Source:** `docs/enrichment-enhancement-design.md` §4, `facet-list-experiment-design.md`
+- **Source:** `docs/architecture/enrichment-design-v1-superseded.md` §4, `facet-list-experiment-design.md`
 
 ## Story
 **As a** growth analyst, **I want** the V3 facet schema (enum

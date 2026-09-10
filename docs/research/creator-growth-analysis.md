@@ -52,9 +52,23 @@ Q11. End-state: for any creator, produce an audit of their channel compared to
   at observation points → which posts took off fast.
 - **Profile snapshot** (`silver_ig_profiles`): `followers_count` — **single
   point in time, PK overwrites on each scrape**. No history.
-- **Gold content analysis** (`gold_content_classification` — enrichment-v2
-  name; exists today as legacy `gold_analyses.result_json`): per-post domain,
-  educational/actionable classification → content-type drift over time.
+- **Content classification** (target name `silver_content_classification` under
+  ADR-0011/v3; `gold_content_classification` was the v2 name; exists today as
+  legacy `gold_analyses.result_json`): per-post domain, educational/actionable
+  classification → content-type drift over time.
+
+> **⚠ SUPERSEDED 2026-09-10 — the names below are v2 (ADR-0010) and are now
+> one generation old.** [ADR-0011](../architecture/adr/0011-enrichment-layered-model.md) (v3)
+> re-layers these tables: the conformed tables are **`silver_*`, not `gold_*`**,
+> and the join key is **`platform`**, never `domain`. So in the note below, read
+> `gold_visual_annotations` → `silver_visual_annotations`,
+> `gold_visual_summaries` → `silver_visual_summaries`,
+> `gold_text_annotations` → `silver_text_annotations`,
+> `gold_text_summaries` → `silver_text_summaries`,
+> `gold_audio_transcripts` → `silver_audio_transcripts`, and
+> `gold_content_classification` → `silver_content_classification`. Gold is now
+> reserved for the four analytic marts. Authoritative numbering and the full
+> v1/v2/v3 history: `docs/architecture/pipelines/enrichment.md`.
 
 > **2026-09-09 audit note (reconciled to enrichment design v2 / ADR-0010):**
 > a second gold output now exists alongside the classification table (legacy
@@ -216,6 +230,14 @@ Panel: Data Architect (schema/pipeline), Analytical/ML (value + method),
 Cost/Feasibility (Apify/Gemini dollars). Converged on the same priorities.
 
 ### Enabling changes (in leverage order) — the "build once, answer many" set
+
+> **Naming generation:** this table was written against **v2** (ADR-0010, 2026-09-09).
+> Under **v3** (ADR-0011) the conformed tables are `silver_*`, not `gold_*`, and
+> the join key is `platform`, not `domain` — so `gold_content_classification` →
+> `silver_content_classification`, `gold_text_annotations` →
+> `silver_text_annotations`, `gold_visual_annotations` →
+> `silver_visual_annotations`. The _changes_ (GAP-1..6) are unaffected; only the
+> table names move. See `docs/architecture/pipelines/enrichment.md` ("Version history").
 
 | ID | Change | Enables |
 |---|---|---|

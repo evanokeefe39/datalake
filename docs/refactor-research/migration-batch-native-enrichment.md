@@ -4,9 +4,9 @@
   Ratify by merging to `main`; then open a dedicated migration/refactor branch
   and execute the phases below.
 - Date: 2026-09-06
-- ADRs: [ADR-0007](../adr/0007-batch-native-enrichment-deprecate-worker.md)
+- ADRs: [ADR-0007](../architecture/adr/0007-batch-native-enrichment-deprecate-worker.md)
   (batch-native enrichment; supersedes 0002),
-  [ADR-0008](../adr/0008-hermetic-with-explicit-api-seam.md) (explicit API seam;
+  [ADR-0008](../architecture/adr/0008-hermetic-with-explicit-api-seam.md) (explicit API seam;
   supersedes 0003).
 
 ## Target state (the destination)

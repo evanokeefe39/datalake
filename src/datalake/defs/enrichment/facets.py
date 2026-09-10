@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any
 
+from datalake.defs.common.resources import DuckDBResource
 from datalake.defs.common.schemas import duckdb_ddl
 from datalake.defs.enrichment import analysis as ew
 from datalake.defs.enrichment.growth_facets_schema import (
@@ -30,7 +30,6 @@ from datalake.defs.enrichment.growth_facets_schema import (
 from datalake.defs.enrichment.prompts import (
     _DEFAULT_QWEN_MODEL,
     CURRENT_FACETS_PROMPT_HASH,
-    build_growth_facets_prompt,
 )
 
 logger = logging.getLogger("enrichment.facets")

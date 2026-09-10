@@ -10,7 +10,7 @@ status: Open
 - **Status:** Open
 - **Relates to:** E-ENRICH-LABELS (standout/underperformer labels as the
   criterion), E-SERVING-ANALYTICS (engagement views)
-- **Source:** `docs/enrichment-enhancement-design.md` §4 (validity revision)
+- **Source:** `docs/architecture/enrichment-design-v1-superseded.md` §4 (validity revision)
 
 ## Story
 **As a** growth analyst, **I want** each facet validated as actually

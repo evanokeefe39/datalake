@@ -14,9 +14,9 @@ import pytest
 
 from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLiteResource
 from datalake.defs.enrichment import media_cache
+from datalake.defs.enrichment.analysis import build_requests_for_items
 from datalake.defs.enrichment.gemini_batch import _build_contents, _to_inlined_request
 from datalake.defs.enrichment.media_cache import lookup_or_upload_all
-from datalake.defs.enrichment.analysis import build_requests_for_items
 from tests.unit.enrichment.test_media_cache import _make_fake_client, _seed_byte_cache
 
 

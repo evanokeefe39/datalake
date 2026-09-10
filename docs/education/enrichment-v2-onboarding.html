@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>How our data enrichment works: the medallion lake, six silver tables, and the async seam (design v2)</title>
+<title>How our data enrichment works: the medallion lake, six silver tables, and the async seam (design v3)</title>
 <meta name="description" content="A visual onboarding one-pager for junior engineers with no Dagster experience: the medallion lake, what AI enrichment is and why it is async, the bronze_enrichment_raw landing zone, the six target-state silver tables, the dependency DAG, the submit-poll-harvest seam, the one-submit-fans-out cost rule, the four gold marts, and naming/provenance rules.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -155,8 +155,8 @@ footer a{color:var(--ld-accent)}
 
 <div class="masthead">
   <div class="wrap">
-    <span class="kicker">datalake &rsaquo; enrichment design v2 &rsaquo; onboarding</span>
-    <span class="kicker">re-layered 2026-09-10 &middot; spec: docs/enrichment-design.md</span>
+    <span class="kicker">datalake &rsaquo; enrichment design v3 &rsaquo; onboarding (file keeps its historical <code>v2</code> name for link stability)</span>
+    <span class="kicker">re-layered 2026-09-10 &middot; spec: docs/architecture/pipelines/enrichment.md</span>
   </div>
 </div>
 
@@ -170,6 +170,7 @@ footer a{color:var(--ld-accent)}
     <a href="#seam">The async seam</a>
     <a href="#seam-e2e">Seam, end to end</a>
     <a href="#machinery">What runs the poll loop</a>
+    <a href="#adapter">Inference service &amp; adapter</a>
     <a href="#fanout">One submit fans out</a>
     <a href="#gold-marts">The gold marts</a>
     <a href="#why-gold">Silver vs gold</a>
@@ -193,7 +194,7 @@ footer a{color:var(--ld-accent)}
 <!-- ============ 1 THE ANSWER ============ -->
 <section id="answer" class="reveal">
   <h2>The answer up front</h2>
-  <div class="lede">Six AI-conformed tables sit in silver. Three outside AI passes produce them: a vision model reads images and video frames, a transcription model reads audio, a text model reads captions and transcripts. Each pass is slow, paid, and non-deterministic, so it runs through one async seam with one shared job ledger instead of a normal pipeline step. Every raw response lands verbatim in <code>bronze_enrichment_raw</code> first; silver's deterministic conform step turns it into the tables below.</div>
+  <div class="lede">Six AI-conformed tables sit in silver. Three outside AI passes produce them: a vision model reads images and video frames, a transcription model reads audio, a text model reads captions and transcripts. Each pass is slow, paid, and non-deterministic, so it runs through one async seam instead of a normal pipeline step. Every raw response lands verbatim in <code>bronze_enrichment_raw</code> first; silver's deterministic conform step turns it into the tables below.</div>
   <p>The three passes and their tables:</p>
   <ul class="bullets">
     <li><span class="chip visual">visual pass</span> qwen vision reads the media. One submit's response is mapped into <code>silver_visual_annotations</code> AND <code>silver_visual_summaries</code>.</li>
@@ -435,19 +436,25 @@ footer a{color:var(--ld-accent)}
 <!-- ============ 6 THE ASYNC SEAM ============ -->
 <section id="seam" class="reveal">
   <h2>The async seam: submit, poll, harvest</h2>
-  <p class="lede">The seam is <strong>not a service and not a component</strong> &mdash; it is the <strong>boundary</strong> where our pipeline hands work to an outside system and takes results back. Nothing runs "in" the seam. Its contract is two things: one shared <code>external_jobs</code> ledger (a table both sides read and write) and three verbs. Every pass, whatever its engine, rides the same three-step lifecycle over that one ledger.</p>
-  <p><strong>Submit</strong> writes one job into the shared <code>external_jobs</code> ledger. It is sub-second, just a database insert plus an HTTP call; it never does AI work itself. <strong>Poll-to-terminal</strong> (<code>poll</code> for short) asks the provider whether the job reached a terminal state (done, failed, or empty). <strong>Retrieve</strong> fetches the finished results. Those three are the <em>seam verbs</em>, and they are the whole contract. <strong>Harvest</strong> is Dagster's step that composes them: poll to terminal, retrieve, then land the verbatim response in <code>bronze_enrichment_raw</code>, append-only and idempotent on its natural key (re-running writes the same rows again, never duplicates). Silver's conform step then maps them into the six tables. Failures are loud: a bad item is surfaced and re-discoverable, never silently marked done.</p>
+  <p class="lede">The seam is <strong>not a service and not a component</strong> &mdash; it is the <strong>boundary</strong> where our pipeline hands work to an outside system and takes results back. Nothing runs "in" the seam. Its contract is the three verbs &mdash; <code>submit</code>, <code>poll-to-terminal</code>, <code>retrieve</code> &mdash; over an HTTP contract (<code>POST /jobs</code>, <code>GET /jobs/{id}</code>, <code>GET /jobs/{id}/results</code>), plus one rule: <strong>each side owns its own state</strong>. Nothing is shared; requests cross the boundary, artifacts do not. Every pass, whatever its engine, rides the same three-step lifecycle over those verbs.</p>
+  <p><em>Status:</em> the seam is the TARGET design &mdash; the whole contract is proven in the enrichment spike (<code>~/repos/enrichment-spike/spike_defs/adapter.py</code>). It is not built yet: today two independent lifecycles run instead, the Gemini path over the <code>ops.sqlite</code> queue and the qwen path over <code>facets_batch_jobs</code> (see <a href="#machinery">What runs the poll loop</a>).</p>
+  <p><strong>Submit</strong> hands one job to the inference service with a single <code>POST /jobs</code>. It is sub-second, just one HTTP call; it never does AI work itself. <strong>Poll-to-terminal</strong> (<code>poll</code> for short) asks the service (<code>GET /jobs/{id}</code>) whether the job reached a terminal state (done, failed, or empty). <strong>Retrieve</strong> fetches the finished results (<code>GET /jobs/{id}/results</code>). Those three are the <em>seam verbs</em>, and they are the whole contract. <strong>Harvest</strong> is Dagster's step that composes them: poll to terminal, retrieve, then land the verbatim response in <code>bronze_enrichment_raw</code>, append-only and idempotent on its natural key (re-running writes the same rows again, never duplicates). Silver's conform step then maps them into the six tables. Failures are loud: a bad item is surfaced and re-discoverable, never silently marked done.</p>
+
+  <div class="callout">
+    <span class="tag">Update 2026-09-10: ADR-0013 &mdash; the seam keeps no ledger</span>
+    <p>Earlier versions of this page taught the seam's contract as one shared <code>external_jobs</code> ledger, a table both sides read and write. <a href="../architecture/adr/0013-seam-keeps-no-ledger.md">ADR-0013</a> superseded that clause of ADR-0007: there is no shared table. The contract is the three verbs over HTTP, and each side owns its own state &mdash; the inference service keeps its job store on the outside; Dagster keeps its instance state on the inside. Nothing straddles the boundary; requests cross, artifacts do not.</p>
+  </div>
 
   <figure>
     <div class="diag-title">The submit-poll-harvest lifecycle</div>
-    <svg viewBox="0 0 920 300" role="img" aria-label="silver posts go to submit, which records in the external jobs ledger and calls the provider; poll-to-terminal checks status until the job is terminal; harvest (a Dagster step) retrieves the results and lands them verbatim in bronze_enrichment_raw">
+    <svg viewBox="0 0 920 300" role="img" aria-label="silver posts go to submit, which POSTs the job to the inference service, which calls the provider; poll-to-terminal asks the service until the job is terminal; harvest (a Dagster step) retrieves the results and lands them verbatim in bronze_enrichment_raw">
       <defs>
         <marker id="s1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0e7490"/></marker>
         <marker id="s2" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#64748b"/></marker>
       </defs>
       <!-- lane labels -->
       <text x="18" y="52" font-family="monospace" font-size="11" fill="#64748b">OUR PIPELINE</text>
-      <text x="18" y="128" font-family="monospace" font-size="11" fill="#64748b">SHARED LEDGER</text>
+      <text x="18" y="128" font-family="monospace" font-size="11" fill="#64748b">THE SERVICE (OUTSIDE)</text>
       <text x="18" y="228" font-family="monospace" font-size="11" fill="#64748b">PROVIDERS (OUTSIDE)</text>
       <!-- silver -->
       <rect x="40" y="66" width="180" height="56" rx="10" fill="#eef2f6" stroke="#45525e" stroke-width="2"/>
@@ -458,10 +465,10 @@ footer a{color:var(--ld-accent)}
       <text x="345" y="90" text-anchor="middle" font-family="monospace" font-size="13" fill="#0e7490">1. submit</text>
       <text x="345" y="108" text-anchor="middle" font-size="10.5" fill="#0e7490">sub-second</text>
       <line x1="224" y1="94" x2="256" y2="94" stroke="#0e7490" stroke-width="2" marker-end="url(#s1)"/>
-      <!-- ledger -->
+      <!-- the service's own job store -->
       <rect x="260" y="160" width="170" height="56" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5 4"/>
-      <text x="345" y="184" text-anchor="middle" font-family="monospace" font-size="12" fill="#45525e">external_jobs</text>
-      <text x="345" y="202" text-anchor="middle" font-size="10.5" fill="#64748b">one shared job ledger</text>
+      <text x="345" y="184" text-anchor="middle" font-family="monospace" font-size="11.5" fill="#45525e">service job store</text>
+      <text x="345" y="202" text-anchor="middle" font-size="10.5" fill="#64748b">the service's own state</text>
       <line x1="345" y1="122" x2="345" y2="156" stroke="#64748b" stroke-width="1.5" marker-end="url(#s2)"/>
       <!-- provider -->
       <rect x="640" y="160" width="240" height="56" rx="10" fill="#fff" stroke="#64748b" stroke-width="1.5"/>
@@ -488,7 +495,7 @@ footer a{color:var(--ld-accent)}
       <text x="760" y="262" text-anchor="middle" font-size="10.5" fill="#64748b">Dagster only schedules and orchestrates;</text>
       <text x="760" y="278" text-anchor="middle" font-size="10.5" fill="#64748b">the hours-long work runs in the async backend</text>
     </svg>
-    <figcaption>Submit is fast and in-graph. The provider drains for hours. Poll checks the ledger and provider status. Harvest lands finished results verbatim into <code>bronze_enrichment_raw</code>, once per completed job, with per-item failures surfaced loudly; silver's deterministic conform step then maps them into the six tables.</figcaption>
+    <figcaption>Submit is fast and in-graph. The provider drains for hours. Poll asks the service until the job is terminal. Harvest lands finished results verbatim into <code>bronze_enrichment_raw</code>, once per completed job, with per-item failures surfaced loudly; silver's deterministic conform step then maps them into the six tables.</figcaption>
   </figure>
 
   <div class="callout">
@@ -496,18 +503,19 @@ footer a{color:var(--ld-accent)}
     <p>The <strong>seam verbs</strong> are <code>submit</code>, <code>poll-to-terminal</code>, and <code>retrieve</code> &mdash; the contract, and the whole of it. Dagster's <strong>steps</strong> are <code>submit</code> (which calls that verb) and <code>harvest</code> (which runs the other two verbs in sequence and lands the bytes). So <code>poll</code> in this page is shorthand for <code>poll-to-terminal</code>, and <code>harvest</code> is always a Dagster step &mdash; never a verb you call on the seam.</p>
   </div>
 
-  <div class="key"><p><strong>The lifecycle is the same, whatever the scheduler.</strong> Executors are pluggable: <code>qwen-vision</code>, <code>whisper</code>, and <code>text-LLM</code> all ride this same submit-poll-harvest pattern over the one shared ledger. Whether a run is triggered by the CLI or by a Dagster sensor, the lifecycle is identical. A provider swap is a metadata change; the seam does not move.</p></div>
+  <div class="key"><p><strong>The lifecycle is the same, whatever the scheduler.</strong> Executors are pluggable: <code>qwen-vision</code>, <code>whisper</code>, and <code>text-LLM</code> all ride this same submit-poll-harvest pattern over the same HTTP contract, with each side keeping its own state. Whether a run is triggered by the CLI or by a Dagster sensor, the lifecycle is identical. A provider swap is a metadata change; the seam does not move.</p></div>
 </section>
 
 <!-- ============ 6b THE SEAM, END TO END ============ -->
 <section id="seam-e2e" class="reveal">
   <h2>The seam, end to end</h2>
   <p class="lede">The lifecycle above is only half the story. This is the full boundary: who talks to whom, and who owns what.</p>
-  <p>Read the diagram as <strong>one boundary, not four tiers</strong>. The seam is the dashed line: a boundary and a contract, with nothing running inside it. <strong>Dagster</strong> (our orchestrator) sits <em>inside</em> the boundary and owns discovery, batching, the sub-second <code>submit</code>, and the idempotent bronze <code>harvest</code> &mdash; orchestration, lineage, quality &mdash; and it <strong>never calls a provider directly</strong>. The only thing that crosses the boundary is the contract: the shared <code>external_jobs</code> ledger (a table <em>both</em> sides read and write) plus the three verbs <code>submit</code>, <code>poll-to-terminal</code>, and <code>retrieve</code>. Everything to the right of the line &mdash; the services and the providers &mdash; is outside our orchestrator. Harvested rows are keyed by <code>(post_id, platform, workload, prompt_hash, run_id)</code>, so re-running the same job re-lands the same rows instead of duplicating them.</p>
+  <p>Read the diagram as <strong>one boundary, not four tiers</strong>. The seam is the dashed line: a boundary and a contract, with nothing running inside it. <strong>Dagster</strong> (our orchestrator) sits <em>inside</em> the boundary and owns discovery, batching, the sub-second <code>submit</code>, and the idempotent bronze <code>harvest</code> &mdash; orchestration, lineage, quality &mdash; and it <strong>never calls a provider directly</strong>. The only thing that crosses the boundary is the contract: the three verbs <code>submit</code>, <code>poll-to-terminal</code>, and <code>retrieve</code> over HTTP (<code>POST /jobs</code>, <code>GET /jobs/{id}</code>, <code>GET /jobs/{id}/results</code>). Nothing is shared &mdash; requests cross, artifacts do not. The service keeps its job store on the outside; Dagster keeps its instance state on the inside. Everything to the right of the line &mdash; the services and the providers &mdash; is outside our orchestrator. Harvested rows are keyed by <code>(post_id, platform, workload, prompt_hash, run_id)</code>, so re-running the same job re-lands the same rows instead of duplicating them.</p>
 
+  <p>As above: this boundary is the TARGET. No shared ledger exists and none is planned &mdash; ADR-0013 superseded the one ADR-0007's amendment specified. Today's Gemini path polls the <code>ops.sqlite</code> queue and the qwen path drains <code>facets_batch_jobs</code>. ADR-0012 retires both queues and moves orchestration state into the Dagster instance; the diagram shows where that lands.</p>
   <figure>
     <div class="diag-title">The seam is a boundary, not a tier</div>
-    <svg viewBox="0 0 920 320" role="img" aria-label="A dashed vertical boundary labelled the seam separates Dagster (inside) from the external services and providers (outside). The shared external_jobs ledger straddles the boundary as the contract both sides read and write: Dagster submits jobs into it and harvests results back out; the services drain it and write status back">
+    <svg viewBox="0 0 920 320" role="img" aria-label="A dashed vertical boundary labelled the seam separates Dagster (inside) from the external services and providers (outside). Only requests cross it: Dagster submits jobs over HTTP and harvests results back; the services own their own job store, retry, and answer over the same contract. Dagster keeps its instance state inside; no artifact is shared">
       <defs>
         <marker id="e1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#0e7490"/></marker>
         <marker id="e2" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#64748b"/></marker>
@@ -528,11 +536,13 @@ footer a{color:var(--ld-accent)}
       <text x="105" y="142" text-anchor="middle" font-size="10.5" fill="#45525e">submit, harvest</text>
       <!-- the seam: a boundary, not a box -->
       <line x1="340" y1="34" x2="340" y2="266" stroke="#64748b" stroke-width="1.5" stroke-dasharray="6 5"/>
-      <!-- the ledger straddles the boundary: the contract both sides touch -->
+      <!-- the contract crosses the boundary; state stays on each side -->
       <rect x="278" y="150" width="124" height="60" rx="8" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5 4"/>
-      <text x="340" y="172" text-anchor="middle" font-family="monospace" font-size="11.5" fill="#45525e">external_jobs</text>
-      <text x="340" y="190" text-anchor="middle" font-size="9.5" fill="#64748b">the shared contract</text>
-      <text x="340" y="203" text-anchor="middle" font-size="9.5" fill="#64748b">both sides read + write</text>
+      <text x="340" y="172" text-anchor="middle" font-family="monospace" font-size="10.5" fill="#45525e">the contract</text>
+      <text x="340" y="188" text-anchor="middle" font-size="9.5" fill="#64748b">three verbs over HTTP</text>
+      <text x="340" y="201" text-anchor="middle" font-size="9.5" fill="#64748b">nothing is shared</text>
+      <text x="334" y="248" text-anchor="end" font-size="9" fill="#45525e">inside: dagster instance state</text>
+      <text x="346" y="248" text-anchor="start" font-size="9" fill="#45525e">outside: service job store</text>
       <!-- Dagster submits into the contract, harvests back out -->
       <path d="M190 92 L274 158" fill="none" stroke="#0e7490" stroke-width="2" marker-end="url(#e1)"/>
       <text x="212" y="84" font-size="10" fill="#0e7490">submit</text>
@@ -577,17 +587,17 @@ footer a{color:var(--ld-accent)}
       <text x="130" y="236" text-anchor="middle" font-size="10.5" fill="#45525e">Dagster owns orchestration,</text>
       <text x="130" y="252" text-anchor="middle" font-size="10.5" fill="#45525e">lineage, quality;</text>
       <text x="130" y="268" text-anchor="middle" font-size="10.5" fill="#45525e">never calls a provider directly</text>
-      <text x="340" y="286" text-anchor="middle" font-size="10.5" fill="#45525e">the contract: one ledger + three verbs</text>
+      <text x="340" y="286" text-anchor="middle" font-size="10.5" fill="#45525e">the contract: three verbs over HTTP</text>
       <text x="340" y="300" text-anchor="middle" font-size="10.5" fill="#45525e">&mdash; nothing runs in the seam</text>
       <text x="555" y="262" text-anchor="middle" font-size="10.5" fill="#45525e">services own durability, retry, backoff,</text>
       <text x="555" y="278" text-anchor="middle" font-size="10.5" fill="#45525e">dead-letter, media handling</text>
       <text x="805" y="262" text-anchor="middle" font-size="10.5" fill="#45525e">outside our infra entirely;</text>
       <text x="805" y="278" text-anchor="middle" font-size="10.5" fill="#45525e">separate processes/containers</text>
     </svg>
-    <figcaption>The dashed line is the seam: a boundary and a contract, not a service &mdash; nothing runs inside it. The <code>external_jobs</code> ledger is the shared artifact that straddles it, and it is the only thing that crosses: Dagster writes jobs into it and harvests results out; the services read jobs from it, retry, handle media, and write status back. They are separate processes with their own durable state. Vision and text go out through OpenRouter to qwen; transcription never leaves our infra.</figcaption>
+    <figcaption>The dashed line is the seam: a boundary and a contract, not a service &mdash; nothing runs inside it. Nothing straddles it either: only requests cross. Dagster submits jobs over HTTP and harvests results back, and keeps its own instance state on the inside; the services read those jobs, retry, handle media, and keep their own job store on the outside. They are separate processes with their own durable state. Vision and text go out through OpenRouter to qwen; transcription never leaves our infra.</figcaption>
   </figure>
 
-  <div class="key"><p><strong>Separation of concerns, in one line each.</strong> Dagster owns orchestration, lineage, and quality, and never calls a provider directly. The external services own durability, retry, backoff, dead-letter, and media handling. The ledger is the contract between them: both sides read and write it, and nothing else crosses the boundary.</p></div>
+  <div class="key"><p><strong>Separation of concerns, in one line each.</strong> Dagster owns orchestration, lineage, and quality, and never calls a provider directly. The external services own durability, retry, backoff, dead-letter, and media handling. The contract between them is the three verbs over HTTP; each side owns its own state, and no shared table or artifact crosses the boundary.</p></div>
 </section>
 
 <!-- ============ 6c WHAT RUNS THE POLL LOOP ============ -->
@@ -602,14 +612,12 @@ footer a{color:var(--ld-accent)}
     <div class="tcard">
       <span class="tname">Dagster-native &mdash; the gemini-batch path</span>
       <span class="art">Dagster owns submit, poll, retrieve and the crash-recovery, using its own primitives</span>
-      <p class="cols">three <code>@job</code>s (upload, submit, harvest) &middot; one <code>@sensor</code> &middot; an <code>AssetSpec</code> plus <code>@asset_check</code>s for the result table</p>
-      <p class="prod">ledger: <b>ops.sqlite</b> &middot; run history, retries, lineage and the sensor&#8217;s cursor are Dagster&#8217;s own</p>
+      <p class="prod">ledger today: <b>ops.sqlite</b> (retires under ADR-0012) &middot; run history, retries, lineage and the sensor&#8217;s cursor are Dagster&#8217;s own</p>
     </div>
     <div class="tcard">
       <span class="tname">Ours &mdash; the qwen path</span>
       <span class="art">Our own service owns the queue and the crash-recovery; we own only submit and harvest</span>
-      <p class="cols"><code>POST /jobs</code> &middot; <code>GET /jobs/{id}</code> &middot; <code>GET /jobs/{id}/results</code>, backed by a service-side SQLite store with lease, backoff, dead-letter and resume</p>
-      <p class="prod">ledger: <b>facets_batch_jobs</b> &middot; driver: <code>scripts/enrich_facets_batch.py</code>, over the verbs in <code>qwen_client.py</code></p>
+      <p class="prod">ledger today: <b>facets_batch_jobs</b> (retires under ADR-0012) &middot; driver: <code>scripts/enrich_facets_batch.py</code>, over the verbs in <code>qwen_client.py</code></p>
     </div>
   </div>
 
@@ -617,15 +625,51 @@ footer a{color:var(--ld-accent)}
 
   <p>The rest of what the ledger holds is ours and only ours: which domain items went into which external job, the payload each item carried, how many attempts it has had, what has permanently failed, and the guard that stops the same item being submitted twice. The provider has no idea what a <code>post_id</code> is &mdash; the qwen service is deliberately domain-agnostic, so it stays reusable &mdash; which means that mapping has to live on our side somewhere.</p>
 
-  <p>And <code>ops.sqlite</code> is not only an enrichment ledger. It also carries the scrape-time media byte cache, the creator and profile registry, and the dead-letter triage table &mdash; none of which have a Dagster equivalent. It is the pipeline&#8217;s operational store that happens to also hold the enrichment ledger, not a purpose-built enrichment queue.</p>
+  <p>And <code>ops.sqlite</code> is not only an enrichment ledger. It also carries the scrape-time media byte cache, the creator and profile registry, and the dead-letter triage table &mdash; none of which have a Dagster equivalent. It is the pipeline&#8217;s operational store that happens to also hold the enrichment ledger, not a purpose-built enrichment queue. Under ADR-0012 (below) only the enrichment queue half retires; the operational store keeps its other tables.</p>
 
   <div class="callout">
     <span class="tag">The harvest sensor ships stopped</span>
     <p>The sensor is declared <code>default_status=DefaultSensorStatus.STOPPED</code>, and both schedules ship stopped for the same reason. So it watches nothing until somebody starts it in the Dagster UI or the CLI &mdash; <strong>enabling it is a required deploy step</strong>, not something Dagster does for you. The sensor is still a real fix for the old &#8220;finished batch sat unharvested overnight&#8221; bug, but it is armed by hand. Left stopped, it behaves exactly like the one-shot poller it replaced.</p>
   </div>
 
-  <div class="key"><p><strong>The pattern is the invariant; the machinery is the variable.</strong> Both paths run the same contract: one shared ledger, the verbs <code>submit</code>, <code>poll-to-terminal</code> and <code>retrieve</code>, an idempotent landing, and loud per-item failure. Only the queue and the crash-recovery moved, and they moved into a service of our own because qwen is synchronous. One open item, flagged in ADR-0007&#8217;s own amendment: the two harvest implementations are still unshared and should converge on one module before a third workload forks the pattern again.</p></div>
+  <div class="callout">
+    <span class="tag">Today vs target: ADR-0012 moves orchestration into Dagster</span>
+    <p><strong>Today</strong>, the queue described in this section is live: the Gemini path polls the <code>ops.sqlite</code> tables <code>batch_jobs</code> / <code>batch_items</code> / <code>dead_letter</code>, the qwen path drains <code>facets_batch_jobs</code>, and the queue's only poller &mdash; the harvest sensor above &mdash; ships STOPPED.</p>
+    <p><strong>Target</strong> (ADR-0012, accepted 2026-09-10, not yet implemented): orchestration state lives in the Dagster instance and the lake, not a hand-rolled queue. <code>batch_jobs</code>, <code>batch_items</code>, <code>dead_letter</code>, and <code>facets_batch_jobs</code> retire. A retry becomes a new partition key (re-materializing a harvested partition is invisible to <code>submitted &#8746; harvested</code>); failures surface through the anti-join <code>landed(bronze) &#8746; conformed(silver)</code> plus a blocking asset check; and the discovery drain's in-flight guard &mdash; the thing that stops the same item being submitted twice &mdash; moves from <code>batch_items</code> to the Dagster instance, or the drain would double-submit. <code>ops.sqlite</code> keeps its non-queue tables: <code>media_cache</code>, <code>media_metadata</code>, <code>creators</code>, <code>profiles</code>, <code>creator_merges</code>, <code>prompt_registry</code>.</p>
+  </div>
+
+  <div class="key"><p><strong>The pattern is the invariant; the machinery is the variable.</strong> Both paths run the same contract: the verbs <code>submit</code>, <code>poll-to-terminal</code> and <code>retrieve</code> over HTTP, an idempotent landing, and loud per-item failure &mdash; with each side owning its own state, per ADR-0013. Only the queue and the crash-recovery moved, and they moved into a service of our own because qwen is synchronous. One open item, flagged in ADR-0007&#8217;s own amendment: the two harvest implementations are still unshared and should converge on one module before a third workload forks the pattern again.</p></div>
 </section>
+
+<!-- ============ 6d THE INFERENCE SERVICE AND THE ADAPTER SWAP ============ -->
+<section id="adapter" class="reveal">
+  <h2>The inference service and the swap seam</h2>
+  <p class="lede">The seam contract above is realized in code by one <code>ProviderAdapter</code> interface with pluggable implementations &mdash; a swap by config string, not a rewrite. The proven implementation lives in the enrichment spike: <code>~/repos/enrichment-spike/spike_defs/adapter.py</code> (spikes S1&ndash;S6 plus a live gate).</p>
+  <p><code>ProviderAdapter</code> is a Protocol with ONE canonical state vocabulary &mdash; <code>pending</code>, <code>processing</code>, <code>completed</code>, <code>failed</code> &mdash; so nothing downstream ever sees a provider-native status string. <code>build_adapter(name)</code> is the only place in the codebase a provider is named; everything else is written against the protocol. Which adapter runs is a configuration string, nothing more.</p>
+
+  <div class="tgrid">
+    <div class="tcard">
+      <span class="tname">ServiceBackedAdapter</span>
+      <span class="art">wraps: qwen-batch-service over HTTP</span>
+      <p class="cols"><code>POST /jobs</code> &middot; <code>GET /jobs</code> &middot; <code>GET /jobs/{id}</code> &middot; <code>GET /jobs/{id}/results</code> &middot; <code>GET /health</code></p>
+      <p class="prod">the service owns the queue: lease, backoff, dead-letter, resume</p>
+    </div>
+    <div class="tcard">
+      <span class="tname">DirectBatchAdapter</span>
+      <span class="art">wraps: a provider with its own job model (Gemini-shaped)</span>
+      <p class="cols">the provider owns the job state; the adapter translates it into the one canonical vocabulary</p>
+      <p class="prod">a <code>ChunkedDirectBatchAdapter</code> variant splits one oversized unit into N requests behind one handle</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <span class="tag">The load-bearing asymmetry: sync provider, async service</span>
+    <p>OpenRouter/qwen is <strong>synchronous</strong>: it returns results in-request and holds nothing server-side, so a bare qwen call cannot be polled. The qwen-batch-service is what makes that workload <strong>async</strong> &mdash; it takes the request, holds the job, and exposes poll/retrieve. Gemini batch is natively async. That difference is exactly what the adapter absorbs, and it is why the same seam serves both. Related rule: the submit path must ping <code>GET /health</code> first and fail loudly if the service is down &mdash; never a quiet &#8220;nothing to do&#8221;.</p>
+  </div>
+
+  <div class="key"><p><strong>The service is deliberately domain-agnostic.</strong> It does not know what a <code>post_id</code> is; the <code>post_id &#8596; custom_key</code> mapping lives on our side of the seam. Like everything on this page that lives right of the boundary, the adapters and the seam contract are the accepted design (ADR-0008/0009 and ADR-0013), not yet datalake code &mdash; today's two lifecycles are the concrete thing they replace.</p></div>
+</section>
+
 
 <!-- ============ 7 ONE SUBMIT FANS OUT ============ -->
 <section id="fanout" class="reveal">
@@ -886,6 +930,8 @@ footer a{color:var(--ld-accent)}
   <h2>Glossary</h2>
   <p class="lede">Every term this page uses, defined once, in plain words.</p>
   <dl class="gloss">
+    <dt><code>adapter</code> (<code>ProviderAdapter</code>)</dt>
+    <dd>The pluggable interface that realizes the seam contract for one provider: one canonical state vocabulary (<code>pending</code>, <code>processing</code>, <code>completed</code>, <code>failed</code>), so nothing downstream sees a provider-native status string. <code>ServiceBackedAdapter</code> wraps the qwen-batch-service; <code>DirectBatchAdapter</code> wraps a provider with its own job model (Gemini). <code>build_adapter(name)</code> is the only place a provider is named. Proven in the enrichment spike; not yet datalake code.</dd>
     <dt><code>asset</code></dt>
     <dd>A named, persistent thing our code produces, usually a table. Dagster tracks each asset and how assets depend on each other.</dd>
     <dt><code>ASR</code></dt>
@@ -911,7 +957,7 @@ footer a{color:var(--ld-accent)}
     <dt><code>idempotent upsert</code></dt>
     <dd>Writing that is safe to repeat: re-running the harvest for the same job produces the same rows, never duplicates.</dd>
     <dt><code>ledger</code></dt>
-    <dd>The shared <code>external_jobs</code> table: the single contract between Dagster and the outside services. Dagster writes submits; the services drain jobs and report status; nothing else crosses the boundary.</dd>
+    <dd>Formerly the name for the seam's shared job store. ADR-0013 (<a href="../architecture/adr/0013-seam-keeps-no-ledger.md">0013-seam-keeps-no-ledger.md</a>) superseded it: there is NO shared <code>external_jobs</code> table. The contract is the three verbs over HTTP, and each side owns its own state &mdash; the inference service keeps its job store, Dagster keeps its instance state. Today the role is still split across the <code>ops.sqlite</code> queue (<code>batch_jobs</code> / <code>batch_items</code> / <code>dead_letter</code>) and <code>facets_batch_jobs</code>, both of which ADR-0012 retires for Dagster-native state.</dd>
     <dt><code>materialization</code></dt>
     <dd>Running the code that produces (or refreshes) an asset. "Materialize the table" means "recompute it now".</dd>
     <dt><code>medallion</code></dt>
@@ -929,7 +975,7 @@ footer a{color:var(--ld-accent)}
     <dt><code>serving views</code></dt>
     <dd>Thin, read-only SQL views (like <code>v_post_metrics</code>) shaped for dashboards rather than storage. They are built on the serving base <code>v_post_detail</code> and stay upstream of the gold marts, which compose them.</dd>
     <dt><code>submit</code></dt>
-    <dd>Both a seam verb and Dagster's step that calls it: sub-second, it records an enrichment job in the shared ledger and sends it to the provider. No AI work happens in the submit.</dd>
+    <dd>Both a seam verb and Dagster's step that calls it: sub-second, it POSTs one enrichment job to the inference service (<code>POST /jobs</code>). No AI work happens in the submit.</dd>
     <dt><code>terminal status</code></dt>
     <dd>A job state that will not change again: done, failed, or empty. Polling stops once a job is terminal.</dd>
   </dl>
@@ -939,8 +985,8 @@ footer a{color:var(--ld-accent)}
 <section id="more" class="reveal">
   <h2>Where to learn more</h2>
   <ul class="bullets">
-    <li><a href="../enrichment-design.md">docs/enrichment-design.md</a> — the canonical v2 spec this page teaches. Where the two disagree, the spec wins.</li>
-    <li><a href="../adr/0010-enrichment-naming-and-provenance.md">docs/adr/0010-enrichment-naming-and-provenance.md</a> — the reasoning behind the naming and provenance rules, including why <code>_bound</code> columns were rejected.</li>
+    <li><a href="../architecture/pipelines/enrichment.md">docs/architecture/pipelines/enrichment.md</a> — the canonical <strong>v3</strong> spec this page teaches (see its "Version history" section: v2 is the superseded ADR-0010 generation; the layered model is v3). Where the two disagree, the spec wins.</li>
+    <li><a href="../architecture/adr/0010-enrichment-naming-and-provenance.md">docs/architecture/adr/0010-enrichment-naming-and-provenance.md</a> — the reasoning behind the naming and provenance rules, including why <code>_bound</code> columns were rejected.</li>
     <li><a href="../../tasks/epics/">tasks/epics/</a> — the epic directory where this design is being implemented.</li>
     <li><a href="dagster-medallion-and-async-enrichment.html">dagster-medallion-and-async-enrichment.html</a> — the companion explainer for Dagster primitives (assets, schedules, sensors) and dev/test playbooks.</li>
   </ul>
@@ -949,7 +995,7 @@ footer a{color:var(--ld-accent)}
 </main>
 
 <footer>
-  <p>Companion onboarding page for the datalake repo, aimed at engineers new to the enrichment design. Content facts verified against <code>docs/enrichment-design.md</code>; re-layered 2026-09-10 to the strict-medallion model (raw responses in <code>bronze_enrichment_raw</code>, conform in silver, four analytic marts in gold). Open decisions (form-taxonomy overlap, <code>asr_model</code> vs envelope <code>model</code>) are flagged in the spec, not resolved here.</p>
+  <p>Companion onboarding page for the datalake repo, aimed at engineers new to the enrichment design. Content facts verified against <code>docs/architecture/pipelines/enrichment.md</code>; re-layered 2026-09-10 to the strict-medallion model (raw responses in <code>bronze_enrichment_raw</code>, conform in silver, four analytic marts in gold). Open decisions (form-taxonomy overlap, <code>asr_model</code> vs envelope <code>model</code>) are flagged in the spec, not resolved here.</p>
   <p>Diagrams are hand-authored inline SVG. The page is self-contained and renders offline; Google Fonts load when online, with system fallbacks otherwise.</p>
 </footer>
 

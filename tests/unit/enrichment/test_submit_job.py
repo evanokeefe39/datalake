@@ -29,7 +29,8 @@ from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.enrichment import analysis as analysis_module
-from datalake.defs.enrichment import gemini_batch, media_upload as media_upload_module
+from datalake.defs.enrichment import gemini_batch
+from datalake.defs.enrichment import media_upload as media_upload_module
 from datalake.defs.enrichment.batch import (
     _ensure_schema,
     create_batch,
@@ -37,6 +38,8 @@ from datalake.defs.enrichment.batch import (
 )
 from datalake.defs.enrichment.media_cache import (
     _ensure_schema as _ensure_media_schema,
+)
+from datalake.defs.enrichment.media_cache import (
     url_hash,
 )
 from datalake.defs.enrichment.submit import (

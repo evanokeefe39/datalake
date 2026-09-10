@@ -1,5 +1,9 @@
 # ADR-0011: Enrichment layered model — bronze landing → silver conform → gold marts
 
+**Generation: v3** — the current enrichment design generation, superseding v2
+(ADR-0010). Lineage v1 → v2 → v3 and the authoritative numbering:
+`docs/architecture/pipelines/enrichment.md` ("Version history").
+
 - Status: Accepted
 - Decided: 2026-09-10
 - Related: ADR-0001 (enrichment output is an ingested source), ADR-0003
@@ -157,5 +161,5 @@ placement of the six tables in gold. ADR-0010's per-pass provenance
 (structural table split), the no-`_bound`-columns rule, the versioned schema
 registry, and the one-seam/one-submit-per-pass fan-out all STAND, re-homed
 into this layer model. ADR-0010's history is preserved; its Status records
-the supersession. The layer model in `docs/enrichment-design.md` is the
+the supersession. The layer model in `docs/architecture/pipelines/enrichment.md` is the
 canonical spec.

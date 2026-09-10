@@ -18,7 +18,7 @@ spend goes where it earns.
 `silver_visual_annotations` + `silver_visual_summaries`, E-ENRICH-FACETS/
 E-ENRICH-SUMMARIES) is deliberately admission-free corpus-wide — its visual
 input is paid for every media post anyway, so summaries/facets ride it as
-marginal output (`docs/enrichment-enhancement-design.md` §6; the fold decision
+marginal output (`docs/architecture/enrichment-design-v1-superseded.md` §6; the fold decision
 reverses triage-first for that pass). Labels remain the engagement-utility
 criterion for facets (US-EFAC-2) regardless of admission.
 

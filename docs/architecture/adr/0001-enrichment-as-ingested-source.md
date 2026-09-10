@@ -168,8 +168,10 @@ never in table names):
   shared-`prompt_hash` defect and the model-as-done-marker hack die with the
   single-table store. No `_bound` columns: enum definitions live in the
   versioned schema registry, referenced by `schema_version`.
-- The one-ingest-seam position is codified in ADR-0010: one shared
-  `external_jobs` ledger, per-workload executor plugins (qwen-vision |
-  whisper | text-LLM), one submit per pass with harvest fanning out to every
-  table that pass produced. Amendment 1's "STT outside the seam" carve-out is
+- The one-ingest-seam position is codified in ADR-0010: per-workload executor
+  plugins (qwen-vision | whisper | text-LLM), one submit per pass with harvest
+  fanning out to every table that pass produced. **ADR-0010's shared
+  `external_jobs` ledger clause is superseded by
+  [ADR-0013](0013-seam-keeps-no-ledger.md)** — there is no ledger table; the
+  service owns its job store. Amendment 1's "STT outside the seam" carve-out is
   superseded — whisper rides the same lifecycle as an executor plugin.

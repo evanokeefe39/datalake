@@ -8,7 +8,7 @@ status: Open
 
 - **Epic:** E-ENRICH-TRANSCRIPTS
 - **Status:** Open
-- **Source:** `docs/enrichment-enhancement-design.md` §5
+- **Source:** `docs/architecture/enrichment-design-v1-superseded.md` §5
 
 ## Story
 **As a** pipeline operator, **I want** the extracted audio transcribed locally

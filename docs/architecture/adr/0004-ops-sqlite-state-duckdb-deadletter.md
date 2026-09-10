@@ -1,6 +1,8 @@
 # ADR-0004: SQLite (ops/coordination) vs DuckDB (analytical state) split; dead-letter + queue decoupling
 
-- Status: Accepted
+- Status: Accepted — **queue + `dead_letter` scope superseded by
+  [ADR-0012](0012-dagster-native-orchestration.md)**; the ops/analytical split
+  itself stands
 - Decided: 2026-07 (backfilled 2026-09-03)
 
 ## Context
@@ -43,5 +45,8 @@ in DuckDB (acceptable — it's operational).
 
 ## Supersedes / Superseded by
 
-Superseded by: none. Related: ADR-0002, ADR-0001 (feature-store mapping of these
-roles).
+Superseded by: [ADR-0012](0012-dagster-native-orchestration.md) **in its queue
+and `dead_letter` scope only** — orchestration state moved into the Dagster
+instance, so `batch_jobs`, `batch_items`, and `dead_letter` are retired. The
+ops/analytical split, the media cache, and creators/profiles stand. Related:
+ADR-0002, ADR-0001 (feature-store mapping of these roles).

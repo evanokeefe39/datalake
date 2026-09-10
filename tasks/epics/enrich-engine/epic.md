@@ -94,9 +94,20 @@ Why (recorded in ADR-0009):
 
 ## Source of truth
 
-`tasks/plans/qwen-batch-enrichment.md`, `docs/adr/0009-qwen-batch-service.md`
-(and ADR-0007 for the preserved orchestration shape),
-`tasks/epics/enrich-engine/user-stories/us-eeng-*.md`.
+Canonical spec: `docs/architecture/pipelines/enrichment.md` (v3 layered model — supersedes
+`docs/architecture/enrichment-design-v1-superseded.md`, which is retained as the rationale
+and experiment record).
+
+Plans: `tasks/plans/inference-service-seam.md` (Phase 1 — the seam and the
+bronze landing), `tasks/plans/dagster-native-orchestration-implementation.md`
+(ADR-0012), `tasks/plans/dagster-native-enrichment-spikes.md` (the evidence
+base), `tasks/plans/qwen-batch-enrichment.md`, `tasks/plans/facet-batch-native.md`.
+Coordination: `tasks/plans/enrichment-v3-migration-master.md`.
+
+ADRs: `docs/architecture/adr/0009` (qwen batch service), `0007` (orchestration shape),
+`0008` (one seam), `0011` (layering), `0012` (Dagster-native).
+
+Stories: `tasks/epics/enrich-engine/user-stories/us-eeng-*.md`.
 
 ## Epic DoD
 

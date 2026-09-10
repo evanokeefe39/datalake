@@ -5,7 +5,7 @@ This repo is operated by Claude. Keep this file current — Claude reads it on e
 ## Key rules
 
 - Never use `pip`. Always use `uv` for Python package management.
-- Work on `feat/*`, `fix/*`, `chore/*` branches; squash-merge to `main` via PR.
+- Work on `feat/*`, `fix/*`, `docs/*`, `chore/*` branches; squash-merge to `main` via PR.
 - Conventional commits only: `type(scope): summary`.
 - No direct pushes to `main`.
 - Never use PowerShell.
@@ -101,6 +101,37 @@ service (one-shot CLI driver, no Dagster op); the separate IG `gold_analyses`
 gemini path (gemini-batch machinery) remains until its own migration — treat
 the 2026-09-08 section below as applying to that path.
 
+### Enrichment v2 — layered model and inference seam (2026-09-10, TARGET STATE)
+
+Two accepted decisions reshape enrichment; **neither is implemented yet** — the
+code still runs the model described in the sections below.
+
+*109:- **Layered model (ADR-0011).** Canonical spec: `docs/architecture/pipelines/enrichment.md` (v3).
+  Bronze lands every external model response verbatim in `bronze_enrichment_raw`
+  (immutable, append-only); silver conforms + validates it deterministically
+  into six `silver_*` tables keyed `(post_id, platform)` — zero API calls, so a
+  schema/mapping change is a replay, never a re-bill; gold builds four analytic
+  marts. See the Architecture section below. This supersedes the v1 spec
+  `docs/architecture/enrichment-design-v1-superseded.md` (retained as rationale/experiment
+  record only — not canonical).
+- **Inference seam (ADR-0008/0009).** One seam, not two lifecycles: three
+  verbs (`submit` / `poll-to-terminal` / `retrieve`) over an HTTP contract;
+  harvest composes poll + retrieve + an idempotent verbatim landing. **No
+  ledger: ADR-0013 — the service owns its job store and Dagster polls it.**
+  A `ProviderAdapter` Protocol with one canonical state vocabulary
+  (`pending`/`processing`/`completed`/`failed`) lets `ServiceBackedAdapter`
+  (qwen-batch-service — the service is what makes the synchronous OpenRouter/qwen
+  provider async) and `DirectBatchAdapter` (Gemini, natively async) swap by
+  config string; `build_adapter(name)` is the only place a provider is named.
+  Proven in `~/repos/enrichment-spike/spike_defs/adapter.py`; NOT wired into this
+  repo yet — today the Gemini `submit.py`/`gemini_batch.py`/`harvest.py` and qwen
+  `facets_batch.py`/`qwen_client.py` lifecycles share no submit/poll/harvest code.
+- **Orchestration (ADR-0012).** Orchestration state moves into the Dagster
+  instance + the lake; the `ops.sqlite` queue (`batch_jobs`, `batch_items`,
+  `dead_letter`, `facets_batch_jobs`) is retired. `ops.sqlite` retains
+  `media_cache`, `media_metadata`, `creators`, `profiles`, `creator_merges`,
+  `prompt_registry`. Not implemented — the queue tables are live today.
+
 ### Multimodal status (2026-09-08) — BATCH-NATIVE ONLY; interactive removed (PRE-PIVOT)
 
 Enrichment is **batch-native only** as of 2026-09-08: the synchronous
@@ -137,12 +168,64 @@ interactive worker hard-crash on very long runs is moot with interactive gone.
 |-------|---------|--------|----------------|
 | Bronze | Parquet (`data/lake/bronze/`) | Polars (direct write) | None — file-based |
 | Silver | Parquet (`data/lake/silver/`) | PolarsIOManager | DuckDB `silver_ig_posts` + watermarks |
-| Batches | SQLite (`data/ops.sqlite`) | `ig_posts_gen_batches` | `batch_jobs` + `batch_items` |
-| Gold | DuckDB table | Dagster enrichment jobs (submit → harvest) | `gold_analyses` (AssetSpec, externally materialized) |
+| Batches | SQLite (`data/ops.sqlite`) | `ig_posts_gen_batches` | `batch_jobs` + `batch_items` (CURRENT; retired by ADR-0012 — target is Dagster-native state) |
+| Gold | DuckDB table | Dagster enrichment jobs (submit → harvest) | `gold_analyses` (AssetSpec, externally materialized) — CURRENT; target is four ADR-0011 marts |
 | Serving | DuckDB views + tables | DuckDB | `dim_profile` (SCD2), `dim_date`, 14 analytics views (incl. 5 canonical metric views) |
 
+**Enrichment layered model (ADR-0011) — ACCEPTED 2026-09-10, NOT YET IMPLEMENTED.**
+Canonical spec: `docs/architecture/pipelines/enrichment.md` (v3; supersedes
+`docs/architecture/enrichment-design-v1-superseded.md` v1, retained as rationale only). The
+table above describes what runs today; this is the target:
+
+| Layer | Job | Contract |
+|---|---|---|
+| Bronze | Land ALL external model responses verbatim | `bronze_enrichment_raw` — immutable, append-only, Parquet, keyed `(post_id, platform, workload, prompt_hash, run_id)` |
+| Silver | Conform + validate — deterministic from bronze, ZERO API calls | six `silver_*` tables, keyed `(post_id, platform)` |
+| Gold | Analytic marts answering the owner's three questions | four marts |
+
+- **Six silver tables** (each with its own provenance columns — `provider`,
+  `model`, `prompt_hash`, `schema_version`, `run_id`, ...): `silver_visual_annotations`,
+  `silver_visual_summaries`, `silver_audio_transcripts`, `silver_text_annotations`,
+  `silver_text_summaries`, `silver_content_classification`.
+- **Four gold marts:** `gold_post_enrichment`, `gold_creator_performance` (Q1:
+  who performs well in X domain), `gold_content_shape_performance` (Q2: what
+  content shape performs), `gold_top_posts` (Q3: what performs across domains).
+- **Key rules:** the join key is `platform`, NEVER `domain` (fixes the live
+  `gold_analyses.domain = 'instagram'` overload); provider lives in metadata
+  columns, never in a table name; validation lives in silver with LOUD
+  quarantine on terminal failures; marts compose the canonical metric views
+  (`v_post_metrics`, `v_creator_metrics`, ...) and never re-derive metrics.
+- **Why:** with the verbatim response landed in bronze, parsing/validating/
+  splitting is a pure function of bronze — a schema or mapping change is a
+  deterministic replay, not a re-bill. The paid/stochastic part ends at bronze.
+- **Replacements:** `gold_analyses` → `silver_content_classification`;
+  `gold_growth_facets` → the four visual/text silver tables;
+  proposed-but-never-built `gold_transcripts` → `silver_audio_transcripts`.
+
+**Inference seam (ADR-0008/0009, amended by ADR-0013):** one boundary where the
+pipeline hands work to an outside system — three verbs
+(`submit` / `poll-to-terminal` / `retrieve`) over an HTTP contract, with each
+side owning its own state. **There is no shared `external_jobs` ledger.** The
+service owns its job store and Dagster polls it. `ProviderAdapter` swaps by config
+string via `build_adapter(name)`: `ServiceBackedAdapter` (qwen-batch-service —
+the service is what makes the synchronous OpenRouter/qwen provider async) and
+`DirectBatchAdapter` (Gemini, natively async). Not built in this repo; proven in
+`~/repos/enrichment-spike/spike_defs/adapter.py`.
+
+**Orchestration (ADR-0012):** orchestration state moves to the Dagster instance
++ the lake. The `ops.sqlite` queue (`batch_jobs`, `batch_items`, `dead_letter`,
+`facets_batch_jobs`) is retired; `ops.sqlite` retains `media_cache`,
+`media_metadata`, `creators`, `profiles`, `creator_merges`, `prompt_registry`.
+Retry becomes a new partition key; failures surface via the anti-join
+`landed(bronze) ∖ conformed(silver)` plus a BLOCKING asset check. NOT IMPLEMENTED.
+
+**Current vs target, in one line:** today `gold_analyses` + `gold_growth_facets`
++ the `batch_*`/`dead_letter` queue in `ops.sqlite`; target the six silver
+tables + four marts + Dagster-native orchestration. An agent reading this file
+must not assume the gold-mirror model is the destination.
+
 **SQLite for operational state, DuckDB for analytical state:**
-- `ops.sqlite` — batch coordination, media cache, dead_letter (OLTP: point lookups, frequent updates)
+- `ops.sqlite` — batch coordination, media cache, dead_letter (OLTP: point lookups, frequent updates). Target (ADR-0012): queue tables retired, only `media_cache`, `media_metadata`, `creators`, `profiles`, `creator_merges`, `prompt_registry` remain.
 - `state.duckdb` — silver tables, gold_analyses, watermarks, serving dims/views (OLAP: scans, aggregations)
 
 **Domain-based structure, not layer-based:**
@@ -156,6 +239,7 @@ src/datalake/defs/
 **Storage split:**
 - **Parquet lake** — bulk data, lock-free parallel writes
 - **DuckDB** (`data/state.duckdb`) — authoritative current state, watermarks, SCD2 dims, views
+- **Lake layers (target, ADR-0011)** — `bronze_enrichment_raw` + six `silver_*` tables + four gold marts as Parquet/DuckDB per the layered model above (not yet built)
 
 **Engine boundary:**
 - Polars handles all Parquet I/O (read/write NDJSON and Parquet)
@@ -182,6 +266,15 @@ Domain-scoped, not generic. Supports multi-source expansion (TikTok, YouTube, Li
 | SQLite | `profiles` | One account per platform (`platform`, `handle` PK) linked to a creator; carries scrape config (depth, enabled, tier) |
 | SQLite | `creator_merges` | Merge ledger for retired duplicate auto-creators (`merged_creator_id` PK → `surviving_creator_id`, `handle`, `merged_at`/`reversed_at` for `--undo`) |
 
+**Current vs target (ADR-0011/0012):** the tables above are what exists today.
+Under the accepted v3 model, `gold_analyses` is replaced by
+`silver_content_classification`, `gold_growth_facets` by
+`silver_visual_annotations` + `silver_visual_summaries` +
+`silver_text_annotations` + `silver_text_summaries`, and `batch_jobs`/
+`batch_items`/`dead_letter` are retired in favor of Dagster-native
+orchestration state (`media_metadata`, `media_cache`, `creators`, `profiles`,
+`creator_merges`, `prompt_registry` retained). None of this is implemented yet.
+
 **DuckDB views:** `v_post_detail` (foundational), `v_signal`, `v_quality_trend`, `v_creator_quality`, `v_rising_creators`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`, `v_post_baselines` (serving-layer comments/views point-in-time baselines), `v_post_metrics` (canonical per-post metrics), `v_creator_metrics` (gate-free per-creator activity), `v_creator_profile` (per-creator canonical rollup: momentum + dominant domain), `v_creator_topics` (per-creator top-5 topics by count and performance), `v_recent_hot_posts` (recent 28-day hot feed), `v_profile_metrics` (per-profile counts), `v_overview` (single-row), `v_standout_calendar` (standouts per day-of-month)
 
 
@@ -195,6 +288,12 @@ CREATE TABLE watermarks (name TEXT PRIMARY KEY, timestamp TIMESTAMP NOT NULL);
 
 - Silver reads/writes `watermarks WHERE name = 'silver_ig'`
 ## Dead letter pattern
+
+> **ADR-0012 (accepted 2026-09-10, NOT IMPLEMENTED):** the `dead_letter` table
+> is scheduled for retirement alongside the `ops.sqlite` queue — failures will
+> surface via the anti-join `landed(bronze) ∖ conformed(silver)` plus a BLOCKING
+> asset check. Everything below describes the CURRENT (pre-ADR-0012) behavior
+> and stays accurate until that lands.
 
 Failures from Gemini enrichment go to `ops.sqlite` (not DuckDB — moved with the queue architecture).
 This keeps `gold_analyses` pure (only completed enrichments) and provides a clean triage surface:
@@ -269,9 +368,17 @@ Any table the pipeline reads or writes must be listed here. The readiness test
 **DuckDB tables:** `silver_ig_posts`, `gold_analyses`, `watermarks`, `dim_profile`, `dim_date`
 **SQLite tables:** `batch_jobs`, `batch_items`, `media_metadata`, `media_cache`, `dead_letter`, `creators`, `profiles`, `creator_merges`
 **Views:** `v_post_detail`, `v_signal`, `v_quality_trend`, `v_creator_quality`, `v_rising_creators`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`, `v_post_metrics`, `v_creator_metrics`, `v_profile_metrics`, `v_overview`, `v_standout_calendar`
+
 - **Missing tables/columns** — fails with "run the pipeline or migration"
 - **Stale table names** — tables in the DB that were renamed/dropped (e.g. `gold_ig_analyses`). Fails with migration hint.
 - **Extra tables** — tables in the DB not in the catalog. Warns, doesn't fail (may be legitimate).
+
+**Current state (above) vs target (ADR-0011/0012):** when the v3 layered model
+and Dagster-native orchestration land, the catalog changes — six `silver_*`
+tables, `bronze_enrichment_raw`, four gold marts appear, and `batch_jobs`/
+`batch_items`/`dead_letter` leave `ops.sqlite` (`media_cache`, `media_metadata`,
+`creators`, `profiles`, `creator_merges`, `prompt_registry` retained). Update
+`schemas.py` and this list together when that migration ships.
 
 ## Operational scripts
 
@@ -330,9 +437,19 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
   `gemini_batch_harvest` runs when chunks reach terminal state. Batch-native
   growth facets: `uv run python scripts/enrich_facets_batch.py` (interactive
   enrichment removed 2026-09-08).
+
 - **Lifecycle:** gen_batches → media_upload → submit → harvest; the shared
   enrichment logic lives in `defs/enrichment/analysis.py`.
 - **Retry:** exponential backoff with jitter, `MAX_ATTEMPTS=5`, terminal failures → `dead_letter`
+
+> **Driver sensor ships STOPPED.** The `gemini_batch_harvest_sensor` (and any
+> schedules) are defined but not enabled — the user turns them on deliberately.
+> A green Dagster UI with no activity is the expected state, not a failure.
+
+> **Target (ADR-0012, NOT IMPLEMENTED):** this section describes the current
+> batch queue model. In the target state the lifecycle becomes
+> submit → harvest-as-partition-landing into `bronze_enrichment_raw`, with
+> orchestration state in the Dagster instance instead of `batch_jobs`/`batch_items`.
 
 ### Why batch-based (not synchronous)
 
@@ -343,6 +460,9 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
 | No per-item rate limiting | `scheduled_for` column with exponential backoff |
 | Crash → partial writes | Batch is durable; stale items reclaimed on next run |
 | Domain coupling (TikTok = copy-paste) | Worker dispatches by `domain` column; same batch system, same worker |
+
+Under ADR-0012 the same anti-blocking rationale is served by Dagster-native
+partitions and asset checks; this table describes the current batch queue.
 
 ## Serving layer
 
@@ -555,7 +675,7 @@ Set in `.env`:
 ## Decision log
 
 > Canonical decision records (with rationale, alternatives, and evolution) live
-> in [`docs/adr/`](docs/adr/README.md) — ADRs are the single source of truth for
+> in [`docs/architecture/adr/`](docs/architecture/adr/README.md) — ADRs are the single source of truth for
 > *why* decisions were made and superseded. This table is a lightweight,
 > chronological index of highlights.
 
@@ -576,3 +696,7 @@ Set in `.env`:
 | 2026-07-01 | Panel of experts for architecture review | Data Architect + ML Engineer + Dagster Expert review non-trivial design decisions |
 | 2026-07-01 | Smoke tests between phases | Temp DB with subset of data, wiped after verification. Self-steering during implementation |
 | 2026-08-14 | `creators` + `profiles` split (replaces `scrape_targets`) | Multi-platform enabler: creator (person/brand) owns 1..N profiles (account per platform). `dim_profile` carries `creator_id`/`creator_name` for click-through without cross-DB joins. Depth is per-profile. Backfill is 1:1 (IG-only today). |
+| 2026-09-10 | Enrichment layered model (ADR-0011) — bronze verbatim → six `silver_*` → four gold marts, keyed `(post_id, platform)` | Deterministic remap from `bronze_enrichment_raw` means schema/mapping changes are replays, not re-bills. ACCEPTED, NOT IMPLEMENTED. Spec: `docs/architecture/pipelines/enrichment.md` (v3) |
+| 2026-09-10 | Dagster-native orchestration (ADR-0012) | Retires the `ops.sqlite` queue (`batch_jobs`/`batch_items`/`dead_letter`/`facets_batch_jobs`); retains media/identity/prompt tables. ACCEPTED, NOT IMPLEMENTED |
+| 2026-09-10 | Inference seam (ADR-0008/0009): three verbs + `submit`/`poll-to-terminal`/`retrieve`, `ProviderAdapter` swap | One seam serves both the qwen-batch-service (async wrapper over a synchronous provider) and Gemini's native batch. Proven in the enrichment spike; not yet wired in |
+| 2026-09-10 | The seam keeps **no ledger** (ADR-0013) — the service owns its job store, Dagster polls it; Dagster state is instance-native | ADR-0007 Amd 1 / ADR-0010 dec 5 specified a shared `external_jobs` table; the spike's S5 negative assertion tested for it by name and found it unnecessary. Reconciles ADR-0012 with the seam. ACCEPTED, NOT IMPLEMENTED |

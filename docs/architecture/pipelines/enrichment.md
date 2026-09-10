@@ -1,13 +1,36 @@
 # Enrichment design v3 — layered model (bronze → silver → gold)
 
 Settled 2026-09-10. The layer model and the platform/domain naming fix are
-recorded in [ADR-0011](adr/0011-enrichment-layered-model.md), which supersedes
-[ADR-0010](adr/0010-enrichment-naming-and-provenance.md) in its naming scope
+recorded in [ADR-0011](../adr/0011-enrichment-layered-model.md), which supersedes
+[ADR-0010](../adr/0010-enrichment-naming-and-provenance.md) in its naming scope
 (ADR-0010's per-pass provenance split, no-`_bound` rule, schema registry, and
 one-seam/one-submit-per-pass decisions stand unchanged). This document is the
-canonical enrichment spec. `docs/enrichment-enhancement-design.md` (v1,
+canonical enrichment spec. `docs/architecture/enrichment-design-v1-superseded.md` (v1,
 2026-09-07) is retained as the rationale/experiment record — where the two
 differ, THIS document wins.
+
+### Version history — the authoritative numbering
+
+The terms "v2" and "v3" name **different generations**. Use them precisely;
+when a doc says "v2" it is describing a superseded layer, not the target.
+
+| Term | Date | Recorded in | What it settled |
+|---|---|---|---|
+| **v1** | 2026-09-07 | `docs/architecture/enrichment-design-v1-superseded.md` | the facets / transcripts / summaries design (rationale + experiment record; superseded) |
+| **v2** | 2026-09-09 | [ADR-0010](../adr/0010-enrichment-naming-and-provenance.md) | naming + per-pass provenance + one-seam/one-submit-per-pass; **six `gold_<channel>_<artifact>` tables** |
+| **v3 — THE TARGET** | 2026-09-10 | [ADR-0011](../adr/0011-enrichment-layered-model.md) | the **layered model**: bronze `bronze_enrichment_raw` → six `silver_*` tables → four gold marts; join key `platform`, never `domain` |
+
+**So: this document (v3) is the target; "v2" is the superseded ADR-0010
+generation.** The v3 design keeps v2's per-pass provenance split, its
+no-`_bound`-column rule, its versioned schema registry, and its
+one-submit-per-pass fan-out — what changed is the **layer** (gold → silver) and
+the **naming/key** (`gold_<channel>_<artifact>` on `domain` →
+`silver_<channel>_<artifact>` on `platform`).
+
+A doc that says "v2 layered model" or "the v2 target" is mislabelled: the
+layered model is v3. `docs/education/enrichment-v2-onboarding.html` keeps "v2"
+in its *filename* for link stability but teaches the v3 model — its title and
+kicker say so.
 
 ## 0. The layer model
 
@@ -135,7 +158,7 @@ defect that killed the single-table facet store — see §10).
 | `silver_content_classification` | `domain`, `subdomain`, `topic`, `subtopic`, `is_educational`, `is_actionable`, `admiralty`, `content_type`, `style`, `format` |
 
 Facet field semantics (enums, codebook wording, agreement grades) are locked
-in `docs/growth-facets-schema.md` (V3): cross-modal fields →
+in `docs/architecture/growth-facets-schema.md` (V3): cross-modal fields →
 `silver_text_annotations`; visual-necessary fields →
 `silver_visual_annotations`. The facet schema itself stays channel-blind;
 `evidence` records which channels grounded each judgment — the table split
@@ -209,36 +232,17 @@ and the tier buckets are never restated.
 PK `(post_id, platform)`: rank/percentile across all domains, joined to the
 full shape + summary/transcript for qualitative reading.
 
-## 6. The seam, end to end
+## 6. The seam
 
-**The seam is not infrastructure.** It is the BOUNDARY where our pipeline
-hands work to an outside system and takes results back — an interface, not a
-component. Nothing runs "in" the seam. Its contract is realized by exactly two
-things: one shared `external_jobs` ledger (a table BOTH sides read and write)
-and three verbs — `submit`, `poll-to-terminal`, `retrieve`. Those three are the
-seam verbs, and they are the whole contract. `harvest` is Dagster's own step,
-not a seam verb: it composes `poll-to-terminal` + `retrieve` + the idempotent
-verbatim landing.
+**Owned by [`inference-service.md`](../services/inference.md)** — the ledger, the
+three verbs, the adapter swap, and the service contract. Not restated here: the
+seam is the boundary *around* this layer model, not part of it, and a second
+copy would only drift from the first.
 
-What sits on each side of that boundary:
-
-- **Dagster (our orchestrator, INSIDE the boundary):** discovery, batching,
-  `submit` (sub-second), `harvest` (idempotent bronze landing). It owns
-  orchestration, lineage, quality. **It never calls a provider directly** —
-  the ledger is the only thing that crosses the boundary.
-- **External infra (OUTSIDE the boundary; separate processes/containers, own
-  durable state):** `qwen-batch-service` (FastAPI + its own SQLite job store;
-  drains jobs against OpenRouter/qwen; server-side ffmpeg frame-sampling for
-  reels) and `whisper` (faster-whisper ASR, the service's `whisper_local`
-  executor).
-- **Providers (outside our infra entirely):** OpenRouter → qwen (vision +
-  text). ASR is local (no vendor).
-
-**Separation of concerns:** Dagster owns orchestration/lineage/quality; the
-service owns durability/retry/backoff/dead-letter/media handling; the ledger
-is the contract between them. Harvest lands verbatim in
-`bronze_enrichment_raw`; silver derives from bronze deterministically (zero
-API calls).
+The one fact this document needs from it: `harvest` lands provider responses
+verbatim in `bronze_enrichment_raw` (§3), and everything in §4 is derived from
+that deterministically — zero API calls, so a mapping change is a replay and
+never a re-bill.
 
 ## 7. Dependency DAG
 
@@ -280,15 +284,15 @@ downstream — the staged/derived deps are declared, not emergent.
 `v_post_detail` → canonical metric views (21) → gold marts (4). The canonical
 views are UPSTREAM of the marts and are never re-pointed at them — no cycle.
 
-## 8. Asset graph — one async seam, one submit per pass
+## 8. Asset graph — which pass produces which table
 
-**CRITICAL cost/payload correctness:** the visual call returns annotations
-AND summaries in ONE request; the text call returns text annotations AND
-transcript summary in ONE request. The graph therefore has **ONE visual
-submit fanning out to both visual tables, and ONE text submit fanning out to
-both text tables** — NOT one submit per table (that would double the bill).
-`silver_content_classification` is its own submit (it additionally consumes
-visual summaries/transcripts).
+The **rule** (one submit per pass, never one per table, and why) is owned by
+[`inference-service.md`](../services/inference.md) §4. What follows is the
+enrichment-specific mapping only: which table each pass lands in.
+
+The visual call returns annotations AND summaries in one request; the text call
+returns text annotations AND a summary in one. `silver_content_classification`
+is its own pass (it additionally consumes visual summaries/transcripts).
 
 ```
 silver ─┬─(submit qwen-vision)─► visual job ─(harvest)─┬─► bronze_enrichment_raw ─(silver)─┬─► silver_visual_annotations
@@ -298,14 +302,113 @@ silver ─┬─(submit qwen-vision)─► visual job ─(harvest)─┬─► b
         │   after transcripts (+ summaries):
         ├─(submit text-LLM)───► text job   ─(harvest)─┬─► bronze_enrichment_raw ─(silver)─┬─► silver_text_annotations
         │                                              │                                   └─► silver_text_summaries
+
         └─(submit text-LLM)───► classif job ─(harvest)──► bronze_enrichment_raw ─(silver)────► silver_content_classification
 ```
 
-Pattern per enrichment asset (the ADR-0007 bridge over ONE shared ledger):
+
+## Current state — the batch queue (retired by ADR-0012)
+
+This is what runs today and what ADR-0012 replaces. Moved here from the
+system-wide design doc: the queue is this pipeline's intake, not a property of
+the whole lakehouse.
+
+Operational state lives in `ops.sqlite`:
+
+```sql
+CREATE TABLE batch_jobs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    status     TEXT NOT NULL DEFAULT 'pending',  -- pending | processing | complete
+    domain     TEXT NOT NULL DEFAULT 'instagram',
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT
+);
+
+CREATE TABLE batch_items (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id       INTEGER NOT NULL REFERENCES batch_jobs(id),
+    post_id      TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',  -- pending | processing | complete | failed | dead
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    scheduled_for TEXT,
+    completed_at TEXT
+);
+```
+
+**Lifecycle.** (1) `ig_posts_gen_batches` creates a batch via `create_batch()` and
+inserts post IDs as items — see [`core.md`](core.md) Stage 4 for the drain's own
+guards. (2) The submit job calls `claim_batch()` to claim the oldest pending
+batch. (3) Submit/harvest call `claim_pending_items()` for up to 5 items at a
+time. (4) Per item: `complete_item()` on success, `fail_item()` on failure —
+retry with exponential backoff, `MAX_ATTEMPTS=5`. Terminal failures route to
+`dead_letter`. (5) The harvest job calls `mark_complete()` once all items are
+done or dead.
+
+Until ADR-0007 these steps were driven by a standalone enrichment worker; that
+process is removed and the roles are Dagster's now.
+
+**`dead_letter`** — terminal failures, after retries are exhausted:
+
+```sql
+CREATE TABLE dead_letter (
+    post_id   TEXT NOT NULL,
+    domain    TEXT NOT NULL DEFAULT 'instagram',
+    error     TEXT,
+    attempts  INTEGER NOT NULL DEFAULT 0,
+    failed_at TEXT NOT NULL,
+    PRIMARY KEY (post_id, domain)
+);
+```
+
+Manual triage only; there is no automatic retry worker. This keeps
+`gold_analyses` pure — completed enrichments only, never partial failures. Note
+the `domain` column here means *platform* (`'instagram'`), the same overload
+ADR-0011 corrects by keying on `platform` instead.
+
+**All of this is what ADR-0012 retires** — see the section below for each table's
+disposition.
+
+## Orchestration (ADR-0012)
+
+Orchestration state is **Dagster-native**
+([ADR-0012](../adr/0012-dagster-native-orchestration.md), ratified 2026-09-10 —
+accepted, NOT YET IMPLEMENTED): orchestration state lives in the Dagster
+instance + the lake, not a hand-rolled queue. The `ops.sqlite` enrichment queue
+retires: `batch_jobs`, `batch_items`, `dead_letter`, and
+`facets_batch_jobs` DROP. `ops.sqlite` RETAINS its operational tables —
+`media_cache`, `media_metadata`, `creators`, `profiles`, `creator_merges`,
+`prompt_registry`. ADR-0012 supersedes only the queue + dead_letter scope of
+ADR-0004; ADR-0004's ops/analytical split (SQLite operational, DuckDB
+analytical) otherwise stands.
+
+What the swap buys:
+
+- **Retry is a NEW partition key**: re-materializing a harvested partition
+  is invisible to `submitted ∖ harvested`; retry round N targets posts that
+  failed exactly N times.
+- Failures surface via the anti-join `landed(bronze) ∖ conformed(silver)`
+  plus a BLOCKING asset check.
+- The accounting identity: `done + failed + in_flight + backlog ==
+  candidates`.
+- **The discovery drain's in-flight guard moves to the Dagster instance**:
+  `ig_posts_gen_batches` derives in-flight state from the instance, not
+  `batch_items` — otherwise the drain double-submits.
+
+Until implemented, the `ops.sqlite` queue is live and its only poller
+(`gemini_batch_harvest_sensor`) ships STOPPED — enabling it is a manual
+deploy step. Evidence: `~/repos/enrichment-spike` (S1–S6 + a live gate) and
+`FINDINGS.md`; plan:
+`tasks/plans/dagster-native-orchestration-implementation.md`.
+
+Pattern per enrichment asset (the ADR-0007 bridge):
 
 - **`submit`** (a seam verb, and Dagster's step that calls it) — sub-second;
-  workload executor = `qwen-vision` | `whisper` | `text-LLM`; records the job
-  in the shared `external_jobs` ledger with the provider in metadata.
+  workload executor = `qwen-vision` | `whisper` | `text-LLM`; the provider is
+  recorded in metadata, never in a table name. **No ledger row is written** —
+  the service owns its own job store and Dagster polls it
+  ([ADR-0013](../adr/0013-seam-keeps-no-ledger.md)).
 - **`harvest`** (Dagster's step; composes the seam verbs `poll-to-terminal` and
   `retrieve`) — poll to terminal → retrieve → idempotent verbatim landing
   into `bronze_enrichment_raw`, per-pass provenance, loud per-item failure

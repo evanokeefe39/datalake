@@ -89,6 +89,7 @@
   <a href="#scheduling">5 · Scheduling model</a>
   <a href="#cheat">6 · Cheat-sheet</a>
   <a href="#playbooks">7 · Dev/test playbooks</a>
+  <a href="#v3-target">8 · The v3 target (ADR-0011/0012)</a>
 </div></nav>
 
 <section id="metaphor">
@@ -245,6 +246,7 @@
 
 <section id="departure">
   <h2>3 · Where we depart: async AI enrichment</h2>
+  <div class="key"><strong>This section describes the engine as it runs TODAY.</strong> The <code>(post_id, domain)</code> MERGE key and the table names shown here are the current implementation. ADR-0011 replaces the join key with <code>platform</code> and moves the conformed tables to <code>silver_*</code>; see <a href="#v3-target">section 8</a> for the target.</div>
   <p>We also want to <strong>enrich each post with an AI model that reads its media</strong> — detect the brand logos, whether a face is present, the "value medium", and (soon) transcribe the audio. Three facts make this unlike a normal transform:</p>
   <ul>
     <li><strong>Slow</strong> — enriching a whole corpus takes <em>hours</em> (one big pass ≈ 15 hours), not seconds.</li>
@@ -317,7 +319,7 @@
   <p>A single post is enriched by <em>several independent services</em>, each writing its <strong>own gold table</strong>:</p>
   <ul>
     <li><span class="chip c-done">facets</span> (LLM reads media) → <code>gold_growth_facets</code></li>
-    <li><span class="chip c-async">transcripts</span> (whisper transcribes audio) → <code>gold_transcripts</code></li>
+    <li><span class="chip c-async">transcripts</span> (whisper transcribes audio) → <code>silver_audio_transcripts</code> <em>(target name; the never-built <code>gold_transcripts</code> predates ADR-0011 — see <a href="#v3-target">section 8</a>)</em></li>
   </ul>
   <p>So <strong>"done" is per-dimension, never a single <code>enriched = True</code> boolean</strong> — we can't know which upstream consumer needs which dimension. Each post has a <em>status per dimension</em>: pending / in-flight / done / failed / stale.</p>
 
@@ -342,7 +344,7 @@
       <rect x="320" y="158" width="170" height="40" rx="9" fill="#ffedd5" stroke="#ea580c"/>
       <text x="405" y="183" text-anchor="middle" font-size="11" fill="#ea580c">transcript submit → service → harvest</text>
       <rect x="320" y="108" width="170" height="40" rx="9" fill="#dcfce7" stroke="#16a34a"/>
-      <text x="405" y="133" text-anchor="middle" font-family="monospace" font-size="11" fill="#16a34a">gold_transcripts</text>
+      <text x="405" y="133" text-anchor="middle" font-family="monospace" font-size="11" fill="#16a34a">silver_audio_transcripts</text>
       <!-- rejoin -->
       <path d="M490 82 L560 82 L560 160 L600 160" fill="none" stroke="#7c3aed" stroke-width="2" marker-end="url(#d)"/>
       <path d="M490 128 L560 128 L560 160 L600 160" fill="none" stroke="#7c3aed" stroke-width="2" marker-end="url(#d)"/>
@@ -586,6 +588,27 @@ QWEN_BATCH_DISABLE_WORKER=1 uv run qwen-batch
 # already stub qwen_client (see tests/unit/enrichment/test_facets_batch.py).</code></pre>
 
   <div class="key"><strong>And "test versions of the asset graph"?</strong> Today the enrichment isn't in the Dagster graph — it's the CLI driver — so today the subset and the isolation are the same knob: <code>--posts</code>/<code>--limit</code> pick which posts run, and <code>--state-db</code>/<code>--ops-db</code> point writes at a scratch DB. When we fold enrichment into Dagster, keep those two ideas separate and reach for the three mechanisms you'll actually meet: <strong>(1) isolation</strong> — point the resources at scratch paths via env-var config (<code>OPS_DB_PATH</code> / <code>IG_DATA_DIR</code> already exist here; one <code>.env</code> per environment); <strong>(2) subset</strong> — asset selection, not the DB (materialize just <code>gold_growth_facets</code> + its <code>downstream()</code>, or one partition); <strong>(3) unit tests</strong> — call <code>materialize()</code> in pytest with the same resources on scratch paths (<code>test_facets_batch.py</code> already does). No special test code-location required.</div>
+</section>
+
+<section id="v3-target">
+  <h2>8 · The v3 target: layered enrichment and Dagster-native orchestration</h2>
+  <p class="lede">Everything above describes the engine as it runs <em>today</em>. Two accepted decisions change where its state and its tables live. Neither is built yet — read this as the destination, not the map.</p>
+
+  <div class="warn"><strong>Accepted, not implemented.</strong> ADR-0011 and ADR-0012 are ratified decisions dated 2026-09-10. The code still runs the model described in sections 1–7: enrichment is a CLI driver over <code>ops.sqlite</code>, gold tables are per-channel mirrors, and no model response is landed verbatim.</div>
+
+  <h3>ADR-0011 — the layered model</h3>
+  <p>The enrichment outputs stop being gold mirrors and become a strict medallion chain of their own. Verbatim model responses land in <code>bronze_enrichment_raw</code> (immutable, Parquet, keyed <code>(post_id, platform, workload, prompt_hash, run_id)</code>). Six <code>silver_*</code> tables are conformed from it <strong>deterministically, with zero API calls</strong>. Four gold marts join them to the canonical metric views.</p>
+  <p>The payoff is economic: because the raw response is landed, a schema or mapping change is a replay of silver rather than a re-call of the paid model. <strong>Today nothing is landed</strong> — both paths parse the response in flight and discard it, so every schema change re-buys the corpus.</p>
+  <p>Two rules matter most for anyone extending this: the join key is <code>platform</code> and <strong>never</strong> <code>domain</code> (<code>domain</code> means the content niche; today's <code>gold_analyses.domain</code> holds <code>'instagram'</code>, a platform — the duplicate-name bug), and validation lives in silver, not in the write path of a paid table.</p>
+
+  <h3>ADR-0012 — orchestration is Dagster-native</h3>
+  <p>Orchestration state moves out of <code>ops.sqlite</code> and into the <strong>Dagster instance and the lake</strong>. The queue tables (<code>batch_jobs</code>, <code>batch_items</code>, <code>dead_letter</code>) and <code>facets_batch_jobs</code> are retired. <code>ops.sqlite</code> keeps only what has no Dagster equivalent: <code>media_cache</code>, <code>media_metadata</code>, <code>creators</code>, <code>profiles</code>, <code>creator_merges</code>, <code>prompt_registry</code>.</p>
+  <p>Two consequences worth knowing before you build on the current design. Retry becomes a <em>new partition key</em> rather than a mutable status column. And the discovery drain (<code>ig_posts_gen_batches</code>) loses its in-flight guard, which today reads <code>batch_items WHERE status IN ('pending','processing')</code> — it must derive in-flight state from the Dagster instance instead, or it double-submits paid work.</p>
+
+  <h3>The inference service and the swap seam</h3>
+  <p>One seam serves every workload: a shared ledger plus three verbs — <code>submit</code>, <code>poll-to-terminal</code>, <code>retrieve</code>. (<code>harvest</code> is our step that composes poll and retrieve with an idempotent landing; it is not a seam verb.)</p>
+  <p>The point of the seam is that the provider becomes swappable: a <code>ProviderAdapter</code> with one canonical state vocabulary, implemented by a <code>ServiceBackedAdapter</code> (the qwen-batch service) and a <code>DirectBatchAdapter</code> (Gemini-shaped). <code>build_adapter(name)</code> is the only place a provider is named.</p>
+  <p>The subtlety that makes one seam cover both: <strong>OpenRouter/qwen is synchronous</strong> — it answers in-request and holds nothing server-side — while Gemini batch is natively async. The qwen-batch service exists to make the synchronous provider behave asynchronously, and the adapter absorbs that difference so nothing downstream knows which provider ran.</p>
 </section>
 
 <footer class="foot">

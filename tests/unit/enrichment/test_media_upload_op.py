@@ -17,20 +17,17 @@ real thing on the cache contract: first call records the File API URI in
 from __future__ import annotations
 
 import json
-import sqlite3
-
-import pytest
-
 from importlib import import_module
 
+import pytest
 from dagster import build_op_context
+
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
 from datalake.defs.enrichment.batch import _ensure_schema, create_batch
 from datalake.defs.enrichment.media_upload import (
     media_upload_pending_batches_op,
     upload_media_for_pending_batches,
 )
-
 
 media_upload_module = import_module("datalake.defs.enrichment.media_upload")
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import duckdb
 import pytest
@@ -25,8 +25,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from datalake.defs.common.schemas import duckdb_ddl  # noqa: E402
 from datalake.defs.common.resources import SQLiteResource  # noqa: E402
+from datalake.defs.common.schemas import duckdb_ddl  # noqa: E402
 from datalake.defs.enrichment import facets_batch  # noqa: E402
 from datalake.defs.enrichment.facets import (  # noqa: E402
     parse_text_response,
@@ -34,11 +34,10 @@ from datalake.defs.enrichment.facets import (  # noqa: E402
     write_gold_facets_pass_conn,
 )
 from datalake.defs.enrichment.prompts import (  # noqa: E402
-    CURRENT_TEXT_FACETS_PROMPT_HASH,
     _DEFAULT_QWEN_MODEL,
+    CURRENT_TEXT_FACETS_PROMPT_HASH,
     build_text_facets_prompt,
 )
-
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
