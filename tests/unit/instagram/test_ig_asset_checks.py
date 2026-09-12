@@ -21,7 +21,6 @@ from tests.fixtures.gold_factories import FAKE_ANALYSIS
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Resolve individual check functions by name ─────────────────────────────
-
 _CHECKS_BY_NAME = {list(c.check_keys)[0].name: c for c in ig_checks}
 
 
@@ -240,7 +239,7 @@ class TestGoldChecks:
         THEN it fails.
         """
         bad = dict(FAKE_ANALYSIS)
-        bad["admirality"] = "Z9"
+        bad["admiralty"] = "Z9"
         with duckdb.get_connection() as conn:
             conn.execute(
                 "INSERT INTO gold_analyses (post_id, domain, result_json, analysed_at) "

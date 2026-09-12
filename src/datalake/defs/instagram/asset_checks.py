@@ -268,7 +268,7 @@ def _ig_posts_gld_valid_admiralty(context) -> AssetCheckResult:
             continue
         try:
             parsed = json.loads(result_json)
-            code = parsed.get("admirality", "")
+            code = parsed.get("admiralty", "")
             if code not in _VALID_ADMIRALTY:
                 invalid.append(f"{post_id}: {code!r}")
         except json.JSONDecodeError:

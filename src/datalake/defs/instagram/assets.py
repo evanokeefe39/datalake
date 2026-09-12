@@ -1179,7 +1179,6 @@ def _ensure_state_tables(db: DuckDBResource) -> None:
     """Create shared state tables if they don't exist."""
     with db.get_connection() as conn:
         for name in (
-            "gold_analyses",
             "ig_post_labels",
             "silver_ig_post_observations",
             "silver_ig_profile_observations",
