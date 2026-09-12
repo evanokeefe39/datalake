@@ -14,6 +14,7 @@ from datalake.defs.enrichment.prompts import (
     _DEFAULT_GEMINI_MODEL,
     CURRENT_PROMPT_HASH,
     IG_GOLD_PROMPT,
+    IG_GOLD_SCHEMA_VERSION,
     compute_prompt_hash,
 )
 
@@ -23,12 +24,16 @@ def register_prompt(
     prompt: str,
     model: str,
     recorded_at: str,
+    schema_version: str = IG_GOLD_SCHEMA_VERSION,
 ) -> str:
     """Upsert a prompt into the registry (idempotent on prompt_hash).
 
+    The hash is a pure function of (prompt, schema_version) via
+    `compute_prompt_hash`; `model` is stored only as provenance.
+
     Returns the prompt_hash.
     """
-    prompt_hash = compute_prompt_hash(prompt, model)
+    prompt_hash = compute_prompt_hash(prompt, schema_version)
     conn = ops.get_connection()
     try:
         conn.execute(

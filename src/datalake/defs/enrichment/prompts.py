@@ -1,18 +1,69 @@
 """Enrichment prompts — domain-specific Gemini analysis prompts.
 
-Prompt hashes use ``hashlib.sha256``, NOT Python's built-in ``hash()``.
-Python 3.3+ randomizes string hashing via ``PYTHONHASHSEED``, making
-``hash()`` non-deterministic across process restarts.
+Phase 3 (US-EENG-3) — prompt identity:
+
+An analysis's identity is its PROMPT plus its OUTPUT SCHEMA VERSION — never
+the model or provider. `compute_prompt_hash` delegates to
+`seam.prompt_identity` so there is exactly one hashing implementation. The
+model that executed an analysis is PROVENANCE (stored beside the result, e.g.
+in `gold_analyses.model` or the landing table), not part of the hash.
+
+MIGRATION (versioned, never silent):
+Every `gold_analyses` row written before this change carries a `prompt_hash`
+computed the OLD model-bound way (`sha256(f"{prompt}:{model}")[:16]`, now
+available as `legacy_prompt_hash` / `seam.prompt_identity_v1`). Those rows are
+NOT silently rewritten. Reconciliation path:
+  1. Rows whose stored hash equals `legacy_prompt_hash(prompt, model)` are
+     identified as legacy-format rows — the prompt content itself may still be
+     current even though the hash format is not.
+  2. To adopt the new scheme, backfill explicitly: for each legacy row whose
+     prompt text equals the current prompt, set prompt_hash to
+     `compute_prompt_hash(IG_GOLD_PROMPT, IG_GOLD_SCHEMA_VERSION)`. Verify
+     with a count of rows still carrying legacy hashes before and after.
+  3. Never backfill in place without an audit step; a re-run of the backfill
+     must be a no-op (idempotent ON CONFLICT-style update).
+Until reconciled, the staleness checks will flag the whole legacy corpus —
+which is the point: the migration is detectable, not hidden.
 """
 
 from __future__ import annotations
 
-import hashlib
+from datalake.defs.enrichment.seam import prompt_identity, prompt_identity_v1
+
+# Output schema version of the IG gold analysis contract (the fields listed in
+# IG_GOLD_PROMPT). Bump this whenever the prompt's expected output schema
+# changes; it participates in the hash so a schema change re-hashes.
+IG_GOLD_SCHEMA_VERSION = "1"
 
 
-def compute_prompt_hash(prompt: str, model: str) -> str:
-    """Compute a deterministic hash of (prompt + model) for staleness detection."""
-    return hashlib.sha256(f"{prompt}:{model}".encode()).hexdigest()[:16]
+def compute_prompt_hash(prompt: str, schema_version: str = IG_GOLD_SCHEMA_VERSION) -> str:
+    """Hash of (prompt, output schema version) — the analysis identity.
+
+    Delegates to `seam.prompt_identity`. Deliberately independent of model,
+    provider, and tier: the same prompt answered by qwen or by Gemini yields
+    the same hash, so switching providers does not mark the corpus stale.
+    The model used is recorded as provenance beside the result instead.
+
+    Raises:
+        ValueError: if prompt or schema_version is empty.
+    """
+    if not prompt:
+        raise ValueError("prompt must be a non-empty string")
+    if not schema_version:
+        raise ValueError("schema_version must be a non-empty string")
+    return prompt_identity(prompt, schema_version)
+
+
+def legacy_prompt_hash(prompt: str, model: str) -> str:
+    """The OLD model-bound hash (`sha256(f"{prompt}:{model}")[:16]`).
+
+    Delegates to `seam.prompt_identity_v1`. Kept ONLY so existing
+    `gold_analyses` rows can be identified and reconciled during migration —
+    never for new writes.
+    """
+    if not prompt:
+        raise ValueError("prompt must be a non-empty string")
+    return prompt_identity_v1(prompt, model)
 
 
 IG_GOLD_PROMPT = """\
@@ -64,7 +115,7 @@ _DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 # service — NOT Gemini. The IG-gold path keeps _DEFAULT_GEMINI_MODEL above.
 _DEFAULT_QWEN_MODEL = "qwen/qwen3.7-flash"
 
-CURRENT_PROMPT_HASH = compute_prompt_hash(IG_GOLD_PROMPT, _DEFAULT_GEMINI_MODEL)
+CURRENT_PROMPT_HASH = compute_prompt_hash(IG_GOLD_PROMPT, IG_GOLD_SCHEMA_VERSION)
 
 
 # ── Universal video→Gemini call (US-EFAC-3 + US-ESUM-1) ──────────────────────
@@ -148,14 +199,12 @@ def facets_instruction_skeleton() -> str:
     )
 
 
-def compute_facets_prompt_hash(model: str = _DEFAULT_QWEN_MODEL) -> str:
-    """Own prompt_hash for the visual pass (schema version folded in, AC6)."""
-    return compute_prompt_hash(
-        facets_instruction_skeleton() + ":" + model, model
-    )
+def compute_facets_prompt_hash(schema_version: str = GROWTH_FACETS_SCHEMA_VERSION) -> str:
+    """Own prompt_hash for the visual pass — model-independent (schema version folded in)."""
+    return compute_prompt_hash(facets_instruction_skeleton(), schema_version)
 
 
-CURRENT_FACETS_PROMPT_HASH = compute_facets_prompt_hash(_DEFAULT_QWEN_MODEL)
+CURRENT_FACETS_PROMPT_HASH = compute_facets_prompt_hash(GROWTH_FACETS_SCHEMA_VERSION)
 
 
 
@@ -175,15 +224,13 @@ def text_facets_instruction_skeleton() -> str:
     )
 
 
-def compute_text_facets_prompt_hash(model: str = _DEFAULT_QWEN_MODEL) -> str:
-    """Own prompt_hash for the text pass (schema version folded in)."""
-    return compute_prompt_hash(
-        text_facets_instruction_skeleton() + ":" + model, model
-    )
+def compute_text_facets_prompt_hash(schema_version: str = GROWTH_FACETS_SCHEMA_VERSION) -> str:
+    """Own prompt_hash for the text pass — model-independent (schema version folded in)."""
+    return compute_prompt_hash(text_facets_instruction_skeleton(), schema_version)
 
 
 CURRENT_TEXT_FACETS_PROMPT_HASH = compute_text_facets_prompt_hash(
-    _DEFAULT_QWEN_MODEL
+    GROWTH_FACETS_SCHEMA_VERSION
 )
 
 
