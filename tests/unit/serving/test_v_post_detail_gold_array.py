@@ -16,6 +16,7 @@ from dagster import (
 )
 from dagster_duckdb import DuckDBResource
 
+from datalake.defs.enrichment.classification import CLASSIFICATION_DDL
 from datalake.defs.serving.asset_checks import _v_post_detail_gold_attribute_coverage
 from datalake.defs.serving.assets import (
     dim_date as _dim_date_asset,
@@ -28,18 +29,12 @@ from tests.fixtures.silver_factories import seed_silver_posts
 # ── Fixture helpers ─────────────────────────────────────────────────────────
 
 
-def _ensure_gold_table(duckdb: DuckDBResource) -> None:
+def _ensure_classification_table(duckdb: DuckDBResource) -> None:
+    """Create silver_content_classification with the real conformed schema.
+    The DDL is imported from the conform module — never hand-rolled — so the
+    fixture cannot drift from the table the serving views read."""
     with duckdb.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id TEXT NOT NULL,
-                domain TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash TEXT,
-                result_json TEXT,
-                analysed_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
+        conn.execute(CLASSIFICATION_DDL)
 
 
 def _ensure_dim_profile_table(duckdb: DuckDBResource) -> None:
@@ -78,18 +73,20 @@ def test_v_post_detail_surfaces_array_shaped_result_json(db):
         [("arr1", "Array post"), ("obj1", "Object post")],
         caption_idx=1,
     )
-    _ensure_gold_table(db)
+    _ensure_classification_table(db)
     _ensure_dim_profile_table(db)
     with db.get_connection() as conn:
         conn.execute(
-            "INSERT INTO gold_analyses VALUES "
-            "('arr1', 'instagram', NULL, "
-            """'[{"topic":"X","content_type":"tutorial"}]', NOW())"""
+            "INSERT INTO silver_content_classification "
+            "(post_id, platform, topic, content_type, result_json) VALUES "
+            "('arr1', 'instagram', 'X', 'tutorial', "
+            """'[{"topic":"X","content_type":"tutorial"}]')"""
         )
         conn.execute(
-            "INSERT INTO gold_analyses VALUES "
-            "('obj1', 'instagram', NULL, "
-            """'{"topic":"Y","content_type":"guide"}', NOW())"""
+            "INSERT INTO silver_content_classification "
+            "(post_id, platform, topic, content_type, result_json) VALUES "
+            "('obj1', 'instagram', 'Y', 'guide', "
+            """'{"topic":"Y","content_type":"guide"}')"""
         )
     _run_v_post_detail(db)
 
@@ -111,7 +108,7 @@ def test_v_post_detail_never_enriched_row_still_nulls(db):
     THEN gold fields stay NULL and the post still appears (LEFT JOIN).
     """
     seed_silver_posts(db, [("p1", "Lonely post")], caption_idx=1)
-    _ensure_gold_table(db)
+    _ensure_classification_table(db)
     _ensure_dim_profile_table(db)
     _run_v_post_detail(db)
 
@@ -127,18 +124,18 @@ def test_v_post_detail_never_enriched_row_still_nulls(db):
 
 
 def _seed_check_tables(duckdb: DuckDBResource, result_rows: list[tuple[str, str]]) -> None:
-    """Seed minimal source tables + gold rows (post_id, result_json)."""
+    """Seed minimal source tables + classification rows (post_id, result_json)."""
     seed_silver_posts(
         duckdb,
         [(post_id, post_id) for post_id, _ in result_rows],
     )
-    _ensure_gold_table(duckdb)
+    _ensure_classification_table(duckdb)
     _ensure_dim_profile_table(duckdb)
     with duckdb.get_connection() as conn:
         for post_id, result_json in result_rows:
             conn.execute(
-                "INSERT INTO gold_analyses VALUES "
-                "(?, 'instagram', NULL, ?, NOW())",
+                "INSERT INTO silver_content_classification "
+                "(post_id, platform, result_json) VALUES (?, 'instagram', ?)",
                 (post_id, result_json),
             )
 
@@ -152,11 +149,11 @@ def test_coverage_check_warns_when_stored_attribute_unsurfaced(db):
     with db.get_connection() as conn:
         conn.execute(
             "CREATE OR REPLACE VIEW v_post_detail AS "
-            "SELECT sp.post_id, sp.caption, ga.result_json, "
-            "ga.result_json->>'$.topic' AS gold_topic "
+            "SELECT sp.post_id, sp.caption, scc.result_json, "
+            "scc.result_json->>'$.topic' AS gold_topic "
             "FROM silver_ig_posts sp "
-            "LEFT JOIN gold_analyses ga "
-            "ON sp.post_id = ga.post_id AND ga.domain = 'instagram'"
+            "LEFT JOIN silver_content_classification scc "
+            "ON sp.post_id = scc.post_id AND scc.platform = 'instagram'"
         )
 
     ctx = build_asset_check_context(resources={"duckdb": db})
@@ -185,12 +182,12 @@ def test_coverage_check_does_not_fail_on_never_enriched_posts(db):
         )
         conn.execute(
             "CREATE OR REPLACE VIEW v_post_detail AS "
-            "SELECT sp.post_id, sp.caption, ga.result_json, "
-            "COALESCE(ga.result_json->>'$.topic', ga.result_json->>'$[0].topic') "
+            "SELECT sp.post_id, sp.caption, scc.result_json, "
+            "COALESCE(scc.result_json->>'$.topic', scc.result_json->>'$[0].topic') "
             "AS gold_topic "
             "FROM silver_ig_posts sp "
-            "LEFT JOIN gold_analyses ga "
-            "ON sp.post_id = ga.post_id AND ga.domain = 'instagram'"
+            "LEFT JOIN silver_content_classification scc "
+            "ON sp.post_id = scc.post_id AND scc.platform = 'instagram'"
         )
 
     ctx = build_asset_check_context(resources={"duckdb": db})
@@ -226,6 +223,15 @@ def test_coverage_check_warns_on_real_view_with_unmigrated_array_rows(db):
     in the view, the stored shape is not).
     """
     _seed_check_tables(db, [("arr1", '[{"topic":"X","content_type":"tutorial"}]')])
+    # The conform writes the typed columns from the payload (the '$[0]' array
+    # fallback is the conform's deterministic shape handling), so a real
+    # conformed array row carries the surfaced values here. result_json stays
+    # stored in the array shape — that is exactly what the tripwire flags.
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE silver_content_classification "
+            "SET topic = 'X', content_type = 'tutorial' WHERE post_id = 'arr1'"
+        )
     _run_v_post_detail(db)
 
     ctx = build_asset_check_context(resources={"duckdb": db})

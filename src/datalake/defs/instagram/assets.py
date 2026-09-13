@@ -24,7 +24,13 @@ from ..common.resources import (
     SQLiteResource,
 )
 from ..common.schemas import SILVER_COLUMNS, duckdb_ddl
+from ..enrichment import landing
 from ..enrichment.media_cache import cache_media_bytes, seed_media_from_file
+from ..enrichment.partitions import (
+    PartitionSnapshot,
+    in_flight_partitions,
+    partition_key,
+)
 from ..enrichment.prompts import CURRENT_PROMPT_HASH
 from .config import (
     LOCAL_INGEST_DIR,
@@ -1013,13 +1019,6 @@ def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame
     return unified
 
 
-from datalake.defs.enrichment import landing
-from datalake.defs.enrichment.partitions import (
-    PartitionSnapshot,
-    in_flight_partitions,
-    partition_key,
-)
-
 DRAIN_WORKLOAD: str = landing.WORKLOAD_CONTENT_CLASSIFICATION
 """The discovery drain's partition workload — classification enrichment."""
 
@@ -1123,7 +1122,7 @@ def ig_posts_gen_batches(
     """
     import json
 
-    from datalake.defs.enrichment.batch import _ensure_schema, create_batch
+    from datalake.defs.enrichment.batch import create_batch
 
     db = duckdb
     _ensure_state_tables(db)

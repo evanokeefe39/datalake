@@ -1,14 +1,27 @@
 """Unit tests for Dagster-native enrichment orchestration state (ADR-0012/0013).
 
-No live Dagster instance: a local fake implements the PartitionSnapshot
-surface (get_materialized_partitions) that the real DagsterInstance provides.
+No live filesystem instance: a STRICT fake implements the PartitionSnapshot
+surface — the real ``DagsterInstance.get_materialized_partitions`` takes an
+``AssetKey`` on Dagster 1.13.x (a PartitionsDefinition argument raises
+``AttributeError ... no attribute 'to_string'``), so the fake rejects any
+non-AssetKey argument. ``TestInstanceContract`` additionally exercises the
+REAL ephemeral instance so signature drift fails here, not in production.
 """
 
+import inspect
+
 import pytest
-from dagster import DynamicPartitionsDefinition
+from dagster import (
+    AssetKey,
+    AssetMaterialization,
+    DagsterInstance,
+    DynamicPartitionsDefinition,
+)
 
 from datalake.defs.enrichment.partitions import (
+    HARVESTED_ASSET_NAME,
     HARVESTED_PARTITIONS,
+    SUBMITTED_ASSET_NAME,
     SUBMITTED_PARTITIONS,
     Account,
     account,
@@ -21,21 +34,48 @@ from datalake.defs.enrichment.partitions import (
 class FakeInstance:
     """Test double implementing the PartitionSnapshot Protocol.
 
-    Backed by plain dicts; never touches the filesystem or a real instance.
+    STRICT: mirrors the real API shape — the argument to
+    ``get_materialized_partitions`` MUST be an ``AssetKey``. A call with a
+    ``DynamicPartitionsDefinition`` (the defect this suite guards against)
+    raises TypeError instead of silently returning an empty set, which is
+    what a permissive fake let through before.
     """
 
     def __init__(self) -> None:
-        self._materialized: dict[DynamicPartitionsDefinition, set[str]] = {}
+        self._materialized: dict[AssetKey, set[str]] = {}
+        self.calls: list[AssetKey] = []
 
-    def materialize(
-        self, partitions_def: DynamicPartitionsDefinition, keys: set[str]
-    ) -> None:
-        self._materialized.setdefault(partitions_def, set()).update(keys)
+    @staticmethod
+    def _as_asset_key(space: object) -> AssetKey:
+        if isinstance(space, AssetKey):
+            return space
+        if isinstance(space, DynamicPartitionsDefinition):
+            if space.name is None:
+                raise TypeError("unnamed dynamic partitions definition")
+            return AssetKey(space.name)
+        raise TypeError(
+            f"get_materialized_partitions expects an AssetKey, "
+            f"got {type(space).__name__}"
+        )
 
-    def get_materialized_partitions(
-        self, partitions_def: DynamicPartitionsDefinition
-    ) -> set[str]:
-        return set(self._materialized.get(partitions_def, set()))
+    def materialize(self, space: object, keys: set[str]) -> None:
+        self._materialized.setdefault(self._as_asset_key(space), set()).update(
+            keys
+        )
+
+    def get_materialized_partitions(self, asset_key: AssetKey) -> set[str]:
+        if not isinstance(asset_key, AssetKey):
+            raise TypeError(
+                f"get_materialized_partitions expects an AssetKey, "
+                f"got {type(asset_key).__name__}"
+            )
+        self.calls.append(asset_key)
+        return set(self._materialized.get(asset_key, set()))
+
+
+SUBMITTED_KEY = AssetKey(SUBMITTED_ASSET_NAME)
+HARVESTED_KEY = AssetKey(HARVESTED_ASSET_NAME)
+
 
 
 def _batch(i: int) -> str:
@@ -164,7 +204,7 @@ class TestInFlight:
         k2 = partition_key("qwen-vision", 0, ["p3", "p4"])
         inst.materialize(SUBMITTED_PARTITIONS, {k1})  # k2's materialization LOST
         # the loss is real, not merely commented: k2 is absent from the snapshot
-        assert k2 not in inst.get_materialized_partitions(SUBMITTED_PARTITIONS)
+        assert k2 not in inst.get_materialized_partitions(SUBMITTED_KEY)
         result = account(inst, done=0, failed=0, backlog=1, total_candidates=5)
         assert result.in_flight == 1
         assert not result.holds
@@ -190,6 +230,63 @@ class TestInFlight:
             account(inst, done=-1, failed=0, backlog=0, total_candidates=0)
         with pytest.raises(ValueError):
             account(inst, done=0, failed=0, backlog=0, total_candidates=-5)
+
+
+
+# ------------------------------------------------- instance API contract
+
+
+class TestInstanceContract:
+    """Guards the defect this suite once missed: the fake accepted any
+    argument type, so ``in_flight_partitions`` passing a
+    ``DynamicPartitionsDefinition`` to the real instance (which needs an
+    ``AssetKey``) surfaced only as an AttributeError in production. These
+    tests fail on the wrong argument type / wrong API shape.
+    """
+
+    def test_snapshot_called_with_the_two_enrichment_asset_keys(self) -> None:
+        inst = FakeInstance()
+        inst.materialize(SUBMITTED_PARTITIONS, {_batch(1)})
+        in_flight_partitions(inst)
+        assert inst.calls == [SUBMITTED_KEY, HARVESTED_KEY]
+
+    def test_fake_rejects_partitions_definition_argument(self) -> None:
+        # The exact wrong call the module used to make: passing the
+        # DynamicPartitionsDefinition instead of an AssetKey.
+        inst = FakeInstance()
+        with pytest.raises(TypeError):
+            inst.get_materialized_partitions(SUBMITTED_PARTITIONS)
+
+    def test_real_instance_signature_takes_asset_key(self) -> None:
+        # Empirically pinned on Dagster 1.13.11: the real method's first
+        # parameter (after self) is named asset_key. If dagster changes the
+        # API, this fails here instead of at runtime.
+        sig = inspect.signature(DagsterInstance.get_materialized_partitions)
+        params = [p for name, p in sig.parameters.items() if name != "self"]
+        assert params[0].name == "asset_key", (
+            f"DagsterInstance.get_materialized_partitions signature "
+            f"changed: {sig}"
+        )
+
+    def test_real_ephemeral_instance_roundtrip(self) -> None:
+        # End-to-end against a REAL DagsterInstance: materialize the
+        # submitted partition, observe it in flight, then harvest and
+        # observe it leave. This is the test that would have caught the
+        # AttributeError from calling the API with a PartitionsDefinition.
+        inst = DagsterInstance.ephemeral()
+        key = _batch(42)
+        inst.add_dynamic_partitions(SUBMITTED_ASSET_NAME, [key])
+        assert in_flight_partitions(inst) == set()
+        inst.report_runless_asset_event(
+            AssetMaterialization(
+                asset_key=SUBMITTED_KEY, partition=key
+            )
+        )
+        assert in_flight_partitions(inst) == {key}
+        inst.report_runless_asset_event(
+            AssetMaterialization(asset_key=HARVESTED_KEY, partition=key)
+        )
+        assert in_flight_partitions(inst) == set()
 
 
 # --------------------------------------------------------- failure surfacing

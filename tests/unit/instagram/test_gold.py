@@ -11,7 +11,10 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+from dagster import AssetKey
+
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
+from datalake.defs.enrichment import classification as classification_mod
 from datalake.defs.enrichment.batch import (
     MAX_ATTEMPTS,
     claim_batch,
@@ -21,7 +24,16 @@ from datalake.defs.enrichment.batch import (
     fail_item,
     mark_complete,
 )
-from datalake.defs.instagram.assets import ig_posts_gen_batches
+from datalake.defs.enrichment.partitions import (
+    HARVESTED_ASSET_NAME,
+    SUBMITTED_ASSET_NAME,
+    partition_key,
+)
+from datalake.defs.instagram.assets import (
+    DRAIN_ATTEMPT_ROUND,
+    DRAIN_WORKLOAD,
+    ig_posts_gen_batches,
+)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -54,13 +66,6 @@ def _seed_silver(db, rows):
             )
         """)
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id TEXT NOT NULL, domain TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash TEXT, result_json TEXT, analysed_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
-        conn.execute("""
             CREATE TABLE IF NOT EXISTS ig_post_labels (
                 post_id VARCHAR PRIMARY KEY,
                 label VARCHAR NOT NULL,
@@ -86,6 +91,62 @@ def _seed_silver(db, rows):
                 "(post_id, caption, processed_on, timestamp, source_dataset) "
                 "VALUES (?, ?, ?, ?, 'test')",
                 [post_id, caption, ts, ts],
+            )
+
+
+
+
+class FakeInstance:
+    """Minimal PartitionSnapshot.
+
+    Mirrors tests/unit/instagram/test_drain_inflight_guard.py::FakeInstance.
+    In-memory submitted/harvested partition sets; ``submit``/``harvest``
+    simulate the two enrichment stages materializing one per-post partition.
+    ``get_materialized_partitions`` accepts both call shapes the derivation
+    may use (DynamicPartitionsDefinition or AssetKey).
+    """
+
+    def __init__(self, submitted=(), harvested=()):
+        self._submitted = set(submitted)
+        self._harvested = set(harvested)
+
+    def get_materialized_partitions(self, asset_key):
+        """STRICT: the real DagsterInstance takes an AssetKey on Dagster
+        1.13.x — reject anything else instead of silently returning empty."""
+        if asset_key == AssetKey(SUBMITTED_ASSET_NAME):
+            return set(self._submitted)
+        if asset_key == AssetKey(HARVESTED_ASSET_NAME):
+            return set(self._harvested)
+        raise TypeError(
+            f"get_materialized_partitions expects an AssetKey, "
+            f"got {type(asset_key).__name__}"
+        )
+
+
+    def submit(self, post_ids):
+        for pid in post_ids:
+            self._submitted.add(
+                partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+            )
+
+    def harvest(self, post_ids):
+        for pid in post_ids:
+            self._harvested.add(
+                partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+            )
+
+
+def _seed_classification(db, rows):
+    """Seed silver_content_classification (the new completion-guard source)
+    with (post_id, prompt_hash) tuples at platform='instagram', via the
+    canonical CLASSIFICATION_DDL — never a hand-rolled schema."""
+    with db.get_connection() as conn:
+        conn.execute(classification_mod.CLASSIFICATION_DDL)
+        for post_id, prompt_hash in rows:
+            conn.execute(
+                "INSERT OR REPLACE INTO silver_content_classification "
+                "(post_id, platform, prompt_hash) VALUES (?, 'instagram', ?)",
+                [post_id, prompt_hash],
             )
 
 
@@ -445,7 +506,9 @@ def test_enqueue_prefer_interactive_opt_out(tmp_path):
 
 
 def test_enqueue_skips_current_prompt_enriched(tmp_path):
-    """GIVEN a label-approved post with a CURRENT-prompt gold analysis
+    """GIVEN a label-approved post with a CURRENT-prompt conformed
+    classification in silver_content_classification (the new completion-guard
+    source, post-ADR-0011)
     WHEN ig_posts_gen_batches runs
     THEN that post is not re-batched (only stale-prompt rows re-enqueue, US-L5).
     """
@@ -458,13 +521,7 @@ def test_enqueue_skips_current_prompt_enriched(tmp_path):
     _seed_silver(db, [("p1", "Test caption", now), ("p2", "Already done", now)])
     _seed_labels(db, [("p1", "standout", "day7_matched", None),
                       ("p2", "standout", "day7_matched", None)])
-
-    with db.get_connection() as conn:
-        conn.execute(
-            "INSERT INTO gold_analyses (post_id, domain, prompt_hash, analysed_at) "
-            "VALUES (?, 'instagram', ?, ?)",
-            ["p2", CURRENT_PROMPT_HASH, now.isoformat()],
-        )
+    _seed_classification(db, [("p2", CURRENT_PROMPT_HASH)])
 
     result = ig_posts_gen_batches(duckdb=db, ops=ops)
 
@@ -476,8 +533,8 @@ def test_enqueue_skips_current_prompt_enriched(tmp_path):
 
 
 def test_enqueue_reenqueues_stale_prompt_gold(tmp_path):
-    """GIVEN a label-approved post whose gold row was written pre-multimodal
-    (stale prompt_hash)
+    """GIVEN a label-approved post whose conformed classification was written
+    under a stale (pre-multimodal) prompt_hash in silver_content_classification
     WHEN ig_posts_gen_batches runs
     THEN the post IS re-enqueued — no permanent orphaning (US-L5).
     """
@@ -487,13 +544,7 @@ def test_enqueue_reenqueues_stale_prompt_gold(tmp_path):
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "Test caption", now)])
     _seed_labels(db, [("p1", "standout", "day7_matched", None)])
-
-    with db.get_connection() as conn:
-        conn.execute(
-            "INSERT INTO gold_analyses (post_id, domain, prompt_hash, analysed_at) "
-            "VALUES (?, 'instagram', ?, ?)",
-            ["p1", "stale-pre-multimodal-hash", now.isoformat()],
-        )
+    _seed_classification(db, [("p1", "stale-pre-multimodal-hash")])
 
     result = ig_posts_gen_batches(duckdb=db, ops=ops)
     assert result["enqueued"][0] == 1
@@ -520,20 +571,23 @@ def test_enqueue_skips_skip_decision(tmp_path):
 
 
 def test_enqueue_skips_open_batch_items(tmp_path):
-    """GIVEN a label-approved post already queued (pending batch item)
+    """GIVEN a label-approved post whose partition is in flight on the Dagster
+    instance (submitted, not yet harvested)
     WHEN ig_posts_gen_batches runs
-    THEN the post is not re-enqueued while its item is open.
+    THEN the post is not re-enqueued while its work is in flight (US-EENG-4).
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
-
     now = datetime.now(timezone.utc)
+
     _seed_silver(db, [("p1", "Caption", now)])
     _seed_labels(db, [("p1", "standout", "day7_matched", None)])
-    create_batch(ops, [_pd("p1")])  # stays pending
+    instance = FakeInstance()
+    instance.submit(["p1"])  # partition materialized by the submit stage
 
-    result = ig_posts_gen_batches(duckdb=db, ops=ops)
+    result = ig_posts_gen_batches(duckdb=db, ops=ops, instance=instance)
     assert result["enqueued"][0] == 0
+    assert result["in_flight_suppressed"][0] == 1
 
 
 def test_enqueue_no_pending_posts(tmp_path):
@@ -552,7 +606,8 @@ def test_enqueue_no_pending_posts(tmp_path):
 
 
 def test_enqueue_post_ids_bypasses_guards(tmp_path):
-    """GIVEN posts with current-prompt gold analyses and no labels
+    """GIVEN posts with CURRENT-prompt conformed classifications in
+    silver_content_classification and no labels
     WHEN ig_posts_gen_batches runs with post_ids
     THEN the requested posts are batched regardless (explicit bypass).
     """
@@ -569,13 +624,9 @@ def test_enqueue_post_ids_bypasses_guards(tmp_path):
         ("p3", "Caption three", now),
     ])
 
-    with db.get_connection() as conn:
-        for pid in ("p2", "p3"):
-            conn.execute(
-                "INSERT INTO gold_analyses (post_id, domain, prompt_hash, analysed_at) "
-                "VALUES (?, 'instagram', ?, ?)",
-                [pid, CURRENT_PROMPT_HASH, now.isoformat()],
-            )
+    _seed_classification(
+        db, [(pid, CURRENT_PROMPT_HASH) for pid in ("p2", "p3")]
+    )
 
     result = ig_posts_gen_batches(
         config=GoldConfig(post_ids=["p2", "p3"]), duckdb=db, ops=ops

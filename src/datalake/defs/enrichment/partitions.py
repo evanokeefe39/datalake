@@ -19,53 +19,73 @@ restart with no in-memory state and cannot drift from a stored copy — there
 is no stored copy.
 
 THE PARTITION KEY — the load-bearing design decision
------------------------------------------------------
+----------------------------------------------------
 
-The key is a per-BATCH key, not a per-post key and not a per-run key::
+The key is a PER-POST key. Every partition in the two spaces belongs to
+exactly one post id::
 
-    partition_key(workload, attempt_round, post_ids)
-      = sha256(workload \\x00 attempt_round \\x00 sorted(post_ids))[:16]
+    partition_key(workload, attempt_round, [post_id])
+      = sha256(workload \\x00 attempt_round \\x00 sorted([post_id]))[:16]
+
+Callers MUST pass exactly one post id. The signature accepts an iterable
+only so it stays one pure function; ``[pid]`` is the tracking case.
 
 Reasoning:
 
-1. **Per-run (run_id) is wrong.** A run id changes on every Dagster
+1. **Per-post is FORCED by ADR-0013's no-ledger decision, not a taste
+   choice.** The seam keeps no ledger, so there is no stored mapping from a
+   job handle to the post ids it covers. The only way the discovery drain
+   can decide whether an INDIVIDUAL post is already in flight is to derive
+   that post's partition key from data it already has (workload, round,
+   the candidate's own id) and test membership in
+   ``in_flight_partitions(instance)``. A per-batch key would require the
+   drain to know the batch composition — i.e. to consult the ledger we
+   banned. Per-post derivability is the only option. This is why a
+   per-batch key documented in earlier revisions of this module silently
+   never intersected the drain's per-post keys and would have hidden the
+   double-submit the guard exists to prevent.
+
+2. **Per-run (run_id) is wrong.** A run id changes on every Dagster
    re-materialization, so re-running the same work under a new run would
    mint a fresh partition invisible to the subtraction — the exact orphaning
-   failure ADR-0012 decision 5 rejects ("re-materializing an
-   already-harvested partition is invisible and would orphan provider work").
-   It is also NOT derivable at harvest time from the same inputs: the
-   harvest step does not know which Dagster run submitted the work.
+   failure ADR-0012 decision 5 rejects. It is also NOT derivable at harvest
+   time from the same inputs.
 
-2. **Per-post is the wrong granularity.** A provider batch job covers many
-   posts; submit and harvest are whole-job operations (one opaque handle per
-   batch, ADR-0012 decision 9). A per-post partition space would claim
-   in-flight granularity the orchestrator cannot actually act on, and would
-   make the subtraction N-times larger for no behavioral difference.
+3. **Granularity split: tracking is per-post, API work is whole-job.** The
+   provider API operation remains whole-job: one ``submit`` call covers N
+   posts and ``harvest`` is all-or-nothing per job. At harvest, ALL of that
+   job's post-partitions flip from ``enrichment_submitted`` to
+   ``enrichment_harvested`` together. So the in-flight set temporarily
+   shrinks by N on one harvest event — that is correct: tracking
+   granularity (per post, so the drain can suppress individual candidates)
+   is finer than the API granularity the orchestrator can actually act on.
 
-3. **Per-batch (workload, attempt_round, sorted post_ids) is right.**
+4. **Determinism properties.**
 
-   * *Derivable identically at submit and harvest time*: both stages receive
-     the same batch definition — the workload, the retry round, and the
-     candidate post ids. The harvest asset re-derives the key of the batch
-     it is harvesting from those same inputs; no hidden state is shared.
+   * *Derivable identically at submit and harvest time*: both stages know
+     the workload, the retry round, and the covered post ids. No hidden
+     state is shared.
    * *Stable across a re-run of the same work*: same inputs -> same digest,
-     so a crash-and-retry of the same batch materializes the SAME
-     submitted partition (idempotent) rather than a new one. This is the
-     double-submit guard: a batch submitted but not yet harvested is visible
-     in the in-flight set, and the sensor/drain refuses to resubmit it.
+     so a crash-and-retry of the same post materializes the SAME submitted
+     partition (idempotent) rather than a new one. A post submitted but not
+     yet harvested is visible in the in-flight set, and the drain refuses
+     to resubmit it.
    * *Retry is a NEW key, deliberately*: bumping ``attempt_round`` mints a
-     fresh partition, so a retry round is visible to the subtraction instead
-     of silently no-oping against an already-harvested partition
-     (ADR-0012 decision 5: retry round N targets posts that failed exactly
-     N times; the round number also bounds the budget — the landing table's
-     row count per post IS the attempt count, no column needed).
+     fresh partition, so a retry round is visible to the subtraction
+     (ADR-0012 decision 5; the round number bounds the budget — the
+     landing table's row count per post IS the attempt count).
    * *The subtraction means exactly "submitted but not yet harvested"*:
      a key enters the space at submit, leaves it when its harvest
      materializes. Every other state (done, failed, backlog) is derived
      from the lake, not from this space.
 
-The post ids are sorted before hashing so batch construction order (which is
-not meaningful) cannot change the key.
+The post id list is sorted before hashing so iteration order cannot change
+the key. Keys are one-way digests: mapping an in-flight key BACK to a post
+id is impossible — the consumer re-derives ``partition_key(workload,
+round, [pid])`` per candidate and tests membership (that mapping lives
+with the consumer, which owns the workload constant; do not duplicate it
+here).
+
 """
 
 from __future__ import annotations
@@ -76,11 +96,9 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from dagster import (
+    AssetKey,
     DynamicPartitionsDefinition,
-    PartitionsDefinition,
 )
-
-# ------------------------------------------------------------- partition space
 
 SUBMITTED_ASSET_NAME = "enrichment_submitted"
 HARVESTED_ASSET_NAME = "enrichment_harvested"
@@ -98,7 +116,15 @@ HARVESTED_PARTITIONS: DynamicPartitionsDefinition = DynamicPartitionsDefinition(
 
 
 def partition_key(workload: str, attempt_round: int, post_ids: Iterable[str]) -> str:
-    """Derive the deterministic batch partition key.
+    """Derive the deterministic PER-POST partition key.
+
+    Callers MUST pass exactly one post id (``[pid]``): the tracking
+    contract is per post, forced by ADR-0013's no-ledger decision — the
+    drain can only test an individual candidate's in-flight state if that
+    candidate's key is derivable from (workload, round, its own id) alone.
+    The iterable signature is kept so this stays one pure function; do NOT
+    pass a whole batch, a per-batch key can never intersect the drain's
+    per-post keys.
 
     Preconditions:
         * ``workload`` is a non-empty string (e.g. a ``landing.WORKLOADS``
@@ -133,7 +159,7 @@ def partition_key(workload: str, attempt_round: int, post_ids: Iterable[str]) ->
 # ------------------------------------------------------- the instance surface
 # The ONLY instance interface this module depends on. The real
 # dagster.DagsterInstance satisfies it (instance.get_materialized_partitions(
-# partitions_def) -> set[str]); tests inject a fake. Nothing here ever opens
+# asset_key) -> set[str]); tests inject a fake. Nothing here ever opens
 # a live instance.
 
 
@@ -141,13 +167,21 @@ def partition_key(workload: str, attempt_round: int, post_ids: Iterable[str]) ->
 class PartitionSnapshot(Protocol):
     """The partition-snapshot surface of a Dagster instance.
 
-    Postcondition of ``get_materialized_partitions``: returns the set of
-    partition keys with at least one materialization for the given
-    partitions definition, in the caller's instance.
+    The REAL ``DagsterInstance.get_materialized_partitions`` takes an
+    ``AssetKey`` (NOT a ``PartitionsDefinition`` — that call raises
+    ``AttributeError ... no attribute 'to_string'`` on Dagster 1.13.x) and
+    returns the set of partition keys with at least one materialization
+    event for that asset in the caller's instance.
+
+    Postcondition: the result contains only keys actually materialized —
+    NOT merely dynamically added. ADR-0012/0013's in-flight set is
+    ``materialized(submitted) - materialized(harvested)`` over the two
+    enrichment asset keys, so this surface must reflect materializations,
+    not the dynamic-partition registry.
     """
 
     def get_materialized_partitions(
-        self, partitions_def: PartitionsDefinition
+        self, asset_key: AssetKey
     ) -> set[str]: ...
 
 
@@ -172,9 +206,12 @@ def in_flight_partitions(instance: PartitionSnapshot) -> set[str]:
     """Derive the complete in-flight set from the instance.
 
     ``materialized(submitted) - materialized(harvested)`` — exactly the
-    batches handed to the provider whose responses have not been landed in
-    bronze yet. This is the double-submit guard: a key present here means
-    the sensor/drain MUST NOT resubmit that batch.
+    posts handed to the provider (one partition key per post) whose
+    responses have not been landed in bronze yet. This is the double-submit
+    guard: a key present here means the sensor/drain MUST NOT resubmit that
+    post. Keys are one-way digests; to map an in-flight key back to posts,
+    re-derive ``partition_key(workload, round, [pid])`` per candidate and
+    test membership.
 
     Preconditions:
         ``instance`` implements :class:`PartitionSnapshot` (the real
@@ -190,8 +227,12 @@ def in_flight_partitions(instance: PartitionSnapshot) -> set[str]:
         TypeError: if ``instance`` lacks the snapshot surface.
     """
     _require_snapshot(instance)
-    submitted = instance.get_materialized_partitions(SUBMITTED_PARTITIONS)
-    harvested = instance.get_materialized_partitions(HARVESTED_PARTITIONS)
+    submitted = instance.get_materialized_partitions(
+        AssetKey(SUBMITTED_ASSET_NAME)
+    )
+    harvested = instance.get_materialized_partitions(
+        AssetKey(HARVESTED_ASSET_NAME)
+    )
     return submitted - harvested
 
 

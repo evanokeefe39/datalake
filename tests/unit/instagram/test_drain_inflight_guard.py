@@ -23,13 +23,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from dagster import AssetKey
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
 from datalake.defs.common.schemas import duckdb_ddl
-from datalake.defs.enrichment import classification, landing
+from datalake.defs.enrichment import classification
 from datalake.defs.enrichment.partitions import (
-    HARVESTED_PARTITIONS,
-    SUBMITTED_PARTITIONS,
+    HARVESTED_ASSET_NAME,
+    SUBMITTED_ASSET_NAME,
     in_flight_partitions,
     partition_key,
 )
@@ -54,12 +55,17 @@ class FakeInstance:
         self._submitted = set(submitted)
         self._harvested = set(harvested)
 
-    def get_materialized_partitions(self, partitions_def):
-        if partitions_def is SUBMITTED_PARTITIONS:
+    def get_materialized_partitions(self, asset_key):
+        """STRICT: the real DagsterInstance takes an AssetKey on Dagster
+        1.13.x — reject anything else instead of silently returning empty."""
+        if asset_key == AssetKey(SUBMITTED_ASSET_NAME):
             return set(self._submitted)
-        if partitions_def is HARVESTED_PARTITIONS:
+        if asset_key == AssetKey(HARVESTED_ASSET_NAME):
             return set(self._harvested)
-        return set()
+        raise TypeError(
+            f"get_materialized_partitions expects an AssetKey, "
+            f"got {type(asset_key).__name__}"
+        )
 
     def submit(self, post_ids):
         """Simulate the submit stage materializing one partition per post."""

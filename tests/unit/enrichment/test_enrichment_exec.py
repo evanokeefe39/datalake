@@ -442,17 +442,23 @@ class TestWholeCorpusAdmission:
         assert mode == "gemini-batch"  # corpus passes ride the batch API
 
     def test_whole_corpus_excludes_current_prompt_gold(self, tmp_path):
+        from datalake.defs.enrichment.classification import CLASSIFICATION_DDL
         from datalake.defs.instagram.assets import ig_posts_gen_batches
         from datalake.defs.instagram.config import GoldConfig
 
         db = DuckDBResource(database=str(tmp_path / "state.duckdb"))
         ops = _ops(tmp_path)
+        # Queue tables outlive the queue writers' retirement; pre-create them
+        # so the zero-enqueue count is observable even when nothing is written.
+        _ensure_schema(ops)
         _seed_state(db, [("p1", "done already")])
         with db.get_connection() as conn:
+            conn.execute(CLASSIFICATION_DDL)
             conn.execute(
-                "INSERT OR REPLACE INTO gold_analyses (post_id, domain,"
-                " prompt_hash, result_json, analysed_at)"
-                " VALUES ('p1', 'instagram', ?, '{}', '2026-01-01')",
+                "INSERT OR REPLACE INTO silver_content_classification ("
+                "post_id, platform, domain, result_json, prompt_hash,"
+                " analysed_at)"
+                " VALUES ('p1', 'instagram', 'instagram', '{}', ?, '2026-01-01')",
                 [CURRENT_PROMPT_HASH],
             )
         ig_posts_gen_batches(
