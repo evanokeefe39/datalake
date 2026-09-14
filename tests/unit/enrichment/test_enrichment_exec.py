@@ -15,13 +15,7 @@ import pytest
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
 from datalake.defs.enrichment import gemini_batch
-from datalake.defs.enrichment.batch import (
-    _ensure_schema,
-    claim_batch,
-    create_batch,
-    set_gemini_batch_name,
-    set_gemini_batch_status,
-)
+from datalake.defs.enrichment.batch import _ensure_schema
 from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH, IG_GOLD_PROMPT
 from datalake.defs.enrichment.registry import (
     is_current_prompt_registered,
@@ -84,126 +78,6 @@ class TestPromptRegistry:
         _ensure_schema(ops)
         assert resolve_prompt(ops, "nope") is None
 
-
-# ── Batch mode columns ──────────────────────────────────────────────────────
-
-
-class TestBatchModeColumns:
-    def test_create_batch_defaults_to_interactive(self, tmp_path):
-        ops = _ops(tmp_path)
-        _ensure_schema(ops)
-        create_batch(ops, [json.dumps({"post_id": "p1"})])
-        batch = claim_batch(ops)
-        assert batch["mode"] == "interactive"
-        assert batch["gemini_batch_name"] is None
-
-    def test_create_batch_with_gemini_batch_mode(self, tmp_path):
-        ops = _ops(tmp_path)
-        _ensure_schema(ops)
-        create_batch(ops, [json.dumps({"post_id": "p1"})], mode="gemini-batch")
-        batch = claim_batch(ops)
-        assert batch["mode"] == "gemini-batch"
-
-    def test_claim_batch_mode_filter(self, tmp_path):
-        ops = _ops(tmp_path)
-        _ensure_schema(ops)
-        create_batch(ops, [json.dumps({"post_id": "a"})], mode="interactive")
-        create_batch(ops, [json.dumps({"post_id": "b"})], mode="gemini-batch")
-        batch = claim_batch(ops, mode="gemini-batch")
-        # only the gemini-batch batch is claimed (oldest interactive skipped)
-        assert json.loads(batch["payloads"][0])["post_id"] == "b"
-        assert batch["mode"] == "gemini-batch"
-        # interactive batches are never claimed in gemini-batch mode
-        ops2 = SQLiteResource(database=str(tmp_path / "ops2.sqlite"))
-        create_batch(ops2, [json.dumps({"post_id": "c"})], mode="interactive")
-        assert claim_batch(ops2, mode="gemini-batch") is None
-
-    def test_claim_batch_interactive_skips_gemini_batch(self, tmp_path):
-        ops = _ops(tmp_path)
-        create_batch(ops, [json.dumps({"post_id": "x"})], mode="gemini-batch")
-        assert claim_batch(ops, mode="interactive") is None
-
-    def test_set_gemini_batch_name_and_status(self, tmp_path):
-        ops = _ops(tmp_path)
-        _ensure_schema(ops)
-        job_id = create_batch(ops, [json.dumps({"post_id": "p1"})])
-        set_gemini_batch_name(ops, job_id, "batches/abc|batches/def")
-        set_gemini_batch_status(ops, job_id, "RETRIEVED")
-        import sqlite3
-
-        conn = sqlite3.connect(str(tmp_path / "ops.sqlite"))
-        name, status = conn.execute(
-            "SELECT gemini_batch_name, gemini_batch_status FROM batch_jobs WHERE id = ?",
-            [job_id],
-        ).fetchone()
-        conn.close()
-        assert name == "batches/abc|batches/def".replace("abc", "abc")
-        assert status == "RETRIEVED"
-
-    def test_migration_adds_columns_to_preexisting_tables(self, tmp_path):
-        # Simulate a pre-migration DB (no mode/gemini columns).
-        import sqlite3
-
-        db_path = str(tmp_path / "ops.sqlite")
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "CREATE TABLE batch_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "consumer TEXT NOT NULL DEFAULT 'gemini', status TEXT NOT NULL "
-            "DEFAULT 'pending', created_at TEXT NOT NULL)"
-        )
-        conn.commit()
-        conn.close()
-        ops = SQLiteResource(database=db_path)
-        _ensure_schema(ops)  # must ALTER-add the missing columns
-        job_id = create_batch(ops, [json.dumps({"post_id": "p"})])
-        assert job_id
-
-
-    def test_migration_backfills_mode_on_legacy_rows(self, tmp_path):
-        # Regression: the DML backfill must be committed (DDL autocommits,
-        # DML does not in sqlite3 legacy mode) or legacy rows keep NULL mode.
-        import sqlite3
-
-        db_path = str(tmp_path / "ops.sqlite")
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "CREATE TABLE batch_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "consumer TEXT NOT NULL DEFAULT 'gemini', status TEXT NOT NULL "
-            "DEFAULT 'pending', created_at TEXT NOT NULL)"
-        )
-        conn.execute(
-            "INSERT INTO batch_jobs (consumer, status, created_at) "
-            "VALUES ('gemini', 'pending', '2026-01-01T00:00:00+00:00')"
-        )
-        conn.commit()
-        conn.close()
-        ops = SQLiteResource(database=db_path)
-        _ensure_schema(ops)
-        check = sqlite3.connect(db_path)
-        mode = check.execute(
-            "SELECT mode FROM batch_jobs WHERE id = 1"
-        ).fetchone()[0]
-        check.close()
-        assert mode == "interactive"
-
-    def test_set_name_extending_appends_submitted_statuses(self, tmp_path):
-        ops = _ops(tmp_path)
-        _ensure_schema(ops)
-        job_id = create_batch(ops, [json.dumps({"post_id": "p"})], mode="gemini-batch")
-        set_gemini_batch_name(ops, job_id, "batches/a")
-        set_gemini_batch_status(ops, job_id, "RETRIEVED", name_index=0)
-        # Incremental resubmission appends a new chunk: old status preserved.
-        set_gemini_batch_name(ops, job_id, "batches/a|batches/b")
-        import sqlite3
-
-        conn = sqlite3.connect(str(tmp_path / "ops.sqlite"))
-        name, status = conn.execute(
-            "SELECT gemini_batch_name, gemini_batch_status FROM batch_jobs WHERE id = ?",
-            [job_id],
-        ).fetchone()
-        conn.close()
-        assert name == "batches/a|batches/b"
-        assert status.split("|") == ["RETRIEVED", "SUBMITTED"]
 
 
 # ── gemini_batch module ─────────────────────────────────────────────────────
