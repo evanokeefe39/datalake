@@ -1024,6 +1024,16 @@ def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame
 DRAIN_WORKLOAD: str = landing.WORKLOAD_CONTENT_CLASSIFICATION
 """The discovery drain's partition workload — classification enrichment."""
 
+_drain_instance: "PartitionSnapshot | None" = None
+"""TEST-ONLY override for the drain's Dagster instance.
+
+Production code NEVER sets this and the asset NEVER falls back to
+``DagsterInstance.get()``: when it is unset, ``ig_posts_gen_batches`` uses
+``context.instance``. It exists only so unit tests can inject a fake
+``PartitionSnapshot`` — ``build_asset_context(instance=<fake>)`` is not an
+option because Dagster type-checks that against the REAL instance class.
+"""
+
 
 def drain_in_flight_keys(instance: "PartitionSnapshot") -> frozenset[str]:
     """THE drain's definition of "in flight" (US-EENG-4 AC2/AC5).
@@ -1121,7 +1131,6 @@ def ig_posts_gen_batches(
     config: GoldConfig,
     duckdb: DuckDBResource,
     ops: SQLiteResource,
-    instance: "PartitionSnapshot | None" = None,
 ) -> pl.DataFrame:
     """Dumb drain over ``ig_post_labels`` (US-L4): any post whose label pass
     approved it for enrichment that has no current-prompt conformed
@@ -1220,15 +1229,18 @@ def ig_posts_gen_batches(
     # ── In-flight guard (US-EENG-4): instance-derived, never the queue. ──
     # The in-flight set comes from the Dagster instance via
     # partitions.in_flight_partitions — the SAME function the accounting
-    # identity uses, so guard and identity cannot disagree. There is NO
-    # DagsterInstance.get() fallback: the instance is injected via the
-    # asset context, and an absent one fails loudly instead of silently
-    # reading a foreign instance.
-    # Test-only injection wins; production uses the CONTEXT-INJECTED
-    # instance. There is NO DagsterInstance.get() fallback anywhere — an
-    # uninjected context is impossible in Dagster, and a missing instance
-    # here raises rather than silently reading a foreign one.
-    instance = instance if instance is not None else context.instance
+    # identity uses, so guard and identity cannot disagree. The instance
+    # ALWAYS comes from the asset context (context.instance): ONE instance
+    # serves both the in-flight guard here and the enqueue materialization
+    # in _materialize_submitted_partitions below. A non-resource, non-config
+    # `instance` function parameter would be misread by Dagster as an asset
+    # INPUT named "instance" (DagsterInvalidDefinitionError) — which is why
+    # the parameter is banned. The module-level _drain_instance is a
+    # TEST-ONLY override; production never sets it. There is NO
+    # DagsterInstance.get() fallback: an instance the drain cannot obtain
+    # from the context fails loudly rather than silently reading a foreign
+    # one.
+    instance = _drain_instance if _drain_instance is not None else context.instance
     suppressed: list[str] = []
     rounds_by_post: dict[str, int] = {}
     if candidates:

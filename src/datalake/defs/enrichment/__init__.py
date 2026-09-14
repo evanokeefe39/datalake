@@ -7,7 +7,12 @@ ops.sqlite queue (`batch_jobs`/`batch_items`/`dead_letter`) has no read or
 write on any live path. The loop: drain → submit → harvest (ADR-0014).
 """
 
-from .assets import ENRICHMENT_CHECKS, ensure_gold_analyses, gold_analyses
+from .assets import (
+    ENRICHMENT_CHECKS,
+    ensure_gold_analyses,
+    gold_analyses,
+    silver_enrichment_conform,
+)
 from .harvest import (
     enrichment_harvest_job,
     harvest_enrichment_op,
@@ -27,6 +32,7 @@ __all__ = [
     # Assets
     "ensure_gold_analyses",
     "gold_analyses",
+    "silver_enrichment_conform",
     "ENRICHMENT_CHECKS",
     # Submit (ADR-0014: partition-discovered, seam-mediated)
     "discover_pending",

@@ -31,7 +31,7 @@ def _run_enqueue(duckdb, ops):
     instance = DagsterInstance.ephemeral()
     return ig_posts_gen_batches(
         build_asset_context(instance=instance), config=GoldConfig(),
-        duckdb=duckdb, ops=ops, instance=instance,
+        duckdb=duckdb, ops=ops,
     )
 
 
@@ -98,13 +98,9 @@ def test_enqueue_skips_already_completed(tmp_path):
     # Seed silver
     now = datetime.now(timezone.utc)
     with duckdb.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id TEXT NOT NULL, domain TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash TEXT, result_json TEXT, analysed_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
+        from datalake.defs.enrichment.classification import CLASSIFICATION_DDL
+
+        conn.execute(CLASSIFICATION_DDL)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS silver_ig_posts (
                 post_id TEXT PRIMARY KEY, caption TEXT, processed_on TIMESTAMP,
@@ -143,7 +139,8 @@ def test_enqueue_skips_already_completed(tmp_path):
             ["p1", now, LABEL_VERSION],
         )
         conn.execute(
-            "INSERT INTO gold_analyses (post_id, domain, prompt_hash, analysed_at) "
+            "INSERT INTO silver_content_classification "
+            "(post_id, platform, prompt_hash, analysed_at) "
             "VALUES (?, 'instagram', ?, ?)",
             ["p1", CURRENT_PROMPT_HASH, now.isoformat()],
         )

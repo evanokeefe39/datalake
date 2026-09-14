@@ -23,6 +23,7 @@ import duckdb
 import polars as pl
 import pytest
 
+from datalake.defs.common import lake
 from datalake.defs.enrichment import classification, landing
 from scripts.migrate_classification_to_silver import (
     MIGRATION_RUN_ID,
@@ -413,3 +414,84 @@ def test_migration_plan_writes_nothing_and_apply_is_idempotent(roots):
     con.close()
     assert landing.read_responses(bronze_root).height == bronze_n_first
     assert second["run_id"] == MIGRATION_RUN_ID
+
+
+# ── Defect guards: default-root symmetry + live-lake provider guard ────────
+
+
+@pytest.fixture
+def default_root_redirect(tmp_path, monkeypatch):
+    """Point the lake module's default bronze root at tmp_path. A test that
+    exercises `root=None` must NEVER touch the real `data/lake/bronze` —
+    bronze is write-once and discovery keys on file mtime; a stray fixture
+    write there re-triggers full silver processing of the live file."""
+    root = tmp_path / "lake" / "bronze"
+    monkeypatch.setattr(lake, "BRONZE_LAKE", root)
+    return root
+
+
+def test_default_root_apply_materializes_bronze_readable_from_disk(
+    roots, default_root_redirect
+):
+    """Apply with `bronze_root=None` (the CLI default) MUST land the bronze
+    Parquet at the DEFAULT lake root and conform from DISK — the live run's
+    defect was a memory-only landing (conformed 9576, appended 0, silver 0
+    rows). `landing.read_responses(None)` and the backfill write path name
+    the same file for the same root value; under the old asymmetric branch
+    the file would not exist and every assertion below fails."""
+    db, silver_root = roots["db"], roots["silver_root"]
+    report = run_migration(
+        db_path=db, bronze_root=None, silver_root=silver_root, apply=True
+    )
+    rec = report["reconciliation"]
+    n = rec["total"]
+    assert n > 0
+
+    # Same root value (None): the write path and the read path agree.
+    disk = landing.read_responses(None)
+    assert disk.height == n
+    assert (default_root_redirect / f"{landing.DATASET_ID}.parquet").exists()
+
+    # Conform reads the LANDED file, not memory: same counts from disk.
+    from_disk = classification.conform_classification(
+        disk, deviance_notes=classification.LEGACY_DEVIANCE_NOTES
+    )
+    assert from_disk.counts["conformed"] == rec["conformed"]
+    assert from_disk.counts["quarantined"] == rec["quarantined"]
+    assert from_disk.counts["classification_rows"] == n
+
+    # The silver table registered in state was materialized from that file.
+    con = duckdb.connect(db, read_only=True)
+    silver_rows = con.execute(
+        f"SELECT COUNT(*) FROM {classification.TABLE_ID}"
+    ).fetchone()[0]
+    con.close()
+    assert silver_rows == rec["conformed"]
+    assert report["bronze_rows_appended"] == n
+
+
+def test_synthetic_provider_cannot_land_into_default_root(
+    tmp_path, default_root_redirect
+):
+    """The guard that makes the observed fixture leak structurally
+    impossible: `provider='fake'` (any non-KNOWN_PROVIDERS value) is refused
+    outright at the live default root, while an explicit test root still
+    accepts it."""
+    kwargs = dict(
+        post_id="P0",
+        platform="instagram",
+        workload=landing.WORKLOAD_CONTENT_CLASSIFICATION,
+        provider="fake",
+        model="fake-model",
+        prompt_hash="ph",
+        schema_version="1",
+        run_id="job1",
+        response_text="{}",
+        ok=True,
+    )
+    with pytest.raises(ValueError, match="LIVE default lake root"):
+        landing.land_response(**kwargs, root=None)
+    assert not (default_root_redirect / f"{landing.DATASET_ID}.parquet").exists()
+    # An explicit tmp root is the sanctioned way to land synthetic fixtures.
+    tmp_root = tmp_path / "fixtures"
+    assert landing.land_response(**kwargs, root=str(tmp_root)) == 1

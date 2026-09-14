@@ -28,7 +28,6 @@ def _run_enqueue(duckdb, ops):
     instance = DagsterInstance.ephemeral()
     return ig_posts_gen_batches(
         build_asset_context(instance=instance), duckdb=duckdb, ops=ops,
-        instance=instance,
     )
 
 

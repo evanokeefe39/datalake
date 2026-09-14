@@ -108,7 +108,7 @@ def make_result(pid: str, ok: bool, round_n: int = 0) -> Result:
 # ── The harvested producer (D2): completion genuinely releases work ─────────
 
 
-def test_harvest_releases_only_its_own_partitions(instance):
+def test_harvest_releases_only_its_own_partitions(instance, tmp_path):
     """P terminates (failed → retry), Q stays in flight.
 
     Fails if the harvested producer is deleted: P's key would stay in the
@@ -120,7 +120,9 @@ def test_harvest_releases_only_its_own_partitions(instance):
     assert in_flight_partitions(instance) == {rkey("P"), rkey("Q")}
 
     adapter = FakeAdapter(results_by_handle={"job1": [make_result("P", ok=False)]})
-    outcome = harvest.harvest_pending(instance, adapter)
+    outcome = harvest.harvest_pending(
+        instance, adapter, root=str(tmp_path / "lake")
+    )
 
     # D2: the round-0 key moved OUT of in-flight — Q's did not.
     assert in_flight_partitions(instance) == {rkey("Q")}
@@ -129,14 +131,16 @@ def test_harvest_releases_only_its_own_partitions(instance):
     assert outcome["retried"] == 1
 
 
-def test_drain_run_two_reenqueues_failed_and_suppresses_in_flight(instance):
+def test_drain_run_two_reenqueues_failed_and_suppresses_in_flight(
+    instance, tmp_path
+):
     """The W4 acceptance: run 2 re-enqueues the eligible failed post AND
     suppresses the in-flight one — BOTH, so total suppression fails."""
     drain_enqueue(instance, {"P": 0, "Q": 0})
     record_handle(instance, rkey("P"), "job1")
     record_handle(instance, rkey("Q"), "job1")
     adapter = FakeAdapter(results_by_handle={"job1": [make_result("P", ok=False)]})
-    harvest.harvest_pending(instance, adapter)
+    harvest.harvest_pending(instance, adapter, root=str(tmp_path / "lake"))
 
     candidates = ["P", "Q"]
     suppressed = ig_assets.drain_suppressed_post_ids(candidates, instance)
@@ -152,19 +156,19 @@ def test_drain_run_two_reenqueues_failed_and_suppresses_in_flight(instance):
     assert rkey("P", 0) not in in_flight_partitions(instance)
 
 
-def test_in_flight_empty_after_harvest_lands(instance):
+def test_in_flight_empty_after_harvest_lands(instance, tmp_path):
     drain_enqueue(instance, {"P": 0})
     record_handle(instance, rkey("P"), "job1")
     adapter = FakeAdapter(results_by_handle={"job1": [make_result("P", ok=True)]})
-    harvest.harvest_pending(instance, adapter)
+    harvest.harvest_pending(instance, adapter, root=str(tmp_path / "lake"))
     assert in_flight_partitions(instance) == set()
 
 
-def test_submit_discovers_retry_round_after_drain_reenqueue(instance):
+def test_submit_discovers_retry_round_after_drain_reenqueue(instance, tmp_path):
     drain_enqueue(instance, {"P": 0})
     record_handle(instance, rkey("P"), "job1")
     adapter = FakeAdapter(results_by_handle={"job1": [make_result("P", ok=False)]})
-    harvest.harvest_pending(instance, adapter)
+    harvest.harvest_pending(instance, adapter, root=str(tmp_path / "lake"))
     drain_enqueue(instance, {"P": 1})
 
     pending = submit.discover_pending(instance)
@@ -175,7 +179,7 @@ def test_submit_discovers_retry_round_after_drain_reenqueue(instance):
 # ── The accounting identity over the corpus ─────────────────────────────────
 
 
-def test_accounting_identity_holds_over_corpus(instance):
+def test_accounting_identity_holds_over_corpus(instance, tmp_path):
     """done + failed + in_flight + backlog == candidates, over the corpus.
 
     Lake-derived counts: done = conformed silver rows (none here — no
@@ -192,7 +196,7 @@ def test_accounting_identity_holds_over_corpus(instance):
             "job1": [make_result("P0", ok=True), make_result("P1", ok=False)],
         }
     )
-    harvest.harvest_pending(instance, adapter)
+    harvest.harvest_pending(instance, adapter, root=str(tmp_path / "lake"))
 
     harvested = instance.get_materialized_partitions(HARVESTED)
     in_flight = in_flight_partitions(instance)

@@ -151,13 +151,16 @@ def drain(conn, db, ops, monkeypatch):
     monkeypatch.setattr(ig_assets.GeminiTierConfig, "detect", lambda: _Tier())
 
     def run(config=None, instance=None):
-        return ig_posts_gen_batches(
-            build_asset_context(),
-            config=config or GoldConfig(prefer_interactive=True),
-            duckdb=db,
-            ops=ops,
-            instance=instance,
-        )
+        ig_assets._drain_instance = instance
+        try:
+            return ig_posts_gen_batches(
+                build_asset_context(),
+                config=config or GoldConfig(prefer_interactive=True),
+                duckdb=db,
+                ops=ops,
+            )
+        finally:
+            ig_assets._drain_instance = None
 
     return run
 

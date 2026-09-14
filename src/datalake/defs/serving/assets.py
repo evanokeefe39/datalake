@@ -196,6 +196,12 @@ def v_post_detail(duckdb: DuckDBResource) -> None:
     profiles still appear.
     """
     with duckdb.get_connection() as conn:
+        # Clean cutover (US-ESA-2): ``analytics_views`` was retired with the
+        # serving refactor to per-view assets, but it still exists in state
+        # DBs created before the refactor — still reading ``gold_analyses``.
+        # It is not in the catalog (DUCKDB_VIEWS) and nothing selects it;
+        # drop it so no serving view can keep referencing the retired table.
+        conn.execute("DROP VIEW IF EXISTS analytics_views")
         conn.execute("""
             CREATE OR REPLACE VIEW v_post_detail AS
             SELECT
@@ -1063,12 +1069,17 @@ def v_creator_profile(duckdb: DuckDBResource) -> None:
         "Long-form per-creator topics: top-5 by post count and top-5 by "
         "baseline-normalized weighted performance."
     ),
-    deps=[AssetKey(["v_post_metrics"]), AssetKey(["v_post_detail"])],
+    deps=[AssetKey(["gold_post_enrichment"])],
 )
 def v_creator_topics(duckdb: DuckDBResource) -> None:
     """Top topics per creator for the creators-page topic chips.
 
     Grain: one row per ``(creator_id, gold_topic)`` over ENRICHED posts.
+    Reads the wide per-post mart ``gold_post_enrichment`` — the correct
+    upstream for topic + engagement: it already composes the canonical
+    ``v_post_metrics`` (``engagement_score``, ``creator_id``) and
+    ``v_post_detail`` (``gold_topic``) on the ``(post_id, platform)`` key,
+    so no metric is re-derived here (WATCHDOG metrics-centralization).
     ``perf_score`` = mean of member posts' baseline-normalized weighted
     ``engagement_score`` (posts without a score drop out of the mean).
     ``perf_rank`` ranks topics by ``perf_score`` DESC within a creator;
@@ -1081,15 +1092,14 @@ def v_creator_topics(duckdb: DuckDBResource) -> None:
             CREATE OR REPLACE VIEW v_creator_topics AS
             WITH topics AS (
                 SELECT
-                    pm.creator_id,
-                    pd.gold_topic                AS topic,
+                    gpe.creator_id,
+                    gpe.gold_topic               AS topic,
                     COUNT(*)                     AS post_count,
-                    AVG(pm.engagement_score)     AS perf_score
-                FROM v_post_metrics pm
-                JOIN v_post_detail pd ON pd.post_id = pm.post_id
-                WHERE pm.creator_id IS NOT NULL
-                  AND pd.gold_topic IS NOT NULL
-                GROUP BY pm.creator_id, pd.gold_topic
+                    AVG(gpe.engagement_score)    AS perf_score
+                FROM gold_post_enrichment gpe
+                WHERE gpe.creator_id IS NOT NULL
+                  AND gpe.gold_topic IS NOT NULL
+                GROUP BY gpe.creator_id, gpe.gold_topic
             ),
             ranked AS (
                 SELECT
@@ -1245,6 +1255,9 @@ def gold_post_enrichment(duckdb: DuckDBResource) -> None:
     the five silver channel tables join on ``(post_id, platform)`` — the
     platform key, never ``domain``. ``platform`` is sourced from
     ``dim_profile.channel`` via ``v_post_detail`` (no literal restated).
+    Creator identity (``creator_id``/``owner_username``) is carried so
+    creator-grain consumers can read the mart without re-joining
+    ``v_post_metrics``.
     LEFT JOINs throughout: a post missing a channel output still appears.
     """
     with duckdb.get_connection() as conn:
@@ -1252,6 +1265,8 @@ def gold_post_enrichment(duckdb: DuckDBResource) -> None:
             CREATE OR REPLACE VIEW gold_post_enrichment AS
             SELECT
                 pm.post_id,
+                pm.creator_id,
+                pm.owner_username,
                 pd.channel                             AS platform,
                 -- Engagement metrics — canonical (v_post_metrics).
                 pm.likes_count,

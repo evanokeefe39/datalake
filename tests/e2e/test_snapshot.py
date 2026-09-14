@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from dagster import build_asset_context
+from dagster import DagsterInstance, build_asset_context
 from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
@@ -103,12 +103,9 @@ def test_enqueue_enqueues_silver_posts(db, ops_db, bronze_dir):
         )
 
     # Run enqueue
-    from dagster import DagsterInstance, build_asset_context
-
     instance = DagsterInstance.ephemeral()
     result = ig_posts_gen_batches(
         build_asset_context(instance=instance), duckdb=db, ops=ops_db,
-        instance=instance,
     )
 
     assert result["enqueued"][0] >= 1

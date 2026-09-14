@@ -22,6 +22,7 @@ from .defs.enrichment import (
     enrichment_harvest_job,
     enrichment_submit_job,
     gold_analyses,
+    silver_enrichment_conform,
 )
 from .defs.instagram import (
     ig_checks,
@@ -58,6 +59,7 @@ all_assets = [
     ig_profiles_slv,
     ig_comments_slv,
     ig_posts_gen_batches,
+    silver_enrichment_conform,
     gold_analyses,
     *serving_assets,
 ]

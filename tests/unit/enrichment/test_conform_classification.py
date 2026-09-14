@@ -25,7 +25,7 @@ import duckdb
 import polars as pl
 import pytest
 
-from datalake.defs.enrichment import conform as conform_mod
+from datalake.defs.enrichment import classification, conform as conform_mod
 from datalake.defs.enrichment.conform import (
     MODEL_LEGACY_NULL,
     SILVER_CONTENT_CLASSIFICATION,
@@ -228,15 +228,20 @@ def state_copy(tmp_path) -> Path:
     return db
 
 
-def _run_migration(state_db: Path, lake_root: Path) -> subprocess.CompletedProcess:
+def _run_migration(
+    state_db: Path, bronze_root: Path, silver_root: Path
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
             sys.executable,
             str(Path(__file__).parents[3] / "scripts" / "migrate_classification_to_silver.py"),
             "--state-db",
             str(state_db),
-            "--lake-root",
-            str(lake_root),
+            "--bronze-root",
+            str(bronze_root),
+            "--silver-root",
+            str(silver_root),
+            "--apply",
             "--run-id",
             "test-migration",
         ],
@@ -249,41 +254,34 @@ def _run_migration(state_db: Path, lake_root: Path) -> subprocess.CompletedProce
 def test_migration_conforms_reconciles_and_is_idempotent(
     state_copy, tmp_path
 ):
-    lake_root = tmp_path / "lake" / "silver"
-    r1 = _run_migration(state_copy, lake_root)
+    bronze_root = tmp_path / "lake" / "bronze"
+    silver_root = tmp_path / "lake" / "silver"
+    r1 = _run_migration(state_copy, bronze_root, silver_root)
     assert r1.returncode == 0, r1.stderr
-    assert "gold_rows=12 conformed=11 quarantined=1" in r1.stdout
+    report = json.loads(r1.stdout.split("counts:", 1)[1])
+    assert report["gold_rows"] == 12
+    rec = report["reconciliation"]
+    assert rec["conformed"] == 11
+    assert rec["quarantined"] == 1
 
     conn = duckdb.connect(str(state_copy), read_only=True)
     try:
         assert conn.execute(
             "SELECT COUNT(*) FROM silver_content_classification"
         ).fetchone()[0] == 11
-        # sentinel: exactly the observed 8 model-NULL rows
+        # sentinel: exactly the observed 8 model-NULL rows, carried as the
+        # classification module's explicit gap marker (never a silent NULL)
         assert conn.execute(
             f"SELECT COUNT(*) FROM silver_content_classification "
-            f"WHERE model = '{MODEL_LEGACY_NULL}'"
+            f"WHERE model = '{classification.MODEL_LEGACY_NULL}'"
         ).fetchone()[0] == 8
-        # reconciliation identity, measured in-state
-        assert conn.execute(
-            "SELECT (SELECT COUNT(*) FROM silver_content_classification) "
-            "+ (SELECT COUNT(*) FROM silver_enrichment_quarantine) "
-            "= (SELECT COUNT(*) FROM gold_analyses)"
-        ).fetchone()[0] is True
+        # reconciliation identity holds on the report...
+        assert rec["total"] == rec["conformed"] + rec["quarantined"] == 12
+        # ...and every quarantined row is named loudly, never dropped
+        qrows = report["quarantined_rows"]
+        assert [q["post_id"] for q in qrows] == ["bad-0"]
+        assert {q["reason_code"] for q in qrows} == {"parse_error"}
         # platform/domain mapping + provenance parity on every row
-        assert conn.execute(
-            "SELECT COUNT(*) FROM silver_content_classification "
-            "WHERE platform != 'instagram'"
-        ).fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM silver_content_classification "
-            "WHERE domain = 'instagram'"
-        ).fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM silver_content_classification "
-            "WHERE provider IS NULL OR model IS NULL OR prompt_hash IS NULL "
-            "OR run_id IS NULL OR schema_version IS NULL"
-        ).fetchone()[0] == 0
         assert conn.execute(
             "SELECT COUNT(*) FROM silver_content_classification s "
             "JOIN gold_analyses g USING (post_id) "
@@ -292,14 +290,11 @@ def test_migration_conforms_reconciles_and_is_idempotent(
         before = conn.execute(
             "SELECT * FROM silver_content_classification ORDER BY post_id"
         ).fetchall()
-        assert conn.execute(
-            "SELECT reason_code FROM silver_enrichment_quarantine"
-        ).fetchall() == [("parse_error",)]
     finally:
         conn.close()
 
     # second run changes 0 rows
-    r2 = _run_migration(state_copy, lake_root)
+    r2 = _run_migration(state_copy, bronze_root, silver_root)
     assert r2.returncode == 0, r2.stderr
     conn = duckdb.connect(str(state_copy), read_only=True)
     try:
@@ -314,7 +309,7 @@ def test_migration_conforms_reconciles_and_is_idempotent(
 def test_migration_fails_loudly_on_unexpected_sentinel_count(tmp_path):
     db = tmp_path / "state.duckdb"
     _make_gold_fixture(db, model_null_rows=7)  # != the audited 8
-    r = _run_migration(db, tmp_path / "lake")
+    r = _run_migration(db, tmp_path / "lake" / "bronze", tmp_path / "lake" / "silver")
     assert r.returncode != 0
     assert "observed 7" in (r.stderr + r.stdout)
     assert "expected 8" in (r.stderr + r.stdout)

@@ -208,3 +208,65 @@ Canonical facts: `docs/architecture/pipelines/enrichment.md` (v3, supersedes
   artifacts. One submit per pass, harvest fans out to every table the pass
   produced. Adapters swap only via `build_adapter(name)` — no provider named
   anywhere else.
+## Orchestration, live-state and concurrency traps (added 2026-09-14)
+
+These are traps for the reviewer/advisor, not the executor. Each one produced a
+real defect during the v3 materialization.
+
+### Dagster definitions must LOAD — treat it as the first gate
+
+- **Every parameter of an `@asset`-decorated function that is not a resource or a
+  config is read by Dagster as an ASSET INPUT.** `ig_posts_gen_batches` declared
+  `instance: "PartitionSnapshot | None" = None`; Dagster resolved an input named
+  `instance` and the whole graph failed to load
+  (`DagsterInvalidDefinitionError: Input asset "["instance"]" is not produced by
+  any of the provided asset ops`). The instance comes from `context.instance`.
+- Gate: `uv run dagster definitions validate -m datalake.definitions`. An asset the
+  worker "verified" by calling it as a plain function can still be un-loadable in
+  Dagster. Watch for test-only injection globals too (`_drain_instance` in
+  `defs/instagram/assets.py`) — acceptable, but it is a test seam, not production.
+
+### Never run an enrichment backfill with DEFAULT roots
+
+- `backfill_bronze(root=None)` takes `else: bronze = incoming` and **writes nothing**,
+  while `run_migration` then conforms via `landing.read_responses(root=None)` — from
+  DISK. The run printed `conformed: 9576` and materialized 0 rows; the silver table
+  appeared in `state.duckdb` with zero rows. **Read the default branch before
+  pointing a script at live state, and verify the destination, never the log line.**
+- A default-root run leaked synthetic rows (`provider='fake'`, `run_id='job1'`,
+  post_ids `P/P0/P1`) into the LIVE `data/lake/bronze/bronze_enrichment_raw.parquet`.
+  Require a known-provider guard before landing, and keep fixtures structurally
+  unable to reach the default lake root.
+- `data/lake/bronze/bronze_enrichment_raw.parquet` is the ENRICHMENT landing — NOT
+  scraped data. Enrichment is replaceable by locked decision, so resetting a polluted
+  landing file is safe. The other `data/lake/bronze/*.parquet` (Apify) and
+  `data/media` are irreplaceable. Never conflate them.
+- Bronze is write-once and discovery keys on file mtime: rewriting an existing bronze
+  file re-triggers silver for it. New data = new file.
+
+### Concurrent agents on one checkout
+
+- A stray `git reset --hard` (reflog `reset: moving to HEAD`) reverted concurrent
+  uncommitted edits and put ~762 insertions at risk; neither worker admitted it.
+  **Commit per phase.** Before a multi-worker burst, protect in-flight work without
+  touching the tree: `SHA=$(git stash create "wip"); git update-ref refs/safety/<name> $SHA`.
+  `reset --hard` spares untracked files, not modified tracked ones.
+- Instruct workers to never run tree-mutating git (`reset`, `checkout`, `stash`,
+  `clean`) — one worker's "get a clean baseline" can destroy a sibling's work.
+- A full test-suite run while workers hold the tree yields a MIXED-VERSION reading.
+  It is invalid as a baseline and must not be reported as a correction.
+
+### Current v3 residuals (known, do not mistake for done)
+
+- **Only `silver_content_classification` has rows** (9,576, `platform='instagram'`).
+  The other five silver tables have NO producer yet: `conform.TRANSCRIPT_WORKLOADS`
+  is deliberately empty, and the visual/text passes have not been run.
+- `bronze_enrichment_raw` holds the classification workload only.
+- `conform.py`'s `TABLE_SCHEMAS` duplicates the `schemas.py` catalog for the six silver
+  tables — two definitions of the same tables. Unresolved.
+- `gold_content_shape_performance` grain includes `platform`
+  (`(platform, domain, topic, follower_tier, facet_name, facet_value)`) as a deliberate
+  deviation from `enrichment.md` §5.3, which omits it. **The spec needs correcting** —
+  do not "fix" the code back to the spec.
+- The three §9 open decisions remain OPEN (form-taxonomy overlap;
+  parser-enum all-or-nothing; `asr_model` vs envelope `model`). Do not resolve silently.

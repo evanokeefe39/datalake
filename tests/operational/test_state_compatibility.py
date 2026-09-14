@@ -1,16 +1,18 @@
 """Readiness tests: validate code expectations against live databases.
 
-Opens ``data/state.duckdb`` and ``data/ops.sqlite`` read-only and asserts:
 - Table existence (both expected tables present, and no unexpected extra tables)
 - Column types (extra columns tolerated, missing/mismatched columns fail)
-- View queryability
-- Stale table name detection (e.g. gold_ig_analyses when gold_analyses is expected)
-
-On a fresh clone (no DB files) every test is skipped — a cold checkout is
-valid pipeline state, not a defect.
+- View queryability — against the TARGET world (all DUCKDB_VIEWS must exist)
+- View DEFINITION purity: no serving view may reference the retired
+  enrichment tables (``gold_analyses`` / ``gold_growth_facets``); the
+  classification views must read ``silver_content_classification`` and the
+  marts must compose their canonical upstreams (ADR-0011, US-ESA-2).
+- Stale name detection (tables AND views, e.g. gold_ig_analyses,
+  analytics_views)
 """
 
 
+import re
 import sqlite3
 import warnings
 from pathlib import Path
@@ -46,6 +48,35 @@ _STALE_SQLITE_TABLES: dict[str, str] = {
         "Replace with 'creators' + 'profiles'. "
         "Run scripts/migrate_creators_profiles.py"
     ),
+}
+
+# ── Tables that exist in the DB but are not in the catalog ───────────────
+_STALE_DUCKDB_VIEWS: dict[str, str] = {
+    "analytics_views": (
+        "Retired — the serving layer was split into per-view assets "
+        "(v_post_detail + downstream views). The v_post_detail serving asset "
+        "drops this view; re-run the serving assets."
+    ),
+}
+
+# Retired enrichment tables — no serving view may reference them (ADR-0011:
+# gold_analyses → silver_content_classification; gold_growth_facets → the
+# four visual/text silver tables).
+_BANNED_VIEW_SOURCES_RE = re.compile(r"\b(gold_analyses|gold_growth_facets)\b")
+
+# Views that MUST read the target world, and the canonical sources their
+# definition must reference. This is what makes the rebind detectable: an
+# old-world definition (reading gold_analyses) cannot satisfy it.
+_REQUIRED_VIEW_SOURCES: dict[str, list[str]] = {
+    "v_post_detail": ["silver_content_classification"],
+    "v_overview": ["silver_content_classification"],
+    "gold_post_enrichment": ["v_post_metrics", "silver_visual_annotations"],
+    "gold_creator_performance": ["v_creator_profile"],
+    "gold_content_shape_performance": [
+        "silver_visual_annotations",
+        "silver_text_annotations",
+    ],
+    "gold_top_posts": ["gold_post_enrichment"],
 }
 
 # ── Tables that exist in the DB but are not in the catalog ───────────────
@@ -98,6 +129,64 @@ def _duckdb_get_columns(con: duckdb.DuckDBPyConnection, table: str) -> dict[str,
         """
     ).fetchall()
     return {r[0]: r[1] for r in rows}
+
+
+def _duckdb_view_definitions(con: duckdb.DuckDBPyConnection) -> dict[str, str]:
+    """Every non-internal view name -> its stored definition SQL."""
+    rows = con.execute(
+        "SELECT view_name, sql FROM duckdb_views() WHERE internal IS FALSE"
+    ).fetchall()
+    return {r[0]: (r[1] or "") for r in rows}
+
+
+def view_definition_violations(
+    con: duckdb.DuckDBPyConnection,
+    check_required: bool = True,
+) -> list[str]:
+    """Target-world violations of the stored view definitions.
+
+    - No view definition may reference a retired enrichment table.
+    - The retired ``analytics_views`` view must not exist.
+    - Views in ``_REQUIRED_VIEW_SOURCES`` must exist and reference their
+      canonical target-world sources.
+    - Every catalog view (DUCKDB_VIEWS) must have a stored definition.
+
+    ``check_required=False`` limits the check to the banned-source/stale-view
+    rules — used by the old-world detectability fixtures, which do not
+    materialize the whole target world.
+    """
+    defs = _duckdb_view_definitions(con)
+    violations: list[str] = []
+    for name, sql in defs.items():
+        if _BANNED_VIEW_SOURCES_RE.search(sql):
+            violations.append(
+                f"view '{name}' references a retired enrichment table "
+                f"(gold_analyses / gold_growth_facets) — rebind to "
+                f"silver_content_classification / the silver visual+text tables"
+            )
+    actual_views = _duckdb_list_views(con)
+    for stale in sorted(set(_STALE_DUCKDB_VIEWS) & actual_views):
+        violations.append(
+            f"stale view '{stale}' still exists — {_STALE_DUCKDB_VIEWS[stale]}"
+        )
+    if check_required:
+        for view in EXPECTED_DUCKDB_VIEWS:
+            if view not in defs:
+                violations.append(
+                    f"catalog view '{view}' has no stored definition — "
+                    f"run the serving assets"
+                )
+        for view, sources in _REQUIRED_VIEW_SOURCES.items():
+            sql = defs.get(view)
+            if sql is None:
+                continue  # already reported above
+            for source in sources:
+                if not re.search(rf"\b{re.escape(source)}\b", sql):
+                    violations.append(
+                        f"view '{view}' does not reference required target "
+                        f"source '{source}' — the rebind did not happen"
+                    )
+    return violations
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +347,11 @@ class TestDuckDBViewsQueryable:
         actual_views = _duckdb_list_views(con)
 
         if view not in actual_views:
-            pytest.skip(f"View '{view}' does not exist — cannot query")
+            pytest.fail(
+                f"View '{view}' does not exist — the target world (DUCKDB_VIEWS, "
+                f"incl. the four ADR-0011 gold marts) requires it. Run the "
+                f"serving assets; a missing view is migration drift, not a skip."
+            )
 
         try:
             con.execute(f"SELECT * FROM {view} LIMIT 1")
@@ -268,8 +361,110 @@ class TestDuckDBViewsQueryable:
                 f"This may indicate a broken view definition or "
                 f"missing underlying table."
             )
-        finally:
-            con.close()
+
+
+# ── DuckDB: view DEFINITIONS (target world) ──────────────────────────────
+
+
+class TestDuckDBViewDefinitionsTargetWorld:
+    """The stored view DEFINITIONS must be the target world (US-ESA-2).
+
+    The old readiness hole: views were only ever SELECT-able — a view
+    reading the retired ``gold_analyses`` still passed. These tests read
+    each definition's SQL out of the DB and assert the ADR-0011 rebind.
+    """
+
+    def test_no_view_references_retired_enrichment_tables(self, state_db):
+        con = _duckdb_connect(str(state_db))
+        violations = view_definition_violations(con, check_required=False)
+        con.close()
+        assert not violations, (
+            "Serving views still reference the OLD enrichment world:\n"
+            + "\n".join(f"  {v}" for v in violations)
+            + "\nRun the serving assets to rebind the views."
+        )
+
+    def test_definitions_are_target_world(self, state_db):
+        con = _duckdb_connect(str(state_db))
+        violations = view_definition_violations(con)
+        con.close()
+        assert not violations, (
+            "Serving view definitions are not the target world:\n"
+            + "\n".join(f"  {v}" for v in violations)
+            + "\nRun the serving assets to materialize the ADR-0011 rebind."
+        )
+
+
+# ── Old-world detectability (self-contained fixtures) ───────────────────
+
+# Verbatim-shaped PRE-migration definitions: what the views looked like
+# while they still read gold_analyses (the status quo the old readiness
+# test blessed). These fixtures prove the rewritten checks FAIL on them.
+_OLD_WORLD_DDL = [
+    """CREATE TABLE silver_ig_posts (post_id VARCHAR PRIMARY KEY)""",
+    """CREATE TABLE gold_analyses (
+           post_id VARCHAR NOT NULL, domain VARCHAR NOT NULL,
+           prompt_hash VARCHAR, result_json VARCHAR, admiralty VARCHAR,
+           analysed_at VARCHAR, PRIMARY KEY (post_id, domain))""",
+    """CREATE VIEW v_post_detail AS
+           SELECT sp.post_id, g.result_json, g.prompt_hash,
+                  g.analysed_at AS gold_analysed_at, g.admiralty
+           FROM silver_ig_posts sp
+           LEFT JOIN gold_analyses g
+               ON sp.post_id = g.post_id AND g.domain = 'instagram'""",
+    """CREATE VIEW v_overview AS
+           SELECT (SELECT COUNT(*) FROM silver_ig_posts) AS total_posts,
+                  (SELECT COUNT(*) FROM gold_analyses)   AS total_enriched""",
+    """CREATE VIEW analytics_views AS
+           SELECT sp.post_id FROM silver_ig_posts sp
+           LEFT JOIN gold_analyses g
+               ON sp.post_id = g.post_id AND g.domain = 'instagram'""",
+]
+_TARGET_WORLD_DDL = [
+    """CREATE TABLE silver_ig_posts (post_id VARCHAR PRIMARY KEY)""",
+    """CREATE TABLE silver_content_classification (
+           post_id VARCHAR NOT NULL, platform VARCHAR NOT NULL,
+           prompt_hash VARCHAR, result_json VARCHAR, admiralty VARCHAR,
+           PRIMARY KEY (post_id, platform))""",
+    """CREATE VIEW v_post_detail AS
+           SELECT sp.post_id, scc.result_json, scc.prompt_hash,
+                  scc.admiralty
+           FROM silver_ig_posts sp
+           LEFT JOIN silver_content_classification scc
+               ON sp.post_id = scc.post_id AND scc.platform = 'instagram'""",
+    """CREATE VIEW v_overview AS
+           SELECT (SELECT COUNT(*) FROM silver_ig_posts) AS total_posts,
+                  (SELECT COUNT(*) FROM silver_content_classification
+                   WHERE platform = 'instagram')        AS total_enriched""",
+]
+
+
+def _build_world(tmp_path, ddl):
+    path = str(tmp_path / "world.duckdb")
+    con = duckdb.connect(path)
+    for stmt in ddl:
+        con.execute(stmt)
+    return con
+
+
+class TestRebindDetectable:
+    """The rewritten readiness checks FAIL on the old world, PASS on the new."""
+
+    def test_old_world_flags_every_retired_reference(self, tmp_path):
+        con = _build_world(tmp_path, _OLD_WORLD_DDL)
+        violations = view_definition_violations(con, check_required=False)
+        con.close()
+        flagged = {v.split("'")[1] for v in violations}
+        # v_post_detail + v_overview: banned-table references in definitions;
+        # analytics_views: stale view exists.
+        assert {"v_post_detail", "v_overview", "analytics_views"} <= flagged
+        assert any("gold_analyses" in v for v in violations)
+
+    def test_target_world_same_grain_has_no_violations(self, tmp_path):
+        con = _build_world(tmp_path, _TARGET_WORLD_DDL)
+        violations = view_definition_violations(con, check_required=False)
+        con.close()
+        assert violations == []
 
 
 # ---------------------------------------------------------------------------

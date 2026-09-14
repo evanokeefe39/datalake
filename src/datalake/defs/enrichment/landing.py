@@ -54,6 +54,13 @@ WORKLOADS: frozenset[str] = frozenset(
     }
 )
 
+KNOWN_PROVIDERS: frozenset[str] = frozenset({"gemini", "qwen", "none"})
+"""Providers that may land into the LIVE default lake root. Any other value
+(`fake`, a typo, an experimental adapter) is refused with root=None — test
+fixtures leaking provider='fake' rows into the real bronze lake is exactly
+the defect this guard makes structurally impossible. A new real provider is
+ADDED here explicitly, alongside its producer."""
+
 # ── Natural key ────────────────────────────────────────────────────────────
 
 KEY_COLUMNS: tuple[str, ...] = (
@@ -164,6 +171,12 @@ def land_response(
     if workload not in WORKLOADS:
         raise ValueError(
             f"unknown workload {workload!r}; expected one of {sorted(WORKLOADS)}"
+        )
+    if root is None and provider not in KNOWN_PROVIDERS:
+        raise ValueError(
+            f"refusing to land provider {provider!r} into the LIVE default "
+            "lake root: not in KNOWN_PROVIDERS "
+            f"{sorted(KNOWN_PROVIDERS)} — pass an explicit tmp/test root"
         )
     if not ok and error_message is None:
         raise ValueError(

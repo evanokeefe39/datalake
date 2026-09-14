@@ -14,10 +14,13 @@ from dagster import (
     AssetKey,
     AssetSpec,
     FreshnessPolicy,
+    asset,
     asset_check,
 )
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
+from datalake.defs.common import lake
+from datalake.defs.enrichment import conform
 from datalake.defs.common.schemas import duckdb_ddl
 from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
 from datalake.defs.instagram.labels import LABEL_VERSION
@@ -206,6 +209,28 @@ def check_enrichment_seam_purity() -> AssetCheckResult:
             "seam": "enrichment-api",
         },
     )
+
+
+@asset(
+    name="silver_enrichment_conform",
+    group_name="enrichment",
+    deps=[AssetKey(["bronze_enrichment_raw"])],
+    description=(
+        "ADR-0011 Phase 4 caller — conform + validate bronze_enrichment_raw "
+        "into the six silver_* tables (plus the loud quarantine surface), "
+        "publish each as an atomic Parquet snapshot and register them in "
+        "state DuckDB so the gold marts' view SQL compiles. Zero API calls; "
+        "a re-run is an idempotent replay."
+    ),
+)
+def silver_enrichment_conform(duckdb: DuckDBResource) -> None:
+    """Deterministic bronze → silver conform, orchestrated by Dagster."""
+    with duckdb.get_connection() as conn:
+        conform.conform(
+            root=lake.BRONZE_LAKE,
+            silver_root=lake.SILVER_LAKE,
+            conn=conn,
+        )
 
 
 ENRICHMENT_CHECKS = [
