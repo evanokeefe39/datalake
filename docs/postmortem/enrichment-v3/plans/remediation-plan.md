@@ -345,17 +345,36 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
 
 ### W9 — Retirement (Phase 7, last)
 - **What**: Only after W3/W4/W7 prove the new world: drop `batch_jobs`, `batch_items`,
-  `dead_letter`, `gold_growth_facets` from `ops.sqlite`/`state.duckdb`; reconcile
-  `facets_batch_jobs`' 4 live ledger rows (1 JOB_FAILED, 2 RETRIEVABLE…) into the service's job
-  store BEFORE the drop (audit P1-5a: currently nothing accounts for them); update docs.
+  `dead_letter`, `gold_growth_facets` from `ops.sqlite`/`state.duckdb`, **and `gold_analyses`
+  from `state.duckdb`** (decided retired 2026-09-14 — superseded by
+  `silver_content_classification`); reconcile `facets_batch_jobs`' 4 live ledger rows
+  (1 JOB_FAILED, 2 RETRIEVABLE…) into the service's job store BEFORE the drop (audit P1-5a:
+  currently nothing accounts for them); update docs.
+- **Archive is a precondition of the drop, and it is verified, not asserted.** For every table
+  dropped — including the six-figure `gold_analyses` — export the full table to Parquet under
+  `data/lake/archive/<table>/` (`COPY <table> TO '…' (FORMAT PARQUET)`), then compare the
+  export's row count against the live count and fail the retirement if they differ. Required
+  counts to match: `gold_analyses` 9,576, `dead_letter` 776, `gold_growth_facets` 205,
+  `facets_batch_jobs` 4. The owner's instruction was "take a copy and archive it so it's safe" —
+  an unchecked export is not a copy, and a copy that was never counted is not safe. Record each
+  export path + measured count in the W9 log.
+  Note the ordering that makes this safe: `gold_analyses` must NOT be archived-and-dropped
+  before W6 migrates its rows and W7 proves parity against it — W7's acceptance is a side-by-side
+  diff with the live table. Sequence is W6 migrate → W7 parity → archive → approval → drop.
 - **Files**: `scripts/retire_queue_tables.py` (new), `data/ops.sqlite` (via script only), `src/datalake/defs/enrichment/facets.py` (docstring fix, P1-6), `docs/architecture/pipelines/enrichment.md`.
 - **Deps**: W7 (readers moved — expand-contract contract satisfied), W3/W4 (new state sources proven).
 - **Control**: C4 (retire only after readers move; starve, don't drop).
-- **Acceptance (round-trip)**: reconciliation ledger for the 4 `facets_batch_jobs` rows first
-  (each row mapped to a service job-store state or explicitly dispositioned), then the drop
-  script runs, then a full drain→submit→harvest cycle succeeds **without** any legacy table —
+- **Acceptance (round-trip)**: four steps, each observable. (1) **Archive verified** — every
+  dropped table exported to Parquet and its export row count measured equal to the live count
+  (`gold_analyses` 9,576, `dead_letter` 776, `gold_growth_facets` 205, `facets_batch_jobs` 4);
+  a mismatch fails the retirement. (2) **Reconciliation ledger** for the 4 `facets_batch_jobs`
+  rows (each mapped to a service job-store state or explicitly dispositioned). (3) **The drop
+  script runs.** (4) A full drain→submit→harvest cycle succeeds **without** any legacy table —
   demonstrating the retirement, not asserting it.
   **[HUMAN APPROVAL required: any DROP against live data.]**
+  Note the archive is not "the drop was fine" — it is the only thing standing between
+  `gold_analyses`' 9,576 rows and permanent loss, so it is gated on a measured count match
+  rather than on the script having run.
 
 **MECE coverage check** against [`../analysis/learnings-mece.md`](../analysis/learnings-mece.md) §2: rows map to W0 (C1 rows: retry driver,
 quarantine consumer, harvested producer — no duplication: spec in W0, implementation in W4/W8),
@@ -378,7 +397,7 @@ implemented twice (spec-once, build-once, verify-once per unit).
 | W7 serving rebind (22 transitive views) | Every view's source changes: `v_post_detail`, `v_overview`, and the 20 transitive views | **Dashboard (`dashboard/server.py`)** — reads views only, but the KPI values underneath change source; re-verify rendered KPI numbers post-rebind; also any notebook/ad-hoc consumer of `gold_analyses` by name | **Parity-gated cutover**: old and new coexist during migration window; views rebound atomically after sample parity passes; `gold_analyses` retained (never dropped without human approval) |
 | W7 catalog reconciliation | `DUCKDB_TABLES`/`expected_schema.py` change meaning | `test_state_compatibility.py`, schema docs | Self-correcting (test suite re-reads catalog) |
 | W8 checks/freshness | Adds blocking checks — new failure surface | On-call/operator workflows | Additive only |
-| W9 drops (`batch_jobs`, `batch_items`, `dead_letter`, `gold_growth_facets`, `facets_batch_jobs`) | Irreversible removal of 776 `dead_letter` rows, 205 `gold_growth_facets` rows, queue history | Serving (must already be off gold by W7), dashboard | **Destructive — requires human approval + pre-drop archive** (export tables to Parquet under `data/lake/archive/` first). `gold_analyses` retention is a separate explicit decision — recommend retaining read-only through at least one full new-world cycle |
+| W9 drops (`batch_jobs`, `batch_items`, `dead_letter`, `gold_growth_facets`, `facets_batch_jobs`, **`gold_analyses`**) | Irreversible removal of 776 `dead_letter` rows, 205 `gold_growth_facets` rows, 9,576 `gold_analyses` rows, queue history | Serving (must already be off gold by W7), dashboard | **Destructive — requires human approval + pre-drop archive** (export every dropped table to Parquet under `data/lake/archive/`, then verify the export row count equals the live count before the drop). `gold_analyses` is **decided retired** (2026-09-14, superseded by `silver_content_classification`) — but only after W6 migrates its 9,576 rows and W7 proves parity against it. Archive first, drop last |
 
 Nothing in this plan writes to `gold_analyses` or deletes any row before W9, and W9's drops are
 gated, archived, and human-approved. All new DDL is additive (`CREATE OR REPLACE` for views,
@@ -528,14 +547,33 @@ intended behaviour, not a bug.
 `TRUNCATE TABLE`) written to a path matching `migrations/`, `alembic/`, `versions/`, or any
 `.sql` file; the attempt is recorded as a guard-block entry. Additive DDL passes untouched.
 
-W9 is therefore **compliant only if its drops live in the Python script**:
-`scripts/retire_queue_tables.py` matches none of those path patterns and is unaffected. Two
-things must be stated in W9 so an implementer does not trip it: (a) the DROP statements belong
-in the script, **never** in a `.sql` file or under a `migrations/` path; (b) W9 is an archived,
-human-gated, standalone script — explicitly **not** a numbered migration, which is what
-`rule://migration-ships-with-code` forbids ("never DROP against real data in a numbered
-migration"). The archive-first + explicit-approval ceremony W9 already specifies is the
-compliant form; this note just says why.
+**Two mechanisms, two different behaviours — do not conflate them.** The hook and the rule are
+scoped differently, and an implementer who expects only one will misread the other:
+
+- **The hook (`migration-guard.ts`) is PATH-scoped.** It matches only `migrations/`, `alembic/`,
+  `versions/`, or `*.sql`. `scripts/retire_queue_tables.py` matches none of those, so **the hook
+  will not block W9's script.** It blocks, records, and stops; additive DDL passes untouched.
+- **The rule (`migration-ships-with-code`) is PATH-AGNOSTIC.** Its condition is a bare
+  `DROP TABLE|COLUMN|SCHEMA|INDEX` / `TRUNCATE TABLE` across `tool:edit(*)` and `tool:write(*)`
+  — any file, any extension, including this plan document. It was demonstrated during this
+  review: editing this very section fired it, because the prose contains the phrase. It is
+  configured **non-interrupting**, so it advises rather than blocks.
+
+Consequence for W9, stated so nobody weakens the script to silence a signal:
+
+- The DROP statements belong **in the script**, never in a `.sql` file or under a `migrations/`
+  path — that is what keeps them past the blocking hook.
+- W9 will nonetheless **see `migration-ships-with-code` fire when the script is written.** That
+  is the expected signal, not a defect. The correct response is to confirm the ceremony is
+  present — archive-first export to `data/lake/archive/`, explicit human approval, non-numbered
+  standalone script — and proceed. The WRONG response is to silence it by removing the DROP,
+  splitting it across statements to dodge the pattern, or renaming the tables out of the
+  statement. A suppressed guard on the one operation that can destroy live data is worse than
+  the guard firing.
+- W9 remains an archived, human-gated, standalone script — explicitly **not** a numbered
+  migration, which is what the rule forbids ("never DROP against real data in a numbered
+  migration"). The archive-first + explicit-approval ceremony W9 already specifies IS the
+  compliant form; this note only says why, and what the expected signal looks like.
 
 ### `dormant-vs-broken` — W8 must declare each source's intended state, and one is unresolved
 
@@ -551,17 +589,29 @@ States that must be declared explicitly in W8:
 |---|---|---|
 | `batch_jobs`, `batch_items`, `dead_letter` | **retired/dormant** | W9 drops them; a presence check must not fire during the W3–W9 window |
 | `facets_batch_jobs` | **retired/dormant** | 4 live rows reconciled at W9 before the drop |
-| `gold_analyses` | **UNKNOWN — escalated, not guessed** | retained read-only post-W7; "live" and "retired" imply different freshness gates |
+| `gold_analyses` | **retired/dormant — DECIDED 2026-09-14** | superseded by `silver_content_classification`; **archived before any drop** (see below) |
 | `bronze_enrichment_raw`, `silver_*`, the four marts | **live** | must stay current; staleness is a defect |
 | `gold_growth_facets` | **retired/dormant** | 205 rows, dropped at W9 |
 
-**`gold_analyses` is the one this plan cannot decide.** It is retained through the migration
-window by W7's parity gate (never dropped without human approval), and post-rebind nothing
-reads it — but a retained table that still receives no writes is exactly the shape
-`dormant-vs-broken` warns about: a run-based check on it will either false-alarm forever or be
-silenced, and silencing it is how a real dropout hides later. **[HUMAN DECISION]** — its
-intended state must be named: *live read-only history* (checks assert non-shrinkage, never
-freshness) or *dormant/retired* (checks exempt it entirely, and it is a W9 drop candidate).
+**RESOLVED 2026-09-14 — `gold_analyses` is retired/dormant, archived before drop.** Owner's
+call: it is superseded by `silver_content_classification`, so it is not live history and gets
+no freshness gate. Two consequences, both mandatory:
+
+1. **Archive is the precondition, not a nicety.** Before any drop, export the full table to
+   Parquet under `data/lake/archive/gold_analyses/` (`COPY … TO … (FORMAT PARQUET)`), verify the
+   row count on the export equals the live count (9,576), and record the export path + count in
+   the W9 log. The archive is what makes the drop reversible in substance even though it is not
+   reversible in place — without it, "superseded" is an assertion and the 9,576 rows are simply
+   gone.
+2. **Retirement is TARGET state, not current state.** `gold_analyses` stays fully live and
+   readable through W6's backfill and W7's parity gate — W7's whole acceptance is a side-by-side
+   diff against it. It becomes dormant only once the parity proof passes and no view reads it.
+   Sequenced: W6 migrates the rows → W7 proves parity → archive → human approval → W9 drop.
+
+Checks treat it as dormant from the W7 cutover: no freshness gate, no non-shrinkage gate on a
+table nobody writes. What replaces that signal is the W6 reconciliation identity
+(`count(silver_content_classification) + count(quarantine) == 9,576`) — the archive proves
+retention, the reconciliation proves migration.
 
 ### `decompose-lean-units` — W6 (and W4/W8) exceed the cap
 
@@ -571,9 +621,17 @@ Target is "one coherent deliverable with ONE observable acceptance criterion, �
 
 W6 as written bundles **four** deliverables — (a) the 9,576-row classification backfill,
 (b) the conform production caller as a Dagster asset, (c) the four gold marts as views,
-(d) the `gold_content_shape_performance` grain fix — plus a materialization that alone exceeds
-a subagent's 2h wall-clock cap (`task.maxRuntimeMs = 7200000`, and it counts wall time even
-while the lid is closed). It must split. Suggested, by contract boundary rather than by phase:
+(d) the `gold_content_shape_performance` grain fix — and its single acceptance only covers ONE
+of them (the backfill reconciliation), leaving the marts, the grain fix and the conform caller
+un-accepted by the unit that builds them. That is the defect: not speed, but an acceptance that
+does not reach everything the unit does.
+
+**Corrected — the runtime claim above was overstated.** Measured: `gold_analyses` is 9,576 rows
+at ~1,787 bytes of `result_json` each, ~17 MB of payload total. Parsing that into local DuckDB
+is seconds of work, not a long materialization, and it does not threaten the 2h cap. It should
+still run as a background process for a different reason — so main keeps working and a fresh
+agent verifies the result — but the sizing argument for splitting W6 is the four-deliverables /
+one-acceptance mismatch, not runtime. Suggested split, by contract boundary rather than phase:
 
 - **W6a** — grain fix + four marts as views (additive, no data movement, verifiable on an empty
   silver). Deps: none beyond W1.
