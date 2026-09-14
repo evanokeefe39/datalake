@@ -192,8 +192,11 @@ provider is available for a future swap without remaining a live cost or a drift
   API calls on re-run) → one silver table → mart/view → drain run 2 suppression. Subset only;
   no full corpus. Capture the real nested envelope as a test fixture (mocks are flat today).
 - **Files**: `src/datalake/defs/enrichment/landing.py`, `src/datalake/defs/enrichment/conform.py`, `tests/fixtures/real_envelope_gemini.json` (new), [`../analysis/spike-evidence.md`](../analysis/spike-evidence.md) (new, evidence for the fork decision), `tasks/plans/enrichment-v3-migration-master.md` (result note).
-- **Deps**: W0 (spec exists to check against). **Blocks everything else** — its verdict selects
-  the path.
+- **Deps**: W0 (spec exists to check against), **W-FREEZE** (the spike's completion guard reads
+  `gold_analyses`, and measures against the frozen baseline — running it against a table that
+  can still grow makes the observed behaviour ambiguous: a post suppressed because it is
+  already-enriched is indistinguishable from one suppressed because a concurrent run just wrote
+  it). **Blocks everything else** — its verdict selects the path.
 - **Control**: C5 (walking skeleton / tracer bullet — the most damning miss in the audits).
 - **Edge contract** (required by §6 — this unit IS the per-edge test the migration never had):
   - *reads from:* the real provider (qwen-batch service or Gemini) over the seam's HTTP
@@ -339,7 +342,9 @@ provider is available for a future swap without remaining a live cost or a drift
   remains of their call sites. Doing W5 first would mean migrating nine sites that W-FREEZE then
   deletes — the double work this unit exists to avoid. **W-FREEZE precedes W5.**
 - **Files**: `src/datalake/defs/enrichment/submit.py`, `src/datalake/defs/enrichment/harvest.py`, `src/datalake/defs/enrichment/facets_batch.py`, `src/datalake/defs/enrichment/seam.py`, `src/datalake/defs/enrichment/qwen_client.py` (delete/retire).
-- **Deps**: W3 (submit already rewired; avoids conflicting edits to `submit.py`). Blocks W1-grade
+- **Deps**: W-FREEZE (**hard predecessor** — it deletes the 9 Gemini sites this unit would
+  otherwise migrate; running W5 first is the double work the freeze exists to prevent), W3
+  (submit already rewired; avoids conflicting edits to `submit.py`). Blocks W1-grade
   real runs of the converged path; parallel with W4 only if W4's `harvest.py` edits are
   coordinated (both own `harvest.py` — see §5).
 - **Control**: C2 + C3 (composition root never wired; two clients, divergent predicates;
@@ -459,7 +464,9 @@ provider is available for a future swap without remaining a live cost or a drift
 
 **MECE coverage check** against [`../analysis/learnings-mece.md`](../analysis/learnings-mece.md) §2: rows map to W0 (C1 rows: retry driver,
 quarantine consumer, harvested producer — no duplication: spec in W0, implementation in W4/W8),
-W2+W3 (drain/submit pairing, zombie queue), W5 (12 bypasses, dual clients, handle encoding),
+W2+W3 (drain/submit pairing, zombie queue), W5 (**2 surviving qwen bypass sites** after W-FREEZE
+deletes the 9 Gemini ones, dual clients, handle encoding), W-FREEZE (Gemini usage retired, old
+write path frozen — the unit that makes the 9 deletions deletions rather than migrations),
 W4 (partition-key shape, retry), W6 (mart grain, materialization, replay proof), W7 (catalog
 reconciliation, vacuous gate, expand-contract), W8 (quarantine consumer, silent failures,
 vacuous checks), W9 (sequencing/retirement). Every defect row covered at least once; no row
@@ -505,7 +512,7 @@ new tables only).
 **Mechanical non-vacuity checks** (each can fail, each targets a specific vacuity found in the
 audits):
 1. **Reconciliation identity**: `count(silver_content_classification) + count(silver_enrichment_quarantine) == count(gold_analyses)` at migration time, every legacy row accounted (C5 — replaces the unmet C5.4). **Self-referential, not `== 9,576`**: W-FREEZE makes the right-hand side static, but a frozen constant still asserts a convention rather than a measurement — and it would report a W-FREEZE regression as a reconciliation error.
-2. **Provider-name grep in CI**: `gemini_batch\.|qwen_client\.` matches only adapter modules (C2/C3 — kills the 12-bypass class).
+2. **Provider-name grep in CI**: `gemini_batch\.|qwen_client\.` matches only adapter modules (C2/C3). After W-FREEZE this checks a smaller surface than it was written for — 9 of the original bypass sites no longer exist — but it still guards the 2 surviving qwen sites and any future re-introduction, which is the point. PAIR it with W-FREEZE's own check: `build_adapter("gemini")` constructs, while no Dagster entry point references Gemini. Together they assert *unused but available*, which a bare grep cannot distinguish from *deleted*.
 3. **Zero-row gate**: any new object referenced by a consumer with zero rows fails the merge (C5 — "every new object has rows").
 4. **Catalog-vs-target reconciliation**: `DUCKDB_TABLES` names the TARGET world and the live DB matches — not the status quo (C5 — the vacuous-gate fix; reconciliation is against the *target* schema, per postmortem §10.2's correction).
 5. **View-definition baseline**: all 22 transitive views' SQL snapshotted; rebind PRs must diff against it (C5 — replaces the never-written "asserted, not assumed").
