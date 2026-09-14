@@ -16,13 +16,20 @@ inline where they appear; re-verified against the working tree and the live data
   dropped. Read this as **retired but still called**, a migration-ordering problem.
 - **The queue-retirement slices are committed, not uncommitted.** W2's "land or discard the
   uncommitted changes" is done; the tree is clean.
-- **The suite is not 25-red.** Running the two files W2 named
-  (`tests/unit/instagram/test_gold.py`, `tests/unit/instagram/test_drain_inflight_guard.py`)
-  now gives **1 failed, 30 passed**. The tests were rewritten to assert the retirement contract
-  — "these primitives have NO behaviour beyond the loud refusal". The one failure is a
-  test-harness bug, not a product bug: `fail_item() got multiple values for argument 'item_id'`.
-  The post-mortem's "701 tests passing" figure predates this and should be re-derived before
-  being relied on.
+- **CORRECTED 2026-09-14 (this bullet was wrong).** The earlier note here inferred "the suite
+  is not 25-red" from running the TWO files W2 happened to name. That was a scope error: those
+  two files are green, but they are not the suite. A full `uv run pytest tests/` run gives
+  **26 failed, 657 passed, 2 skipped, 31 errors in 422s** — 57 red, spread across 16 files in
+  unit, integration, e2e, and operational. The 25-red figure was REAL, not stale; the commit
+  message that produced it scoped itself to `tests/unit/instagram/` but the actual red is
+  broader and centred on `tests/unit/enrichment/`. The dominant uniform cause is the same one
+  the commit message named: tests still construct or require the retired queue tables, so they
+  die on `RuntimeError: ops.sqlite queue retirement (ADR-0012): legacy queue tables
+  ['batch_jobs', 'batch_items'] do not exist`, `sqlite3.OperationalError: no such table:
+  batch_items`, or `KeyError: 'batch_jobs'`. The fail_item harness bug was one red test among
+  57; fixing it was necessary and nowhere near sufficient. **Lesson: characterize a suite from
+  a full run, never from the files a plan names** — a named-file sample is a hypothesis about
+  where the red is, not a measurement of it.
 
 Everything else in this plan was verified against the live databases and still holds: the live
 `state.duckdb` contains **zero** new-model objects, `enrichment_harvested` still has no
@@ -133,21 +140,41 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   run does not re-enqueue the post. Evidence file records each observed materialization.
 
 ### W2 — Branch stabilization: finish the queue-retirement slices
-- **What**: The slices are COMMITTED (tree clean) — the "land or discard" half is done. What
-  remains is ONE failing test, and it is a HARNESS bug, not a product bug:
-  `test_retired_queue_primitive_refuses_queueless_ops` calls `fail_item()` with a duplicate
-  `item_id` (`TypeError: fail_item() got multiple values for argument 'item_id'`). The other 30
-  tests across the two affected files pass. Note the contract they now assert: these primitives
+- **What**: The slices are COMMITTED (tree clean) — the "land or discard" half is done. But the
+  unit is NOT one test, and closing it on the two named files repeats the scope error that
+  produced the wrong currency note above. The measured baseline is **57 red** (26 failed +
+  31 errors) across 16 files, and Pytest reports 26 as the count it would `--maxfail` on, which
+  is why the number is easy to misread as smaller than it is. Red by file:
+  `test_enrichment_exec.py` 11F, `test_harvest_sensor.py` 8E, `test_harvest_landing.py` 8E,
+  `test_submit_job.py` 6E+1F, `test_media_upload_op.py` 5E, `test_batch_media_resilience.py` 4E,
+  `test_migrate_creators_profiles.py` 3F, `test_batch_inline_media.py` 2F, `test_snapshot.py`
+  (e2e) 2F, `test_full_pipeline.py` (e2e) 2F, `test_silver_observations.py` 1F,
+  `test_ddl_builder.py` (operational) 1F, `test_gold_to_serving.py` (integration) 1F,
+  `test_silver_to_gold.py` (integration) 1F, `test_operational.py` (e2e) 1F.
+  The bulk are one failure mode — fixtures still building the retired queue tables — and are
+  therefore a single mechanical fix applied across files, not 57 independent bugs. The
+  `fail_item` harness bug (`TypeError: fail_item() got multiple values for argument 'item_id'`)
+  is FIXED and committed (`2280e2c`). Note the contract those tests now assert: these primitives
   "have NO behaviour beyond the loud refusal" — the old behaviour tests (claim routing,
   attempts/backoff, failed_items counts) were replaced deliberately, so do not restore them.
   `_require_legacy_queue_tables` (`batch.py:51`) is a fail-loud precondition on transitional
   shims, NOT a zombie the retirer preserves; it is deleted only when W3 has replaced its last
   of five callers (submit, harvest, media_upload, analysis, registry).
-- **Files**: `tests/unit/instagram/test_gold.py` (the failing test), `src/datalake/defs/enrichment/batch.py`, `src/datalake/defs/instagram/assets.py`, `tests/operational/test_state_compatibility.py` (unblock only; rewrite is W7).
+- **Files**: the 16 red files above (fixtures that still build the retired queue tables),
+  plus `src/datalake/defs/enrichment/batch.py`, `src/datalake/defs/instagram/assets.py`,
+  `tests/operational/test_state_compatibility.py` (unblock only; rewrite is W7). Note
+  `test_ddl_builder.py` and `test_state_compatibility.py` share a root cause with defect 9 (raw
+  `CLASSIFICATION_DDL` literal bypassing `duckdb_ddl`), so that red clears with W6/W7 rather
+  than here — do not force it green in W2 by weakening the assertion.
 - **Deps**: none (parallel with W0). Blocks W3.
 - **Control**: C4 (retirement ordering: producers retired before readers move — the inverse of
   expand-contract, which is exactly what the five-caller shim dependency exposes).
-- **Acceptance (round-trip)**: full suite green on the stabilized branch; then demonstrate the
+- **Acceptance (round-trip)**: **full `uv run pytest tests/` green on the stabilized branch** —
+  the whole suite, from an actual run, not a named-file subset. Baseline to beat is recorded
+  above (57 red). Any test that cannot be made green without W3/W6/W7 must be explicitly
+  listed with its owning unit rather than silently left red, and any test deleted to reach
+  green must be justified against the retirement contract (the primitives "have NO behaviour
+  beyond the loud refusal"; do not restore the old behaviour tests). Then demonstrate the
   queue path: with `batch_jobs` present, the legacy read path executes; with it absent, the
   *replacement* discovery path (W3) serves submit — never a green test resting on deletion.
 
@@ -361,9 +388,13 @@ W0 ∥ W2; W8 ∥ W7; W5 ∥ W8 if `harvest.py` ownership is settled first.
 4. **W9 drops** — irreversible; archive-first; explicit human approval per table; `gold_analyses`
    retention decided separately (recommend: keep read-only ≥ 1 full cycle).
 5. **W1 spike spend** — real paid API calls; budget approved by human.
-6. **The failing test (W2)** — one test-harness bug (`fail_item()` duplicate `item_id`), not a
-   product defect; the queue-retirement slices are already committed, so no commit-or-discard
-   decision remains. No history rewrite.
+6. **The W2 red set** — the fail_item harness bug is FIXED (`2280e2c`) and was never a product
+   defect, but it was 1 red of 57. The real W2 risk is the size of the remainder: 56 red across
+   15 further files, mostly one mechanical failure mode (fixtures still building the retired
+   queue tables) but including red that cannot clear until W3/W6/W7 and must be assigned rather
+   than forced green. The queue-retirement slices are already committed, so no commit-or-discard
+   decision remains, and no history rewrite. **Do not re-close W2 on a named-file subset** —
+   that is exactly the error the corrected currency note records.
 
 ### Process controls binding every unit (from §10 of the postmortem — promotion, not prose)
 - Each dispatch names the **owner** of the contract and the **production consumer** of
