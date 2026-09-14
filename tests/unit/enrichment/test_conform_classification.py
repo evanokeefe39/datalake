@@ -115,10 +115,7 @@ def test_classification_table_body_columns_exactly(bronze_root, silver_root):
         "format",
     }
     schema = TABLE_SCHEMAS[SILVER_CONTENT_CLASSIFICATION]
-    assert expected_body <= set(schema)
-    # key + provenance block + the 10 body columns — nothing else
-    assert len(schema) == 2 + 11 + len(expected_body)
-
+    assert len(schema) == 2 + 11 + len(expected_body) + 1  # +1: result_json
 
 # ── Provenance ──────────────────────────────────────────────────────────────
 
@@ -183,6 +180,25 @@ def test_array_form_conforms_like_the_legacy_fallback(bronze_root, silver_root):
     )
     assert row["domain"] == CLS_PAYLOAD["domain"]
 
+
+
+def test_result_json_byte_identical_to_bronze(bronze_root, silver_root):
+    """US-ESA-2 AC6: the conform-path silver row carries the bronze
+    ``response_text`` VERBATIM in ``result_json`` — byte-identical
+    (newlines, unicode, escaped quotes), never re-serialized."""
+    byte_hostile = (
+        '{\n  "domain": "Dev",\n  "topic": "émoji 🚀",'
+        '\n  "note": "quote \\" and backslash \\\\"\n}'
+    )
+    _land_classification(bronze_root, post_id="p1", response_text=byte_hostile)
+    result = conform(root=bronze_root, silver_root=silver_root, now=NOW)
+    assert result.counts["conformed"] == 1
+    row = conform_mod.read_table(SILVER_CONTENT_CLASSIFICATION, silver_root).row(
+        0, named=True
+    )
+    assert row["result_json"] == byte_hostile
+    # and it is not a re-serialization of the parsed body
+    assert row["result_json"] != json.dumps(json.loads(byte_hostile))
 
 # ── Legacy gold_analyses backfill (migration script) ───────────────────────
 

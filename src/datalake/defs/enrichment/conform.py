@@ -179,6 +179,10 @@ TABLE_SCHEMAS: dict[str, dict[str, pl.DataType]] = {
             "content_type": pl.String,
             "style": pl.String,
             "format": pl.String,
+            # Verbatim passthrough (bronze response_text == legacy result_json,
+            # US-ESA-2 AC6 byte parity) — carried ON the silver table because
+            # serving reads silver, never bronze.
+            "result_json": pl.String,
         }
     ),
     SILVER_QUARANTINE: {
@@ -719,6 +723,7 @@ def _conform_classification(
     niche ``domain`` body column. ``model IS NULL`` carries the
     ``legacy-unknown`` sentinel (ADR-0014 D5), never a silent NULL.
     """
+
     body, errors = _classification_body(payload)
     if errors:
         return {}, errors
@@ -727,6 +732,10 @@ def _conform_classification(
         model = MODEL_LEGACY_NULL
     prov = _provenance(bronze_row, now=now)
     prov["model"] = model
+    # Verbatim passthrough: the bronze response_text IS the legacy
+    # result_json (US-ESA-2 AC6) — carried through byte-identically,
+    # never re-serialized.
+    body = {**body, "result_json": bronze_row["response_text"]}
     return _assemble(SILVER_CONTENT_CLASSIFICATION, bronze_row, body, prov), []
 
 
