@@ -294,8 +294,9 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
 - **Deps**: W1 (real envelope shapes proven — conform has never met real data), W4 (terminal
   states exist to drive conform), W5 (all flows on the seam). Blocks W7.
 - **Control**: C5 (zero real-run gate; twelve code-only objects; unproven replay guarantee).
-- **Acceptance (round-trip)**: 9,576 `gold_analyses` rows accounted for —
-  `count(silver_content_classification) + count(silver_enrichment_quarantine) == 9,576`, each
+- **Acceptance (round-trip)**: every `gold_analyses` row accounted for —
+  `count(silver_content_classification) + count(silver_enrichment_quarantine)
+   == count(gold_analyses)` **measured in the same run**, each
   migrated row carrying provenance (`provider, model, prompt_hash, schema_version, run_id`);
   re-running the backfill changes 0 rows (idempotency demonstrated by double-run + diff);
   delete a conformed row and re-conform from bronze with the SDK counter at **0** (replay,
@@ -353,11 +354,20 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
 - **Archive is a precondition of the drop, and it is verified, not asserted.** For every table
   dropped — including the six-figure `gold_analyses` — export the full table to Parquet under
   `data/lake/archive/<table>/` (`COPY <table> TO '…' (FORMAT PARQUET)`), then compare the
-  export's row count against the live count and fail the retirement if they differ. Required
-  counts to match: `gold_analyses` 9,576, `dead_letter` 776, `gold_growth_facets` 205,
-  `facets_batch_jobs` 4. The owner's instruction was "take a copy and archive it so it's safe" —
-  an unchecked export is not a copy, and a copy that was never counted is not safe. Record each
-  export path + measured count in the W9 log.
+  export's row count against the live count **in the same run** and fail the retirement if they
+  differ. The owner's instruction was "take a copy and archive it so it's safe" — an unchecked
+  export is not a copy, and a copy that was never counted is not safe. Record each export path
+  + measured count in the W9 log.
+- **The gate is SELF-REFERENTIAL: export count == live count at archive time.** It is
+  deliberately NOT a comparison against the numbers below, and the distinction matters:
+  `gold_analyses` is still a **live write target** today (`analysis.py:179` does
+  `INSERT INTO gold_analyses`; the gemini-batch path "remains until its own migration"), so it
+  will have GROWN by the time W9 runs. A frozen `== 9,576` would fail the retirement on a
+  phantom mismatch. Use these only as a **drift signal** — a dated baseline snapshot:
+  `gold_analyses` 9,576 · `dead_letter` 776 · `gold_growth_facets` 205 · `facets_batch_jobs` 4
+  (read from the live DBs 2026-09-14). If the live count differs at W9, that is expected for
+  `gold_analyses` and is information (the corpus grew), not a failure — but it means W6's
+  reconciliation must have run against the grown count, so re-check W6 before archiving.
   Note the ordering that makes this safe: `gold_analyses` must NOT be archived-and-dropped
   before W6 migrates its rows and W7 proves parity against it — W7's acceptance is a side-by-side
   diff with the live table. Sequence is W6 migrate → W7 parity → archive → approval → drop.
@@ -365,15 +375,16 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
 - **Deps**: W7 (readers moved — expand-contract contract satisfied), W3/W4 (new state sources proven).
 - **Control**: C4 (retire only after readers move; starve, don't drop).
 - **Acceptance (round-trip)**: four steps, each observable. (1) **Archive verified** — every
-  dropped table exported to Parquet and its export row count measured equal to the live count
-  (`gold_analyses` 9,576, `dead_letter` 776, `gold_growth_facets` 205, `facets_batch_jobs` 4);
-  a mismatch fails the retirement. (2) **Reconciliation ledger** for the 4 `facets_batch_jobs`
+  dropped table exported to Parquet and its export row count measured equal to its live count
+  **in the same run** (self-referential, per above — never against a frozen constant);
+  a mismatch fails the retirement. A live count that differs from the 2026-09-14 baseline is a
+  drift signal to investigate, not automatically a failure. (2) **Reconciliation ledger** for the 4 `facets_batch_jobs`
   rows (each mapped to a service job-store state or explicitly dispositioned). (3) **The drop
   script runs.** (4) A full drain→submit→harvest cycle succeeds **without** any legacy table —
   demonstrating the retirement, not asserting it.
   **[HUMAN APPROVAL required: any DROP against live data.]**
   Note the archive is not "the drop was fine" — it is the only thing standing between
-  `gold_analyses`' 9,576 rows and permanent loss, so it is gated on a measured count match
+  `gold_analyses`' rows and permanent loss, so it is gated on a measured count match
   rather than on the script having run.
 
 **MECE coverage check** against [`../analysis/learnings-mece.md`](../analysis/learnings-mece.md) §2: rows map to W0 (C1 rows: retry driver,
@@ -411,16 +422,18 @@ new tables only).
 
 > One real, already-enriched post and one real never-enriched post, driven through the live
 > pipeline: drain run 1 enqueues only the never-enriched post (completion guard reads silver,
-> respects the 9,576 legacy rows); submit goes through the seam; the response lands verbatim in
+> respects the legacy rows present at run time); submit goes through the seam; the response lands verbatim in
 > bronze (`ok` populated); conform materializes the silver row with zero additional API calls on
 > re-run; the marts and serving views expose it; harvest reaches terminal state and the
 > `enrichment_harvested` producer materializes; drain run 2 re-enqueues nothing in-flight and
-> nothing already-conformed. Meanwhile `gold_analyses` still holds all 9,576 rows and the
-> dashboard serves coherently throughout.
+> nothing already-conformed. Meanwhile `gold_analyses` is still intact — it holds every row it
+> held when the run started, and is never smaller (measure it before and after; the corpus is
+> live and may legitimately GROW mid-run via the still-active gemini-batch path, so assert
+> non-shrinkage, never equality) — and the dashboard serves coherently throughout.
 
 **Mechanical non-vacuity checks** (each can fail, each targets a specific vacuity found in the
 audits):
-1. **Reconciliation identity**: `count(silver_content_classification) + count(silver_enrichment_quarantine) ≥ 9,576` with every legacy row accounted (C5 — replaces the unmet C5.4).
+1. **Reconciliation identity**: `count(silver_content_classification) + count(silver_enrichment_quarantine) == count(gold_analyses)` at migration time, every legacy row accounted (C5 — replaces the unmet C5.4). **Self-referential, not `== 9,576`**: `gold_analyses` is still a live write target and will have grown; a frozen constant would pass or fail for the wrong reason.
 2. **Provider-name grep in CI**: `gemini_batch\.|qwen_client\.` matches only adapter modules (C2/C3 — kills the 12-bypass class).
 3. **Zero-row gate**: any new object referenced by a consumer with zero rows fails the merge (C5 — "every new object has rows").
 4. **Catalog-vs-target reconciliation**: `DUCKDB_TABLES` names the TARGET world and the live DB matches — not the status quo (C5 — the vacuous-gate fix; reconciliation is against the *target* schema, per postmortem §10.2's correction).
@@ -599,10 +612,11 @@ no freshness gate. Two consequences, both mandatory:
 
 1. **Archive is the precondition, not a nicety.** Before any drop, export the full table to
    Parquet under `data/lake/archive/gold_analyses/` (`COPY … TO … (FORMAT PARQUET)`), verify the
-   row count on the export equals the live count (9,576), and record the export path + count in
-   the W9 log. The archive is what makes the drop reversible in substance even though it is not
-   reversible in place — without it, "superseded" is an assertion and the 9,576 rows are simply
-   gone.
+   row count on the export equals the live count **at that moment**, and record the export path
+   + count in the W9 log. The archive is what makes the drop reversible in substance even though
+   it is not reversible in place — without it, "superseded" is an assertion and the rows are
+   simply gone. (Baseline for drift: 9,576 as of 2026-09-14, read live. Do not assert against
+   it — `gold_analyses` is still written by the gemini-batch path and will grow.)
 2. **Retirement is TARGET state, not current state.** `gold_analyses` stays fully live and
    readable through W6's backfill and W7's parity gate — W7's whole acceptance is a side-by-side
    diff against it. It becomes dormant only once the parity proof passes and no view reads it.
@@ -610,8 +624,8 @@ no freshness gate. Two consequences, both mandatory:
 
 Checks treat it as dormant from the W7 cutover: no freshness gate, no non-shrinkage gate on a
 table nobody writes. What replaces that signal is the W6 reconciliation identity
-(`count(silver_content_classification) + count(quarantine) == 9,576`) — the archive proves
-retention, the reconciliation proves migration.
+(`count(silver_content_classification) + count(quarantine) == count(gold_analyses)` at migration
+time) — the archive proves retention, the reconciliation proves migration.
 
 ### `decompose-lean-units` — W6 (and W4/W8) exceed the cap
 
