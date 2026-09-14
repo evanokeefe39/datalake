@@ -169,14 +169,56 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
 - **Deps**: none (parallel with W0). Blocks W3.
 - **Control**: C4 (retirement ordering: producers retired before readers move — the inverse of
   expand-contract, which is exactly what the five-caller shim dependency exposes).
-- **Acceptance (round-trip)**: **full `uv run pytest tests/` green on the stabilized branch** —
-  the whole suite, from an actual run, not a named-file subset. Baseline to beat is recorded
-  above (57 red). Any test that cannot be made green without W3/W6/W7 must be explicitly
-  listed with its owning unit rather than silently left red, and any test deleted to reach
-  green must be justified against the retirement contract (the primitives "have NO behaviour
-  beyond the loud refusal"; do not restore the old behaviour tests). Then demonstrate the
-  queue path: with `batch_jobs` present, the legacy read path executes; with it absent, the
-  *replacement* discovery path (W3) serves submit — never a green test resting on deletion.
+- **Premise corrected 2026-09-14: "the suite was green except one harness test" is FALSIFIED.**
+  W2's acceptance was written on that premise, so it is unachievable as stated and would force
+  double work. Every red file exercises the primitives W3 deletes (`batch.py` + its five
+  callers) or the seam sites W5 rewires: measured by occurrence, `create_batch`,
+  `claim_pending_items`, `set_gemini_batch_name`, `batch_items`, `batch_jobs`. Making those
+  green inside W2 means re-implementing the queue W3 is removing — and it is the exact inverse
+  of this unit's own rule ("never a green test resting on deletion").
+- **Acceptance (round-trip), restated**: W2 exits when the suite's red is **partitioned and
+  owned**, not when it is zero. Three parts:
+  1. **DELETE (W2's own work)** — tests asserting retired behaviour, per this unit's note that
+     the old behaviour tests "were replaced deliberately, so do not restore them".
+     `test_enrichment_exec.py` is the measured case: its 11 red are the claim-routing
+     (`test_claim_batch_mode_filter`, `test_claim_batch_interactive_skips_gemini_batch`),
+     batch-mode-column (`test_create_batch_defaults_to_interactive`,
+     `test_create_batch_with_gemini_batch_mode`,
+     `test_migration_backfills_mode_on_legacy_rows`,
+     `test_migration_adds_columns_to_preexisting_tables`), status-setter
+     (`test_set_gemini_batch_name_and_status`,
+     `test_set_name_extending_appends_submitted_statuses`) and whole-corpus-admission
+     (`test_default_stays_label_gated`, `test_whole_corpus_includes_skip_posts`,
+     `test_whole_corpus_excludes_current_prompt_gold`) cases. The SAME FILE's green tests
+     (chunking, request building, token estimation, retrieve state machine) cover live
+     behaviour and stay — delete by test, not by file. Each deletion is recorded with the
+     retired behaviour it asserted, so the coverage is not silently lost.
+  2. **W3/W5 ENTRY DEBT** — green-able only once the queue is truly gone and discovery is
+     partition-based: `test_harvest_sensor.py` (8E), `test_harvest_landing.py` (8E),
+     `test_submit_job.py` (6E+1F), `test_media_upload_op.py` (5E),
+     `test_batch_media_resilience.py` (4E), `test_batch_inline_media.py` (2F),
+     `test_silver_observations.py` (1F).
+     `test_migrate_creators_profiles.py` — **FIXED 2026-09-14, not debt.** It was not fixture
+     fallout: `scripts/migrate_creators_profiles.py:67` called
+     `sqlite_ddl_for("batch_jobs", "batch_items", "media_metadata", "dead_letter")`, which
+     raised KeyError on the three retired names (spec lookup). The script was not trying to
+     resurrect them opportunistically — it was written before retirement and still listed them,
+     so "fixing" the KeyError by re-adding specs would have resurrected the queue on live
+     `ops.sqlite`. Dropped the three retired names, kept `media_metadata`. Two test assertions
+     encoding the same retired expectation were corrected. 3 passed. NB the genuinely dangerous
+     script is `migrate_enrichment_queue.py` (raw `CREATE TABLE IF NOT EXISTS`), recorded in the
+     master plan's consumer register — it cannot fail loudly, it just recreates the tables.
+  3. **W6/W7 ENTRY DEBT** — green-able only once silver/gold exist: `test_snapshot.py` (2F),
+     `test_full_pipeline.py` (2F), `test_gold_to_serving.py` (1F), `test_silver_to_gold.py`
+     (1F), `test_operational.py` (1F), `test_ddl_builder.py` (1F — defect 9, the raw
+     `CLASSIFICATION_DDL` literal bypassing `duckdb_ddl`).
+  Then demonstrate the queue path: with `batch_jobs` present, the legacy read path executes;
+  with it absent, the *replacement* discovery path (W3) serves submit — never a green test
+  resting on deletion.
+- **W2 exit state:** the suite is NOT expected green at W2 exit. It is expected to have a
+  documented partition (deleted / W3-W5 debt / W6-W7 debt) with counts, so W3 and W5 open
+  against a known debt rather than rediscovering it. Re-running the two named files and
+  declaring victory is the failure this note exists to prevent.
 
 ### W3 — Reconnect the halves: drain→submit handoff + retire the queue read-path
 - **What**: `submit.py` discovers work from the Dagster instance's `enrichment_submitted`

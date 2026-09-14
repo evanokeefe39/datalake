@@ -62,10 +62,16 @@ def _full_name_for(duckdb_con: duckdb.DuckDBPyConnection, username: str) -> str 
 
 
 def _ensure_batch_tables(con: sqlite3.Connection) -> None:
-    """Recreate the batch tables lost when ops.sqlite was recreated externally."""
-    con.executescript(
-        sqlite_ddl_for("batch_jobs", "batch_items", "media_metadata", "dead_letter")
-    )
+    """Recreate the operational tables lost when ops.sqlite was recreated externally.
+
+    Retirement note (ADR-0012): this used to recreate ``batch_jobs``, ``batch_items``
+    and ``dead_letter``. Those are the retired queue tables — they no longer exist in
+    ``_SQLITE_SPECS``, so the old call raised KeyError, and re-adding their specs to
+    "fix" that would resurrect the retired queue on live ``ops.sqlite``. Only
+    ``media_metadata`` survived retirement, and it is the only name this script needs:
+    the creators/profiles migration reads creators and profiles, not the queue.
+    """
+    con.executescript(sqlite_ddl_for("media_metadata"))
 
 
 def migrate(ops_path: Path, duckdb_path: Path) -> None:

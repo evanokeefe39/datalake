@@ -107,7 +107,11 @@ def test_migration_backfills_and_drops(tmp_path):
 
     tables = _tables(ops_path)
     assert "scrape_targets" not in tables
-    assert {"batch_jobs", "batch_items", "media_metadata", "dead_letter"} <= tables
+    # Retirement (ADR-0012): the queue tables are gone from _SQLITE_SPECS, so the
+    # migration must NOT recreate them. media_metadata survived retirement and is
+    # the only operational table this script still owns.
+    assert "media_metadata" in tables
+    assert not {"batch_jobs", "batch_items", "dead_letter"} & tables
 
 
 def test_migration_idempotent(tmp_path):
@@ -136,10 +140,8 @@ def test_migration_without_scrape_targets_is_noop(tmp_path):
     migrate_mod.migrate(ops_path, duckdb_path)
 
     tables = _tables(ops_path)
-    assert {
-        "creators", "profiles", "batch_jobs", "batch_items",
-        "media_metadata", "dead_letter",
-    } <= tables
+    assert {"creators", "profiles", "media_metadata"} <= tables
+    assert not {"batch_jobs", "batch_items", "dead_letter"} & tables
     con = sqlite3.connect(str(ops_path))
     try:
         n_creators = con.execute("SELECT COUNT(*) FROM creators").fetchone()[0]
