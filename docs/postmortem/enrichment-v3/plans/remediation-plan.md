@@ -215,9 +215,18 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   migrated row carrying provenance (`provider, model, prompt_hash, schema_version, run_id`);
   re-running the backfill changes 0 rows (idempotency demonstrated by double-run + diff);
   delete a conformed row and re-conform from bronze with the SDK counter at **0** (replay,
-  never re-bill — the keystone claim, now demonstrated on a real row). The 8 `model IS NULL`
-  legacy rows are explicitly dispositioned (re-hashed via the documented procedure or
-  quarantined with a reason code — not silently skipped).
+  never re-bill — the keystone claim, now demonstrated on a real row).
+  **Amended by ADR-0014 (W0, 2026-09-14):** the 8 `model IS NULL` legacy rows are
+  NOT a re-hash/quarantine fork — verified live, all 8 carry `prompt_hash 24c8e291`
+  and valid classification JSON, so quarantining would misrepresent valid data and
+  re-hashing `prompt_identity_v1` is void (the model is unknowable by construction).
+  The disposition is **migrate with sentinel provenance**: `model='legacy-unknown'`,
+  `provider='gemini'`, `prompt_hash` unchanged, and the migration asserts
+  `count(model IS NULL rows dispositioned) == 8`, failing loudly if a ninth appears
+  between audit and migration. The reconciliation identity becomes genuinely
+  checkable: `count(silver_content_classification where model='legacy-unknown') == 8`
+  AND `count(gold_analyses where model IS NULL) == 0` after migration, asserted in
+  `tests/operational/test_backfill_idempotency.py`.
 
 ### W7 — Serving rebind + schema-catalog/target reconciliation
 - **What**: Rebind the 22 transitive views from `gold_analyses` to silver/marts (the silver-bound

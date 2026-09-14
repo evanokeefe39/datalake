@@ -38,6 +38,7 @@ Part of the [architecture documentation](../README.md).
 | [0011](0011-enrichment-layered-model.md) | **The v3 layer model**: bronze verbatim → six `silver_*` conform tables → four gold marts; key `platform` not `domain` | Accepted (**not yet implemented**) | 2026-09-10 |
 | [0012](0012-dagster-native-orchestration.md) | Orchestration state is Dagster-native; retire the `ops.sqlite` queue | Accepted (**not yet implemented**) | 2026-09-10 |
 | [0013](0013-seam-keeps-no-ledger.md) | The seam keeps **no ledger** — the service owns its job store (Dagster polls it), Dagster owns orchestration state | Accepted (**not yet implemented**) | 2026-09-10 |
+| [0014](0014-orchestration-dynamics.md) | The orchestration **dynamics**: the harvested driver, the retry driver, the quarantine disposition, and a partition key whose round survives derivation | Proposed (**not yet implemented**) | 2026-09-14 |
 
 These are the current target and are **not built yet** — read them alongside
 [`../README.md`](../README.md)'s current-vs-target table. ADR-0013 reconciles
