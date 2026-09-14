@@ -366,6 +366,20 @@ footer{border-top:1px solid var(--line-soft);margin-top:96px;padding:28px 0 48px
   </div>
 </header>
 
+<div class="honesty rv" style="margin:0 0 8px">
+  <span class="tag">Read this first — the verdict below has been revised</span>
+  Two independent reviews changed this document after it was written, and the changes cut against
+  its original confidence. <b>§03's root cause does not discriminate</b> — "orchestration failed" is
+  true of every migration this process has run, including the successful ones, so it explains
+  neither; the discriminating form is the compound <i>unowned contracts AND no acceptance gate
+  capable of observing a real run</i>, which makes <b>acceptance the proximate cause</b>. And
+  <b>one claim was retracted</b>: the assertion that no unit was briefed to migrate the seam call
+  sites was inferred from the commit trail, which shows what ran, not what was assigned.
+  Assignment-versus-execution is <b>undetermined</b>. The §03 correction carries the full detail.
+  What survives untouched is the <i>measurement</i>: 7 of 36 criteria met, verified against the
+  live database. That is the part this document is actually entitled to assert.
+</div>
+
 <section id="summary">
   <h2>Summary</h2>
   <p class="lede">The bottom line, first.</p>
@@ -645,6 +659,25 @@ footer{border-top:1px solid var(--line-soft);margin-top:96px;padding:28px 0 48px
   </div>
 
   <div class="verdict-bar rv">Orchestration is the dominant cause. The workers' faults are second-order.</div>
+
+  <div class="honesty rv">
+    <span class="tag">Correction — supersedes the allocation above</span>
+    Two revisions, both from the panel, and both weaken how confidently this section can be read.
+    <br><br>
+    <b>One claim was retracted.</b> An earlier draft stated that no unit was ever briefed to
+    migrate the seam call sites. That was an inference from the commit trail — which shows what
+    was <i>executed</i>, not what was <i>assigned</i>. Presented as a dispatch record it was not
+    evidence. The assignment-versus-execution question is <b>undetermined</b> on the current
+    record, and the "worker correct" framing above rests partly on it.
+    <br><br>
+    <b>And the root cause as stated does not discriminate.</b> "Orchestration failed" describes
+    every migration this process has run, including the ones that succeeded. A cause present in
+    both outcomes explains neither. The discriminating form is the compound:
+    <b>unowned contracts AND no acceptance gate capable of observing a real run.</b> Remove either
+    half and the failure does not occur. That makes the proximate cause
+    <b>acceptance</b> — the check that could not see the drift — rather than the shape of the
+    dispatch.
+  </div>
 </section>
 <section id="lessons">
   <h2><span class="no">04</span>Lessons, in three layers</h2>
