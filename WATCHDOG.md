@@ -270,3 +270,22 @@ real defect during the v3 materialization.
   do not "fix" the code back to the spec.
 - The three §9 open decisions remain OPEN (form-taxonomy overlap;
   parser-enum all-or-nothing; `asr_model` vs envelope `model`). Do not resolve silently.
+- **The `result_json` passthrough is load-bearing.** `v_post_detail` selects
+  `scc.result_json`; conform populates it from bronze `response_text` verbatim
+  (US-ESA-2 AC6, byte-identity tested). Removing it from conform's schema silently
+  breaks the ENTIRE serving surface (Binder Error on every view), because the conform
+  replay is `CREATE OR REPLACE TABLE AS SELECT * FROM read_parquet` — the catalog
+  cannot rescue a producer that omits a column. This exact bug took serving down on
+  2026-09-14. The `conform.py` vs `schemas.py` duplication is therefore a defect
+  class, not a style nit: treat any divergence between them as a bug.
+- **`classification.py::CLASSIFICATION_DDL` does NOT match the live
+  `silver_content_classification`** (missing provenance columns its own schema adds;
+  different column order). Replaying `migrate_classification_to_silver.py::
+  register_silver` (positional `INSERT ... SELECT *`) against a conform-built table
+  would CORRUPT rows positionally. The live publisher is
+  `scripts/conform_silver.py`; reconcile `classification.py` before any replay.
+- Marts are now MATERIALIZED live (2026-09-14): `gold_post_enrichment` 10,038,
+  `gold_creator_performance` 661, `gold_content_shape_performance` 31,811,
+  `gold_top_posts` 8,262 — over the classification backfill alone. Their
+  `silver_visual_*`/`silver_text_*` inputs are typed-empty until the visual/text
+  passes run, so shape-analytics rows are classification-only today.
