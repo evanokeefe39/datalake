@@ -567,6 +567,21 @@ in the repo that no downstream action can regenerate.
 3. **Restore verified, not asserted** — spot-check N files read back from R2, byte-compare
    against local, and record the counts. An upload nobody read back is a hope, not a backup.
 
+**Integrity verified 2026-09-14 — every indexed byte is present.** The apparent mismatch between
+`media_cache` (27,748 rows) and `data/media/posts/` (26,657 files) was checked rather than
+assumed, because a row pointing at missing bytes would be unrecoverable data loss on the exact
+asset this gate protects. Result — the gap is **benign and arithmetically exact**:
+
+- `media_cache`: 27,748 rows, 27,748 distinct `cache_key`, 27,748 distinct `local_path`, **0 NULL paths**
+- Rows whose file **exists: 27,748**. Rows whose file is **missing: 0**. Zero-byte files: **0**
+- The 1,091-row difference is `data/media/thumbnails/` (1,099 files), not posts: posts 26,657 +
+  thumbnails 1,091 = **27,748**, matching the cache exactly
+- Total bytes across all indexed files: **55.36 GB**
+
+So `media_cache` is a **complete and accurate index** of the scraped media bytes — no orphans, no
+dangling pointers. This is what makes the gate's step (2) meaningful: restoring the bytes *and*
+the index restores a usable asset; restoring either alone does not.
+
 **Not claimed by this gate:** that R2 is durable, versioned, or lifecycle-managed. Those are
 decisions for whoever owns the bucket, not for this plan. The gate asserts only that a second
 copy exists and was read back.
@@ -585,7 +600,23 @@ weight, safe to drop.
 | W7 catalog reconciliation | `DUCKDB_TABLES`/`expected_schema.py` change meaning | `test_state_compatibility.py`, schema docs | Self-correcting (test suite re-reads catalog) |
 | W8 checks/freshness | Adds blocking checks — new failure surface | On-call/operator workflows | Additive only |
 | **W9 drops — DROP list** (`batch_jobs` 6, `batch_items` 10,285, `dead_letter` 776, `facets_batch_jobs` 4, `media_metadata` 5,613, `gold_growth_facets` 205, `gold_analyses` 9,576) | Irreversible removal of queue history + the enrichment layer | Serving (must already be off gold by W7), dashboard | **Destructive — §3.0 backup gate MUST pass first, then human approval, then archive** (export every dropped table to Parquet under `data/lake/archive/`, verify export count == live count in the same run). Owner 2026-09-14: *"i dont care about the queues and batches in ops.sqlite we can confidently drop them"* — the queue drops are AUTHORIZED; sequencing is the only question. `gold_analyses` is decided retired but drops LAST, only after W6 migrates its rows and W7 proves parity |
-| **W9 — KEEP list (irreplaceable or curated)** `media_cache` 27,748 · `creators` 675 · `profiles` 675 · `creator_merges` 2 · `prompt_registry` 1 | — | None — these are the mapping that makes the 55.4 GB of scraped media bytes *usable*, plus human curation that cannot be regenerated | **NEVER DROPPED.** `media_cache` is the URL→file index for `data/media/posts/`; without it the cached bytes are 55 GB of unlabelled files. `creators`/`profiles` encode human identity decisions (WATCHDOG: "Creator identity is a human decision"). Dropping any of these is data loss even though the queue drops are authorized |
+| **W9 — KEEP list (irreplaceable or curated)** `media_cache` 27,748 · `creators` 675 · `profiles` 675 · `creator_merges` 2 · `prompt_registry` 1 | — | None — these are the mapping that makes the 55.4 GB of scraped media bytes *usable*, plus human curation that cannot be regenerated | **NEVER DROPPED.** `media_cache` is the URL→file index for the scraped bytes (verified complete: all 27,748 rows resolve to existing files, 0 missing — §3.0); without it the cached bytes are 55 GB of unlabelled files. `creators`/`profiles` encode human identity decisions (WATCHDOG: "Creator identity is a human decision"). Dropping any of these is data loss even though the queue drops are authorized |
+
+**⚠ THE DROP MUST BE PER-TABLE — never a database-level operation.** The KEEP and DROP sets live in
+the **same file**, `ops.sqlite`. `media_cache` (27,748 rows, the index to 55.36 GB of unrecoverable
+scraped media), `creators`, `profiles`, `creator_merges` and `prompt_registry` share that file with
+the queue tables that are cleared to drop. Therefore:
+- `scripts/retire_queue_tables.py` issues **per-table `DROP TABLE` statements**, one named table at a
+  time, from an explicit allow-list. No `DROP DATABASE`, no file deletion, no "recreate ops.sqlite
+  clean", no `VACUUM INTO`-and-swap, no temp-file rename, no wholesale rewrite.
+- The script **asserts the KEEP list is still present and non-empty after the drops** — if
+  `media_cache` or `creators` is missing when the script finishes, it failed loudly and the
+  promotion does not proceed.
+- The KEEP set is **backed up independently** (§3.0 step 2) *before* the script runs, so a botched
+  per-table drop is recoverable and not a best-effort.
+- Deleting `ops.sqlite` to "start clean" would destroy the media index and the human curation while
+  leaving the 55 GB of bytes intact and unlabelled — the worst possible outcome, since it looks like
+  a successful cleanup. Say so in the script's docstring.
 
 Nothing in this plan writes to `gold_analyses` or deletes any row before W9, and W9's drops are
 gated, archived, and human-approved. All new DDL is additive (`CREATE OR REPLACE` for views,
