@@ -20,14 +20,34 @@ could not complete one cycle.**
 
 ## The three states
 
+Read them in narrative order — where we came from, where we were going, where we actually went:
+
 | State | Diagram | What it shows |
 |---|---|---|
-| **OLD — working** | [`diagrams/state1-old.html`](diagrams/state1-old.html) | The queue-driven pipeline that actually ran and produced 9,576 enriched rows. The baseline. |
-| **CURRENT — incorrect** | [`diagrams/state2-current.html`](diagrams/state2-current.html) | **Start here.** The branch today: 12 objects code-only, the two halves not meeting, the missing producer, the bypassed seam. |
-| **TARGET** | [`diagrams/state3-target.html`](diagrams/state3-target.html) | The layered model per ADR-0011/0012/0013: verbatim bronze → deterministic conform → six silver tables → four gold marts, Dagster-native. |
+| **PRE-MIGRATION** | [`diagrams/state1-old.html`](diagrams/state1-old.html) | The queue-driven pipeline that actually ran and produced 9,576 enriched rows. The baseline that must not be lost. |
+| **TARGET** | [`diagrams/state3-target.html`](diagrams/state3-target.html) | The layered model per ADR-0011/0012/0013: verbatim bronze → deterministic conform → six silver tables → four gold marts, Dagster-native, with Dagster polling the inference service. |
+| **DRIFTED** | [`diagrams/state2-current.html`](diagrams/state2-current.html) | **Start here.** The branch today: the enrichment loop does not close — 12 objects code-only, the halves not meeting, the missing producer, the bypassed seam. |
 
 The narrative behind the three states is
 [`analysis/three-state-articulation.md`](analysis/three-state-articulation.md).
+
+**Diagram rework status — DEFERRED (2026-09-14).** The three diagrams are being rebuilt to a
+single layout spec (left-to-right BRONZE → SILVER → GOLD → SERVING inside one Dagster boundary,
+with `ops.sqlite` and the inference service outside it, no security blocks, and a numbered
+lifecycle). That work is paused to prioritise the remediation plan, so the set is **currently
+inconsistent** and should not be read as a matched trio:
+
+| Shipped HTML | Built from | Status |
+|---|---|---|
+| `state3-target.html` | `state3-target.architecture.json` | Complete — new layout, new title |
+| `state2-current.html` | `state2-current.architecture.json` | Partial — new title, layout lags its spec |
+| `state1-old.html` | `state1-old.dataflow.json` | **Stale** — still the pre-rework design; title reads "STATE 1 (OLD)" |
+
+`state1-old.architecture.json` holds the new design but fails archify's desktop-readability
+check (a sublabel projects at 4.9px against a 6px minimum at 1440×900, because the computed
+viewBox is 1420px wide and only 930px is available). There is no font knob — only
+`meta.viewBox` and node sizes — so the fix is a layout change, not a copy edit. `state1` and
+`state2` need redelivery before these three can be presented side by side.
 
 ---
 

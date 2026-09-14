@@ -3,9 +3,14 @@
 Source for the architecture diagrams. Every fact below is verified against the repo, the live
 databases, and the audits in [`../audits`](../audits). Do not invent nodes or edges.
 
+The three states are named, never numbered, because the narrative order is not the numeric
+order. Read them as: **PRE-MIGRATION** (where we came from) → **TARGET** (where we were going)
+→ **DRIFTED** (where we actually went). The sections below appear in numeric order for
+historical continuity; the narrative order is the one above.
+
 ---
 
-## STATE 1 — OLD (the state before the migration; it WORKED)
+## PRE-MIGRATION STATE (the state before the migration; it WORKED)
 
 This is the pipeline that ran and produced real output. It is not a failure state. It is the
 baseline that must not be lost while the new one is built.
@@ -41,10 +46,11 @@ baseline that must not be lost while the new one is built.
 
 ---
 
-## STATE 2 — CURRENT / INCORRECT (what is on the branch today)
+## DRIFTED STATE (what is on the branch today)
 
 **The defining characteristic: the code branch is green and the system does not run.** Twelve
-objects exist as code and are materialized nowhere. The live database is still STATE 1.
+objects exist as code and are materialized nowhere. The live database still holds the
+PRE-MIGRATION world.
 
 **What the code now declares (materialized: NONE of it):**
 - `bronze_enrichment_raw` (verbatim landing, keyed `(post_id, platform, workload, prompt_hash, run_id)`)
@@ -98,7 +104,7 @@ met.
 
 ---
 
-## STATE 3 — TARGET (ADR-0011 / ADR-0012 / ADR-0013; not yet built)
+## TARGET STATE (ADR-0011 / 0012 / 0013; not yet built)
 
 The layered model. Clean, one direction, no queue.
 
@@ -140,10 +146,16 @@ The layered model. Clean, one direction, no queue.
 
 ## Visual guidance
 
-- Use **`dataflow`** for the pipeline states (1 → 2 → 3 as three separate panels or one figure
-  with three columns). Use **`architecture`** if showing the seam/port/adapter structure.
-- **STATE 2 is the one that matters most.** It must make the four breakages visually obvious —
+- Use **`architecture`** for the pipeline states (one panel each, in the narrative order
+  PRE-MIGRATION → TARGET → DRIFTED). The rework uses `architecture` because the subject is the
+  components (Dagster assets, jobs, sensors, partitions, checks) and where orchestration state
+  lives, not the data lineage alone. Legacy `dataflow` specs are superseded — there is now one
+  spec per state.
+- **The DRIFTED state is the one that matters most.** It must make the four breakages visually obvious —
   especially the disconnected halves, which should read as two chains that visibly do not meet.
-- Colour semantics: state 1 neutral/working, state 2 red/incorrect, state 3 blue/target.
+- Colour semantics: PRE-MIGRATION neutral/working, TARGET blue/target, DRIFTED red/incorrect.
+  Note the red is reserved for the DRIFTED state alone — it marks a state that is wrong, not a
+  class of component. This document is the source for the diagrams, and it previously implied
+  red was a categorical colour; it is not.
 - Keep node counts low (≤12 primary per diagram). Label the meaningful edges.
 - Every label must be a fact from this document. Do not invent components.
