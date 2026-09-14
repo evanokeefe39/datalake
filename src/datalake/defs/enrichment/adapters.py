@@ -109,6 +109,15 @@ class _HttpAdapter:
             return RETRYABLE
         return UNKNOWN
 
+    def is_terminal(self, state: str) -> bool:
+        """Canonical-vocabulary predicate (Protocol seam.py:121). Terminal means
+        COMPLETED or FAILED — the only two states a consumer may act on.
+        Regression: the Protocol declared this method, neither adapter
+        implemented it, and the facets path failed with AttributeError on the
+        first real enrichment run (2026-09-14) AFTER the submit had already
+        been billed."""
+        return state in TERMINAL_STATES
+
 
 def handle_codec(names_or_handle: str | Sequence[str]) -> str | list[str]:
     """THE handle encoding (batch contract): a JSON array of provider job

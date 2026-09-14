@@ -69,36 +69,46 @@ def test_live_roots_untouched(live_snapshot, slice_a):
     assert _snapshot_live() == live_snapshot, "the smoke slice wrote to the live lake"
 
 
-def test_deterministic_selection(tmp_path_factory, live_snapshot, slice_a):
-    out_b = tmp_path_factory.mktemp("slice_b")
-    build_slice(out_b, creators=3, posts=12, seed=42)
-    a = duckdb.connect(str(slice_a / "state.duckdb"), read_only=True)
-    b = duckdb.connect(str(out_b / "state.duckdb"), read_only=True)
-    ids_a = [r[0] for r in a.execute("SELECT post_id FROM silver_ig_posts ORDER BY post_id").fetchall()]
-    ids_b = [r[0] for r in b.execute("SELECT post_id FROM silver_ig_posts ORDER BY post_id").fetchall()]
-    a.close()
-    b.close()
-    assert ids_a == ids_b and len(ids_a) == 12
+def test_deterministic_selection(live_snapshot, slice_a):
+    """Same seed on the same live snapshot -> same selection.
+
+    select_slice runs twice against the SAME read-only connection so the
+    assertion cannot be broken by a sibling agent landing new bronze between
+    two full builds (which grows the pools and legitimately changes the slice).
+    """
+    from scripts.make_smoke_slice import select_slice
+    state_ro = duckdb.connect(str(LIVE_STATE_DB), read_only=True)
+    ops_ro = sqlite3.connect(f"file:{LIVE_OPS_DB.as_posix()}?mode=ro", uri=True)
+    try:
+        s1 = select_slice(state_ro, ops_ro, creators=3, posts=12, seed=42)
+        s2 = select_slice(state_ro, ops_ro, creators=3, posts=12, seed=42)
+    finally:
+        state_ro.close()
+        ops_ro.close()
+    ids1 = [r[0] for r in s1["posts"]]
+    ids2 = [r[0] for r in s2["posts"]]
+    assert ids1 == ids2 and len(ids1) == 12
 
 
 def test_six_silver_tables_and_classification(slice_a):
     conn = duckdb.connect(str(slice_a / "state.duckdb"), read_only=True)
-    names = {
-        r[0]
-        for r in conn.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
-        )
-    }
+    try:
+        names = {
+            r[0]
+            for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
+            ).fetchall()
+        }
+        n_posts = conn.execute("SELECT count(*) FROM silver_ig_posts").fetchone()[0]
+        n_cls = conn.execute(
+            "SELECT count(*) FROM silver_content_classification "
+            "WHERE post_id IN (SELECT post_id FROM silver_ig_posts)"
+        ).fetchone()[0]
+    finally:
+        conn.close()
     assert set(SIX_SILVER) <= names
-    n_posts, n_cls = conn.execute(
-        "SELECT count(*), "
-        "(SELECT count(*) FROM silver_content_classification c WHERE c.post_id = p.post_id) "
-        "FROM silver_ig_posts p"
-    ).fetchone()
-    conn.close()
     assert n_posts == 12
     assert n_cls == 12, "the slice must inherit the migrated classification for every post"
-
 
 def test_media_bytes_present_and_no_dangling_paths(slice_a):
     ops = sqlite3.connect(str(slice_a / "ops.sqlite"))
@@ -112,22 +122,22 @@ def test_media_bytes_present_and_no_dangling_paths(slice_a):
         assert cache_key in Path(local_path).name
     assert any(media_root.rglob("*")), "media bytes must exist under the smoke root"
 
-
 def test_stratification(slice_a):
     conn = duckdb.connect(str(slice_a / "state.duckdb"), read_only=True)
-    videos, carousels, text_only = conn.execute(
-        "SELECT "
-        "count(*) FILTER (WHERE video_view_count > 0), "
-        "count(*) FILTER (WHERE media_count > 1), "
-        "count(*) FILTER (WHERE media_files = '[]') FROM silver_ig_posts"
-    ).fetchone()
-    labels = {
-        r[0] for r in conn.execute("SELECT DISTINCT label FROM ig_post_labels")
-    }
-    conn.close()
+    try:
+        videos, carousels, text_only = conn.execute(
+            "SELECT "
+            "count(*) FILTER (WHERE video_view_count > 0), "
+            "count(*) FILTER (WHERE media_count > 1), "
+            "count(*) FILTER (WHERE media_files = '[]') FROM silver_ig_posts"
+        ).fetchone()
+        labels = {
+            r[0] for r in conn.execute("SELECT DISTINCT label FROM ig_post_labels").fetchall()
+        }
+    finally:
+        conn.close()
     assert videos >= 1 and carousels >= 1 and text_only >= 1
     assert len(labels) >= 2, "standout/non-standout mix required"
-
 
 def test_enrichment_plan_submittable(slice_a):
     sub = enrichment_plan_check(slice_a, ["visual", "text"])

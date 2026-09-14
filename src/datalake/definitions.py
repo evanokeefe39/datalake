@@ -24,6 +24,7 @@ from .defs.enrichment import (
     gold_analyses,
     silver_enrichment_conform,
 )
+from .defs.enrichment.sensor import enrichment_harvest_sensor
 from .defs.instagram import (
     ig_checks,
     ig_comments_slv,
@@ -72,5 +73,5 @@ defs = Definitions(
     resources=all_resources,
     schedules=[daily_medallion, core_refresh],
     jobs=[enrichment_harvest_job, enrichment_submit_job],
-    sensors=[],
+    sensors=[enrichment_harvest_sensor],
 )

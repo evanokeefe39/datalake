@@ -435,7 +435,11 @@ def harvest_facets_batches(
                 post_id=post_id,
                 platform="instagram",
                 workload=workload,
-                provider=res.provider or "qwen",
+                # provider names the PROVIDER, not the transport adapter:
+                # res.provider carries the adapter name ('service_backed'),
+                # which the landing KNOWN_PROVIDERS guard rightly refuses.
+                # Workload->provider is settled — this path IS qwen.
+                provider="qwen",
                 model=res_model,
                 prompt_hash=prompt_hash,
                 schema_version=GROWTH_FACETS_SCHEMA_VERSION,

@@ -124,7 +124,7 @@ def run_harvest(args: argparse.Namespace) -> int:
     conn = _open_state(args.state_db)
     try:
         facets_batch.wait_for_facets_batches(
-            args.job_ids,
+            _csv(args.job_ids),
             poll_seconds=args.poll_seconds,
             timeout_seconds=args.timeout_seconds,
             base_url=base_url,
@@ -133,8 +133,9 @@ def run_harvest(args: argparse.Namespace) -> int:
         print(
             "Harvest:",
             facets_batch.harvest_facets_batches(
-                conn, args.job_ids, args.mode,
+                conn, _csv(args.job_ids), args.mode,
                 model=args.model, base_url=base_url,
+                root=args.bronze_root,
             ),
         )
     finally:
@@ -208,6 +209,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--state-db", default=DEFAULT_STATE_DB)
     p.add_argument("--ops-db", default=DEFAULT_OPS_DB)
     p.add_argument("--model", default=None, help="model override for this run")
+    p.add_argument(
+        "--bronze-root", default=None,
+        help="bronze landing root (default: the live lake root — pass the "
+        "smoke/test root for dev runs; the landing guard refuses unknown "
+        "providers on the default root)",
+    )
     p.add_argument(
         "--service-url",
         default=os.environ.get("QWEN_SERVICE_URL")

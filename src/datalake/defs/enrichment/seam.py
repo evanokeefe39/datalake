@@ -149,6 +149,15 @@ def build_adapter(name: str, **kwargs: Any) -> ProviderAdapter:
     Raises KeyError naming every known adapter when `name` is unknown.
     """
     if name not in ADAPTER_REGISTRY:
+        # Registration is an import side effect of adapters.py. Import it lazily
+        # on FIRST USE so no production call site can reach an empty registry —
+        # the facets path shipped exactly that bug (KeyError: known adapters:
+        # []), caught by the first real enrichment run on 2026-09-14. Safe at
+        # call time: adapters imports this module, which is fully initialized
+        # by then. If the import itself fails mid-package-init, the KeyError
+        # below still fires and names the (empty) registry — loud, not silent.
+        from datalake.defs.enrichment import adapters  # noqa: PLC0415
+    if name not in ADAPTER_REGISTRY:
         raise KeyError(
             f"unknown adapter {name!r}; known adapters: {sorted(ADAPTER_REGISTRY)}"
         )

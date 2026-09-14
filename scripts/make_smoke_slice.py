@@ -184,11 +184,11 @@ def select_slice(
     # Stratification floor: video, carousel, text-only, standout mix.
     take(media_pool, lambda r: (r[4] or 0) > 0, 1)              # video
     take(media_pool, lambda r: (r[3] or 0) > 1, 1)              # carousel
-    take(media_pool + text_pool, lambda r: r[5] == "standout", max(5, posts // 20))
-    take(text_pool, lambda r: True, max(10, posts // 10))       # text-only presence
+    take(media_pool + text_pool, lambda r: r[5] == "standout", min(max(5, posts // 20), posts // 4))
+    take(text_pool, lambda r: True, min(max(10, posts // 10), posts // 3))  # text-only presence
 
     remaining = [r for r in (media_pool + text_pool) if r[0] not in selected]
-    rng.shuffle(remaining)
+
     for r in remaining:
         if len(selected) >= posts:
             break
