@@ -233,7 +233,7 @@ def test_create_batch_empty_raises(tmp_path):
         (claim_batch, [], {}),
         (claim_pending_items, [], {"job_id": 1}),
         (complete_item, [], {"item_id": 1}),
-        (fail_item, ["test error"], {"item_id": 1}),
+        (fail_item, [1, "test error"], {}),
         (mark_complete, [], {"job_id": 1}),
     ],
 )
