@@ -125,12 +125,32 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   lands in quarantine, is read by its named consumer, and redrives. **[HUMAN APPROVAL: the
   spec sign-off gates the fork decision.]**
 
-### W-FREEZE — Freeze the old write path (decided 2026-09-14: cut over, bin Gemini *usage*)
+### W-FREEZE — Retire the Gemini path and freeze the old write path
+**DECIDED 2026-09-14 (owner):** Gemini batch usage is **retired for the foreseeable future** —
+not parked, not pending re-admission. *"id rather completely bin gemini batch usage and finish
+the migration swiftly… lets assume we aren't gonna use gemini batch for the foreseable future.
+if we need to re-enrich everything so be it."*
+
+**The re-admission story is DROPPED, deliberately.** Panel round 2 returned the re-admission half
+as *"a promissory note with no scheduled trigger, owner, or unit"* — and the owner has now chosen
+retirement over a promise. This retires the panel's §5 conditions by resolving the question the
+other way: there is nothing to trigger. Consequences:
+- The panel's four interface gaps (handle lifetime, dual `max_tokens`, encoding, HTTP taxonomy)
+  stay **unfixed** and are recorded as *known limits of the seam*, not as W5 work. W5 keeps only
+  the two live qwen sites. That is a real reduction in scope and it is the point.
+- `gemini_batch.py` + `DirectBatchAdapter` are kept as **inert code** (deleting them is optional
+  cleanup, not required). No test asserts they construct — `build_adapter("gemini")` was never a
+  real key anyway (`direct_batch` is), and the panel classified the adapter **PARTIAL**:
+  never run over the wire, every test stubs the SDK.
+- **If Gemini returns, it returns as a rewrite against then-current needs, not as a re-admission
+  through this seam.** Say that plainly so nobody later mistakes inert code for a capability.
 
 Owner decision: stop maintaining the intermediate stages. Rather than run the old and new
 paths side by side through a long migration, **freeze the old write path and cut over.**
-Gemini-batch *usage* is retired; the Gemini *code* (the client and the `DirectBatchAdapter`)
-stays as a supported seam provider per ADR-0008/0009.
+Gemini-batch usage is retired; the Gemini code (the client and `DirectBatchAdapter`) stays on
+disk as inert code — see the retirement framing above. It is NOT a supported seam provider in
+any operational sense: no entry point references it, no test exercises it over the wire, and
+the seam's lifecycle was never fixed to accommodate it.
 
 **This is a precondition, ordered BEFORE W1, not a step inside the migration** — the spike and
 W6's reconciliation both measure against `gold_analyses`, and a baseline that can still move is
@@ -172,13 +192,11 @@ not a baseline.
   **Therefore W-FREEZE must be paired with either W4's harvested producer or an explicit
   submitter-quiet guard** (a drain-side refusal to materialize when no submitter is registered).
   Freezing the writer without wiring the reader is not a partial state — it is a stall.
-- **Re-admission trigger — REQUIRED, or this unit is misnamed.** The panel's adversary seat
-  (HIGH finding) verified that `remediation-plan.md` contains **zero** mentions of re-admission:
-  "temporarily" currently has no observable condition, owner, or unit. Either name one — a
-  concrete trigger such as a Tier-1 grant, observable via `health()` (`adapters.py:349-352`) —
-  or rename this unit to acknowledge a permanent retirement. The panel listed five conditions a
-  re-admission claim must meet to be honest (`panel/readmission/SYNTHESIS.md` §5); naming a
-  trigger is the first and cheapest.
+- **Owner decision supersedes the panel's trigger requirement (2026-09-14):** retirement was
+  chosen over re-admission, so there is no trigger to name. The panel's finding stands as the
+  reason the choice had to be made explicitly rather than left as "temporarily" — and the panel
+  is the reason the choice was cheap to make, having established that the delete half was sound
+  and the re-admission half was not yet real.
 
 **Consequence 1 — W5 shrinks by ~80%.** Measured against the working tree: of the bypass call
 sites the plan enumerated, **9 are Gemini and only 2 are qwen**
@@ -190,7 +208,7 @@ sites the plan enumerated, **9 are Gemini and only 2 are qwen**
 | `submit.py:152` (`gemini_batch.submit`) | migrate to the seam | **delete** with the retired entry point |
 | `harvest.py:311,316,319,334` (poll/job_state/is_terminal/retrieve) | migrate | **delete** |
 | `harvest.py:446,454,459,462` (second poll path) | migrate | **delete** |
-| `facets_batch.py:318,322` (`qwen_client`) | migrate to the seam | **migrate** (unchanged — this is the live path) |
+| `facets_batch.py:292` (`qwen_client`, via `build_adapter`) | migrate to the seam | **migrate** (unchanged — this is the live path) |
 
 The seam's `DirectBatchAdapter` already wraps Gemini, so the *capability* is not lost — only the
 direct, un-seamed calls. That is the same thing W5 was trying to achieve, reached by deletion
@@ -202,17 +220,24 @@ path green while building the new one, and the "6 live `batch_jobs` rows reconci
 read-path dies" item in §3 becomes a static reconciliation against a frozen set rather than a
 race. W6's reconciliation identity now has a stable right-hand side.
 
-**Consequence 3 — Gemini remains a supported provider, unused.** `gemini_batch.py` and
-`DirectBatchAdapter` stay. **CORRECTED 2026-09-14 (panel):** the registry name is **`direct_batch`**,
-not `"gemini"` — `seam.register_adapter("service_backed", …)` is the only registration in
-`seam.py` (:113,:119), and an earlier draft of this unit specified a test for
-`build_adapter("gemini")`, a key that does not exist and would fail on a correct implementation.
-Guard the real name: assert `build_adapter("direct_batch")` **constructs** while **no Dagster
-entry point references it** — so the provider stays available for a future swap without remaining
-a live cost or a drift source. Note the panel's warning that this is a weaker guarantee than it
-looks: `DirectBatchAdapter` is classified **partial**, never run over the wire, with every test
-stubbing the SDK (`test_adapters.py:188-197`), so "constructs" proves registration, not
-capability.
+**Consequence 3 — the Gemini code stays on disk, inert, with NO test guarding it.**
+**SUPERSEDED 2026-09-14 by the owner's retirement decision.** Two corrections to the draft this
+replaces, both from panel round 2:
+
+- The registry name is **`direct_batch`**, not `"gemini"` — `seam.register_adapter("service_backed", …)`
+  is the only registration in `seam.py` (:113,:119). An earlier draft specified a test for
+  `build_adapter("gemini")`: a key that does not exist, which would have failed on a *correct*
+  implementation. That draft is withdrawn.
+- The required test is **withdrawn too.** It existed to preserve a re-admission path the owner has
+  now retired. Asserting that inert code constructs would be maintaining a capability claim nobody
+  holds — exactly the "dead weight that looks like a capability" the adversary seat warned about.
+  `DirectBatchAdapter` is inert; leave it inert; a future Gemini effort starts from the ADRs and
+  the client library, not from an unused adapter.
+
+Deleting `gemini_batch.py` / `DirectBatchAdapter` outright is **optional cleanup**, not required by
+this unit and not a blocker for any other. If deleted, note it in the W9 log so the removal is
+discoverable; if kept, note *why* (inert, unguarded, unreferenced) so it is not mistaken for a
+supported path.
 
 ### W1 — Validation spike (the fork instrument)
 - **What**: One real post (multi-image, one workload) driven end-to-end against the real
@@ -504,6 +529,52 @@ implemented twice (spec-once, build-once, verify-once per unit).
 
 ## 3. Blast radius & invalidation plan
 
+### 3.0 THE BACKUP GATE — must pass before ANY destructive step
+
+Owner instruction 2026-09-14: *"i definitely dont want to lose apify scraped data."* The
+enrichment layer is re-derivable (re-run qwen; if the whole corpus needs re-enriching, so be it —
+that is the accepted cost of finishing swiftly). The **scraped** layer is not. This gate protects
+the difference.
+
+**Audit result (measured 2026-09-14 — the gap is real):**
+
+| Asset | Size | In git? | Backed up? |
+|---|---|---|---|
+| `data/lake/bronze/*.parquet` — Apify scraped raw | 42 files, 69 MB | **No** (gitignored) | **NO** |
+| `data/media/posts/` — scraped media BYTES | 27,806 files, **55.4 GB** | **No** (gitignored) | **NO** |
+| `ops.sqlite` `media_cache` — URL→file mapping for the above | 27,748 rows | No | only via a 09-10 snapshot |
+| `ops.sqlite` `creators`/`profiles`/`creator_merges` — human curation | 675/675/2 | No | only via a 09-10 snapshot |
+| `ops.sqlite` `prompt_registry` | 1 | No | only via a 09-10 snapshot |
+| `ops.sqlite` / `state.duckdb` | 42.7 / 80.5 MB | No | `~/backups/datalake/2026-09-10-spike-baseline` (4 days stale) |
+
+`~/backups/datalake/` contains **two files** — `ops.sqlite` and `state.duckdb`, dated 2026-09-10.
+It contains **zero parquet files and zero media files**. The scraped layer exists **only on this
+laptop**.
+
+**Why the media bytes are the sharpest edge:** Instagram CDN URLs die in ~4-5 days (WATCHDOG).
+The byte cache exists *precisely* because re-fetching is impossible — so `data/media/` is not a
+cache in the disposable sense, it is the **only copy** of the scraped media. Losing it means
+losing the media permanently, and no amount of re-enrichment recovers it. This is the one asset
+in the repo that no downstream action can regenerate.
+
+**Gate (all three required, before the first destructive step):**
+1. **Bronze + media bytes copied off this machine.** Destination: R2 (profiles `r2-handoff` /
+   `r2-sessions` already configured; endpoint in `~/.aws/config`). 55.4 GB — a long upload, so it
+   is a background process (`rule://offload-long-runs`), not a subagent unit.
+2. **Identity tables exported** (`media_cache`, `creators`, `profiles`, `creator_merges`,
+   `prompt_registry`) — small, and they are the mapping that makes the media bytes *usable*. A
+   byte cache with no URL→file index is 55 GB of unlabelled files.
+3. **Restore verified, not asserted** — spot-check N files read back from R2, byte-compare
+   against local, and record the counts. An upload nobody read back is a hope, not a backup.
+
+**Not claimed by this gate:** that R2 is durable, versioned, or lifecycle-managed. Those are
+decisions for whoever owns the bucket, not for this plan. The gate asserts only that a second
+copy exists and was read back.
+
+**Note on `media_metadata` (5,613 rows):** it is **not** in the preservation set — it caches
+Gemini File API URIs, 5,419 of which have expired (max `expires_at` 2026-09-11). It is dead
+weight, safe to drop.
+
 | Change | Invalidates | Consumers to signal | Refresh class |
 |---|---|---|---|
 | W3/W4 discovery + in-flight switch (`batch_jobs` → Dagster partitions) | `ops.sqlite` `batch_jobs`/`batch_items` become read-dead; in-flight derivation changes | Drain, submit, harvest, accounting identity, any operator tooling reading the queue | Self-correcting for serving; **full** for pipeline state — first run under new discovery must be on a subset; 6 live `batch_jobs` rows reconciled before the read-path dies (W2/W9) |
@@ -513,7 +584,8 @@ implemented twice (spec-once, build-once, verify-once per unit).
 | W7 serving rebind (22 transitive views) | Every view's source changes: `v_post_detail`, `v_overview`, and the 20 transitive views | **Dashboard (`dashboard/server.py`)** — reads views only, but the KPI values underneath change source; re-verify rendered KPI numbers post-rebind; also any notebook/ad-hoc consumer of `gold_analyses` by name | **Parity-gated cutover**: old and new coexist during migration window; views rebound atomically after sample parity passes; `gold_analyses` retained (never dropped without human approval) |
 | W7 catalog reconciliation | `DUCKDB_TABLES`/`expected_schema.py` change meaning | `test_state_compatibility.py`, schema docs | Self-correcting (test suite re-reads catalog) |
 | W8 checks/freshness | Adds blocking checks — new failure surface | On-call/operator workflows | Additive only |
-| W9 drops (`batch_jobs`, `batch_items`, `dead_letter`, `gold_growth_facets`, `facets_batch_jobs`, **`gold_analyses`**) | Irreversible removal of 776 `dead_letter` rows, 205 `gold_growth_facets` rows, 9,576 `gold_analyses` rows, queue history | Serving (must already be off gold by W7), dashboard | **Destructive — requires human approval + pre-drop archive** (export every dropped table to Parquet under `data/lake/archive/`, then verify the export row count equals the live count before the drop). `gold_analyses` is **decided retired** (2026-09-14, superseded by `silver_content_classification`) — but only after W6 migrates its 9,576 rows and W7 proves parity against it. Archive first, drop last |
+| **W9 drops — DROP list** (`batch_jobs` 6, `batch_items` 10,285, `dead_letter` 776, `facets_batch_jobs` 4, `media_metadata` 5,613, `gold_growth_facets` 205, `gold_analyses` 9,576) | Irreversible removal of queue history + the enrichment layer | Serving (must already be off gold by W7), dashboard | **Destructive — §3.0 backup gate MUST pass first, then human approval, then archive** (export every dropped table to Parquet under `data/lake/archive/`, verify export count == live count in the same run). Owner 2026-09-14: *"i dont care about the queues and batches in ops.sqlite we can confidently drop them"* — the queue drops are AUTHORIZED; sequencing is the only question. `gold_analyses` is decided retired but drops LAST, only after W6 migrates its rows and W7 proves parity |
+| **W9 — KEEP list (irreplaceable or curated)** `media_cache` 27,748 · `creators` 675 · `profiles` 675 · `creator_merges` 2 · `prompt_registry` 1 | — | None — these are the mapping that makes the 55.4 GB of scraped media bytes *usable*, plus human curation that cannot be regenerated | **NEVER DROPPED.** `media_cache` is the URL→file index for `data/media/posts/`; without it the cached bytes are 55 GB of unlabelled files. `creators`/`profiles` encode human identity decisions (WATCHDOG: "Creator identity is a human decision"). Dropping any of these is data loss even though the queue drops are authorized |
 
 Nothing in this plan writes to `gold_analyses` or deletes any row before W9, and W9's drops are
 gated, archived, and human-approved. All new DDL is additive (`CREATE OR REPLACE` for views,
@@ -540,7 +612,7 @@ new tables only).
 **Mechanical non-vacuity checks** (each can fail, each targets a specific vacuity found in the
 audits):
 1. **Reconciliation identity**: `count(silver_content_classification) + count(silver_enrichment_quarantine) == count(gold_analyses)` at migration time, every legacy row accounted (C5 — replaces the unmet C5.4). **Self-referential, not `== 9,576`**: W-FREEZE makes the right-hand side static, but a frozen constant still asserts a convention rather than a measurement — and it would report a W-FREEZE regression as a reconciliation error.
-2. **Provider-name grep in CI**: `gemini_batch\.|qwen_client\.` matches only adapter modules (C2/C3). After W-FREEZE this checks a smaller surface than it was written for — 9 of the original bypass sites no longer exist — but it still guards the 2 surviving qwen sites and any future re-introduction, which is the point. PAIR it with W-FREEZE's own check: `build_adapter("gemini")` constructs, while no Dagster entry point references Gemini. Together they assert *unused but available*, which a bare grep cannot distinguish from *deleted*.
+2. **Provider-name grep in CI**: `gemini_batch\.|qwen_client\.` matches only adapter modules (C2/C3). After W-FREEZE this checks a smaller surface than it was written for — 9 of the original bypass sites no longer exist — but it still guards the 2 surviving qwen sites and any future re-introduction, which is the point. (It was previously PAIRED with a `build_adapter("gemini")` constructibility check; that pairing is **withdrawn** — the key was wrong (`direct_batch` is real) and the owner's retirement decision removed the capability it was preserving. See W-FREEZE Consequence 3.)
 3. **Zero-row gate**: any new object referenced by a consumer with zero rows fails the merge (C5 — "every new object has rows").
 4. **Catalog-vs-target reconciliation**: `DUCKDB_TABLES` names the TARGET world and the live DB matches — not the status quo (C5 — the vacuous-gate fix; reconciliation is against the *target* schema, per postmortem §10.2's correction).
 5. **View-definition baseline**: all 22 transitive views' SQL snapshotted; rebind PRs must diff against it (C5 — replaces the never-written "asserted, not assumed").
@@ -554,11 +626,19 @@ audits):
 ### Declared DAG
 
 ```
-W0 ──► W-FREEZE ──► W1 ──► [FORK DECISION — human] ──► W2 ──► W3 ──► W5 ──► W6 ──► W7 ──► W9
-                                                              │        ▲       ▲
-                                                              └──► W4 ─┘       │
-                                                                   W8 ────────┘ (independent of W7)
+[§3.0 BACKUP GATE] ──► W0 ──► W-FREEZE ──► W1 ──► [FORK DECISION — human] ──► W2 ──► W3 ──► W5 ──► W6 ──► W7 ──► W9
+                                                                                     │        ▲       ▲
+                                                                                     └──► W4 ─┘       │
+                                                                                          W8 ────────┘ (independent of W7)
 ```
+
+- **§3.0 BACKUP GATE runs FIRST — before W0, before anything.** It is not a unit and has no
+  acceptance document; it is a precondition with one observable: the scraped layer
+  (`data/lake/bronze` 69 MB + `data/media` 55.4 GB) exists in a second location, read back and
+  byte-verified. It gates only the DESTRUCTIVE steps in principle, but it runs first because it
+  is currently **unmet** (see §3.0: zero parquet, zero media in `~/backups/datalake/`) and a
+  backup is precisely the kind of task that gets deferred to just-before-the-drop and then
+  shipped without being read back.
 
 - **W-FREEZE precedes W1**, and precedes W5 specifically. It freezes `gold_analyses` so the
   baseline W1 measures and W6 reconciles against cannot move mid-migration, and it deletes the
