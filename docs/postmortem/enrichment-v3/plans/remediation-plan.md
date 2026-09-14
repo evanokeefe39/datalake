@@ -134,10 +134,25 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
 - **Deps**: W0 (spec exists to check against). **Blocks everything else** — its verdict selects
   the path.
 - **Control**: C5 (walking skeleton / tracer bullet — the most damning miss in the audits).
+- **Edge contract** (required by §6 — this unit IS the per-edge test the migration never had):
+  - *reads from:* the real provider (qwen-batch service or Gemini) over the seam's HTTP
+    contract; the drain's `enrichment_submitted` partitions; the real bronze root on disk.
+  - *read by:* the fork decision (its verdict selects finish vs revert); every later unit relies
+    on the envelope shape it captures as `tests/fixtures/real_envelope_gemini.json`.
+  - *verifiable without a fake on either side?* **NO — deliberately.** That is the entire point
+    of the unit: every other test in this repo mocks this boundary, and the flat-vs-nested
+    envelope mismatch is the failure mode the migration is named for. The spike's value is
+    precisely that it does not fake the boundary. State this as the unit's residual risk
+    (a real call can fail for real reasons), not as a coverage claim.
 - **Acceptance (round-trip)**: `landing.read_responses()` height ≥ 1 with the real captured
-  envelope; conform re-run over the same bronze row executes with a monkeypatched provider-SDK
-  call counter reading **0**; the silver row exists keyed `(post_id, platform)`; a second drain
-  run does not re-enqueue the post. Evidence file records each observed materialization.
+  envelope; **conform re-run over the same bronze row executes with a call counter reading
+  `0`**. Build the counter by *wrapping* the adapter in a pass-through decorator that increments
+  and delegates — do NOT `monkeypatch.setattr` the provider, which would both fake the very
+  boundary under test and trip `hooks/pre/boundary-gate.ts` (§6). If the code shape forces a
+  patch instead, the test file MUST carry `boundary-mock-ok: <reason>` and the unit must record
+  the mock as a declared residual. Also: the silver row exists keyed `(post_id, platform)`; a
+  second drain run does not re-enqueue the post. Evidence file records each observed
+  materialization, including the real envelope's actual nesting.
 
 ### W2 — Branch stabilization: finish the queue-retirement slices
 - **What**: The slices are COMMITTED (tree clean) — the "land or discard" half is done. But the
@@ -446,3 +461,128 @@ W0 ∥ W2; W8 ∥ W7; W5 ∥ W8 if `harvest.py` ownership is settled first.
   coherence (rows exist? derived data stale? consumer contract changed?) not just code (C5).
 - Mechanically checkable items ship as hooks/tests, not prose: the CI grep (W5), the
   reconciliation and definition-baseline tests (W6/W7), the replay counter (W6/W8).
+
+---
+
+## 6. Enforcement plane (agent config, added 2026-09-14)
+
+The plan was written before the harness gained a rules + hooks enforcement plane. Three of
+those rules and both hooks bear directly on this migration, and the plan referenced none of
+them. Binding them here so a unit does not have to rediscover them at implementation time.
+
+### The edge contract is now a required per-unit artifact
+
+`rule://edge-contract` was written *from this migration* — it quotes "the 36 exit criteria in
+the enrichment-v3 migration" as its worked example, and names the exact failure: **every
+criterion was checkable without any other component existing.** Per-node completeness was easy
+and per-edge completeness was invisible. That is why the migration landed complete and
+non-functional with a green suite.
+
+Every unit W0–W9 must therefore carry three lines on top of its existing What/Files/Deps:
+
+```
+- reads from:      <the counterparties whose real output this consumes>
+- read by:         <the counterparties that consume what this produces>
+- verifiable without a fake on either side?  <yes | no — and if no, say so plainly>
+```
+
+A `no` is not a failure. It is a **module, not a component**, and must be reported as such and
+recorded as a declared residual — never presented as coverage. A mock at the boundary encodes
+the author's belief about the other side's shape, and *the belief* is what gets tested; when
+the real envelope differs (nested not flat, field renamed, key under a different name) the
+suite stays green and integration fails on first contact.
+
+### `boundary-gate` hook — will block this plan's own acceptance tests
+
+`~/.omp/agent/hooks/pre/boundary-gate.ts` blocks a write to a **test file** whose text contains
+**both** a mocking construct (`monkeypatch.setattr`, `MagicMock`, `mock.patch`, `AsyncMock`, …)
+**and** a boundary word (`client|adapter|api|endpoint|provider|db|sqlite|duckdb|session|queue|…`),
+case-insensitive. Escape: a file carrying `boundary-mock-ok: <reason>` is not blocked, and the
+suppression is itself recorded so the exemption is auditable.
+
+This collides with three units as currently written:
+
+| Unit | The acceptance line | Why it trips |
+|---|---|---|
+| W1 | "a monkeypatched provider-SDK call counter reading **0**" | `monkeypatch.setattr` + `provider` |
+| W6 | "re-conform from bronze with the SDK counter at **0**" | same |
+| W8 | "inject a deliberately malformed real-shaped response" | mock at the adapter/endpoint boundary |
+
+**Required of each:** carry `boundary-mock-ok: <reason>` naming the boundary and why it cannot
+be exercised for real here, AND record in that unit's acceptance that the mock is a declared
+residual rather than coverage. Where the counter can be built by *wrapping* the adapter instead
+of *patching* it — a pass-through decorator that increments and delegates — prefer that: it
+counts the real call path and needs no suppression at all. W1 and W6 should be written the
+wrapping way if the code shape allows; only fall back to a declared suppression if it does not.
+
+Measured blast radius on this plan's files: of the plan-touched test files, only
+`tests/unit/enrichment/test_media_cache.py` currently contains blocked lines (3) and **zero**
+files carry the marker — so WATCHDOG's "keep the File API upload path exercised there" cannot
+be honoured by an edit until that file declares its suppression. Repo-wide the pattern occurs
+on 31 lines across the suite; the gate will surface each when first touched, which is the
+intended behaviour, not a bug.
+
+### `migration-guard` hook + `migration-ships-with-code` — constrains W9's mechanism
+
+`hooks/pre/migration-guard.ts` blocks destructive DDL (`DROP TABLE|COLUMN|SCHEMA|DATABASE|INDEX`,
+`TRUNCATE TABLE`) written to a path matching `migrations/`, `alembic/`, `versions/`, or any
+`.sql` file; the attempt is recorded as a guard-block entry. Additive DDL passes untouched.
+
+W9 is therefore **compliant only if its drops live in the Python script**:
+`scripts/retire_queue_tables.py` matches none of those path patterns and is unaffected. Two
+things must be stated in W9 so an implementer does not trip it: (a) the DROP statements belong
+in the script, **never** in a `.sql` file or under a `migrations/` path; (b) W9 is an archived,
+human-gated, standalone script — explicitly **not** a numbered migration, which is what
+`rule://migration-ships-with-code` forbids ("never DROP against real data in a numbered
+migration"). The archive-first + explicit-approval ceremony W9 already specifies is the
+compliant form; this note just says why.
+
+### `dormant-vs-broken` — W8 must declare each source's intended state, and one is unresolved
+
+`rule://dormant-vs-broken`: "Before building a presence/freshness check, declare each source's
+intended state: **live** (must stay current) or **retired/dormant** (healthy as-is) … If a
+source's intended state is unknown, **ask** — never guess." W8 currently says only "declare
+freshness/volume expectations per asset", which is about *thresholds*, not about *intended
+state* — and a threshold on a deliberately-retired source is a false andon.
+
+States that must be declared explicitly in W8:
+
+| Source | Intended state after this migration | Note |
+|---|---|---|
+| `batch_jobs`, `batch_items`, `dead_letter` | **retired/dormant** | W9 drops them; a presence check must not fire during the W3–W9 window |
+| `facets_batch_jobs` | **retired/dormant** | 4 live rows reconciled at W9 before the drop |
+| `gold_analyses` | **UNKNOWN — escalated, not guessed** | retained read-only post-W7; "live" and "retired" imply different freshness gates |
+| `bronze_enrichment_raw`, `silver_*`, the four marts | **live** | must stay current; staleness is a defect |
+| `gold_growth_facets` | **retired/dormant** | 205 rows, dropped at W9 |
+
+**`gold_analyses` is the one this plan cannot decide.** It is retained through the migration
+window by W7's parity gate (never dropped without human approval), and post-rebind nothing
+reads it — but a retained table that still receives no writes is exactly the shape
+`dormant-vs-broken` warns about: a run-based check on it will either false-alarm forever or be
+silenced, and silencing it is how a real dropout hides later. **[HUMAN DECISION]** — its
+intended state must be named: *live read-only history* (checks assert non-shrinkage, never
+freshness) or *dormant/retired* (checks exempt it entirely, and it is a W9 drop candidate).
+
+### `decompose-lean-units` — W6 (and W4/W8) exceed the cap
+
+`rule://decompose-lean-units`: a unit is TOO BIG if it "spans multiple deliverables/contracts,
+is expected to run >= ~30-45 min, or would hold a long materialization in-runtime" — SPLIT it.
+Target is "one coherent deliverable with ONE observable acceptance criterion, ≤5 explicit files".
+
+W6 as written bundles **four** deliverables — (a) the 9,576-row classification backfill,
+(b) the conform production caller as a Dagster asset, (c) the four gold marts as views,
+(d) the `gold_content_shape_performance` grain fix — plus a materialization that alone exceeds
+a subagent's 2h wall-clock cap (`task.maxRuntimeMs = 7200000`, and it counts wall time even
+while the lid is closed). It must split. Suggested, by contract boundary rather than by phase:
+
+- **W6a** — grain fix + four marts as views (additive, no data movement, verifiable on an empty
+  silver). Deps: none beyond W1.
+- **W6b** — conform production caller registered as a Dagster asset. Deps: W4 (terminal states).
+- **W6c** — the 9,576-row backfill + idempotency instrument. Deps: W6a/W6b. **This one is a
+  background process, not a subagent unit** — `rule://offload-long-runs`: launch it, checkpoint,
+  and let main dispatch a fresh bounded agent to verify the result.
+
+W4 (harvested producer + retry driver) and W8 (quarantine consumer + DQ/freshness gates) each
+bundle two deliverables; each is defensible as ONE unit only because both halves share a single
+contract (W4: the same harvest run owns both per ADR-0014 D2/D3; W8: the same quarantine table).
+State that justification explicitly in those units, or split them.

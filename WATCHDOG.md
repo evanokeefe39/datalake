@@ -55,11 +55,25 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
 
 - Never commit `data/ops.sqlite` / `data/state.duckdb`.
 - `scripts/migrate_creators_profiles.py` mutates live ops state (drops
-  `scrape_targets`, recreates batch tables). Do **not** run it against live
-  `data/ops.sqlite` without explicit approval. The live DB currently carries
-  two known local-only drifts this test suite flags: the vestigial
-  `scrape_targets` table and a missing `batch_items.scheduled_for` (self-heals
-  on the next batch/worker run).
+  `scrape_targets`). Do **not** run it against live `data/ops.sqlite` without
+  explicit approval. **Corrected 2026-09-14:** it no longer recreates batch
+  tables. It used to call `sqlite_ddl_for("batch_jobs", "batch_items",
+  "media_metadata", "dead_letter")`, which raised KeyError once those names left
+  `_SQLITE_SPECS` — and re-adding the specs to silence that would have
+  resurrected the retired queue on live ops.sqlite. It now creates
+  `media_metadata` only. If you see a review claiming this script recreates the
+  queue, that review predates the fix.
+- The live DB carries one known local-only drift this test suite flags: the
+  vestigial `scrape_targets` table. (The former second drift — a missing
+  `batch_items.scheduled_for` that "self-healed on the next batch run" — no
+  longer applies under ADR-0012: the queue is retired, so it will never
+  self-heal. Do not wait for it.)
+- **Retirement leaves holes in scripts, and raw DDL hides them.** Four scripts
+  once owned the retired queue. `migrate_enrichment_queue.py:31,41` uses RAW
+  `CREATE TABLE IF NOT EXISTS batch_jobs` / `batch_items` — raw DDL cannot fail
+  loudly on a retired name, it just recreates the tables. That is the one to
+  delete at W9 rather than "update". A red test is visible; a migration script
+  that silently resurrects retired tables is not.
 
 ## Test boundaries
 
