@@ -3,7 +3,7 @@
 Planning only. Branch `feat/enrichment-v3-phase-1-seam-and-landing`, HEAD `04ea11d`, 7/36 exit
 criteria genuinely met. Inputs: `three-state-articulation.md` (target), `postmortem-implementation-drift.md`
 §10, the three phase audits, `learnings-mece.md` (C1–C5 control set), `panel-data.md`,
-`panel-adversary.md`, `docs/architecture/enrichment.md`, ADR-0011/0012/0013, master plan §3/§4/§8.
+`panel-adversary.md`, `docs/architecture/pipelines/enrichment.md`, ADR-0011/0012/0013, master plan §3/§4/§8.
 
 ---
 
@@ -78,7 +78,7 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   the quarantine disposition policy (consumer, triage cadence, retention, redrive rule). Also
   fix the partition-key shape requirement: the round dimension must survive derivation (no
   one-way digest fusing it).
-- **Files**: `docs/architecture/adr/ADR-0012.md`, `docs/architecture/adr/ADR-0012-addendum-dynamics.md`, `tasks/plans/enrichment-v3-migration-master.md` (§3 sequencing note only).
+- **Files**: `docs/architecture/adr/0012-dagster-native-orchestration.md`, `docs/architecture/adr/0014-orchestration-dynamics.md`, `tasks/plans/enrichment-v3-migration-master.md` (§3 sequencing note only).
 - **Deps**: none. Blocks W1's fork decision.
 - **Control**: C1 (three mechanisms existed with no driver/consumer).
 - **Acceptance (round-trip)**: each spec answers "name the production consumer of everything
@@ -107,7 +107,7 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   contract `_require_legacy_queue_tables` (`batch.py:51`) is deleted only when W3 has replaced
   its last reader — until then the red tests are fixed against the *current* topology, not
   deferred. Resolve the uncommitted work so the tree is reviewable.
-- **Files**: `src/datalake/defs/instagram/batch.py`, `src/datalake/defs/instagram/assets.py`, `tests/` (the 25 red tests), `tests/operational/test_state_compatibility.py` (unblock only; rewrite is W7).
+- **Files**: `src/datalake/defs/enrichment/batch.py`, `src/datalake/defs/instagram/assets.py`, `tests/` (the 25 red tests), `tests/operational/test_state_compatibility.py` (unblock only; rewrite is W7).
 - **Deps**: none (parallel with W0). Blocks W3.
 - **Control**: C4 (retirement inverted: zombie kept alive by code that raises if removed).
 - **Acceptance (round-trip)**: full suite green on the stabilized branch; then demonstrate the
@@ -120,7 +120,7 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   (`submit.py:77`). Delete `_require_legacy_queue_tables`. Multi-chunk handle round-trip test
   fixing the `"|"` vs `","` encoding divergence (submit.py:170 vs adapters.py:280) — one
   serialization, one test with a multi-chunk case.
-- **Files**: `src/datalake/defs/enrichment/submit.py`, `src/datalake/defs/instagram/batch.py` (delete), `src/datalake/defs/instagram/partitions.py`, `src/datalake/defs/enrichment/adapters.py`, `tests/unit/enrichment/test_submit_discovery.py` (new).
+- **Files**: `src/datalake/defs/enrichment/submit.py`, `src/datalake/defs/enrichment/batch.py` (delete), `src/datalake/defs/enrichment/partitions.py`, `src/datalake/defs/enrichment/adapters.py`, `tests/unit/enrichment/test_submit_discovery.py` (new).
 - **Deps**: W1 verdict = finish (a); W2 (tree stable). Blocks W4, W5.
 - **Control**: C2 (runtime producer/consumer pairing unowned) + C3 (handle encoding).
 - **Acceptance (round-trip)**: on one shared instance: drain run materializes N partitions →
@@ -134,7 +134,7 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   that makes `in_flight = submitted ∖ harvested` shrink). Implement the retry driver: failed
   submits/terminal failures mint round-N partition keys per W0's shape; remove the round-0
   hardcode (`DRAIN_ATTEMPT_ROUND = 0`).
-- **Files**: `src/datalake/defs/instagram/partitions.py`, `src/datalake/defs/instagram/assets.py`, `src/datalake/defs/enrichment/harvest.py`, `tests/unit/instagram/test_partitions_retry.py` (new).
+- **Files**: `src/datalake/defs/enrichment/partitions.py`, `src/datalake/defs/instagram/assets.py`, `src/datalake/defs/enrichment/harvest.py`, `tests/unit/enrichment/test_partitions_retry.py` (new).
 - **Deps**: W3 (drain→submit exists to observe), W0 (spec).
 - **Control**: C1 + C2 (mechanism with no actor; state transition with no named event).
 - **Acceptance (round-trip)**: a real cycle: submit → harvest-terminal → `enrichment_harvested`
@@ -218,7 +218,7 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   `dead_letter`, `gold_growth_facets` from `ops.sqlite`/`state.duckdb`; reconcile
   `facets_batch_jobs`' 4 live ledger rows (1 JOB_FAILED, 2 RETRIEVABLE…) into the service's job
   store BEFORE the drop (audit P1-5a: currently nothing accounts for them); update docs.
-- **Files**: `scripts/retire_queue_tables.py` (new), `data/ops.sqlite` (via script only), `src/datalake/defs/enrichment/facets.py` (docstring fix, P1-6), `docs/architecture/enrichment.md`.
+- **Files**: `scripts/retire_queue_tables.py` (new), `data/ops.sqlite` (via script only), `src/datalake/defs/enrichment/facets.py` (docstring fix, P1-6), `docs/architecture/pipelines/enrichment.md`.
 - **Deps**: W7 (readers moved — expand-contract contract satisfied), W3/W4 (new state sources proven).
 - **Control**: C4 (retire only after readers move; starve, don't drop).
 - **Acceptance (round-trip)**: reconciliation ledger for the 4 `facets_batch_jobs` rows first
