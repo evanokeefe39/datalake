@@ -211,12 +211,12 @@ their verified JSON payload, and their provenance block is filled as:
 | Field | Value for the 8 rows |
 |---|---|
 | `provider` | `gemini` (the only provider that ever wrote `gold_analyses`) |
-| `model` | `legacy-unknown` — a sentinel, NOT `NULL` and NOT a fabricated model name |
+| `model` | `unrecorded-legacy-null` — a sentinel, NOT `NULL` and NOT a fabricated model name. AMENDED 2026-09-14: the owner selected this literal over the original `legacy-unknown`, keeping the code constant (`classification.MODEL_LEGACY_NULL`) as the single definition |
 | `prompt_hash` | `24c8e291` (unchanged — the legacy prompt identity is real and recorded) |
 | `schema_version` | the classification schema version current at migration time |
 | `run_id` | the backfill's migration run id (provenance of the *migration*) |
 
-The sentinel `legacy-unknown` is honest: it says "this result exists and was
+The sentinel `unrecorded-legacy-null` is honest: it says "this result exists and was
 verified, but the producing model name was never recorded" — which is true.
 Quarantining would be a lie (the data is valid); backfilling a plausible
 model name would be a worse lie (fabricated provenance). The migration
@@ -319,7 +319,7 @@ Negative / work this commits us to:
 - **Quarantine triage is a human obligation**, not an automated one. If
   nobody triages weekly, quarantine grows silently behind the advisory
   check — the blocking anti-join is the only hard stop.
-- **The 8-row sentinel leaks into serving** as model `legacy-unknown`; any
+- **The 8-row sentinel leaks into serving** as model `unrecorded-legacy-null`; any
   consumer that filters or groups on `model` must tolerate it. This is
   deliberate: it makes the legacy gap visible rather than laundered.
 
