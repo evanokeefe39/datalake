@@ -536,7 +536,8 @@ enrichment layer is re-derivable (re-run qwen; if the whole corpus needs re-enri
 that is the accepted cost of finishing swiftly). The **scraped** layer is not. This gate protects
 the difference.
 
-**Audit result (measured 2026-09-14 — the gap is real):**
+**Audit result — AS FOUND, before any action (measured 2026-09-14). This is the state that
+justified the gate; see the progress table below for current status.**
 
 | Asset | Size | In git? | Backed up? |
 |---|---|---|---|
@@ -557,15 +558,24 @@ cache in the disposable sense, it is the **only copy** of the scraped media. Los
 losing the media permanently, and no amount of re-enrichment recovers it. This is the one asset
 in the repo that no downstream action can regenerate.
 
-**Gate (all three required, before the first destructive step):**
-1. **Bronze + media bytes copied off this machine.** Destination: R2 (profiles `r2-handoff` /
-   `r2-sessions` already configured; endpoint in `~/.aws/config`). 55.4 GB — a long upload, so it
-   is a background process (`rule://offload-long-runs`), not a subagent unit.
-2. **Identity tables exported** (`media_cache`, `creators`, `profiles`, `creator_merges`,
-   `prompt_registry`) — small, and they are the mapping that makes the media bytes *usable*. A
-   byte cache with no URL→file index is 55 GB of unlabelled files.
-3. **Restore verified, not asserted** — spot-check N files read back from R2, byte-compare
-   against local, and record the counts. An upload nobody read back is a hope, not a backup.
+**Gate progress (2026-09-14) — partially satisfied; the largest item is still open.**
+
+| Item | Where | Status |
+|---|---|---|
+| `state.duckdb` 80.5 MB | `~/backups/datalake/2026-09-14-pre-migration/state.duckdb` | **DONE + verified** — sha256 identical; copy opens read-only and answers (`gold_analyses` 9,576 · `silver_ig_posts` 10,038 · `ig_post_labels` 10,038 · 69 views) |
+| `ops.sqlite` 42.7 MB | `…/2026-09-14-pre-migration/ops.sqlite` | **DONE + verified** — sha256 identical; `PRAGMA integrity_check` = `ok`; KEEP list intact (`media_cache` 27,748 · `creators` 675 · `profiles` 675 · `creator_merges` 2 · `prompt_registry` 1) |
+| `data/lake/bronze` 42 files / 69 MB | `…/2026-09-14-pre-migration/bronze/` | **DONE + verified** — all 42 files byte-identical (sha256 each) |
+| `data/media` 27,806 files / **55.36 GB** | user reports **Google Cloud Storage** | **UNVERIFIED — do not treat as satisfied.** The owner's belief ("i think we have the media backed up in a google storage bucket rn") is a hypothesis, not a read-back. It must be confirmed by listing the bucket and spot-reading N objects before the gate is called passed — this is the one asset no downstream action can regenerate, and "i think" is exactly the confidence level that produces a discovery *after* the bytes are gone |
+
+**Deliberate change to the plan's stated destination:** the draft named R2; the owner directed a
+local off-repo copy for now, which is what the three DONE rows are. R2/GCS remains the right home
+for the 55 GB when that item is actioned — a laptop-adjacent copy of the media would not survive
+the failure it is meant to guard against.
+
+**Note the seeding recursion to avoid:** the copies under `~/backups/datalake/` are themselves
+outside git and outside the repo, which is correct. Do not back the backup up into
+`data/lake/archive/` (the W9 archive path) — W9's archive is for *retired tables*, and conflating
+the two puts the safety copy inside the directory that destructive steps write to.
 
 **Integrity verified 2026-09-14 — every indexed byte is present.** The apparent mismatch between
 `media_cache` (27,748 rows) and `data/media/posts/` (26,657 files) was checked rather than
