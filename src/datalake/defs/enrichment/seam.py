@@ -154,9 +154,13 @@ def build_adapter(name: str, **kwargs: Any) -> ProviderAdapter:
         # the facets path shipped exactly that bug (KeyError: known adapters:
         # []), caught by the first real enrichment run on 2026-09-14. Safe at
         # call time: adapters imports this module, which is fully initialized
-        # by then. If the import itself fails mid-package-init, the KeyError
-        # below still fires and names the (empty) registry — loud, not silent.
-        from datalake.defs.enrichment import adapters  # noqa: PLC0415
+        # by then. The import is WRAPPED so a failure mid-package-init falls
+        # through to the KeyError below — the failure mode stays "loud KeyError
+        # naming the empty registry", never an ImportError that masks it.
+        try:
+            from datalake.defs.enrichment import adapters  # noqa: PLC0415
+        except ImportError:  # pragma: no cover — only mid-package-init
+            pass
     if name not in ADAPTER_REGISTRY:
         raise KeyError(
             f"unknown adapter {name!r}; known adapters: {sorted(ADAPTER_REGISTRY)}"

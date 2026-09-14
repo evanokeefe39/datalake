@@ -5,6 +5,7 @@ import pytest
 from datalake.defs.enrichment.seam import (
     CANONICAL_STATES,
     COMPLETED,
+    DEFAULT_JOBSPEC,
     FAILED,
     PENDING,
     PROCESSING,
@@ -46,8 +47,9 @@ class _FakeAdapter:
     def build_request(self, item: Item) -> dict[str, object]:
         return {"prompt": item.prompt}
 
-    def submit(self, items: list[Item]) -> str:
+    def submit(self, items: list[Item], *, job_spec=DEFAULT_JOBSPEC) -> str:
         self.submitted = list(items)
+        self.job_spec = job_spec
         return "handle-1"
 
     def poll(self, handle: str) -> str:
