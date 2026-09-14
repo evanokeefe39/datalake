@@ -5,215 +5,37 @@
     "title": "STATE 1 - OLD: the queue-driven pipeline that worked",
     "output": "state1-old.html",
     "quality_profile": "showcase",
-    "viewBox": [
-      1080,
-      500
-    ]
+    "viewBox": [1080, 500]
   },
   "stages": [
-    {
-      "label": "Ingest"
-    },
-    {
-      "label": "Bronze + Silver"
-    },
-    {
-      "label": "Labels + Queue"
-    },
-    {
-      "label": "Gemini"
-    },
-    {
-      "label": "Gold + Serving"
-    }
+    { "label": "Ingest" },
+    { "label": "Bronze + Silver" },
+    { "label": "Labels + Queue" },
+    { "label": "Gemini" },
+    { "label": "Gold + Serving" }
   ],
   "nodes": [
-    {
-      "id": "apify",
-      "type": "cloud",
-      "label": "Apify scrape",
-      "sublabel": "NDJSON to Parquet",
-      "stage": 0,
-      "row": 0,
-      "width": 140
-    },
-    {
-      "id": "bronze",
-      "type": "database",
-      "label": "ig_posts_raw",
-      "sublabel": "data/lake/bronze/",
-      "stage": 0,
-      "row": 2,
-      "width": 140
-    },
-    {
-      "id": "silver",
-      "type": "database",
-      "label": "ig_posts_slv",
-      "sublabel": "10,038 rows",
-      "stage": 1,
-      "row": 2,
-      "width": 140
-    },
-    {
-      "id": "labels",
-      "type": "database",
-      "label": "ig_post_labels",
-      "sublabel": "10,038 rows",
-      "tag": "enrich_decision",
-      "stage": 1,
-      "row": 0,
-      "width": 140
-    },
-    {
-      "id": "gen_batches",
-      "type": "backend",
-      "label": "ig_posts_gen_batches",
-      "sublabel": "no API calls, sub-ms",
-      "stage": 2,
-      "row": 0,
-      "width": 140
-    },
-    {
-      "id": "queue",
-      "type": "database",
-      "label": "ops.sqlite queue",
-      "sublabel": "batch_jobs + batch_items",
-      "stage": 2,
-      "row": 2,
-      "width": 140
-    },
-    {
-      "id": "submit",
-      "type": "backend",
-      "label": "submit_gemini_batches_job",
-      "sublabel": "uploads to File API",
-      "stage": 3,
-      "row": 2,
-      "width": 150
-    },
-    {
-      "id": "harvest",
-      "type": "backend",
-      "label": "gemini_batch_harvest",
-      "sublabel": "polls Gemini",
-      "tag": "sensor-driven",
-      "stage": 3,
-      "row": 0,
-      "width": 140
-    },
-    {
-      "id": "gold",
-      "type": "database",
-      "label": "gold_analyses",
-      "sublabel": "9,576 rows (+facets 205)",
-      "stage": 4,
-      "row": 1,
-      "width": 140
-    },
-    {
-      "id": "serving",
-      "type": "backend",
-      "label": "Serving views",
-      "sublabel": "v_post_detail + ~21 views",
-      "tag": "ga.result_json",
-      "stage": 4,
-      "row": 2,
-      "width": 140
-    }
+    { "id": "apify", "type": "cloud", "label": "Apify scrape", "sublabel": "NDJSON to Parquet", "stage": 0, "row": 0, "width": 140 },
+    { "id": "bronze", "type": "database", "label": "ig_posts_raw", "sublabel": "data/lake/bronze/", "stage": 0, "row": 2, "width": 140 },
+    { "id": "silver", "type": "database", "label": "ig_posts_slv", "sublabel": "10,038 rows", "stage": 1, "row": 2, "width": 140 },
+    { "id": "labels", "type": "database", "label": "ig_post_labels", "sublabel": "10,038 rows", "tag": "enrich_decision", "stage": 1, "row": 0, "width": 140 },
+    { "id": "gen_batches", "type": "backend", "label": "ig_posts_gen_batches", "sublabel": "no API calls, sub-ms", "stage": 2, "row": 0, "width": 140 },
+    { "id": "queue", "type": "database", "label": "ops.sqlite queue", "sublabel": "batch_jobs + batch_items", "stage": 2, "row": 2, "width": 140 },
+    { "id": "submit", "type": "backend", "label": "submit_gemini_batches_job", "sublabel": "uploads to File API", "stage": 3, "row": 2, "width": 150 },
+    { "id": "harvest", "type": "backend", "label": "gemini_batch_harvest", "sublabel": "polls Gemini", "tag": "sensor-driven", "stage": 3, "row": 0, "width": 140 },
+    { "id": "gold", "type": "database", "label": "gold_analyses", "sublabel": "9,576 rows (+facets 205)", "stage": 4, "row": 1, "width": 140 },
+    { "id": "serving", "type": "backend", "label": "Serving views", "sublabel": "v_post_detail + ~21 views", "tag": "ga.result_json", "stage": 4, "row": 2, "width": 140 }
   ],
   "flows": [
-    {
-      "id": "scrape",
-      "from": "apify",
-      "to": "bronze",
-      "label": "raw posts",
-      "variant": "default",
-      "labelAt": [
-        100,
-        271
-      ]
-    },
-    {
-      "id": "normalize",
-      "from": "bronze",
-      "to": "silver",
-      "label": "deduped, normalized",
-      "variant": "default",
-      "labelAt": [
-        208,
-        428
-      ]
-    },
-    {
-      "id": "discover",
-      "from": "silver",
-      "to": "labels",
-      "label": "every post labelled",
-      "variant": "default",
-      "labelAt": [
-        315,
-        265
-      ]
-    },
-    {
-      "id": "enqueue",
-      "from": "labels",
-      "to": "gen_batches",
-      "label": "no API calls",
-      "variant": "default",
-      "labelAt": [
-        420,
-        200
-      ]
-    },
-    {
-      "id": "queue-write",
-      "from": "gen_batches",
-      "to": "queue",
-      "label": "writes the work queue",
-      "variant": "emphasis",
-      "labelAt": [
-        530,
-        265
-      ]
-    },
-    {
-      "id": "queue-read",
-      "from": "queue",
-      "to": "submit",
-      "label": "reads status=pending",
-      "variant": "default",
-      "labelAt": [
-        635,
-        428
-      ]
-    },
-    {
-      "id": "poll",
-      "from": "submit",
-      "to": "harvest",
-      "label": "Gemini batch",
-      "variant": "default"
-    },
-    {
-      "id": "results",
-      "from": "harvest",
-      "to": "gold",
-      "label": "retrieves results",
-      "variant": "emphasis"
-    },
-    {
-      "id": "serve",
-      "from": "gold",
-      "to": "serving",
-      "label": "dashboard reads",
-      "variant": "emphasis",
-      "labelAt": [
-        960,
-        318
-      ]
-    }
+    { "id": "scrape", "from": "apify", "to": "bronze", "label": "raw posts", "variant": "default", "labelAt": [100, 271] },
+    { "id": "normalize", "from": "bronze", "to": "silver", "label": "deduped, normalized", "variant": "default", "labelAt": [208, 428] },
+    { "id": "discover", "from": "silver", "to": "labels", "label": "every post labelled", "variant": "default", "labelAt": [315, 265] },
+    { "id": "enqueue", "from": "labels", "to": "gen_batches", "label": "no API calls", "variant": "default", "labelAt": [420, 200] },
+    { "id": "queue-write", "from": "gen_batches", "to": "queue", "label": "writes the work queue", "variant": "emphasis", "labelAt": [530, 265] },
+    { "id": "queue-read", "from": "queue", "to": "submit", "label": "reads status=pending", "variant": "default", "labelAt": [635, 428] },
+    { "id": "poll", "from": "submit", "to": "harvest", "label": "Gemini batch", "variant": "default" },
+    { "id": "results", "from": "harvest", "to": "gold", "label": "retrieves results", "variant": "emphasis" },
+    { "id": "serve", "from": "gold", "to": "serving", "label": "dashboard reads", "variant": "emphasis", "labelAt": [960, 318] }
   ],
   "cards": [
     {

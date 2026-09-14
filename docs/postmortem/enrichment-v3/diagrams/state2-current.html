@@ -5592,7 +5592,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>The four breakages</h3>
         </div>
         <ul>
-          <li>&bull; Disconnected halves: enrichment_submitted partitions nothing consumes; submit.py:77 reads batch_jobs, written by none</li>
+          <li>&bull; Disconnected halves: partitions nothing consumes; submit.py:77 reads batch_jobs, written by none</li>
           <li>&bull; Missing producer: enrichment_harvested has no writer - in-flight only grows, pipeline stalls</li>
           <li>&bull; Dead contract: _require_legacy_queue_tables (batch.py:51) raises if batch_jobs is absent</li>
           <li>&bull; Bypassed seam: 12 call sites around the port; 1 of 4 flows uses it; zero run_lifecycle callers</li>

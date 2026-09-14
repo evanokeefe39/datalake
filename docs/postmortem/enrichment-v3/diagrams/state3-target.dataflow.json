@@ -8,7 +8,7 @@
     "visual_preset": "blueprint",
     "viewBox": [
       1080,
-      602
+      505
     ]
   },
   "stages": [
@@ -49,6 +49,16 @@
       "width": 140
     },
     {
+      "id": "orch",
+      "type": "backend",
+      "label": "Dagster orchestration",
+      "sublabel": "state in Dagster + lake",
+      "tag": "queue RETIRED",
+      "stage": 1,
+      "row": 2,
+      "width": 140
+    },
+    {
       "id": "bronze",
       "type": "database",
       "label": "bronze_enrichment_raw",
@@ -79,15 +89,6 @@
       "width": 140
     },
     {
-      "id": "quarantine",
-      "type": "security",
-      "label": "enrichment_quarantine",
-      "sublabel": "LOUD on terminal failure",
-      "stage": 3,
-      "row": 3,
-      "width": 140
-    },
-    {
       "id": "gold",
       "type": "database",
       "label": "Four gold marts",
@@ -106,22 +107,12 @@
       "width": 140
     },
     {
-      "id": "orch",
-      "type": "backend",
-      "label": "Dagster orchestration",
-      "sublabel": "state in Dagster + lake",
-      "tag": "queue RETIRED",
-      "stage": 1,
-      "row": 3,
-      "width": 140
-    },
-    {
-      "id": "ops",
-      "type": "database",
-      "label": "ops.sqlite retained",
-      "sublabel": "lookup tables only",
+      "id": "quarantine",
+      "type": "security",
+      "label": "enrichment_quarantine",
+      "sublabel": "LOUD on terminal failure",
       "stage": 4,
-      "row": 3,
+      "row": 2,
       "width": 140
     }
   ],
@@ -173,8 +164,8 @@
       "label": "terminal failure",
       "variant": "security",
       "labelAt": [
-        745,
-        445
+        810,
+        428
       ]
     },
     {
@@ -207,7 +198,7 @@
       "variant": "dashed",
       "labelAt": [
         315,
-        385
+        328
       ]
     }
   ],
@@ -236,7 +227,7 @@
       "items": [
         "State in Dagster instance + lake; queue RETIRED; retry = new partition key",
         "Marts: post_enrichment, creator_performance, content_shape_performance, top_posts",
-        "ops.sqlite keeps only lookup tables: media_cache, creators, profiles and more"
+        "ops.sqlite keeps only lookup tables (media_cache, creators, profiles, and more)"
       ]
     }
   ]

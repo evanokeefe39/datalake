@@ -5,367 +5,43 @@
     "title": "STATE 2 - CURRENT / INCORRECT: green branch, system does not run",
     "output": "state2-current.html",
     "quality_profile": "showcase",
-    "viewBox": [
-      1080,
-      500
-    ]
+    "viewBox": [1080, 500]
   },
   "components": [
-    {
-      "id": "bronze_raw",
-      "type": "database",
-      "label": "bronze_enrichment_raw",
-      "sublabel": "0 landed rows",
-      "tag": "tests mock FLAT - providers NEST",
-      "pos": [
-        60,
-        50
-      ],
-      "size": [
-        220,
-        88
-      ]
-    },
-    {
-      "id": "drain",
-      "type": "backend",
-      "label": "Drain",
-      "sublabel": "materializes enrichment_submitted partitions",
-      "tag": "instagram/assets.py:1289",
-      "pos": [
-        60,
-        200
-      ],
-      "size": [
-        220,
-        88
-      ]
-    },
-    {
-      "id": "harvested",
-      "type": "database",
-      "label": "enrichment_harvested",
-      "sublabel": "no production writer in src/",
-      "tag": "in-flight only grows - stalls",
-      "pos": [
-        60,
-        330
-      ],
-      "size": [
-        220,
-        88
-      ]
-    },
-    {
-      "id": "prod",
-      "type": "external",
-      "label": "1 production flow",
-      "sublabel": "the only seam caller",
-      "pos": [
-        290,
-        211
-      ],
-      "size": [
-        140,
-        60
-      ]
-    },
-    {
-      "id": "port",
-      "type": "backend",
-      "label": "ProviderAdapter port",
-      "sublabel": "run_lifecycle: 0 production callers",
-      "tag": "built, then bypassed",
-      "pos": [
-        470,
-        195
-      ],
-      "size": [
-        190,
-        92
-      ]
-    },
-    {
-      "id": "adapters",
-      "type": "cloud",
-      "label": "Provider adapters",
-      "sublabel": "gemini-batch, qwen-batch-service",
-      "pos": [
-        475,
-        325
-      ],
-      "size": [
-        180,
-        80
-      ]
-    },
-    {
-      "id": "bypass",
-      "type": "backend",
-      "label": "12 call sites bypass the port",
-      "sublabel": "submit.py:152, 170 - facets_batch.py:318, 322",
-      "tag": "1 of 4 flows uses the seam",
-      "pos": [
-        430,
-        50
-      ],
-      "size": [
-        220,
-        84
-      ]
-    },
-    {
-      "id": "gate",
-      "type": "security",
-      "label": "test_state_compatibility.py",
-      "sublabel": "77 tests PASS on OLD catalog",
-      "tag": "vacuous gate",
-      "pos": [
-        845,
-        50
-      ],
-      "size": [
-        180,
-        84
-      ]
-    },
-    {
-      "id": "submit",
-      "type": "backend",
-      "label": "submit.py",
-      "sublabel": "discovers work by reading batch_jobs",
-      "tag": "submit.py:77",
-      "pos": [
-        670,
-        150
-      ],
-      "size": [
-        160,
-        84
-      ]
-    },
-    {
-      "id": "batch_jobs",
-      "type": "database",
-      "label": "batch_jobs",
-      "sublabel": "nothing writes this table",
-      "tag": "retired contract",
-      "pos": [
-        870,
-        150
-      ],
-      "size": [
-        150,
-        84
-      ]
-    },
-    {
-      "id": "guard",
-      "type": "security",
-      "label": "_require_legacy_queue_tables",
-      "sublabel": "raises if the table is absent",
-      "tag": "batch.py:51",
-      "pos": [
-        690,
-        250
-      ],
-      "size": [
-        190,
-        84
-      ]
-    },
-    {
-      "id": "harvest",
-      "type": "backend",
-      "label": "harvest.py",
-      "sublabel": "8 bypass call sites",
-      "tag": "311-462 (8 sites)",
-      "pos": [
-        690,
-        345
-      ],
-      "size": [
-        140,
-        76
-      ]
-    },
-    {
-      "id": "live",
-      "type": "database",
-      "label": "Live gold_analyses",
-      "sublabel": "9,576 rows (STATE 1)",
-      "pos": [
-        885,
-        345
-      ],
-      "size": [
-        135,
-        76
-      ]
-    }
+    { "id": "bronze_raw", "type": "database", "label": "bronze_enrichment_raw", "sublabel": "0 landed rows", "tag": "tests mock FLAT - providers NEST", "pos": [60, 50], "size": [220, 88] },
+    { "id": "drain", "type": "backend", "label": "Drain", "sublabel": "materializes enrichment_submitted partitions", "tag": "instagram/assets.py:1289", "pos": [60, 200], "size": [220, 88] },
+    { "id": "harvested", "type": "database", "label": "enrichment_harvested", "sublabel": "no production writer in src/", "tag": "in-flight only grows - stalls", "pos": [60, 330], "size": [220, 88] },
+    { "id": "prod", "type": "external", "label": "1 production flow", "sublabel": "the only seam caller", "pos": [290, 211], "size": [140, 60] },
+    { "id": "port", "type": "backend", "label": "ProviderAdapter port", "sublabel": "run_lifecycle: 0 production callers", "tag": "built, then bypassed", "pos": [470, 195], "size": [190, 92] },
+    { "id": "adapters", "type": "cloud", "label": "Provider adapters", "sublabel": "gemini-batch, qwen-batch-service", "pos": [475, 325], "size": [180, 80] },
+    { "id": "bypass", "type": "backend", "label": "12 call sites bypass the port", "sublabel": "submit.py:152, 170 - facets_batch.py:318, 322", "tag": "1 of 4 flows uses the seam", "pos": [430, 50], "size": [220, 84] },
+    { "id": "gate", "type": "security", "label": "test_state_compatibility.py", "sublabel": "77 tests PASS on OLD catalog", "tag": "vacuous gate", "pos": [845, 50], "size": [180, 84] },
+    { "id": "submit", "type": "backend", "label": "submit.py", "sublabel": "discovers work by reading batch_jobs", "tag": "submit.py:77", "pos": [670, 150], "size": [160, 84] },
+    { "id": "batch_jobs", "type": "database", "label": "batch_jobs", "sublabel": "nothing writes this table", "tag": "retired contract", "pos": [870, 150], "size": [150, 84] },
+    { "id": "guard", "type": "security", "label": "_require_legacy_queue_tables", "sublabel": "raises if the table is absent", "tag": "batch.py:51", "pos": [690, 250], "size": [190, 84] },
+    { "id": "harvest", "type": "backend", "label": "harvest.py", "sublabel": "8 bypass call sites", "tag": "311-462 (8 sites)", "pos": [690, 345], "size": [140, 76] },
+    { "id": "live", "type": "database", "label": "Live gold_analyses", "sublabel": "9,576 rows (STATE 1)", "pos": [885, 345], "size": [135, 76] }
   ],
   "boundaries": [
-    {
-      "kind": "region",
-      "label": "SEAM - the ProviderAdapter port",
-      "wraps": [
-        "prod",
-        "port",
-        "adapters"
-      ]
-    },
-    {
-      "kind": "region",
-      "label": "live database - still STATE 1",
-      "wraps": [
-        "submit",
-        "batch_jobs",
-        "guard",
-        "harvest",
-        "live"
-      ]
-    }
+    { "kind": "region", "label": "SEAM - the ProviderAdapter port", "wraps": ["prod", "port", "adapters"] },
+    { "kind": "region", "label": "live database - still STATE 1", "wraps": ["submit", "batch_jobs", "guard", "harvest", "live"] }
   ],
   "connections": [
-    {
-      "id": "gap",
-      "from": "drain",
-      "to": "submit",
-      "label": "NO EDGE - the halves never meet",
-      "variant": "dashed",
-      "fromSide": "left",
-      "toSide": "top",
-      "via": [
-        [
-          35,
-          244
-        ],
-        [
-          35,
-          42
-        ],
-        [
-          750,
-          42
-        ]
-      ],
-      "labelAt": [
-        540,
-        30
-      ]
-    },
-    {
-      "id": "inflight",
-      "from": "drain",
-      "to": "harvested",
-      "label": "in-flight = submitted - harvested",
-      "variant": "dashed",
-      "labelAt": [
-        170,
-        312
-      ]
-    },
-    {
-      "id": "discover",
-      "from": "submit",
-      "to": "batch_jobs",
-      "label": "reads - nothing writes",
-      "variant": "emphasis",
-      "labelAt": [
-        550,
-        186
-      ]
-    },
-    {
-      "id": "raise",
-      "from": "guard",
-      "to": "batch_jobs",
-      "label": "raises if absent",
-      "variant": "security",
-      "fromSide": "right",
-      "toSide": "bottom",
-      "via": [
-        [
-          945,
-          292
-        ],
-        [
-          945,
-          244
-        ]
-      ],
-      "labelAt": [
-        985,
-        272
-      ]
-    },
-    {
-      "id": "wire1",
-      "from": "port",
-      "to": "prod",
-      "label": "only wire",
-      "variant": "emphasis",
-      "labelAt": [
-        425,
-        283
-      ]
-    },
-    {
-      "id": "build",
-      "from": "port",
-      "to": "adapters",
-      "label": "build_adapter(name)",
-      "variant": "default",
-      "labelAt": [
-        615,
-        305
-      ]
-    },
-    {
-      "id": "around1",
-      "from": "bypass",
-      "to": "submit",
-      "label": "direct calls around the seam",
-      "variant": "dashed",
-      "fromSide": "bottom",
-      "toSide": "left",
-      "via": [
-        [
-          540,
-          142
-        ],
-        [
-          620,
-          142
-        ],
-        [
-          620,
-          192
-        ]
-      ],
-      "labelAt": [
-        595,
-        168
-      ]
-    },
-    {
-      "id": "state1",
-      "from": "harvest",
-      "to": "live",
-      "label": "unchanged",
-      "variant": "default",
-      "labelAt": [
-        856,
-        383
-      ]
-    }
+    { "id": "gap", "from": "drain", "to": "submit", "label": "NO EDGE - the halves never meet", "variant": "dashed", "fromSide": "left", "toSide": "top", "via": [[35, 244], [35, 42], [750, 42]], "labelAt": [540, 30] },
+    { "id": "inflight", "from": "drain", "to": "harvested", "label": "in-flight = submitted - harvested", "variant": "dashed", "labelAt": [170, 312] },
+    { "id": "discover", "from": "submit", "to": "batch_jobs", "label": "reads - nothing writes", "variant": "emphasis", "labelAt": [550, 186] },
+    { "id": "raise", "from": "guard", "to": "batch_jobs", "label": "raises if absent", "variant": "security", "fromSide": "right", "toSide": "bottom", "via": [[945, 292], [945, 244]], "labelAt": [985, 272] },
+    { "id": "wire1", "from": "port", "to": "prod", "label": "only wire", "variant": "emphasis", "labelAt": [425, 283] },
+    { "id": "build", "from": "port", "to": "adapters", "label": "build_adapter(name)", "variant": "default", "labelAt": [615, 305] },
+    { "id": "around1", "from": "bypass", "to": "submit", "label": "direct calls around the seam", "variant": "dashed", "fromSide": "bottom", "toSide": "left", "via": [[540, 142], [620, 142], [620, 192]], "labelAt": [595, 168] },
+    { "id": "state1", "from": "harvest", "to": "live", "label": "unchanged", "variant": "default", "labelAt": [856, 383] }
   ],
   "cards": [
     {
       "dot": "rose",
       "title": "The four breakages",
       "items": [
-        "Disconnected halves: enrichment_submitted partitions nothing consumes; submit.py:77 reads batch_jobs, written by none",
+        "Disconnected halves: partitions nothing consumes; submit.py:77 reads batch_jobs, written by none",
         "Missing producer: enrichment_harvested has no writer - in-flight only grows, pipeline stalls",
         "Dead contract: _require_legacy_queue_tables (batch.py:51) raises if batch_jobs is absent",
         "Bypassed seam: 12 call sites around the port; 1 of 4 flows uses it; zero run_lifecycle callers"
