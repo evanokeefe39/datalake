@@ -335,6 +335,24 @@ footer{border-top:1px solid var(--line-soft);margin-top:96px;padding:28px 0 48px
   .verdict{padding:16px 18px}
   .kpis{margin-left:-20px;margin-right:-20px}
 }
+
+/* ---------- three-state figures ---------- */
+.state{margin:32px 0 0;border:1px solid var(--line);background:var(--bg2);
+  overflow:hidden;border-left:3px solid var(--line)}
+.state.s1{border-left-color:var(--teal)}
+.state.s3{border-left-color:var(--blue)}
+.state.s2{border-left-color:var(--red)}
+.state a{display:block;line-height:0}
+.state img{width:100%;height:auto;display:block;border-bottom:1px solid var(--line)}
+.state figcaption{padding:18px 22px 20px;font-size:14.5px;line-height:1.68;
+  color:var(--muted);max-width:96ch}
+.state figcaption b{color:var(--text);font-weight:600}
+.state code{font-family:var(--mono);font-size:12.5px;color:var(--text)}
+.state .reg{margin-bottom:5px}
+.state .open{font-family:var(--mono);font-size:11px;letter-spacing:.06em;
+  color:var(--dim);display:block;margin-top:10px}
+.arrow{font-family:var(--mono);font-size:11.5px;color:var(--dim);text-align:center;
+  margin:18px 0;letter-spacing:.12em;text-transform:uppercase}
 </style>
 </head>
 <body>
@@ -342,6 +360,7 @@ footer{border-top:1px solid var(--line-soft);margin-top:96px;padding:28px 0 48px
 <aside class="toc">
   <ol>
     <li><a href="#summary">Summary</a></li>
+    <li><a href="#states">The three states</a></li>
     <li><a href="#failures">Six failures</a></li>
     <li><a href="#rootcause">Root cause</a></li>
     <li><a href="#fault">Who is at fault</a></li>
@@ -430,6 +449,79 @@ footer{border-top:1px solid var(--line-soft);margin-top:96px;padding:28px 0 48px
     <div class="kpi bad" role="listitem"><span class="v">701</span><span class="l">Unit tests passing while the pipeline cannot run</span></div>
     <div class="kpi" role="listitem"><span class="v">1 of 4</span><span class="l">Production seam adoption</span></div>
   </div>
+</section>
+
+<section id="states">
+  <h2>The three states</h2>
+  <p class="lede">Where we came from, where we were going, and where we actually went.</p>
+
+  <figure class="state s1 rv">
+    <a href="diagrams/state1-old.html" title="Open the full interactive diagram">
+      <img src="diagrams/state1-old.visual-check.2048x1320.dark.png"
+        alt="State 1: the queue-driven pipeline that worked. Apify scrape to bronze Parquet, silver_ig_posts, ig_post_labels, a SQLite batch queue in ops.sqlite, Gemini submit and harvest, into gold_analyses holding 9,576 rows, feeding the serving views.">
+    </a>
+    <figcaption>
+      <span class="reg">Where we came from</span>
+      <b>STATE 1 — OLD. The pipeline that worked.</b> A SQLite work queue in
+      <code>ops.sqlite</code> drove everything: the scraper wrote bronze, silver deduped it, the
+      label pass decided what was worth enriching, and <code>ig_posts_gen_batches</code> enqueued
+      work that submit and harvest consumed. It produced real output — <b>9,576</b> rows in
+      <code>gold_analyses</code>, <b>205</b> in <code>gold_growth_facets</code>, <b>10,038</b>
+      posts in silver, and the dashboard read it. Its limits are what motivated the migration:
+      Instagram-only, a hardcoded <code>domain</code>, media effectively text-only, and a bespoke
+      queue serving exactly one path.
+      <span class="open">→ diagrams/state1-old.html</span>
+    </figcaption>
+  </figure>
+
+  <div class="arrow">↓ &nbsp; the migration was aimed here &nbsp; ↓</div>
+
+  <figure class="state s3 rv">
+    <a href="diagrams/state3-target.html" title="Open the full interactive diagram">
+      <img src="diagrams/state3-target.visual-check.2048x1320.dark.png"
+        alt="State 3: the target layered model. Providers reached only through the seam, verbatim bronze landing, deterministic conform, six silver tables keyed by post_id and platform, four gold marts, and Dagster-native orchestration with the queue retired.">
+    </a>
+    <figcaption>
+      <span class="reg">Where we were going</span>
+      <b>STATE 3 — TARGET. The layered model (ADR-0011 / 0012 / 0013).</b> One direction, one
+      seam, no queue. Providers are reached <i>only</i> through the seam, so
+      <code>build_adapter(name)</code> is the single place a provider is ever named. Every model
+      response lands <b>verbatim</b> in <code>bronze_enrichment_raw</code> — the paid and
+      stochastic part ends there. Conform is a pure function of bronze with <b>zero API calls</b>,
+      so a schema change is a replay, never a re-bill. Six silver tables keyed
+      <code>(post_id, platform)</code> — never <code>domain</code>. Four gold marts that compose
+      the canonical metrics instead of re-deriving them. Orchestration moves into the Dagster
+      instance and the queue is retired.
+      <span class="open">→ diagrams/state3-target.html</span>
+    </figcaption>
+  </figure>
+
+  <div class="arrow">↓ &nbsp; this is where it actually arrived &nbsp; ↓</div>
+
+  <figure class="state s2 rv">
+    <a href="diagrams/state2-current.html" title="Open the full interactive diagram">
+      <img src="diagrams/state2-current.visual-check.2048x1320.dark.png"
+        alt="State 2: the current incorrect state. A green branch where the system does not run. Twelve objects are declared in code and materialized nowhere, the live database still holds State 1, and the two halves of the new pipeline do not meet.">
+    </a>
+    <figcaption>
+      <span class="reg">Where we actually went</span>
+      <b>STATE 2 — CURRENT. The branch is green and the system does not run.</b> Twelve objects
+      exist as code and are materialized nowhere; the live database still holds State 1. Four
+      breakages do the damage. The two halves are <b>disconnected</b> — the drain writes
+      <code>enrichment_submitted</code> partitions that nothing reads, while submit discovers work
+      by reading a <code>batch_jobs</code> table nothing writes. The <b>producer is missing</b>:
+      <code>enrichment_harvested</code> has no writer anywhere in <code>src/</code>, so the
+      in-flight set only grows and the guard suppresses everything after the first cycle. A
+      <b>dead contract is kept alive by the code meant to retire it</b> —
+      <code>_require_legacy_queue_tables</code> raises if the retired table is absent. And the
+      <b>seam is bypassed</b>: one seam was built, one of four flows uses it, twelve call sites go
+      around it, and <code>seam.run_lifecycle</code> has zero production callers. The gate that
+      should have caught all of this passes — the schema catalog still lists
+      <code>gold_analyses</code> and never expected <code>silver_content_classification</code>, so
+      the readiness test certifies a world that no longer matches intent.
+      <span class="open">→ diagrams/state2-current.html</span>
+    </figcaption>
+  </figure>
 </section>
 <section id="failures">
   <h2><span class="no">01</span>Where it went wrong</h2>
@@ -871,7 +963,9 @@ footer{border-top:1px solid var(--line-soft);margin-top:96px;padding:28px 0 48px
     <li><a href="analysis/harness-coverage-and-hooks.md">docs/postmortem/enrichment-v3/analysis/harness-coverage-and-hooks.md</a><span>rule-vs-hook coverage per agent</span></li>
     <li><a href="plans/agent-improvement-plan.md">docs/postmortem/enrichment-v3/plans/agent-improvement-plan.md</a><span>changes to the agents</span></li>
     <li><a href="plans/remediation-plan.md">docs/postmortem/enrichment-v3/plans/remediation-plan.md</a><span>10 units, the fix</span></li>
-    <li><a href="diagrams/state2-current.html">docs/postmortem/enrichment-v3/diagrams/state2-current.html</a><span>the failure, drawn</span></li>
+    <li><a href="diagrams/state1-old.html">docs/postmortem/enrichment-v3/diagrams/state1-old.html</a><span>state 1, drawn — the pipeline that worked</span></li>
+    <li><a href="diagrams/state3-target.html">docs/postmortem/enrichment-v3/diagrams/state3-target.html</a><span>state 3, drawn — the target model</span></li>
+    <li><a href="diagrams/state2-current.html">docs/postmortem/enrichment-v3/diagrams/state2-current.html</a><span>state 2, drawn — the failure</span></li>
     <li><a href="../../../tasks/plans/enrichment-v3-migration-master.md">tasks/plans/enrichment-v3-migration-master.md</a><span>the plan</span></li>
   </ul>
   <div class="honesty rv">
@@ -905,5 +999,7 @@ footer{border-top:1px solid var(--line-soft);margin-top:96px;padding:28px 0 48px
   secs.forEach(function(s){if(s)io2.observe(s)});
 })();
 </script>
+</main>
+</div>
 </body>
 </html>
