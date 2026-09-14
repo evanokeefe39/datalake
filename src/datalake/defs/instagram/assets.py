@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
-from dagster import asset
+from dagster import AssetKey, AssetMaterialization, asset
 
 from ..common.apify import poll_run, stream_dataset, trigger_run
 from ..common.lake import BRONZE_LAKE, bronze_path
@@ -28,6 +28,7 @@ from ..enrichment import landing
 from ..enrichment.media_cache import cache_media_bytes, seed_media_from_file
 from ..enrichment.partitions import (
     PartitionSnapshot,
+    SUBMITTED_ASSET_NAME,
     in_flight_partitions,
     partition_key,
 )
@@ -1060,6 +1061,37 @@ def drain_suppressed_post_ids(
     ]
 
 
+def _materialize_submitted_partitions(
+    instance: PartitionSnapshot, post_ids: list[str]
+) -> None:
+    """THE drain enqueue (ADR-0012/0013): one ``enrichment_submitted``
+    partition PER POST, materialized runlessly on the SAME instance the
+    in-flight guard reads — never an instance this function opens itself.
+
+    The key contract is IDENTICAL to the guard's derivation
+    (``partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])`` — per
+    post, never per batch): the guard decides "is this post in flight?" by
+    deriving that post's key and testing membership in the instance's
+    in-flight set. Materializing any other key shape would make the two
+    sets never intersect, the guard would never suppress, and the drain
+    would silently double-submit.
+
+    Sequence mirrors the real-instance roundtrip pinned in
+    ``tests/unit/enrichment/test_partitions.py``: register the dynamic
+    partition, then report the runless materialization.
+    """
+    keys = [
+        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        for pid in post_ids
+    ]
+    instance.add_dynamic_partitions(SUBMITTED_ASSET_NAME, keys)
+    submitted_key = AssetKey(SUBMITTED_ASSET_NAME)
+    for key in keys:
+        instance.report_runless_asset_event(
+            AssetMaterialization(asset_key=submitted_key, partition=key)
+        )
+
+
 @asset(
     name="ig_comments_slv",
     group_name="instagram",
@@ -1110,20 +1142,20 @@ def ig_posts_gen_batches(
     posts) are enqueued for a text-only pass (ADR-0001). Still excludes
     current-prompt conformed rows + in-flight work so a re-run never re-pays.
 
-    Mode selection: batches default to ``gemini-batch`` (BATCH API, ~50%
-    cheaper) whenever the active Gemini tier supports it
-    (``GeminiTierConfig.detect().supports_batch``, i.e. Tier 1+) — for
-    curated subsets as well as whole-corpus runs. Batches fall back to
-    ``interactive`` when the tier does NOT support batch (free tier) or
-    when ``GoldConfig.prefer_interactive`` is set. Drain the batch jobs
-    with the ``--mode gemini-batch`` worker cycle (submit + poll/retrieve);
-    submit-side enforcement is loud: the free tier cannot submit a
-    gemini-batch job (RuntimeError in gemini_batch.submit_gemini_batch).
+    Execution mode stays tier-driven — batches default to ``gemini-batch``
+    (BATCH API, ~50% cheaper) whenever the active Gemini tier supports it
+    (``GeminiTierConfig.detect().supports_batch``, i.e. Tier 1+), falling
+    back to ``interactive`` on the free tier or by explicit
+    ``GoldConfig.prefer_interactive`` opt-out. The retired queue stored the
+    mode on ``batch_jobs`` for worker claim routing (ADR-0012); the submit
+    stage now owns execution, so the drain only SURFACES the mode in the
+    result frame and the free-tier gate stays loud at the submit call
+    (RuntimeError in ``gemini_batch.submit_gemini_batch``).
+
+    The enqueue itself is Dagster-native (ADR-0012/0013): one
+    ``enrichment_submitted`` partition PER POST on the injected instance,
+    under the same per-post key contract the in-flight guard derives.
     """
-    import json
-
-    from datalake.defs.enrichment.batch import create_batch
-
     db = duckdb
     _ensure_state_tables(db)
 
@@ -1228,23 +1260,40 @@ def ig_posts_gen_batches(
             n_suppressed,
         )
 
+    # Execution mode is tier-driven (batch default, interactive fallback).
+    # The retired queue stored it on batch_jobs for worker claim routing
+    # (ADR-0012); the submit stage now owns execution and enforces the
+    # free-tier gate loudly (RuntimeError in gemini_batch.submit_gemini_batch),
+    # so the drain only SURFACES the mode in the result frame — None when
+    # nothing was enqueued. ``consumer="gemini"`` had the same fate: it was
+    # queue claim routing, replaced by the workload identity carried inside
+    # the partition key (DRAIN_WORKLOAD).
+    mode: str | None = None
     if payloads:
-        # Batch mode is the DEFAULT: tag jobs so the gemini-batch worker
-        # claims them (~50% cheaper). Interactive only when the active tier
-        # cannot use the BATCH API (free tier) or the operator opts out.
         tier = GeminiTierConfig.detect()
         mode = (
             "interactive"
             if config.prefer_interactive or not tier.supports_batch
             else "gemini-batch"
         )
-        create_batch(ops, payloads, consumer="gemini", mode=mode)
+        # ── The enqueue (ADR-0012/0013): Dagster-native, no queue. ──
+        # One enrichment_submitted partition per post, on the SAME instance
+        # the in-flight guard reads — the normal path reuses the fallback
+        # instance the guard resolved above; the post_ids bypass path
+        # (guards skipped) resolves the same fallback here. Materializing
+        # here is what makes the NEXT run's guard suppress these posts.
+        if instance is None:
+            from dagster import DagsterInstance
+
+            instance = DagsterInstance.get()
+        _materialize_submitted_partitions(instance, candidates)
 
     return pl.DataFrame(
         {
             "enqueued": pl.Series([len(payloads)], dtype=pl.Int32),
             "candidates_seen": pl.Series([candidates_seen], dtype=pl.Int32),
             "in_flight_suppressed": pl.Series([n_suppressed], dtype=pl.Int32),
+            "mode": pl.Series([mode], dtype=pl.Utf8),
         }
     )
 

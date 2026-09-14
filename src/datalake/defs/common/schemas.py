@@ -35,8 +35,7 @@ class Column:
     ``sql_type`` is the type name reported by the target DB's introspection.
     ``default`` is a raw SQL literal (e.g. ``"'instagram'"``, ``"0"``,
     ``"FALSE"``, ``"CURRENT_TIMESTAMP"``). ``references`` is the full clause
-    after ``REFERENCES`` (e.g. ``"batch_jobs(id)"``,
-    ``"creators(id) ON DELETE CASCADE"``).
+    after ``REFERENCES`` (e.g. ``"creators(id) ON DELETE CASCADE"``).
     """
 
     sql_type: str
@@ -234,37 +233,6 @@ DUCKDB_VIEWS: list[str] = [
 # ── SQLite (data/ops.sqlite) ────────────────────────────────────────────────
 
 _SQLITE_SPECS: dict[str, Table] = {
-    "batch_jobs": Table(
-        columns={
-            "id": Column("INTEGER", primary_key=True, autoincrement=True),
-            "consumer": Column("TEXT", not_null=True, default="'gemini'"),
-            "mode": Column("TEXT", not_null=True, default="'interactive'"),
-            "gemini_batch_name": Column("TEXT"),
-            "gemini_batch_status": Column("TEXT"),
-            "gemini_batch_error": Column("TEXT"),
-            "status": Column("TEXT", not_null=True, default="'pending'"),
-            "created_at": Column("TEXT", not_null=True),
-            "completed_at": Column("TEXT"),
-            "total_items": Column("INTEGER", not_null=True, default="0"),
-            "processed_items": Column("INTEGER", not_null=True, default="0"),
-            "failed_items": Column("INTEGER", not_null=True, default="0"),
-        },
-    ),
-    "batch_items": Table(
-        columns={
-            "id": Column("INTEGER", primary_key=True, autoincrement=True),
-            "job_id": Column("INTEGER", not_null=True, references="batch_jobs(id)"),
-            "payload": Column("TEXT", not_null=True),
-            "status": Column("TEXT", not_null=True, default="'pending'"),
-            "attempts": Column("INTEGER", not_null=True, default="0"),
-            "error": Column("TEXT"),
-            "scheduled_for": Column("TEXT"),
-            "created_at": Column("TEXT", not_null=True),
-            "updated_at": Column("TEXT", not_null=True),
-        },
-        unique=(("job_id", "payload"),),
-        indexes=(("idx_batch_items_job_status", "job_id, status"),),
-    ),
     "media_metadata": Table(
         columns={
             "media_url_hash": Column("TEXT", primary_key=True),
@@ -278,16 +246,6 @@ _SQLITE_SPECS: dict[str, Table] = {
             "created_at": Column("TEXT", not_null=True),
             "uploaded_at": Column("TEXT"),
         },
-    ),
-    "dead_letter": Table(
-        columns={
-            "post_id": Column("TEXT", not_null=True),
-            "domain": Column("TEXT", not_null=True, default="'instagram'"),
-            "error": Column("TEXT"),
-            "attempts": Column("INTEGER", not_null=True, default="0"),
-            "failed_at": Column("TEXT", not_null=True),
-        },
-        primary_key=("post_id", "domain"),
     ),
     "media_cache": Table(
         columns={

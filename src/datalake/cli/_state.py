@@ -66,33 +66,6 @@ def print_full_state(phase: str) -> None:
     ops.close()
 
 
-def print_batches() -> None:
-    """Show batch_jobs with per-status item counts."""
-    con = sqlite3.connect(f"file:{OPS_PATH}?mode=ro", uri=True)
-    jobs = con.execute(
-        "SELECT id, status, total_items, processed_items, failed_items, created_at "
-        "FROM batch_jobs ORDER BY id"
-    ).fetchall()
-    if not jobs:
-        print("  No batches found.")
-    else:
-        print(f"\n{'='*60}")
-        print("  Batches")
-        print(f"{'='*60}")
-        for j in jobs:
-            print(
-                f"  batch #{j[0]}: status={j[1]}, total={j[2]}, "
-                f"processed={j[3]}, failed={j[4]}, created={j[5][:19]}"
-            )
-            items = con.execute(
-                "SELECT status, COUNT(*) FROM batch_items "
-                "WHERE job_id=? GROUP BY status",
-                [j[0]],
-            ).fetchall()
-            for status, cnt in items:
-                print(f"    {status}: {cnt}")
-    con.close()
-
 
 def print_watermarks() -> None:
     """Show watermark rows."""
@@ -123,9 +96,3 @@ def reset_watermarks(since: datetime) -> None:
     db.close()
 
 
-def reset_batches() -> None:
-    con = sqlite3.connect(OPS_PATH)
-    con.execute("DELETE FROM batch_items")
-    con.execute("DELETE FROM batch_jobs")
-    con.commit()
-    con.close()

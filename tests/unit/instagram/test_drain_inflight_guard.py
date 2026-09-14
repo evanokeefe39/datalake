@@ -23,7 +23,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from dagster import AssetKey
+from dagster import AssetKey, AssetMaterialization
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
 from datalake.defs.common.schemas import duckdb_ddl
@@ -49,11 +49,15 @@ NOW = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
 
 class FakeInstance:
-    """Minimal PartitionSnapshot: in-memory submitted/harvested sets."""
+    """Minimal DagsterInstance stand-in: in-memory submitted/harvested
+    partition sets plus the runless-materialization surface the drain's
+    enqueue writes (``add_dynamic_partitions`` +
+    ``report_runless_asset_event``)."""
 
     def __init__(self, submitted=(), harvested=()):
         self._submitted = set(submitted)
         self._harvested = set(harvested)
+        self._dynamic_registered: set[str] = set()
 
     def get_materialized_partitions(self, asset_key):
         """STRICT: the real DagsterInstance takes an AssetKey on Dagster
@@ -67,8 +71,45 @@ class FakeInstance:
             f"got {type(asset_key).__name__}"
         )
 
+    def add_dynamic_partitions(self, partitions_def_name, partition_keys):
+        """Runless partition registration. STRICT: the drain only ever
+        registers the ``enrichment_submitted`` dynamic space."""
+        if partitions_def_name != SUBMITTED_ASSET_NAME:
+            raise TypeError(
+                f"add_dynamic_partitions expects {SUBMITTED_ASSET_NAME!r}, "
+                f"got {partitions_def_name!r}"
+            )
+        self._dynamic_registered.update(partition_keys)
+
+    def report_runless_asset_event(self, event):
+        """Runless event-log write. STRICT: only a partition-scoped
+        AssetMaterialization for the two enrichment spaces lands here."""
+        if not isinstance(event, AssetMaterialization):
+            raise TypeError(
+                f"report_runless_asset_event expects an AssetMaterialization, "
+                f"got {type(event).__name__}"
+            )
+        if event.partition is None:
+            raise ValueError("runless enrichment events must carry a partition")
+        if event.asset_key == AssetKey(SUBMITTED_ASSET_NAME):
+            self._submitted.add(event.partition)
+        elif event.asset_key == AssetKey(HARVESTED_ASSET_NAME):
+            self._harvested.add(event.partition)
+        else:
+            raise TypeError(f"unexpected asset key {event.asset_key}")
+
+    def submitted_partitions(self):
+        return set(self._submitted)
+
+    def harvested_partitions(self):
+        return set(self._harvested)
+
+    def dynamic_partitions(self):
+        return set(self._dynamic_registered)
+
     def submit(self, post_ids):
-        """Simulate the submit stage materializing one partition per post."""
+        """Simulate an EXTERNAL submit (a submit that happened before this
+        test, outside the drain) materializing one partition per post."""
         for pid in post_ids:
             self._submitted.add(partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid]))
 
@@ -163,12 +204,24 @@ def test_two_consecutive_runs_enqueue_no_post_twice(drain, conn):
 
     first = drain(instance=fake)
     assert _enqueued(first) == 3
-    fake.submit(["p1", "p2", "p3"])  # submit stage materializes the partitions
+    # THE DRAIN materialized the three per-post submitted partitions — no
+    # test-side submit simulation. The second run therefore reads an
+    # in-flight state written by the production write path.
+    assert fake.submitted_partitions() == {
+        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        for pid in ("p1", "p2", "p3")
+    }
 
-    # Second run over the SAME corpus: every post is still in flight.
+    # Second run over the SAME corpus against the SAME instance: every post
+    # is still in flight (first run's materializations are visible).
     second = drain(instance=fake)
     assert _enqueued(second) == 0
     assert second["in_flight_suppressed"][0] == 3
+    # The second run enqueued nothing: no new partitions materialized.
+    assert fake.submitted_partitions() == {
+        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        for pid in ("p1", "p2", "p3")
+    }
 
 
 def test_one_post_done_others_in_flight_still_no_double_submit(drain, conn):
@@ -179,7 +232,10 @@ def test_one_post_done_others_in_flight_still_no_double_submit(drain, conn):
         _label(conn, pid)
     fake = FakeInstance()
     assert _enqueued(drain(instance=fake)) == 3
-    fake.submit(["p1", "p2", "p3"])
+    assert fake.submitted_partitions() == {
+        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        for pid in ("p1", "p2", "p3")
+    }
 
     _conform(conn, "p2", CURRENT_PROMPT_HASH)  # p2 completes while 1,3 fly
 
@@ -188,6 +244,76 @@ def test_one_post_done_others_in_flight_still_no_double_submit(drain, conn):
     # zero re-enqueues either way.
     assert _enqueued(second) == 0
     assert second["candidates_seen"][0] == 2
+    assert second["in_flight_suppressed"][0] == 2
+
+
+def test_enqueue_partition_keys_equal_guard_derived_keys(drain, conn):
+    """THE contract-agreement property (US-EENG-4/ADR-0012): the keys the
+    drain materializes at enqueue are EXACTLY the keys the in-flight guard
+    derives for the same posts — per post, same workload, same round.
+
+    The guard suppresses a post by deriving
+    ``partition_key(WORKLOAD, ROUND, [pid])`` and testing membership in
+    ``in_flight_partitions``. If the enqueue wrote any other key shape
+    (e.g. a batch-level key over the whole candidate set), the two sets
+    would never intersect and the drain would silently double-submit.
+    """
+    for pid in ("a1", "a2", "a3"):
+        _post(conn, pid)
+        _label(conn, pid)
+    fake = FakeInstance()
+
+    result = drain(instance=fake)
+    assert _enqueued(result) == 3
+
+    enqueued_keys = fake.get_materialized_partitions(
+        AssetKey(SUBMITTED_ASSET_NAME)
+    )
+    guard_derived = {
+        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        for pid in ("a1", "a2", "a3")
+    }
+    # The enqueue wrote exactly the keys the guard derives — no more, no less.
+    assert enqueued_keys == guard_derived
+    # Registered in the dynamic partition space too (the real-instance
+    # sequence: add_dynamic_partitions, then the runless materialization).
+    assert fake.dynamic_partitions() == guard_derived
+    # Therefore the guard suppresses every enqueued post on read:
+    assert drain_suppressed_post_ids(["a1", "a2", "a3"], fake) == [
+        "a1", "a2", "a3"
+    ]
+    # Negative control pinning the historical failure mode: a per-BATCH key
+    # over the whole candidate set never intersects the per-post keys.
+    assert partition_key(
+        DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, ["a1", "a2", "a3"]
+    ) not in enqueued_keys
+
+
+def test_two_consecutive_runs_real_instance_no_double_submit(drain, conn):
+    """AC1 against a REAL DagsterInstance (ephemeral, in-memory): the drain's
+    runless materializations must be visible to the second run's guard. The
+    FakeInstance tests prove the drain's suppress logic; this one proves the
+    write path (``add_dynamic_partitions`` + ``report_runless_asset_event``)
+    lands in the instance's materialization registry the guard actually
+    reads — the API shape pinned in
+    ``tests/unit/enrichment/test_partitions.py``.
+    """
+    from dagster import DagsterInstance
+
+    for pid in ("r1", "r2"):
+        _post(conn, pid)
+        _label(conn, pid)
+    real = DagsterInstance.ephemeral()
+
+    first = drain(instance=real)
+    assert _enqueued(first) == 2
+    assert in_flight_partitions(real) == {
+        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        for pid in ("r1", "r2")
+    }
+
+    second = drain(instance=real)
+    assert _enqueued(second) == 0
     assert second["in_flight_suppressed"][0] == 2
 
 
@@ -214,6 +340,11 @@ def test_harvested_partition_does_not_suppress(drain, conn):
 
     result = drain(instance=fake)
     assert _enqueued(result) == 1  # re-eligible (completion guard governs next)
+    # Re-eligible means the drain RE-SUBMITTED: it materialized the
+    # partition again (idempotent — the same per-post key).
+    assert fake.submitted_partitions() == {
+        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, ["p1"])
+    }
 
 
 # ── drain contract preserved: filters + post_ids bypass ────────────────────
@@ -248,6 +379,11 @@ def test_post_ids_bypass_bypasses_all_guards(drain, conn):
         config=GoldConfig(post_ids=["p1"], prefer_interactive=True), instance=fake
     )
     assert _enqueued(result) == 1
+    # The bypass skips the GUARDS, not the materialization: the partition is
+    # (re)materialized so the NEXT normal run's guard sees the work.
+    assert fake.submitted_partitions() == {
+        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, ["p1"])
+    }
 
 
 # ── AC4: the skip path NAMES the in-flight work ────────────────────────────
