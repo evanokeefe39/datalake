@@ -158,6 +158,27 @@ not a baseline.
   `gold_analyses` fails loudly rather than silently succeeding; the frozen count is recorded
   with the date it was read. Then: `gold_analyses` count is unchanged after 24h of normal
   operation — a cheap empirical proof that nothing writes it.
+- **⚠ This unit CANNOT LAND ALONE — it creates the stall by construction.** Established by the
+  panel round 2 orchestration seat (see `panel/readmission/SYNTHESIS.md` §1). With the Gemini
+  submitter gone and no qwen submitter wired yet, **one drain run materializes the entire
+  approved corpus as `enrichment_submitted`**; in-flight (`submitted − harvested`) then never
+  shrinks, the drain guard suppresses every future run, and the only signal is a **warning log**
+  (`assets.py:1256-1261`; trace `1083-1092,1289` → `partitions.py:230-236` → `1228-1244`). This
+  is the same stall mechanism the post-mortem identified as the migration's signature failure.
+  Mitigating facts, all verified: `check_enrichment_health` can fire on `approved_unenriched > 20`
+  (though it prescribes the wrong remedy and nothing ticks it); the schedule that would trigger it
+  (`daily_medallion` → the drain) ships stopped; recovery is automatic once W3/W4 land. But it is
+  **one UI toggle away**.
+  **Therefore W-FREEZE must be paired with either W4's harvested producer or an explicit
+  submitter-quiet guard** (a drain-side refusal to materialize when no submitter is registered).
+  Freezing the writer without wiring the reader is not a partial state — it is a stall.
+- **Re-admission trigger — REQUIRED, or this unit is misnamed.** The panel's adversary seat
+  (HIGH finding) verified that `remediation-plan.md` contains **zero** mentions of re-admission:
+  "temporarily" currently has no observable condition, owner, or unit. Either name one — a
+  concrete trigger such as a Tier-1 grant, observable via `health()` (`adapters.py:349-352`) —
+  or rename this unit to acknowledge a permanent retirement. The panel listed five conditions a
+  re-admission claim must meet to be honest (`panel/readmission/SYNTHESIS.md` §5); naming a
+  trigger is the first and cheapest.
 
 **Consequence 1 — W5 shrinks by ~80%.** Measured against the working tree: of the bypass call
 sites the plan enumerated, **9 are Gemini and only 2 are qwen**
@@ -182,9 +203,16 @@ read-path dies" item in §3 becomes a static reconciliation against a frozen set
 race. W6's reconciliation identity now has a stable right-hand side.
 
 **Consequence 3 — Gemini remains a supported provider, unused.** `gemini_batch.py` and
-`DirectBatchAdapter` stay; `build_adapter("gemini")` must still construct. Guard it with a test
-asserting the adapter is *constructible but not wired into any Dagster entry point* — so the
-provider is available for a future swap without remaining a live cost or a drift source.
+`DirectBatchAdapter` stay. **CORRECTED 2026-09-14 (panel):** the registry name is **`direct_batch`**,
+not `"gemini"` — `seam.register_adapter("service_backed", …)` is the only registration in
+`seam.py` (:113,:119), and an earlier draft of this unit specified a test for
+`build_adapter("gemini")`, a key that does not exist and would fail on a correct implementation.
+Guard the real name: assert `build_adapter("direct_batch")` **constructs** while **no Dagster
+entry point references it** — so the provider stays available for a future swap without remaining
+a live cost or a drift source. Note the panel's warning that this is a weaker guarantee than it
+looks: `DirectBatchAdapter` is classified **partial**, never run over the wire, with every test
+stubbing the SDK (`test_adapters.py:188-197`), so "constructs" proves registration, not
+capability.
 
 ### W1 — Validation spike (the fork instrument)
 - **What**: One real post (multi-image, one workload) driven end-to-end against the real
