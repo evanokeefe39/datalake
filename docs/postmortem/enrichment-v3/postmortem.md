@@ -201,9 +201,9 @@ gaps** (7, 9, 13). The workers did not fail their remits; the remits failed the 
 
 ## 7. Evidence index
 
-- `data/dev/review-interfaces.md` §1 (12 bypass sites, one adoption), §2 (desync inventory), §3 (hidden globals), §4 (layering), §5 (silent failures), §6 (dead code incl. `run_lifecycle` zero callers, disconnected halves), §7 (ranked defects + test-coverage observation).
-- `data/dev/review-architecture-soundness.md` §2 (retry orphaned; zero plan matches for retry), §4 (layering), §5 (`max_tokens`/`JobSpec`), §1 (`enrichment_harvested` complete in design, missing producer is implementation).
-- `data/dev/review-round-semantics.md` §1–§2 (round-0 guard, unscannable digest), §5 (decision 5 mandates distinctness, not shape).
+- `docs/postmortem/enrichment-v3/reviews/interfaces.md` §1 (12 bypass sites, one adoption), §2 (desync inventory), §3 (hidden globals), §4 (layering), §5 (silent failures), §6 (dead code incl. `run_lifecycle` zero callers, disconnected halves), §7 (ranked defects + test-coverage observation).
+- `docs/postmortem/enrichment-v3/reviews/architecture-soundness.md` §2 (retry orphaned; zero plan matches for retry), §4 (layering), §5 (`max_tokens`/`JobSpec`), §1 (`enrichment_harvested` complete in design, missing producer is implementation).
+- `docs/postmortem/enrichment-v3/reviews/round-semantics.md` §1–§2 (round-0 guard, unscannable digest), §5 (decision 5 mandates distinctness, not shape).
 - `tasks/plans/enrichment-v3-migration-master.md` §3 (phase criteria phrasing; Phase 2 vs Phase 7 sequencing), §4 (blast-radius register naming the drain), §8 (verification strategy corrected post-hoc).
 - Git log `main..HEAD`: `ef15765`, `872904e`, `b38465b`, `4e9cf4b`, `c9e8724`, `04ea11d`.
 

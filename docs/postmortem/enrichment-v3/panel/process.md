@@ -1,7 +1,7 @@
 # Expert Panel — PROCESS seat: how the work was organized
 
 Seat: agent orchestration, dispatch shape, verification instrument, harness placement.
-Document under review: `data/dev/postmortem-implementation-drift.md` (+ audits as evidence).
+Document under review: `docs/postmortem/enrichment-v3/postmortem.md` (+ audits as evidence).
 Read-only review; this file is the deliverable.
 
 ---

@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "STATE 3 - TARGET: the layered model (ADR-0011 / 0012 / 0013)",
+    "output": "state3-target.html",
+    "quality_profile": "showcase",
+    "visual_preset": "blueprint",
+    "viewBox": [
+      1080,
+      602
+    ]
+  },
+  "stages": [
+    {
+      "label": "Providers"
+    },
+    {
+      "label": "SEAM"
+    },
+    {
+      "label": "Bronze"
+    },
+    {
+      "label": "Conform + Silver"
+    },
+    {
+      "label": "Gold + Serving"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "providers",
+      "type": "cloud",
+      "label": "Providers",
+      "sublabel": "gemini-batch, qwen-batch",
+      "stage": 0,
+      "row": 1,
+      "width": 140
+    },
+    {
+      "id": "seam",
+      "type": "backend",
+      "label": "ProviderAdapter port",
+      "sublabel": "only provider-named spot",
+      "tag": "submit / poll / retrieve",
+      "stage": 1,
+      "row": 1,
+      "width": 140
+    },
+    {
+      "id": "bronze",
+      "type": "database",
+      "label": "bronze_enrichment_raw",
+      "sublabel": "verbatim, append-only",
+      "tag": "paid part ENDS here",
+      "stage": 2,
+      "row": 1,
+      "width": 140
+    },
+    {
+      "id": "conform",
+      "type": "backend",
+      "label": "Conform",
+      "sublabel": "zero API calls",
+      "tag": "replay, never re-bill",
+      "stage": 3,
+      "row": 0,
+      "width": 140
+    },
+    {
+      "id": "silver",
+      "type": "database",
+      "label": "Six silver tables",
+      "sublabel": "keyed (post_id, platform)",
+      "tag": "never domain",
+      "stage": 3,
+      "row": 2,
+      "width": 140
+    },
+    {
+      "id": "quarantine",
+      "type": "security",
+      "label": "enrichment_quarantine",
+      "sublabel": "LOUD on terminal failure",
+      "stage": 3,
+      "row": 3,
+      "width": 140
+    },
+    {
+      "id": "gold",
+      "type": "database",
+      "label": "Four gold marts",
+      "sublabel": "canonical metric views",
+      "stage": 4,
+      "row": 0,
+      "width": 140
+    },
+    {
+      "id": "serving",
+      "type": "backend",
+      "label": "Serving",
+      "sublabel": "~22 views read marts",
+      "stage": 4,
+      "row": 1,
+      "width": 140
+    },
+    {
+      "id": "orch",
+      "type": "backend",
+      "label": "Dagster orchestration",
+      "sublabel": "state in Dagster + lake",
+      "tag": "queue RETIRED",
+      "stage": 1,
+      "row": 3,
+      "width": 140
+    },
+    {
+      "id": "ops",
+      "type": "database",
+      "label": "ops.sqlite retained",
+      "sublabel": "lookup tables only",
+      "stage": 4,
+      "row": 3,
+      "width": 140
+    }
+  ],
+  "flows": [
+    {
+      "id": "providers-seam",
+      "from": "providers",
+      "to": "seam",
+      "label": "the only provider-named boundary",
+      "variant": "emphasis",
+      "labelAt": [
+        208,
+        314
+      ]
+    },
+    {
+      "id": "seam-bronze",
+      "from": "seam",
+      "to": "bronze",
+      "label": "the paid part ends here",
+      "variant": "emphasis",
+      "labelAt": [
+        423,
+        314
+      ]
+    },
+    {
+      "id": "bronze-conform",
+      "from": "bronze",
+      "to": "conform",
+      "label": "zero API calls",
+      "variant": "emphasis"
+    },
+    {
+      "id": "conform-silver",
+      "from": "conform",
+      "to": "silver",
+      "label": "keyed (post_id, platform)",
+      "variant": "emphasis",
+      "labelAt": [
+        745,
+        265
+      ]
+    },
+    {
+      "id": "quarantine-path",
+      "from": "silver",
+      "to": "quarantine",
+      "label": "terminal failure",
+      "variant": "security",
+      "labelAt": [
+        745,
+        445
+      ]
+    },
+    {
+      "id": "silver-gold",
+      "from": "silver",
+      "to": "gold",
+      "label": "never re-derive",
+      "variant": "emphasis",
+      "labelAt": [
+        900,
+        215
+      ]
+    },
+    {
+      "id": "gold-serving",
+      "from": "gold",
+      "to": "serving",
+      "label": "marts feed views",
+      "variant": "default",
+      "labelAt": [
+        1020,
+        328
+      ]
+    },
+    {
+      "id": "orch-seam",
+      "from": "orch",
+      "to": "seam",
+      "label": "Dagster-native; queue retired",
+      "variant": "dashed",
+      "labelAt": [
+        315,
+        385
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "One direction, no queue",
+      "items": [
+        "Providers reached ONLY through the seam: build_adapter(name)",
+        "Verbs: submit / poll-to-terminal / retrieve; states pending / processing / completed / failed",
+        "Every response lands VERBATIM in bronze, keyed (post_id, platform, workload, prompt_hash, run_id)"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Determinism after bronze",
+      "items": [
+        "Conform: zero API calls; a mapping change is a REPLAY, never a re-bill",
+        "Six silver tables keyed (post_id, platform), each with provenance",
+        "LOUD quarantine; anti-join landed minus conformed + BLOCKING asset check"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Orchestration (ADR-0012)",
+      "items": [
+        "State in Dagster instance + lake; queue RETIRED; retry = new partition key",
+        "Marts: post_enrichment, creator_performance, content_shape_performance, top_posts",
+        "ops.sqlite keeps only lookup tables: media_cache, creators, profiles and more"
+      ]
+    }
+  ]
+}

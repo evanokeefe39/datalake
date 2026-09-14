@@ -93,7 +93,7 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   providers: drain enqueue → submit through the seam → verbatim bronze landing → conform (zero
   API calls on re-run) → one silver table → mart/view → drain run 2 suppression. Subset only;
   no full corpus. Capture the real nested envelope as a test fixture (mocks are flat today).
-- **Files**: `src/datalake/defs/enrichment/landing.py`, `src/datalake/defs/enrichment/conform.py`, `tests/fixtures/real_envelope_gemini.json` (new), `data/dev/spike-evidence.md`, `tasks/plans/enrichment-v3-migration-master.md` (result note).
+- **Files**: `src/datalake/defs/enrichment/landing.py`, `src/datalake/defs/enrichment/conform.py`, `tests/fixtures/real_envelope_gemini.json` (new), `docs/postmortem/enrichment-v3/analysis/spike-evidence.md` (new, evidence for the fork decision), `tasks/plans/enrichment-v3-migration-master.md` (result note).
 - **Deps**: W0 (spec exists to check against). **Blocks everything else** — its verdict selects
   the path.
 - **Control**: C5 (walking skeleton / tracer bullet — the most damning miss in the audits).

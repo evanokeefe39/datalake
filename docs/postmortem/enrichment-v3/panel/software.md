@@ -1,6 +1,6 @@
 # Expert Panel — Software Design & Architecture seat
 
-Reviewer: PanelSoftware. Document under review: `data/dev/postmortem-implementation-drift.md`
+Reviewer: PanelSoftware. Document under review: `docs/postmortem/enrichment-v3/postmortem.md`
 (hereafter "PM"). Evidence base: the three audits, three prior reviews, the master plan
 (§8 read at line 439+), ADRs. All line references are to the PM unless noted.
 

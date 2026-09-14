@@ -450,13 +450,13 @@ Use the hooks for the mechanical checks and the agents for the judgment."
 
 List these files. The reader can open them for the full detail.
 
-- `data/dev/postmortem-implementation-drift.md` — the root-cause analysis (301 lines)
-- `data/dev/audit-p1-p2.md` — 18 criteria, phases 1-2
-- `data/dev/audit-p3-p4.md` — 8 criteria, phases 3-4
-- `data/dev/audit-p5-p6.md` — 10 criteria, phases 5-6
-- `data/dev/review-architecture-soundness.md`
-- `data/dev/review-interfaces.md`
-- `data/dev/review-round-semantics.md`
+- `docs/postmortem/enrichment-v3/postmortem.md` — the root-cause analysis (301 lines)
+- `docs/postmortem/enrichment-v3/audits/p1-p2.md` — 18 criteria, phases 1-2
+- `docs/postmortem/enrichment-v3/audits/p3-p4.md` — 8 criteria, phases 3-4
+- `docs/postmortem/enrichment-v3/audits/p5-p6.md` — 10 criteria, phases 5-6
+- `docs/postmortem/enrichment-v3/reviews/architecture-soundness.md`
+- `docs/postmortem/enrichment-v3/reviews/interfaces.md`
+- `docs/postmortem/enrichment-v3/reviews/round-semantics.md`
 - `tasks/plans/enrichment-v3-migration-master.md` — the plan
 
 Add one closing honesty note: the architecture is sound. The design does not need to change.
@@ -477,6 +477,6 @@ design. Fix the process.
 - The three lesson layers must be clearly separated and must not blur together.
 - Make the KPI strip legible at a glance.
 - The page must be readable on a phone. The team reads reports on phones.
-- Save the file to `C:/Users/evano/repos/datalake/data/dev/postmortem-enrichment-v3.html`.
+- Save the file to `C:/Users/evano/repos/datalake/docs/postmortem/enrichment-v3/postmortem.html`.
 - Verify the page in a real browser at desktop and mobile width. Take screenshots. Check the
   KPI values render as the numbers above.
