@@ -1,7 +1,37 @@
 # Enrichment v3 — Remediation Plan
 
-Planning only. Branch `feat/enrichment-v3-phase-1-seam-and-landing`, HEAD `04ea11d`, 7/36 exit
-criteria genuinely met. Inputs: [`../analysis/three-state-articulation.md`](../analysis/three-state-articulation.md) (target), [`../postmortem.md`](../postmortem.md)
+Planning only. Branch `feat/enrichment-v3-phase-1-seam-and-landing`.
+
+**Currency note, 2026-09-14.** The plan was written against HEAD `04ea11d`, the commit the
+post-mortem audited. The branch has since advanced to `461f5e3`, which sits on top of `952386d`
+("checkpoint the queue-retirement slices"). Three facts below have changed and are corrected
+inline where they appear; re-verified against the working tree and the live databases:
+
+- **The queue DDL is gone from code.** `batch.py` was rewritten in `952386d`: it no longer
+  creates `batch_jobs`/`batch_items`, and carries an explicit DISPOSITION docstring describing
+  the legacy functions as deliberate transitional SHIMS that fail loudly outside a legacy
+  database. `_require_legacy_queue_tables` is therefore no longer a zombie contract kept alive
+  by the code meant to retire it — it is a fail-loud precondition on transitional code. The
+  *dependency* is unchanged: five modules still call those shims, so the queue cannot be
+  dropped. Read this as **retired but still called**, a migration-ordering problem.
+- **The queue-retirement slices are committed, not uncommitted.** W2's "land or discard the
+  uncommitted changes" is done; the tree is clean.
+- **The suite is not 25-red.** Running the two files W2 named
+  (`tests/unit/instagram/test_gold.py`, `tests/unit/instagram/test_drain_inflight_guard.py`)
+  now gives **1 failed, 30 passed**. The tests were rewritten to assert the retirement contract
+  — "these primitives have NO behaviour beyond the loud refusal". The one failure is a
+  test-harness bug, not a product bug: `fail_item() got multiple values for argument 'item_id'`.
+  The post-mortem's "701 tests passing" figure predates this and should be re-derived before
+  being relied on.
+
+Everything else in this plan was verified against the live databases and still holds: the live
+`state.duckdb` contains **zero** new-model objects, `enrichment_harvested` still has no
+production writer anywhere in `src/`, the drain still materializes `enrichment_submitted`
+(`instagram/assets.py:1087`), `submit.py:77` still reads `batch_jobs`, and the seam bypass
+stands (`submit.py:152` and `harvest.py:334` call `gemini_batch` directly; only
+`facets_batch.py:292` goes through `build_adapter`). 7/36 exit criteria genuinely met.
+
+Inputs: [`../analysis/three-state-articulation.md`](../analysis/three-state-articulation.md) (target), [`../postmortem.md`](../postmortem.md)
 §10, the three phase audits, [`../analysis/learnings-mece.md`](../analysis/learnings-mece.md) (C1–C5 control set), [`../panel/data.md`](../panel/data.md),
 [`../panel/adversary.md`](../panel/adversary.md), `docs/architecture/pipelines/enrichment.md`, ADR-0011/0012/0013, master plan §3/§4/§8.
 
@@ -102,14 +132,21 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   call counter reading **0**; the silver row exists keyed `(post_id, platform)`; a second drain
   run does not re-enqueue the post. Evidence file records each observed materialization.
 
-### W2 — Branch stabilization: queue-retirement slices and the 25 red tests
-- **What**: Land or discard the uncommitted changes; triage the 25 red tests. The zombie
-  contract `_require_legacy_queue_tables` (`batch.py:51`) is deleted only when W3 has replaced
-  its last reader — until then the red tests are fixed against the *current* topology, not
-  deferred. Resolve the uncommitted work so the tree is reviewable.
-- **Files**: `src/datalake/defs/enrichment/batch.py`, `src/datalake/defs/instagram/assets.py`, `tests/` (the 25 red tests), `tests/operational/test_state_compatibility.py` (unblock only; rewrite is W7).
+### W2 — Branch stabilization: finish the queue-retirement slices
+- **What**: The slices are COMMITTED (tree clean) — the "land or discard" half is done. What
+  remains is ONE failing test, and it is a HARNESS bug, not a product bug:
+  `test_retired_queue_primitive_refuses_queueless_ops` calls `fail_item()` with a duplicate
+  `item_id` (`TypeError: fail_item() got multiple values for argument 'item_id'`). The other 30
+  tests across the two affected files pass. Note the contract they now assert: these primitives
+  "have NO behaviour beyond the loud refusal" — the old behaviour tests (claim routing,
+  attempts/backoff, failed_items counts) were replaced deliberately, so do not restore them.
+  `_require_legacy_queue_tables` (`batch.py:51`) is a fail-loud precondition on transitional
+  shims, NOT a zombie the retirer preserves; it is deleted only when W3 has replaced its last
+  of five callers (submit, harvest, media_upload, analysis, registry).
+- **Files**: `tests/unit/instagram/test_gold.py` (the failing test), `src/datalake/defs/enrichment/batch.py`, `src/datalake/defs/instagram/assets.py`, `tests/operational/test_state_compatibility.py` (unblock only; rewrite is W7).
 - **Deps**: none (parallel with W0). Blocks W3.
-- **Control**: C4 (retirement inverted: zombie kept alive by code that raises if removed).
+- **Control**: C4 (retirement ordering: producers retired before readers move — the inverse of
+  expand-contract, which is exactly what the five-caller shim dependency exposes).
 - **Acceptance (round-trip)**: full suite green on the stabilized branch; then demonstrate the
   queue path: with `batch_jobs` present, the legacy read path executes; with it absent, the
   *replacement* discovery path (W3) serves submit — never a green test resting on deletion.
@@ -315,8 +352,9 @@ W0 ∥ W2; W8 ∥ W7; W5 ∥ W8 if `harvest.py` ownership is settled first.
 4. **W9 drops** — irreversible; archive-first; explicit human approval per table; `gold_analyses`
    retention decided separately (recommend: keep read-only ≥ 1 full cycle).
 5. **W1 spike spend** — real paid API calls; budget approved by human.
-6. **The 25 red tests + uncommitted changes (W2)** — commit or discard decisions are human-visible
-   in the PR; no history rewrite.
+6. **The failing test (W2)** — one test-harness bug (`fail_item()` duplicate `item_id`), not a
+   product defect; the queue-retirement slices are already committed, so no commit-or-discard
+   decision remains. No history rewrite.
 
 ### Process controls binding every unit (from §10 of the postmortem — promotion, not prose)
 - Each dispatch names the **owner** of the contract and the **production consumer** of
