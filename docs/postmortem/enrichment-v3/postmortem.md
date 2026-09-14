@@ -65,10 +65,22 @@ Because the drain slice and the submit slice each implemented what its dispatch 
 against the state that existed in front of it: the drain materializes
 `enrichment_submitted` partitions (`instagram/assets.py:1289`), while
 `submit_gemini_batches_job` still discovers work in `batch_jobs` (`submit.py:77`) and
-`_require_legacy_queue_tables` (`batch.py:51`) actively raises if that retired table is
-absent — the zombie contract is *preserved by code*. No slice was asked to own the
-handoff. Evidence: [`reviews/interfaces.md`](reviews/interfaces.md) §6.3 ("the two halves never meet") and §7
+`_require_legacy_queue_tables` (`batch.py:51`) raises if that retired table is
+absent — so the retired queue remains a hard runtime dependency of submit. No slice was
+asked to own the handoff. Evidence: [`reviews/interfaces.md`](reviews/interfaces.md) §6.3 ("the two halves never meet") and §7
 defect 1.
+
+> **Correction, 2026-09-14.** The original text read "the zombie contract is *preserved
+> by code*". That was true at the audited commit `04ea11d`, where `batch.py` still
+> created the queue DDL — which is why it read as a contract kept alive by the code meant
+> to retire it. It is no longer accurate. Commit `952386d` rewrote `batch.py` to stop
+> creating the DDL and to carry an explicit DISPOSITION docstring describing the legacy
+> functions as deliberate transitional SHIMS that fail loudly outside a legacy database.
+> The *dependency* is unchanged and is the real finding: five modules still call those
+> shims (`submit`, `harvest`, `media_upload`, `analysis`, `registry`), so the queue cannot
+> be dropped. But the accurate framing is **retired but still called, with the drop
+> blocked on caller migration** — not a zombie the retirer preserves. The difference
+> matters because it changes the remedy: this is migration ordering, not intent.
 
 **Why 2 — Why did no slice own the handoff?**
 Because decomposition was per-component, and integration was nobody's dispatch. The
@@ -128,7 +140,7 @@ itself. Most defects have a primary class and contributing classes.
 
 | # | Defect | Class | Reasoning |
 |---|---|---|---|
-| 1 | Pipeline halves disconnected: drain → partitions nobody consumes; `submit.py` reads `batch_jobs` nobody writes; `_require_legacy_queue_tables` keeps the zombie alive | **(a) primary; (e)** — the plan put queue retirement in Phase 7 while rewiring the drain in Phase 2, and no criterion demanded a round-trip; workers built each half to spec | Orchestrator fault. Neither worker's slice contained the other half. |
+| 1 | Pipeline halves disconnected: drain → partitions nobody consumes; `submit.py` reads `batch_jobs` nobody writes; `_require_legacy_queue_tables` is still called by five modules, so the retired queue cannot yet be dropped (see the 2026-09-14 correction under Why 1) | **(a) primary; (e)** — the plan put queue retirement in Phase 7 while rewiring the drain in Phase 2, and no criterion demanded a round-trip; workers built each half to spec | Orchestrator fault. Neither worker's slice contained the other half. |
 | 2 | `enrichment_harvested` has no writer → in-flight grows monotonically, discovery stops after one cycle | **(a)+(c)** — the dispatch "derive in-flight from the instance" named only the submitted side; no slice was told to materialize the harvested side. Design is sound (review-architecture §1: "complete in the design — the code's missing producer is an implementation gap") but the *implementation gap* traces to an unassigned producer, not to the slice worker | Orchestrator fault in the main; a correct dispatch would have named the writer. |
 | 3 | `run_lifecycle` zero production callers — Phase 1's stated purpose (converge both lifecycles) unfulfilled | **(a)+(c)** — "converge the lifecycles" produced the convergence function, but the Gemini-path rewiring (12 call sites in `submit.py`/`harvest.py`) was in no dispatch | Orchestrator fault. The agent that built the shelf was not the agent with authority over `submit.py`/`harvest.py`. |
 | 4 | 12 provider call sites bypass the seam (3 of 4 flows never touch it) | **(a) primary** — per-module dispatches meant no dispatch included "migrate `submit.py`/`harvest.py` call sites"; **(b)** the registry test proved the registry, not adoption | Orchestrator fault. Note `facets_batch.py:322` bypass is class (e)/(latent) — see §4. |
@@ -139,7 +151,7 @@ itself. Most defects have a primary class and contributing classes.
 | 9 | Retry semantics orphaned: no driver, no round minter, failed submits count zero attempts | **(e)** — master plan has zero matches for retry/attempt/backoff ([`reviews/architecture-soundness.md`](reviews/architecture-soundness.md) §2.1); ADR-0012 defines the mechanism on paper and names no actor | Plan/ADR fault. |
 | 10 | Layering violations: `instagram/assets.py:1170` executes another domain's DDL; two `DagsterInstance.get()` fallbacks in production guard code; `adapters.py` imports `GeminiTierConfig` from instagram config | **(d) + (e)** — the `.get()` fallbacks are genuine worker shortcuts (the asset signature already accepted an injected instance; the fallback removes a guarantee to make a test easier); the DDL reach and tier-config import are slice-boundary shortcuts no test caught | Mixed: worker shortcut (fallbacks), plan blind spot (cross-domain reach). |
 | 11 | Silent-failure paths: `classify_error` defaults unknown exceptions to TERMINAL; harvest poll failures warn-and-continue forever; `"?"` custom_key collision; asset checks pass vacuously on unread parquet | **(d)** — worker execution quality; all are inside single slices, detectable by any careful worker review | Worker fault (quality), uncaught because the orchestrator's acceptance did not include adversarial error-path review. |
-| 12 | Dead/zombie code: legacy queue read-path, `prompt_identity_v1`, legacy `__init__` exports | **(a)+(c)** — retirement was Phase 7 but each slice left its own leftovers; no dispatch said "delete what you supersede" | Orchestrator fault in acceptance scope; workers did not overstep. |
+| 12 | Leftover superseded code: legacy queue read-path (retired-but-still-called), `prompt_identity_v1`, legacy `__init__` exports | **(a)+(c)** — retirement was Phase 7 but each slice left its own leftovers; no dispatch said "delete what you supersede" | Orchestrator fault in acceptance scope; workers did not overstep. |
 | 13 | `max_tokens` job-level vs per-item seam (caused facets bypass) | **(e)** — real interface defect; see §4 | Design fault, worker handled it correctly. |
 
 Summary: **(a) and (b) account for every system-level failure** (1–6, 8, 12). **(d) is
@@ -507,7 +519,7 @@ This post-mortem diagnoses. These carry the diagnosis forward:
 | [`analysis/harness-coverage-and-hooks.md`](analysis/harness-coverage-and-hooks.md) | Rule-vs-hook coverage **per agent**, the hook specs, and the finding that coverage is per-agent — rules scoped `[dlc-worker, main]` never reach `sdlc-worker`. |
 | [`plans/agent-improvement-plan.md`](plans/agent-improvement-plan.md) | Concrete changes to `dlc-worker`, `sdlc-worker`, `reviewer`, `implementer`, `frontend`, plus the orchestrator gap (there is no orchestrator agent — the obligations belong in `AGENTS.md` and rules scoped `agents: [main]`). |
 | [`plans/remediation-plan.md`](plans/remediation-plan.md) | 10 units with a declared dependency graph, a hybrid recommendation (validation spike first), and the 9,576 real `gold_analyses` rows explicitly protected. |
-| [`analysis/three-state-articulation.md`](analysis/three-state-articulation.md) + [`diagrams`](diagrams) | OLD (working) → CURRENT (incorrect) → TARGET, as diagrams. State 2 makes the disconnected halves visible. |
+| [`analysis/three-state-articulation.md`](analysis/three-state-articulation.md) + [`diagrams`](diagrams) | PRE-MIGRATION (working) → TARGET (intended) → DRIFTED (what actually happened), as diagrams. The DRIFTED diagram makes the disconnected halves visible, and the TARGET diagram now shows the full enrichment cycle — submit, poll the service, land back in bronze, conform, gold. |
 | [`audits`](audits) | The evidence this document rests on: every criterion checked against the **live** database, not the branch. |
 | [`panel`](panel) | The four-seat review that produced the corrections above. `panel/data.md` rules the original framing "unfair as stated"; `panel/adversary.md` applies the discriminating-vs-non-discriminating test. |
 

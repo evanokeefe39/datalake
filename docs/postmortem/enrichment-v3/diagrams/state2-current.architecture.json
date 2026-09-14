@@ -2,66 +2,395 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "STATE 2 - CURRENT / INCORRECT: green branch, system does not run",
+    "title": "DRIFTED STATE - green branch, the system does not run",
     "output": "state2-current.html",
-    "quality_profile": "showcase",
-    "viewBox": [1080, 500]
+    "quality_profile": "showcase"
+  },
+  "layout": {
+    "mode": "grid",
+    "origin": [
+      40,
+      40
+    ],
+    "gapX": 40,
+    "gapY": 50
   },
   "components": [
-    { "id": "bronze_raw", "type": "database", "label": "bronze_enrichment_raw", "sublabel": "0 landed rows", "tag": "tests mock FLAT - providers NEST", "pos": [60, 50], "size": [220, 88] },
-    { "id": "drain", "type": "backend", "label": "Drain", "sublabel": "materializes enrichment_submitted partitions", "tag": "instagram/assets.py:1289", "pos": [60, 200], "size": [220, 88] },
-    { "id": "harvested", "type": "database", "label": "enrichment_harvested", "sublabel": "no production writer in src/", "tag": "in-flight only grows - stalls", "pos": [60, 330], "size": [220, 88] },
-    { "id": "prod", "type": "external", "label": "1 production flow", "sublabel": "the only seam caller", "pos": [290, 211], "size": [140, 60] },
-    { "id": "port", "type": "backend", "label": "ProviderAdapter port", "sublabel": "run_lifecycle: 0 production callers", "tag": "built, then bypassed", "pos": [470, 195], "size": [190, 92] },
-    { "id": "adapters", "type": "cloud", "label": "Provider adapters", "sublabel": "gemini-batch, qwen-batch-service", "pos": [475, 325], "size": [180, 80] },
-    { "id": "bypass", "type": "backend", "label": "12 call sites bypass the port", "sublabel": "submit.py:152, 170 - facets_batch.py:318, 322", "tag": "1 of 4 flows uses the seam", "pos": [430, 50], "size": [220, 84] },
-    { "id": "gate", "type": "security", "label": "test_state_compatibility.py", "sublabel": "77 tests PASS on OLD catalog", "tag": "vacuous gate", "pos": [845, 50], "size": [180, 84] },
-    { "id": "submit", "type": "backend", "label": "submit.py", "sublabel": "discovers work by reading batch_jobs", "tag": "submit.py:77", "pos": [670, 150], "size": [160, 84] },
-    { "id": "batch_jobs", "type": "database", "label": "batch_jobs", "sublabel": "nothing writes this table", "tag": "retired contract", "pos": [870, 150], "size": [150, 84] },
-    { "id": "guard", "type": "security", "label": "_require_legacy_queue_tables", "sublabel": "raises if the table is absent", "tag": "batch.py:51", "pos": [690, 250], "size": [190, 84] },
-    { "id": "harvest", "type": "backend", "label": "harvest.py", "sublabel": "8 bypass call sites", "tag": "311-462 (8 sites)", "pos": [690, 345], "size": [140, 76] },
-    { "id": "live", "type": "database", "label": "Live gold_analyses", "sublabel": "9,576 rows (STATE 1)", "pos": [885, 345], "size": [135, 76] }
+    {
+      "id": "posts",
+      "type": "external",
+      "label": "posts arrive",
+      "sublabel": "Apify scrape",
+      "tag": "step 1",
+      "pos": [
+        40,
+        150
+      ],
+      "size": [
+        140,
+        72
+      ]
+    },
+    {
+      "id": "submitted",
+      "type": "messagebus",
+      "label": "enrichment_submitted",
+      "sublabel": "drain materializes",
+      "tag": "NOTHING consumes them",
+      "pos": [
+        450,
+        28
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "submit",
+      "type": "backend",
+      "label": "submit.py:77",
+      "sublabel": "reads batch_jobs",
+      "tag": "never reads partitions",
+      "pos": [
+        680,
+        28
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "harvested",
+      "type": "messagebus",
+      "label": "enrichment_harvested",
+      "sublabel": "NO production writer",
+      "tag": "in-flight only grows",
+      "pos": [
+        220,
+        280
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "bronze",
+      "type": "database",
+      "label": "bronze_enrichment_raw",
+      "sublabel": "declared, ZERO rows",
+      "tag": "return never arrives",
+      "pos": [
+        220,
+        150
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "silver",
+      "type": "database",
+      "label": "silver_ig_posts (legacy)",
+      "sublabel": "10,038 rows, live",
+      "tag": "conform: ZERO callers",
+      "pos": [
+        450,
+        150
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "gold",
+      "type": "database",
+      "label": "new-model gold marts",
+      "sublabel": "materialized NOWHERE",
+      "tag": "9,576 rows = legacy",
+      "pos": [
+        680,
+        150
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "serving",
+      "type": "frontend",
+      "label": "serving views",
+      "sublabel": "~22 views read gold",
+      "tag": "unreachable",
+      "pos": [
+        910,
+        150
+      ],
+      "size": [
+        160,
+        72
+      ]
+    },
+    {
+      "id": "batch_jobs",
+      "type": "database",
+      "label": "batch_jobs",
+      "sublabel": "6 stale, unwritten rows",
+      "tag": "DDL gone since 952386d",
+      "pos": [
+        560,
+        410
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "service",
+      "type": "external",
+      "label": "inference service",
+      "sublabel": "Gemini / qwen-batch",
+      "tag": "outside Dagster",
+      "pos": [
+        1110,
+        28
+      ],
+      "size": [
+        150,
+        90
+      ]
+    }
   ],
   "boundaries": [
-    { "kind": "region", "label": "SEAM - the ProviderAdapter port", "wraps": ["prod", "port", "adapters"] },
-    { "kind": "region", "label": "live database - still STATE 1", "wraps": ["submit", "batch_jobs", "guard", "harvest", "live"] }
+    {
+      "kind": "region",
+      "label": "Dagster Definitions - data assets (green, idle)",
+      "wraps": [
+        "posts",
+        "submitted",
+        "submit",
+        "harvested",
+        "bronze",
+        "silver",
+        "gold",
+        "serving"
+      ],
+      "pad": 24
+    },
+    {
+      "kind": "region",
+      "label": "BRONZE",
+      "wraps": [
+        "bronze"
+      ],
+      "pad": 14
+    },
+    {
+      "kind": "region",
+      "label": "SILVER",
+      "wraps": [
+        "silver"
+      ],
+      "pad": 14
+    },
+    {
+      "kind": "region",
+      "label": "GOLD",
+      "wraps": [
+        "gold"
+      ],
+      "pad": 14
+    },
+    {
+      "kind": "region",
+      "label": "SERVING",
+      "wraps": [
+        "serving"
+      ],
+      "pad": 14
+    },
+    {
+      "kind": "region",
+      "label": "ops.sqlite - legacy queue, retired but still called",
+      "wraps": [
+        "batch_jobs"
+      ],
+      "pad": 12
+    },
+    {
+      "kind": "region",
+      "label": "external inference service",
+      "wraps": [
+        "service"
+      ],
+      "pad": 8
+    }
   ],
   "connections": [
-    { "id": "gap", "from": "drain", "to": "submit", "label": "NO EDGE - the halves never meet", "variant": "dashed", "fromSide": "left", "toSide": "top", "via": [[35, 244], [35, 42], [750, 42]], "labelAt": [540, 30] },
-    { "id": "inflight", "from": "drain", "to": "harvested", "label": "in-flight = submitted - harvested", "variant": "dashed", "labelAt": [170, 312] },
-    { "id": "discover", "from": "submit", "to": "batch_jobs", "label": "reads - nothing writes", "variant": "emphasis", "labelAt": [550, 186] },
-    { "id": "raise", "from": "guard", "to": "batch_jobs", "label": "raises if absent", "variant": "security", "fromSide": "right", "toSide": "bottom", "via": [[945, 292], [945, 244]], "labelAt": [985, 272] },
-    { "id": "wire1", "from": "port", "to": "prod", "label": "only wire", "variant": "emphasis", "labelAt": [425, 283] },
-    { "id": "build", "from": "port", "to": "adapters", "label": "build_adapter(name)", "variant": "default", "labelAt": [615, 305] },
-    { "id": "around1", "from": "bypass", "to": "submit", "label": "direct calls around the seam", "variant": "dashed", "fromSide": "bottom", "toSide": "left", "via": [[540, 142], [620, 142], [620, 192]], "labelAt": [595, 168] },
-    { "id": "state1", "from": "harvest", "to": "live", "label": "unchanged", "variant": "default", "labelAt": [856, 383] }
+    {
+      "id": "e1",
+      "from": "posts",
+      "to": "bronze",
+      "label": "1. posts arrive",
+      "labelDy": -50,
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e2",
+      "from": "bronze",
+      "to": "silver",
+      "label": "2. bronze > silver - fine",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDy": 55
+    },
+    {
+      "id": "e3",
+      "from": "silver",
+      "to": "submitted",
+      "label": "3. drain writes partitions - NOTHING consumes",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "variant": "dashed",
+      "labelAt": [
+        605,
+        110
+      ]
+    },
+    {
+      "id": "e4",
+      "from": "submit",
+      "to": "batch_jobs",
+      "label": "4. reads batch_jobs - NOTHING writes it",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "variant": "dashed",
+      "via": [
+        [
+          775,
+          140
+        ],
+        [
+          890,
+          140
+        ],
+        [
+          890,
+          370
+        ],
+        [
+          650,
+          370
+        ]
+      ],
+      "labelDx": -200,
+      "labelDy": 20
+    },
+    {
+      "id": "e5",
+      "from": "submit",
+      "to": "service",
+      "fromSide": "right",
+      "toSide": "left",
+      "variant": "dashed",
+      "labelAt": [
+        990,
+        16
+      ]
+    },
+    {
+      "id": "e6",
+      "from": "service",
+      "to": "harvested",
+      "label": "6. poll broken - harvested has NO writer",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "variant": "dashed",
+      "via": [
+        [
+          1185,
+          130
+        ],
+        [
+          1290,
+          130
+        ],
+        [
+          1290,
+          500
+        ],
+        [
+          310,
+          500
+        ]
+      ],
+      "labelAt": [
+        747,
+        516
+      ]
+    },
+    {
+      "id": "e8",
+      "from": "harvested",
+      "to": "bronze",
+      "label": "7. return into bronze NEVER happens",
+      "fromSide": "left",
+      "toSide": "left",
+      "variant": "dashed",
+      "labelDx": -70,
+      "via": [
+        [
+          200,
+          312
+        ],
+        [
+          200,
+          186
+        ]
+      ]
+    },
+    {
+      "id": "e9",
+      "from": "silver",
+      "to": "gold",
+      "label": "8-9. gold + serving unreachable",
+      "fromSide": "right",
+      "toSide": "left",
+      "variant": "dashed",
+      "labelDy": 55
+    }
   ],
   "cards": [
     {
       "dot": "rose",
-      "title": "The four breakages",
+      "title": "The loop does not close - break it at step 3",
       "items": [
-        "Disconnected halves: partitions nothing consumes; submit.py:77 reads batch_jobs, written by none",
-        "Missing producer: enrichment_harvested has no writer - in-flight only grows, pipeline stalls",
-        "Dead contract: _require_legacy_queue_tables (batch.py:51) raises if batch_jobs is absent",
-        "Bypassed seam: 12 call sites around the port; 1 of 4 flows uses it; zero run_lifecycle callers"
+        "Step 3: the drain materializes enrichment_submitted partitions that NOTHING consumes; submit.py:77 discovers work by reading batch_jobs, a table nothing writes",
+        "Step 6: enrichment_harvested has NO production writer, so in-flight (submitted minus harvested) only grows - after the first cycle the guard suppresses everything",
+        "Step 7: the return into bronze never happens - bronze_enrichment_raw has zero landed rows, so conform, gold and serving are unreachable from the new model"
       ]
     },
     {
       "dot": "orange",
-      "title": "Live database - still STATE 1",
+      "title": "Retired but still called - migration ordering, not preservation",
       "items": [
-        "gold_analyses 9,576 + gold_growth_facets 205 - the migration never happened",
-        "Zero views read silver_content_classification; three still read gold_analyses",
-        "77 tests pass on the OLD catalog - the gate certifies the status quo"
+        "Commit 952386d rewrote batch.py to stop creating the queue DDL and to fail loudly - the code no longer preserves the thing it retires",
+        "The drop is blocked on five caller modules: submit, harvest, media_upload, analysis, registry - the legacy shims are retired but still called"
       ]
     },
     {
-      "dot": "rose",
-      "title": "Root cause",
+      "dot": "orange",
+      "title": "The gate certifies the status quo",
       "items": [
-        "Integration treated as emergent, not an owned, tested deliverable",
-        "Per-component acceptance cannot detect inter-component drift; 7 of 36 exit criteria met"
+        "test_state_compatibility.py passes 77 tests on the OLD schema catalog - the gate certifies the status quo, not the migration",
+        "The live database still holds the PRE-MIGRATION tables (gold_analyses 9,576 rows) while the new-model medallion objects are declared in code and materialized NOWHERE"
       ]
     }
   ]

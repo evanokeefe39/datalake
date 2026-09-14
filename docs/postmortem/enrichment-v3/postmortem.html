@@ -511,9 +511,10 @@ footer{border-top:1px solid var(--line-soft);margin-top:96px;padding:28px 0 48px
       <code>enrichment_submitted</code> partitions that nothing reads, while submit discovers work
       by reading a <code>batch_jobs</code> table nothing writes. The <b>producer is missing</b>:
       <code>enrichment_harvested</code> has no writer anywhere in <code>src/</code>, so the
-      in-flight set only grows and the guard suppresses everything after the first cycle. A
-      <b>dead contract is kept alive by the code meant to retire it</b> —
-      <code>_require_legacy_queue_tables</code> raises if the retired table is absent. And the
+      in-flight set only grows and the guard suppresses everything after the first cycle. The
+      <b>queue is retired but still called</b> — <code>_require_legacy_queue_tables</code> raises
+      if the retired table is absent, and five modules still call those shims, so the drop is
+      blocked on caller migration rather than on intent. And the
       <b>seam is bypassed</b>: one seam was built, one of four flows uses it, twelve call sites go
       around it, and <code>seam.run_lifecycle</code> has zero production callers. The gate that
       should have caught all of this passes — the schema catalog still lists
@@ -790,7 +791,7 @@ footer{border-top:1px solid var(--line-soft);margin-top:96px;padding:28px 0 48px
       <p class="w">know what your gate cannot see. <code>test_state_compatibility.py</code> asserted the status quo.</p>
       <p class="c">for each gate, write the sentence "this gate cannot detect X". If X is a real risk, the gate is wrong.</p></div>
     <div class="lesson"><p class="p"><span class="n">04</span>Delete what you replace, in the same change.</p>
-      <p class="w">a retired path that still exists will be used. Code preserves dead contracts. <code>_require_legacy_queue_tables</code> raised an error to keep a dead table alive.</p>
+      <p class="w">a retired path that still exists will be used. The queue's DDL stopped being created, but five modules kept calling its shims — so the retired queue stayed a hard runtime dependency and could not be dropped. Retirement that stops at the writer is not retirement.</p>
       <p class="c">make "delete everything you supersede" an explicit item in the brief and the acceptance.</p></div>
     <div class="lesson"><p class="p"><span class="n">05</span>Do not defer retirement to a later phase than the rewiring.</p>
       <p class="w">if phase N stops writing to a store, phase N must also move the readers. The drain was rewired in Phase 2; the queue retirement was in Phase 7.</p>
