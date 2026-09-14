@@ -1,7 +1,7 @@
 # Adversarial / Red-Team Review of the Post-mortem
 
 Panel seat: ADVERSARY · 2026-09-13 · Read-only; this file is the deliverable.
-Target: `postmortem-implementation-drift.md` (and its §8 audit addendum).
+Target: [`../postmortem.md`](../postmortem.md) (and its §8 audit addendum).
 Stance: find where it is WRONG, not where it is incomplete. Where an attack fails, that is said too.
 
 **One-line verdict up front:** the post-mortem's *direction* (orchestration-dominant) survives,

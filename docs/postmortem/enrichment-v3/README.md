@@ -14,7 +14,7 @@ could not complete one cycle.**
 |---|---|
 | 2 minutes | [`postmortem.html`](postmortem.html) — the visual version: KPI strip, the six failures, the Five Whys, four figures |
 | 20 minutes | [`postmortem.md`](postmortem.md) — the full analysis, including why existing guidance did not bind |
-| The architecture | [`diagrams/`](diagrams/) — three states: old (working) → current (incorrect) → target |
+| The architecture | [`diagrams`](diagrams) — three states: old (working) → current (incorrect) → target |
 
 ---
 

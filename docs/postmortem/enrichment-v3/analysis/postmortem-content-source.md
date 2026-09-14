@@ -450,13 +450,13 @@ Use the hooks for the mechanical checks and the agents for the judgment."
 
 List these files. The reader can open them for the full detail.
 
-- `docs/postmortem/enrichment-v3/postmortem.md` — the root-cause analysis (301 lines)
-- `docs/postmortem/enrichment-v3/audits/p1-p2.md` — 18 criteria, phases 1-2
-- `docs/postmortem/enrichment-v3/audits/p3-p4.md` — 8 criteria, phases 3-4
-- `docs/postmortem/enrichment-v3/audits/p5-p6.md` — 10 criteria, phases 5-6
-- `docs/postmortem/enrichment-v3/reviews/architecture-soundness.md`
-- `docs/postmortem/enrichment-v3/reviews/interfaces.md`
-- `docs/postmortem/enrichment-v3/reviews/round-semantics.md`
+- [`../postmortem.md`](../postmortem.md) — the root-cause analysis (301 lines)
+- [`../audits/p1-p2.md`](../audits/p1-p2.md) — 18 criteria, phases 1-2
+- [`../audits/p3-p4.md`](../audits/p3-p4.md) — 8 criteria, phases 3-4
+- [`../audits/p5-p6.md`](../audits/p5-p6.md) — 10 criteria, phases 5-6
+- [`../reviews/architecture-soundness.md`](../reviews/architecture-soundness.md)
+- [`../reviews/interfaces.md`](../reviews/interfaces.md)
+- [`../reviews/round-semantics.md`](../reviews/round-semantics.md)
 - `tasks/plans/enrichment-v3-migration-master.md` — the plan
 
 Add one closing honesty note: the architecture is sound. The design does not need to change.

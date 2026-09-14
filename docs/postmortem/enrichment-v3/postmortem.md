@@ -39,9 +39,9 @@ The commit trail (main..HEAD, oldest first) maps cleanly onto per-component disp
 
 | Commit | Likely dispatch | Agent could see | Agent could NOT see |
 |---|---|---|---|
-| `ef15765` seam + bronze landing | "Port the inference seam (ProviderAdapter Protocol, `build_adapter`) and add the verbatim bronze landing" (`inference-service-seam.md` sub-plan) | Its own module, the spike's adapter design, ADR-0008/0013 | Whether any production caller would ever adopt `build_adapter` or `run_lifecycle`. A module author cannot know its future callers; nothing in the dispatch named them. Result: `run_lifecycle` has **zero production callers** (`review-interfaces.md` §6.1) — built to spec, adopted by no dispatch. |
+| `ef15765` seam + bronze landing | "Port the inference seam (ProviderAdapter Protocol, `build_adapter`) and add the verbatim bronze landing" (`inference-service-seam.md` sub-plan) | Its own module, the spike's adapter design, ADR-0008/0013 | Whether any production caller would ever adopt `build_adapter` or `run_lifecycle`. A module author cannot know its future callers; nothing in the dispatch named them. Result: `run_lifecycle` has **zero production callers** ([`reviews/interfaces.md`](reviews/interfaces.md) §6.1) — built to spec, adopted by no dispatch. |
 | `872904e` "converge both lifecycles onto one seam" | "Converge the lifecycles" | The facets path (`facets_batch.py`), which it converged onto the seam (the ONE adoption at `facets_batch.py:292`) | That the Gemini path (`submit.py`, `harvest.py` — 8 of 12 bypass sites live in `harvest.py`) was not in its remit. "Both lifecycles" was not unpacked into "and every call site of them." The agent converged one lifecycle and reported success; that is a faithful reading of the dispatch, not a mistake. |
-| `b38465b` prompt identity + silver conform | "Bind prompt+schema, never the model; build the conform layer" | `prompts.py`, `conform.py`, bronze schema | Whether the drain/submit would agree with its hash semantics. (This contract, notably, *did* get the one-function treatment and is clean — the only one that did, per `review-interfaces.md` §2.7.) |
+| `b38465b` prompt identity + silver conform | "Bind prompt+schema, never the model; build the conform layer" | `prompts.py`, `conform.py`, bronze schema | Whether the drain/submit would agree with its hash semantics. (This contract, notably, *did* get the one-function treatment and is clean — the only one that did, per [`reviews/interfaces.md`](reviews/interfaces.md) §2.7.) |
 | `4e9cf4b` + `c9e8724` classification + drain | "Derive in-flight from the Dagster instance" | `ig_posts_gen_batches`, `partitions.py`, the instance snapshot | Whether anything would ever **consume** the `enrichment_submitted` partitions it materializes (`assets.py:1289`), and whether anything would ever **write** `enrichment_harvested` (nothing does). The agent derived the guard from the instance exactly as told; that `submit.py:77` still SELECTs `batch_jobs` — a table nothing writes — is invisible from its slice. |
 | `04ea11d` serving rebind + gold marts | "Rebind classification consumers; build four gold marts" | Views, marts, `test_state_compatibility.py` | The pipeline upstream; it is correctly out of scope for this slice. |
 
@@ -67,7 +67,7 @@ against the state that existed in front of it: the drain materializes
 `submit_gemini_batches_job` still discovers work in `batch_jobs` (`submit.py:77`) and
 `_require_legacy_queue_tables` (`batch.py:51`) actively raises if that retired table is
 absent — the zombie contract is *preserved by code*. No slice was asked to own the
-handoff. Evidence: `review-interfaces.md` §6.3 ("the two halves never meet") and §7
+handoff. Evidence: [`reviews/interfaces.md`](reviews/interfaces.md) §6.3 ("the two halves never meet") and §7
 defect 1.
 
 **Why 2 — Why did no slice own the handoff?**
@@ -87,7 +87,7 @@ Because the verification instrument for each phase was the phase's own unit test
 every one of those tests injects a fake on one side of the seam (fake instance, fake
 service, fake registry). The drain test proves the drain works against a fake instance;
 the submit test proves submit works against a fake `batch_jobs`; nothing asserts a
-nonempty handoff between the two real halves. Evidence: `review-interfaces.md` §7
+nonempty handoff between the two real halves. Evidence: [`reviews/interfaces.md`](reviews/interfaces.md) §7
 ("Test-coverage observation") verbatim: "none asserts the two production halves
 connect... That is why #1 and #2 are invisible." The orchestrator accepted
 phase-complete reports on the strength of green suites — 701 tests passing while the
@@ -134,9 +134,9 @@ itself. Most defects have a primary class and contributing classes.
 | 4 | 12 provider call sites bypass the seam (3 of 4 flows never touch it) | **(a) primary** — per-module dispatches meant no dispatch included "migrate `submit.py`/`harvest.py` call sites"; **(b)** the registry test proved the registry, not adoption | Orchestrator fault. Note `facets_batch.py:322` bypass is class (e)/(latent) — see §4. |
 | 5 | Two complete HTTP clients for the qwen service (`qwen_client.py` vs `ServiceBackedAdapter`) with divergent terminal predicates | **(a)** — split-brain across slices: facets submit stayed on the client, facets poll/retrieve moved to the adapter | Orchestrator fault; the seam adoption was partial because the dispatch boundary cut the flow in half. |
 | 6 | Handle serialization diverged: `"|"` (submit.py:170) vs `","` (adapters.py:280) | **(a)+(b)** — two slices each encoded "one handle = several jobs"; no round-trip test forced them to agree | Orchestrator fault; the divergence is invisible to any single-side test. |
-| 7 | Partition-key round-0 hardcode (`DRAIN_ATTEMPT_ROUND=0`) → latent double-submit under retry | **(e) primary** — ADR-0012 decision 5 mandates key *distinctness* but is silent on key *shape*; the digest fusion was a module-level choice the plan never reviewed (`review-round-semantics.md` §5); **(c)** — the worker cited decision 5 in its docstring and implemented the guard honestly for round 0 | Design/plan fault; the worker's implementation matches its remit. |
+| 7 | Partition-key round-0 hardcode (`DRAIN_ATTEMPT_ROUND=0`) → latent double-submit under retry | **(e) primary** — ADR-0012 decision 5 mandates key *distinctness* but is silent on key *shape*; the digest fusion was a module-level choice the plan never reviewed ([`reviews/round-semantics.md`](reviews/round-semantics.md) §5); **(c)** — the worker cited decision 5 in its docstring and implemented the guard honestly for round 0 | Design/plan fault; the worker's implementation matches its remit. |
 | 8 | Vacuous exit-criterion tests (registry test; "no post twice" passing on total suppression) | **(b)** — the verification instrument accepted existence proofs as adoption/convergence proofs | Orchestrator/instrument fault. |
-| 9 | Retry semantics orphaned: no driver, no round minter, failed submits count zero attempts | **(e)** — master plan has zero matches for retry/attempt/backoff (`review-architecture-soundness.md` §2.1); ADR-0012 defines the mechanism on paper and names no actor | Plan/ADR fault. |
+| 9 | Retry semantics orphaned: no driver, no round minter, failed submits count zero attempts | **(e)** — master plan has zero matches for retry/attempt/backoff ([`reviews/architecture-soundness.md`](reviews/architecture-soundness.md) §2.1); ADR-0012 defines the mechanism on paper and names no actor | Plan/ADR fault. |
 | 10 | Layering violations: `instagram/assets.py:1170` executes another domain's DDL; two `DagsterInstance.get()` fallbacks in production guard code; `adapters.py` imports `GeminiTierConfig` from instagram config | **(d) + (e)** — the `.get()` fallbacks are genuine worker shortcuts (the asset signature already accepted an injected instance; the fallback removes a guarantee to make a test easier); the DDL reach and tier-config import are slice-boundary shortcuts no test caught | Mixed: worker shortcut (fallbacks), plan blind spot (cross-domain reach). |
 | 11 | Silent-failure paths: `classify_error` defaults unknown exceptions to TERMINAL; harvest poll failures warn-and-continue forever; `"?"` custom_key collision; asset checks pass vacuously on unread parquet | **(d)** — worker execution quality; all are inside single slices, detectable by any careful worker review | Worker fault (quality), uncaught because the orchestrator's acceptance did not include adversarial error-path review. |
 | 12 | Dead/zombie code: legacy queue read-path, `prompt_identity_v1`, legacy `__init__` exports | **(a)+(c)** — retirement was Phase 7 but each slice left its own leftovers; no dispatch said "delete what you supersede" | Orchestrator fault in acceptance scope; workers did not overstep. |
@@ -220,9 +220,9 @@ gaps** (7, 9, 13). The workers did not fail their remits; the remits failed the 
 
 ## 7. Evidence index
 
-- `docs/postmortem/enrichment-v3/reviews/interfaces.md` §1 (12 bypass sites, one adoption), §2 (desync inventory), §3 (hidden globals), §4 (layering), §5 (silent failures), §6 (dead code incl. `run_lifecycle` zero callers, disconnected halves), §7 (ranked defects + test-coverage observation).
-- `docs/postmortem/enrichment-v3/reviews/architecture-soundness.md` §2 (retry orphaned; zero plan matches for retry), §4 (layering), §5 (`max_tokens`/`JobSpec`), §1 (`enrichment_harvested` complete in design, missing producer is implementation).
-- `docs/postmortem/enrichment-v3/reviews/round-semantics.md` §1–§2 (round-0 guard, unscannable digest), §5 (decision 5 mandates distinctness, not shape).
+- [`reviews/interfaces.md`](reviews/interfaces.md) §1 (12 bypass sites, one adoption), §2 (desync inventory), §3 (hidden globals), §4 (layering), §5 (silent failures), §6 (dead code incl. `run_lifecycle` zero callers, disconnected halves), §7 (ranked defects + test-coverage observation).
+- [`reviews/architecture-soundness.md`](reviews/architecture-soundness.md) §2 (retry orphaned; zero plan matches for retry), §4 (layering), §5 (`max_tokens`/`JobSpec`), §1 (`enrichment_harvested` complete in design, missing producer is implementation).
+- [`reviews/round-semantics.md`](reviews/round-semantics.md) §1–§2 (round-0 guard, unscannable digest), §5 (decision 5 mandates distinctness, not shape).
 - `tasks/plans/enrichment-v3-migration-master.md` §3 (phase criteria phrasing; Phase 2 vs Phase 7 sequencing), §4 (blast-radius register naming the drain), §8 (verification strategy corrected post-hoc).
 - Git log `main..HEAD`: `ef15765`, `872904e`, `b38465b`, `4e9cf4b`, `c9e8724`, `04ea11d`.
 
@@ -232,8 +232,8 @@ gaps** (7, 9, 13). The workers did not fail their remits; the remits failed the 
 
 This document was written BEFORE the three phase audits landed. Its §5 verdict (workers
 correct, orchestration at fault) is much stronger once their evidence is folded in, and
-§6's signals gain a sharper target. The audits are: `audit-p1-p2.md`,
-`audit-p3-p4.md`, `audit-p5-p6.md`.
+§6's signals gain a sharper target. The audits are: [`audits/p1-p2.md`](audits/p1-p2.md),
+[`audits/p3-p4.md`](audits/p3-p4.md), [`audits/p5-p6.md`](audits/p5-p6.md).
 
 ### 8.1 The counts
 
@@ -360,7 +360,7 @@ sites, and on that basis classifies the flagship defect as decomposition failure
 worker failure. **That assertion is not supported by the evidence in this document, and this
 section retracts its force.**
 
-Three problems, found by the adversarial seat (`panel-adversary.md`):
+Three problems, found by the adversarial seat ([`panel/adversary.md`](panel/adversary.md)):
 
 1. **No dispatch text is quoted anywhere in this 333-line document.** §1 reconstructs the
    dispatches from the commit trail and labels them "likely told". §8.4 then reasons from that
@@ -399,7 +399,7 @@ this document, one level up.
   medallion shape) is sound. ADR-0012 (the dynamics: retry, quarantine, harvested-transition)
   is **underspecified** — it names mechanisms but not their drivers or consumers. An
   underspecified dynamic surfaces as apparent "implementation drift" under any dispatch quality.
-  See `panel-data.md` §5.
+  See [`panel/data.md`](panel/data.md) §5.
 
 ---
 
@@ -507,9 +507,9 @@ This post-mortem diagnoses. These carry the diagnosis forward:
 | [`analysis/harness-coverage-and-hooks.md`](analysis/harness-coverage-and-hooks.md) | Rule-vs-hook coverage **per agent**, the hook specs, and the finding that coverage is per-agent — rules scoped `[dlc-worker, main]` never reach `sdlc-worker`. |
 | [`plans/agent-improvement-plan.md`](plans/agent-improvement-plan.md) | Concrete changes to `dlc-worker`, `sdlc-worker`, `reviewer`, `implementer`, `frontend`, plus the orchestrator gap (there is no orchestrator agent — the obligations belong in `AGENTS.md` and rules scoped `agents: [main]`). |
 | [`plans/remediation-plan.md`](plans/remediation-plan.md) | 10 units with a declared dependency graph, a hybrid recommendation (validation spike first), and the 9,576 real `gold_analyses` rows explicitly protected. |
-| [`analysis/three-state-articulation.md`](analysis/three-state-articulation.md) + [`diagrams/`](diagrams/) | OLD (working) → CURRENT (incorrect) → TARGET, as diagrams. State 2 makes the disconnected halves visible. |
-| [`audits/`](audits/) | The evidence this document rests on: every criterion checked against the **live** database, not the branch. |
-| [`panel/`](panel/) | The four-seat review that produced the corrections above. `panel/data.md` rules the original framing "unfair as stated"; `panel/adversary.md` applies the discriminating-vs-non-discriminating test. |
+| [`analysis/three-state-articulation.md`](analysis/three-state-articulation.md) + [`diagrams`](diagrams) | OLD (working) → CURRENT (incorrect) → TARGET, as diagrams. State 2 makes the disconnected halves visible. |
+| [`audits`](audits) | The evidence this document rests on: every criterion checked against the **live** database, not the branch. |
+| [`panel`](panel) | The four-seat review that produced the corrections above. `panel/data.md` rules the original framing "unfair as stated"; `panel/adversary.md` applies the discriminating-vs-non-discriminating test. |
 
 **If you read one thing after this:** `analysis/learnings-mece.md`. It is the shortest complete
 statement of what was missing, and it is the only artifact the remediation plan was written from.

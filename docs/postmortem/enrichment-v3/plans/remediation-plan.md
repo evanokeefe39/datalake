@@ -1,9 +1,9 @@
 # Enrichment v3 — Remediation Plan
 
 Planning only. Branch `feat/enrichment-v3-phase-1-seam-and-landing`, HEAD `04ea11d`, 7/36 exit
-criteria genuinely met. Inputs: `three-state-articulation.md` (target), `postmortem-implementation-drift.md`
-§10, the three phase audits, `learnings-mece.md` (C1–C5 control set), `panel-data.md`,
-`panel-adversary.md`, `docs/architecture/pipelines/enrichment.md`, ADR-0011/0012/0013, master plan §3/§4/§8.
+criteria genuinely met. Inputs: [`../analysis/three-state-articulation.md`](../analysis/three-state-articulation.md) (target), [`../postmortem.md`](../postmortem.md)
+§10, the three phase audits, [`../analysis/learnings-mece.md`](../analysis/learnings-mece.md) (C1–C5 control set), [`../panel/data.md`](../panel/data.md),
+[`../panel/adversary.md`](../panel/adversary.md), `docs/architecture/pipelines/enrichment.md`, ADR-0011/0012/0013, master plan §3/§4/§8.
 
 ---
 
@@ -42,7 +42,7 @@ suppression), on a subset (`--max-pages 1` / single post), before any further mi
 - The asymmetry the brief names is decisive: **ADR-0011 (statics: layering, seam, verbatim
   landing, deterministic conform) is sound and its code exists. ADR-0012 (dynamics: retry
   driver, quarantine consumer, harvested transition) is underspecified — those are design gaps
-  that would have surfaced under any dispatch quality** (`panel-data.md` §5). You cannot "revert
+  that would have surfaced under any dispatch quality** ([`../panel/data.md`](../panel/data.md) §5). You cannot "revert
   your way out of" an underspecified dynamic; rebuilding silver would reproduce the same gaps
   unless ADR-0012 is completed first — which is exactly what option (a) must do anyway.
 
@@ -69,7 +69,7 @@ call) and abort criteria must be approved before any spend.
 Every unit states its target files (≤5), declared dependencies, and an acceptance that is a
 **demonstrated round-trip**, never an existence claim. Each unit names its MECE control (C1
 specification / C2 accountability / C3 interface / C4 sequencing / C5 verification) per the
-`learnings-mece.md` §2 map, so every defect row of §2 there is covered exactly once.
+[`../analysis/learnings-mece.md`](../analysis/learnings-mece.md) §2 map, so every defect row of §2 there is covered exactly once.
 
 ### W0 — ADR-0012 dynamic specification (drives the fork decision)
 - **What**: Write the three missing dynamic specs as an ADR-0012 addendum: (i) the *driver*
@@ -93,7 +93,7 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   providers: drain enqueue → submit through the seam → verbatim bronze landing → conform (zero
   API calls on re-run) → one silver table → mart/view → drain run 2 suppression. Subset only;
   no full corpus. Capture the real nested envelope as a test fixture (mocks are flat today).
-- **Files**: `src/datalake/defs/enrichment/landing.py`, `src/datalake/defs/enrichment/conform.py`, `tests/fixtures/real_envelope_gemini.json` (new), `docs/postmortem/enrichment-v3/analysis/spike-evidence.md` (new, evidence for the fork decision), `tasks/plans/enrichment-v3-migration-master.md` (result note).
+- **Files**: `src/datalake/defs/enrichment/landing.py`, `src/datalake/defs/enrichment/conform.py`, `tests/fixtures/real_envelope_gemini.json` (new), [`../analysis/spike-evidence.md`](../analysis/spike-evidence.md) (new, evidence for the fork decision), `tasks/plans/enrichment-v3-migration-master.md` (result note).
 - **Deps**: W0 (spec exists to check against). **Blocks everything else** — its verdict selects
   the path.
 - **Control**: C5 (walking skeleton / tracer bullet — the most damning miss in the audits).
@@ -227,7 +227,7 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   demonstrating the retirement, not asserting it.
   **[HUMAN APPROVAL required: any DROP against live data.]**
 
-**MECE coverage check** against `learnings-mece.md` §2: rows map to W0 (C1 rows: retry driver,
+**MECE coverage check** against [`../analysis/learnings-mece.md`](../analysis/learnings-mece.md) §2: rows map to W0 (C1 rows: retry driver,
 quarantine consumer, harvested producer — no duplication: spec in W0, implementation in W4/W8),
 W2+W3 (drain/submit pairing, zombie queue), W5 (12 bypasses, dual clients, handle encoding),
 W4 (partition-key shape, retry), W6 (mart grain, materialization, replay proof), W7 (catalog

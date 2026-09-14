@@ -7,7 +7,7 @@ All rules are KEPT. Nothing is deleted. This proposes additions only.
 
 ## 1. Method
 
-The five MECE controls (`learnings-mece.md` §1) are the coverage grid. Each of the 20 existing
+The five MECE controls ([`learnings-mece.md`](learnings-mece.md) §1) are the coverage grid. Each of the 20 existing
 rules in `~/.omp/agent/rules/` was mapped onto them, plus the two worker configs
 (`dlc-worker.md`, `sdlc-worker.md`). A control is covered only if a rule or config clause
 **states an obligation whose violation is detectable**.
@@ -221,7 +221,7 @@ central finding). A hook with no rule is an unexplained failure.
 | New rules G1–G5 | `~/.omp/agent/rules/*.md` | User-wide (all repos) |
 | H1, H2, H5, H6 | `<repo>/.omp/hooks/pre/*.ts` | Project (needs repo paths + DB) |
 | H3, H4, H7 | `~/.omp/agent/hooks/pre/*.ts` | User-wide (repo-agnostic) |
-| Orchestrator-side learnings | **no home yet — the gap** | See `postmortem-implementation-drift.md` §10.4 |
+| Orchestrator-side learnings | **no home yet — the gap** | See [`../postmortem.md`](../postmortem.md) §10.4 |
 
 Note: `~/.omp/agent/hooks/` does not exist yet — it must be created.
 
@@ -229,7 +229,7 @@ Note: `~/.omp/agent/hooks/` does not exist yet — it must be created.
 
 ## 6. The one thing no rule or hook fixes
 
-`postmortem-implementation-drift.md` §10.3 established the structural gap: the learnings that
+[`../postmortem.md`](../postmortem.md) §10.3 established the structural gap: the learnings that
 would have prevented this are **orchestrator-side**, and no agent config owns the orchestrator.
 The `dlc-worker` and `sdlc-worker` configs both hand responsibility *up* (step 5: "the
 ORCHESTRATOR owns the reviewer gate"). Adding rules and hooks helps, but until the orchestrator
@@ -388,7 +388,7 @@ declaration against itself.
 - For every catalog object: it must exist in the live DB.
 - For every catalog object newly added in this commit: it must have rows, or an explicit,
   recorded justification for zero rows (a landing table that has never run is *unexercised*, not
-  *broken* — cf. `panel-data.md` F1).
+  *broken* — cf. [`../panel/data.md`](../panel/data.md) F1).
 - H2 and H5(a) compose: H5 makes the catalog complete, H2 proves the catalog's objects were
   actually materialized.
 

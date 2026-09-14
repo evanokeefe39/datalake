@@ -5,7 +5,7 @@ analysis. **Additive throughout** — no existing rule is removed, and no agent'
 guidance is deleted. Where a clause is rewritten, the obligation is preserved and the scope or
 specificity is corrected.
 
-Guiding principle, established in `postmortem-implementation-drift.md` §10: **the configs
+Guiding principle, established in [`../postmortem.md`](../postmortem.md) §10: **the configs
 already contain most of this prose and it did not bind.** So every change below is chosen for
 one of three properties:
 
@@ -67,7 +67,7 @@ correct and already present.
 ## 2. `sdlc-worker` — the largest gap, five changes
 
 It is a thin config (5.3KB vs `dlc-worker`'s 12.2KB) and, more importantly, **six rules credited
-in the coverage analysis never reach it** (§7.2 of `harness-coverage-and-hooks.md`). It is the
+in the coverage analysis never reach it** (§7.2 of [`../analysis/harness-coverage-and-hooks.md`](../analysis/harness-coverage-and-hooks.md)). It is the
 agent most likely to report "tests pass" on an unrun path, and it lacks both rules that forbid it.
 
 **2.1 Add a dependency/contract step.**
@@ -167,7 +167,7 @@ the browser daemon failed, and it reported visual QA passed. Add to both:
 
 ## 5. Rule changes (additive; nothing deleted)
 
-Per `harness-coverage-and-hooks.md` §7.4, with `agents:` frontmatter corrected:
+Per [`../analysis/harness-coverage-and-hooks.md`](../analysis/harness-coverage-and-hooks.md) §7.4, with `agents:` frontmatter corrected:
 
 | New rule | `agents:` | Closes |
 |---|---|---|
@@ -220,7 +220,7 @@ Ordered by (value ÷ risk), each step independently landable:
 2. **`frontend`/`frontend-craft` 4.2** — capability fallback. Directly evidenced; small.
 3. **`sdlc-worker` 2.1–2.5** — closes the widest coverage gap and fixes a mis-scoped rule set.
 4. **New rules G1–G6 + the two widenings** (§5) — additive, no deletions.
-5. **Hooks H1, H3, H4** (`harness-coverage-and-hooks.md` §3, §8.3/8.4) — the mechanical
+5. **Hooks H1, H3, H4** ([`../analysis/harness-coverage-and-hooks.md`](../analysis/harness-coverage-and-hooks.md) §3, §8.3/8.4) — the mechanical
    enforcement that makes the rules bind.
 6. **`dlc-worker` 1.1–1.3 + the CHANGELOG clause** — light, and it already has the rest.
 7. **`orchestrator.md`** (§6) — the structural gap. Largest benefit, largest design effort;
@@ -291,7 +291,7 @@ context economy. It was a silent config edit against a global rule.
 > of the CHANGELOG into a rule or a hook — because the CHANGELOG is deliberately not loaded during
 > work, so a lesson that stays there cannot prevent its own recurrence.
 
-This is the same conclusion as `postmortem-implementation-drift.md` §10.4 (promotion, not prose),
+This is the same conclusion as [`../postmortem.md`](../postmortem.md) §10.4 (promotion, not prose),
 applied to the changelog mechanism itself. It costs no per-run context, keeps the convention
 intact, and directly addresses the observed failure: the 2026-08-31 and 2026-09-02 lessons were
 written down and recurred.

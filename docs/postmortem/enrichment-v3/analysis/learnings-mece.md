@@ -1,7 +1,7 @@
 # MECE learnings from the Enrichment v3 failure
 
-Synthesis of a four-seat expert panel (`panel-software.md`, `panel-data.md`,
-`panel-process.md`, `panel-adversary.md`) over `postmortem-implementation-drift.md`.
+Synthesis of a four-seat expert panel ([`../panel/software.md`](../panel/software.md), [`../panel/data.md`](../panel/data.md),
+[`../panel/process.md`](../panel/process.md), [`../panel/adversary.md`](../panel/adversary.md)) over [`../postmortem.md`](../postmortem.md).
 This is the artifact the remediation plan should be built against.
 
 ---
@@ -77,7 +77,7 @@ them is itself a defect.**
   route it to. The §4 blast-radius register *named* the drain as Phase 2's consumer — ownership
   existed on paper — and nothing enforced it.
 
-`panel-software.md` puts the decisive evidence best: this project **had owned seams** (the §4
+[`../panel/software.md`](../panel/software.md) puts the decisive evidence best: this project **had owned seams** (the §4
 register named the coupling) and still shipped existence-shaped criteria. **Ownership alone is
 provably insufficient.** The correct single learning, if you must merge them, is conjunctive:
 
@@ -161,7 +161,7 @@ retrospective).
 
 ## 5. Where this belongs in the harness
 
-> **SUPERSEDED IN PART — read `postmortem-implementation-drift.md` §10 before acting on this.**
+> **SUPERSEDED IN PART — read [`../postmortem.md`](../postmortem.md) §10 before acting on this.**
 > This table was drafted before the real config was read. `~/.omp/agent/agents/dlc-worker.md`
 > **already mandates most of these items** (blast radius, consumer check, fresh review,
 > coherence-not-tests, producer guardrails, dormant-vs-broken, decompose-by-deliverable,
@@ -170,7 +170,7 @@ retrospective).
 > class of lesson being learned on 2026-08-31 and 2026-09-02, and recurring here anyway. The
 > table below is still useful as a *placement* guide; the framing is corrected in §10.4.
 
-The critical finding from `panel-process.md`: **the `dlc-worker` and `sdlc-worker` configs
+The critical finding from [`../panel/process.md`](../panel/process.md): **the `dlc-worker` and `sdlc-worker` configs
 already carry the behavioural prose** — blast radius, fresh-context reviewer, never trust
 self-report, guardrail-presence. Adding more prose is the documented failure mode (the agents'
 own CHANGELOG records briefs carrying the offload prose and not following it).
@@ -219,7 +219,7 @@ harness change in this document.
   dispatch-first reading: `facets_batch.py:292` is the one unprompted seam adoption in the
   migration.
 - **Evidence-chain caveat.** Live-DB audit facts are mechanical and stronger than the claims they
-  refute. But several qualitative verdicts echo one source (`review-interfaces.md` §7) through
+  refute. But several qualitative verdicts echo one source ([`../reviews/interfaces.md`](../reviews/interfaces.md) §7) through
   five documents presented as triangulation. Subagents rendered a verdict on subagents with the
   conflict unregistered.
 
@@ -227,7 +227,7 @@ harness change in this document.
 
 ## 7. Corrected placement: promotion, not prose
 
-The config already contains the guidance (see `postmortem-implementation-drift.md` §10). So the
+The config already contains the guidance (see [`../postmortem.md`](../postmortem.md) §10). So the
 action is not to author more instructions but to **promote each learning into a control that
 cannot be skipped.** Four placement targets, in order of binding strength:
 

@@ -1,7 +1,7 @@
 # Three-state articulation: Enrichment v3
 
 Source for the architecture diagrams. Every fact below is verified against the repo, the live
-databases, and the audits in `docs/postmortem/enrichment-v3/audits/`. Do not invent nodes or edges.
+databases, and the audits in [`../audits`](../audits). Do not invent nodes or edges.
 
 ---
 
