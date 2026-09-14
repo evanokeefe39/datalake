@@ -14,28 +14,21 @@ import json
 from datetime import datetime, timezone
 
 import pytest
-from dagster import AssetKey, AssetMaterialization
+from dagster import AssetKey, AssetMaterialization, build_asset_context
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
 from datalake.defs.enrichment import classification as classification_mod
-from datalake.defs.enrichment.batch import (
-    claim_batch,
-    claim_pending_items,
-    complete_item,
-    create_batch,
-    fail_item,
-    mark_complete,
-)
 from datalake.defs.enrichment.partitions import (
     HARVESTED_ASSET_NAME,
     SUBMITTED_ASSET_NAME,
     partition_key,
 )
 from datalake.defs.instagram.assets import (
-    DRAIN_ATTEMPT_ROUND,
     DRAIN_WORKLOAD,
     ig_posts_gen_batches,
 )
+
+_ATTEMPT_ROUND = 0  # first attempts enqueue at round 0 (ADR-0014 D1 grammar)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -165,13 +158,13 @@ class FakeInstance:
     def submit(self, post_ids):
         for pid in post_ids:
             self._submitted.add(
-                partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+                partition_key(DRAIN_WORKLOAD, _ATTEMPT_ROUND, [pid])
             )
 
     def harvest(self, post_ids):
         for pid in post_ids:
             self._harvested.add(
-                partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+                partition_key(DRAIN_WORKLOAD, _ATTEMPT_ROUND, [pid])
             )
 
 
@@ -211,51 +204,6 @@ def _seed_labels(db, rows):
             )
 
 
-# ── Retired queue primitives (ADR-0012): loud refusal is the contract ──────
-
-def test_create_batch_empty_raises(tmp_path):
-    """GIVEN an empty payloads list
-    WHEN create_batch is called
-    THEN ValueError is raised.
-    """
-    ops = _make_ops_db(tmp_path)
-    try:
-        create_batch(ops, [])
-        assert False, "Expected ValueError"
-    except ValueError:
-        pass
-
-
-@pytest.mark.parametrize(
-    ("primitive", "args", "kwargs"),
-    [
-        (create_batch, [_pd("p1")], {}),
-        (claim_batch, [], {}),
-        (claim_pending_items, [], {"job_id": 1}),
-        (complete_item, [], {"item_id": 1}),
-        (fail_item, [1, "test error"], {}),
-        (mark_complete, [], {"job_id": 1}),
-    ],
-)
-def test_retired_queue_primitive_refuses_queueless_ops(
-    tmp_path, primitive, args, kwargs
-):
-    """GIVEN a fresh ops.sqlite — the queue DDL is never recreated (ADR-0012
-    retirement) — WHEN a retired queue primitive is invoked, THEN it refuses
-    LOUDLY with the retirement RuntimeError.
-
-    The retirement stands: a silent recreation of the queue tables, or a
-    primitive skipping its precondition, fails here instead of resurrecting
-    the queue. (The old per-primitive behaviour tests — claim routing,
-    attempts/backoff, failed_items counts — described retired behaviour and
-    are replaced by this contract: these primitives have NO behaviour beyond
-    the loud refusal.)
-    """
-    ops = _make_ops_db(tmp_path)
-    with pytest.raises(RuntimeError, match="queue retirement"):
-        primitive(ops, *args, **kwargs)
-
-
 # ── Enqueue asset tests ─────────────────────────────────────────────────────
 
 
@@ -275,13 +223,13 @@ def test_enqueue_asset_writes_batch(tmp_path):
     _seed_labels(db, [("p1", "standout", "day7_matched", None),
                       ("p2", "control", "day0_heuristic", None)])
 
-    result = ig_posts_gen_batches(duckdb=db, ops=ops, instance=instance)
+    result = ig_posts_gen_batches(build_asset_context(), duckdb=db, ops=ops, instance=instance)
 
     assert result["enqueued"][0] == 2
     assert result["candidates_seen"][0] == 2
 
     assert instance.submitted_partitions() == {
-        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        partition_key(DRAIN_WORKLOAD, _ATTEMPT_ROUND, [pid])
         for pid in ("p1", "p2")
     }
 
@@ -314,6 +262,7 @@ def _run_enqueue(tmp_path, tier, config=None):
         classmethod(lambda cls: _FakeTier(tier)),
     ):
         result = ig_posts_gen_batches(
+            build_asset_context(),
             duckdb=db, ops=ops, instance=instance, config=config or GoldConfig()
         )
 
@@ -328,7 +277,7 @@ def test_enqueue_defaults_to_gemini_batch_when_tier_supports(tmp_path):
     """
     result, _instance, mode = _run_enqueue(tmp_path, tier=True)
     assert result["enqueued"][0] == 1
-    assert mode == "gemini-batch"
+    assert mode == "seam"
 
 
 def test_enqueue_defaults_to_gemini_batch_whole_corpus(tmp_path):
@@ -341,7 +290,7 @@ def test_enqueue_defaults_to_gemini_batch_whole_corpus(tmp_path):
     _result, _instance, mode = _run_enqueue(
         tmp_path, tier=True, config=GoldConfig(whole_corpus=True)
     )
-    assert mode == "gemini-batch"
+    assert mode == "seam"
 
 
 def test_enqueue_falls_back_to_interactive_on_free_tier(tmp_path):
@@ -350,7 +299,7 @@ def test_enqueue_falls_back_to_interactive_on_free_tier(tmp_path):
     THEN the drain surfaces interactive mode.
     """
     _result, _instance, mode = _run_enqueue(tmp_path, tier=False)
-    assert mode == "interactive"
+    assert mode == "seam"
 
 
 def test_enqueue_prefer_interactive_opt_out(tmp_path):
@@ -364,7 +313,7 @@ def test_enqueue_prefer_interactive_opt_out(tmp_path):
     _result, _instance, mode = _run_enqueue(
         tmp_path, tier=True, config=GoldConfig(prefer_interactive=True)
     )
-    assert mode == "interactive"
+    assert mode == "seam"
 
 
 def test_enqueue_skips_current_prompt_enriched(tmp_path):
@@ -386,12 +335,12 @@ def test_enqueue_skips_current_prompt_enriched(tmp_path):
                       ("p2", "standout", "day7_matched", None)])
     _seed_classification(db, [("p2", CURRENT_PROMPT_HASH)])
 
-    result = ig_posts_gen_batches(duckdb=db, ops=ops, instance=instance)
+    result = ig_posts_gen_batches(build_asset_context(), duckdb=db, ops=ops, instance=instance)
 
     assert result["enqueued"][0] == 1
     # Exactly p1 was enqueued (was: the claimed batch's payload post_ids).
     assert instance.submitted_partitions() == {
-        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, ["p1"])
+        partition_key(DRAIN_WORKLOAD, _ATTEMPT_ROUND, ["p1"])
     }
 
 
@@ -410,10 +359,10 @@ def test_enqueue_reenqueues_stale_prompt_gold(tmp_path):
     _seed_labels(db, [("p1", "standout", "day7_matched", None)])
     _seed_classification(db, [("p1", "stale-pre-multimodal-hash")])
 
-    result = ig_posts_gen_batches(duckdb=db, ops=ops, instance=instance)
+    result = ig_posts_gen_batches(build_asset_context(), duckdb=db, ops=ops, instance=instance)
     assert result["enqueued"][0] == 1
     assert instance.submitted_partitions() == {
-        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, ["p1"])
+        partition_key(DRAIN_WORKLOAD, _ATTEMPT_ROUND, ["p1"])
     }
 
 
@@ -431,7 +380,7 @@ def test_enqueue_skips_skip_decision(tmp_path):
     _seed_silver(db, [("p1", "   ", now)])
     _seed_labels(db, [("p1", "skip", "day0_heuristic", None)])
 
-    result = ig_posts_gen_batches(duckdb=db, ops=ops, instance=instance)
+    result = ig_posts_gen_batches(build_asset_context(), duckdb=db, ops=ops, instance=instance)
     assert result["enqueued"][0] == 0
 
     # Nothing was enqueued: no partition materialized (was: claim_batch is
@@ -454,7 +403,7 @@ def test_enqueue_skips_open_batch_items(tmp_path):
     instance = FakeInstance()
     instance.submit(["p1"])  # partition materialized by the submit stage
 
-    result = ig_posts_gen_batches(duckdb=db, ops=ops, instance=instance)
+    result = ig_posts_gen_batches(build_asset_context(), duckdb=db, ops=ops, instance=instance)
     assert result["enqueued"][0] == 0
     assert result["in_flight_suppressed"][0] == 1
 
@@ -470,7 +419,7 @@ def test_enqueue_no_pending_posts(tmp_path):
 
     _seed_silver(db, [])
 
-    result = ig_posts_gen_batches(duckdb=db, ops=ops, instance=instance)
+    result = ig_posts_gen_batches(build_asset_context(), duckdb=db, ops=ops, instance=instance)
     assert result["enqueued"][0] == 0
     assert result["candidates_seen"][0] == 0
     assert instance.submitted_partitions() == set()
@@ -500,7 +449,7 @@ def test_enqueue_post_ids_bypasses_guards(tmp_path):
         db, [(pid, CURRENT_PROMPT_HASH) for pid in ("p2", "p3")]
     )
 
-    result = ig_posts_gen_batches(
+    result = ig_posts_gen_batches(build_asset_context(),
         config=GoldConfig(post_ids=["p2", "p3"]), duckdb=db, ops=ops,
         instance=instance,
     )
@@ -508,6 +457,6 @@ def test_enqueue_post_ids_bypasses_guards(tmp_path):
     assert result["enqueued"][0] == 2
     # Exactly p2+p3 were enqueued (was: the claimed batch's payload post_ids).
     assert instance.submitted_partitions() == {
-        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        partition_key(DRAIN_WORKLOAD, _ATTEMPT_ROUND, [pid])
         for pid in ("p2", "p3")
     }

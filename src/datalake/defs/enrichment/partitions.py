@@ -22,13 +22,18 @@ THE PARTITION KEY — the load-bearing design decision
 ----------------------------------------------------
 
 The key is a PER-POST key. Every partition in the two spaces belongs to
-exactly one post id::
+exactly one post id, and the key is a READABLE, self-describing composite
+(ADR-0014 decision 1) — not a one-way digest::
 
     partition_key(workload, attempt_round, [post_id])
-      = sha256(workload \\x00 attempt_round \\x00 sorted([post_id]))[:16]
+      = "<workload>\x00r<attempt_round>\x00<post_id>"
+      # e.g. "content-classification\x00r0\x00Cabc123"
 
-Callers MUST pass exactly one post id. The signature accepts an iterable
-only so it stays one pure function; ``[pid]`` is the tracking case.
+Callers MUST pass exactly one post id — the grammar has exactly one post-id
+slot. The round is READ BACK OUT of a materialized key with
+:func:`parse_partition_key`, so the retry driver (ADR-0014 D3) can derive
+"what round is this key at?" without any stored state — the key IS the
+record (ADR-0013: no ledger).
 
 Reasoning:
 
@@ -65,7 +70,7 @@ Reasoning:
    * *Derivable identically at submit and harvest time*: both stages know
      the workload, the retry round, and the covered post ids. No hidden
      state is shared.
-   * *Stable across a re-run of the same work*: same inputs -> same digest,
+   * *Stable across a re-run of the same work*: same inputs -> same key,
      so a crash-and-retry of the same post materializes the SAME submitted
      partition (idempotent) rather than a new one. A post submitted but not
      yet harvested is visible in the in-flight set, and the drain refuses
@@ -79,18 +84,16 @@ Reasoning:
      materializes. Every other state (done, failed, backlog) is derived
      from the lake, not from this space.
 
-The post id list is sorted before hashing so iteration order cannot change
-the key. Keys are one-way digests: mapping an in-flight key BACK to a post
-id is impossible — the consumer re-derives ``partition_key(workload,
-round, [pid])`` per candidate and tests membership (that mapping lives
-with the consumer, which owns the workload constant; do not duplicate it
-here).
+Keys are composites, not digests: any consumer can split a materialized key
+back into (workload, round, post_id) with :func:`parse_partition_key` — no
+stored mapping exists or is needed (ADR-0013, ADR-0014 D1). The workload
+constant lives with the consumer that owns it; this module does not
+duplicate it.
 
 """
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
@@ -99,9 +102,19 @@ from dagster import (
     AssetKey,
     DynamicPartitionsDefinition,
 )
-
 SUBMITTED_ASSET_NAME = "enrichment_submitted"
 HARVESTED_ASSET_NAME = "enrichment_harvested"
+
+MAX_ROUNDS: int = 5
+"""Retry budget (ADR-0014 D3): "give up" is the derived condition
+``round >= MAX_ROUNDS`` read straight out of the highest-round key for a
+post. Replaces the retired queue's ``MAX_ATTEMPTS = 5``; no attempt column,
+no backoff timer — rounds advance only when a real harvest cycle completes."""
+
+
+_ROUND_PREFIX = "r"
+_KEY_DELIMITER = "\x00"
+
 
 #: Partition space of the submit stage. Materialized before the billed call.
 SUBMITTED_PARTITIONS: DynamicPartitionsDefinition = DynamicPartitionsDefinition(
@@ -115,46 +128,92 @@ HARVESTED_PARTITIONS: DynamicPartitionsDefinition = DynamicPartitionsDefinition(
 )
 
 
+
+
 def partition_key(workload: str, attempt_round: int, post_ids: Iterable[str]) -> str:
-    """Derive the deterministic PER-POST partition key.
+    """Derive the deterministic PER-POST partition key (ADR-0014 D1).
 
     Callers MUST pass exactly one post id (``[pid]``): the tracking
     contract is per post, forced by ADR-0013's no-ledger decision — the
     drain can only test an individual candidate's in-flight state if that
     candidate's key is derivable from (workload, round, its own id) alone.
-    The iterable signature is kept so this stays one pure function; do NOT
-    pass a whole batch, a per-batch key can never intersect the drain's
-    per-post keys.
+    The iterable signature is kept so this stays one pure function.
 
-    Preconditions:
-        * ``workload`` is a non-empty string (e.g. a ``landing.WORKLOADS``
-          member);
-        * ``attempt_round`` >= 0 (0 = first attempt; retry round N uses N);
-        * ``post_ids`` is a non-empty iterable of non-empty unique strings.
-
-    Postconditions:
-        * Pure and deterministic: the same inputs always return the same
-          key, independent of ``post_ids`` order.
-        * Distinct inputs (any workload, round, or set-of-ids difference)
-          produce distinct keys with overwhelming probability (16 hex chars
-          = 64 bits of the sha256 digest).
+    Grammar: ``<workload>\\x00r<attempt_round>\\x00<post_id>`` — readable,
+    delimiter-disambiguated, and reversible via :func:`parse_partition_key`.
+    Round 0 keys keep the same shape (``r0``); there is no special case.
 
     Raises:
-        ValueError: on an empty workload, a negative round, an empty id set,
-            or an empty id within the set.
+        ValueError: on an empty workload, a negative round, anything other
+            than exactly one non-empty post id.
     """
     if not workload:
         raise ValueError("workload must be a non-empty string")
     if attempt_round < 0:
         raise ValueError(f"attempt_round must be >= 0, got {attempt_round}")
-    ids = sorted(post_ids)
-    if not ids:
-        raise ValueError("post_ids must contain at least one post id")
-    if any(not pid for pid in ids):
-        raise ValueError("post_ids must not contain empty strings")
-    payload = "\x00".join([workload, str(attempt_round), *ids])
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    ids = list(post_ids)
+    if len(ids) != 1:
+        raise ValueError(
+            "partition_key is PER-POST: pass exactly one post id, "
+            f"got {len(ids)}"
+        )
+    pid = ids[0]
+    if not pid:
+        raise ValueError("post id must be a non-empty string")
+    return _KEY_DELIMITER.join([workload, f"{_ROUND_PREFIX}{attempt_round}", pid])
 
+
+@dataclass(frozen=True)
+class ParsedKey:
+    """The dimensions read back OUT of a materialized partition key."""
+
+    workload: str
+    attempt_round: int
+    post_id: str
+
+
+def parse_partition_key(key: str) -> ParsedKey:
+    """Split a composite partition key back into its dimensions (ADR-0014 D1).
+
+    The inverse of :func:`partition_key`. This is what makes the retry
+    driver possible with no ledger: the harvest run reads the round straight
+    out of a terminal key and mints round N+1.
+
+    Raises:
+        ValueError: if ``key`` does not match the D1 grammar (wrong number
+            of delimiter-separated fields, a non-``r<N>`` round token, or a
+            non-integer round).
+    """
+    parts = key.split(_KEY_DELIMITER)
+    if len(parts) != 3:
+        raise ValueError(
+            "partition key must be '<workload>\\x00r<N>\\x00<post_id>'; "
+            f"got {key!r}"
+        )
+    workload, round_token, post_id = parts
+    if not round_token.startswith(_ROUND_PREFIX):
+        raise ValueError(f"round token must start with 'r'; got {round_token!r}")
+    try:
+        attempt_round = int(round_token[len(_ROUND_PREFIX):])
+    except ValueError:
+        raise ValueError(f"round token must be r<N>; got {round_token!r}") from None
+    if attempt_round < 0:
+        raise ValueError(f"round must be >= 0; got {attempt_round}")
+    return ParsedKey(workload=workload, attempt_round=attempt_round, post_id=post_id)
+
+
+def parse_partition_key_or_round0(key: str) -> ParsedKey | None:
+    """Parse a key, grandfathering pre-ADR-0014 opaque digests as round 0.
+
+    Keys materialized before the D1 grammar are 16-hex digests with no
+    readable round. ADR-0014 D1 migration rule: treat an unparseable key as
+    round 0 for SUPPRESSION ONLY. Returns ``None`` for keys that are not
+    even plausible digests (empty), which callers skip.
+    """
+    try:
+        return parse_partition_key(key)
+    except ValueError:
+        return ParsedKey(workload=key, attempt_round=0, post_id="") if key else None
 
 # ------------------------------------------------------- the instance surface
 # The ONLY instance interface this module depends on. The real
@@ -208,10 +267,9 @@ def in_flight_partitions(instance: PartitionSnapshot) -> set[str]:
     ``materialized(submitted) - materialized(harvested)`` — exactly the
     posts handed to the provider (one partition key per post) whose
     responses have not been landed in bronze yet. This is the double-submit
-    guard: a key present here means the sensor/drain MUST NOT resubmit that
-    post. Keys are one-way digests; to map an in-flight key back to posts,
-    re-derive ``partition_key(workload, round, [pid])`` per candidate and
-    test membership.
+    guard: a key present here means the drain MUST NOT resubmit that post.
+    Keys are composites: map an in-flight key back to its post with
+    :func:`parse_partition_key` (no stored mapping exists — ADR-0013).
 
     Preconditions:
         ``instance`` implements :class:`PartitionSnapshot` (the real
@@ -234,6 +292,61 @@ def in_flight_partitions(instance: PartitionSnapshot) -> set[str]:
         AssetKey(HARVESTED_ASSET_NAME)
     )
     return submitted - harvested
+
+
+@dataclass(frozen=True)
+class PostPartitionState:
+    """A candidate post's orchestration state, derived from the instance.
+
+    ``suppressed`` — some materialized key for this post is in flight
+    (submitted, not yet harvested): the drain MUST NOT re-enqueue.
+    ``next_round`` — the round the drain should enqueue at if not
+    suppressed: one past the highest MATERIALIZED harvested round for the
+    post. Pre-ADR-0014 digest keys cannot prove they belong to a post, so
+    they neither suppress nor advance the round — they simply age out.
+    """
+
+    suppressed: bool
+    next_round: int
+
+
+def post_partition_state(
+    instance: PartitionSnapshot, workload: str, post_id: str
+) -> PostPartitionState:
+    """Derive one post's suppression + next-round state from the instance.
+
+    This is the drain guard's whole derivation (ADR-0014 D1: both sides
+    derive the dimensions from the key itself). Suppression is a
+    whole-post test over ALL materialized keys for the post — not just
+    round 0 — so a retry round in flight suppresses exactly as a first
+    attempt does, and a harvested round never suppresses.
+    """
+    _require_snapshot(instance)
+    submitted = instance.get_materialized_partitions(AssetKey(SUBMITTED_ASSET_NAME))
+    harvested = instance.get_materialized_partitions(AssetKey(HARVESTED_ASSET_NAME))
+    own_submitted = _keys_for_post(submitted, workload, post_id)
+    own_harvested = _keys_for_post(harvested, workload, post_id)
+    in_flight = own_submitted - own_harvested
+    rounds = [parsed.attempt_round for parsed in own_harvested]
+    return PostPartitionState(
+        suppressed=bool(in_flight),
+        next_round=(max(rounds) + 1) if rounds else 0,
+    )
+
+
+def _keys_for_post(
+    keys: set[str], workload: str, post_id: str
+) -> set[ParsedKey]:
+    """Materialized keys that belong to (workload, post_id), parsed."""
+    out: set[ParsedKey] = set()
+    for key in keys:
+        try:
+            parsed = parse_partition_key(key)
+        except ValueError:
+            continue
+        if parsed.workload == workload and parsed.post_id == post_id:
+            out.add(parsed)
+    return out
 
 
 @dataclass(frozen=True)

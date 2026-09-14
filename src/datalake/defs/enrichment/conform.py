@@ -1,6 +1,6 @@
 """Silver conform + validation for enrichment responses (ADR-0011 Phase 4).
 
-Turns ``bronze_enrichment_raw`` (verbatim, already landed) into five validated
+Turns ``bronze_enrichment_raw`` (verbatim, already landed) into six validated
 silver tables — **a pure function of bronze with ZERO network/API calls**.
 
 Enforced structurally: this module's import graph contains only the standard
@@ -20,6 +20,9 @@ is detectable — self-versioning):
 - ``silver_audio_transcripts``    — STT transcript       (NO landing workload
   yet — the table and its conform path exist, but ``TRANSCRIPT_WORKLOADS`` is
   deliberately empty, so correct emptiness is explicit, never fabricated)
+- ``silver_content_classification`` — taxonomy + educational/actionable +
+  admiralty (content-classification; also the target of the legacy
+  ``gold_analyses`` backfill, ``scripts/migrate_classification_to_silver.py``)
 - ``silver_text_annotations``     — text-layer facets    (growth-facets-text)
 - ``silver_text_summaries``       — transcript summary   (the text pass does
   not emit a summary yet; same explicit-emptiness rule as transcripts)
@@ -62,7 +65,6 @@ from datalake.defs.enrichment.growth_facets_schema import (
 
 logger = logging.getLogger("enrichment.conform")
 
-# ── Derivation versioning (self-versioning; provenance-on-derived) ─────────
 DERIVATION_VERSION = "1"
 """Bump on any change to conform logic, field mapping, bounds, or reason
 codes. Each silver row records it; a version mismatch on read = stale derived
@@ -74,6 +76,11 @@ SILVER_VISUAL_SUMMARIES = "silver_visual_summaries"
 SILVER_AUDIO_TRANSCRIPTS = "silver_audio_transcripts"
 SILVER_TEXT_ANNOTATIONS = "silver_text_annotations"
 SILVER_TEXT_SUMMARIES = "silver_text_summaries"
+SILVER_CONTENT_CLASSIFICATION = "silver_content_classification"
+"""The classification pass's table — ``gold_analyses``'s replacement. The
+join key is ``platform``; ``domain`` here means ONLY the content niche
+(the ``gold_analyses.domain = 'instagram'`` overload is the bug this table
+fixes, ADR-0011)."""
 SILVER_QUARANTINE = "silver_enrichment_quarantine"
 
 SILVER_TABLES: tuple[str, ...] = (
@@ -82,6 +89,7 @@ SILVER_TABLES: tuple[str, ...] = (
     SILVER_AUDIO_TRANSCRIPTS,
     SILVER_TEXT_ANNOTATIONS,
     SILVER_TEXT_SUMMARIES,
+    SILVER_CONTENT_CLASSIFICATION,
 )
 
 # ── Key ────────────────────────────────────────────────────────────────────
@@ -99,6 +107,7 @@ _PROVENANCE: dict[str, pl.DataType] = {
     "sampling_params_json": pl.String,
     "analysed_at": pl.Datetime("us", "UTC"),
     "conformed_at": pl.Datetime("us", "UTC"),
+    "content_mime_type": pl.String,
     "derivation_version": pl.String,
 }
 
@@ -156,6 +165,20 @@ TABLE_SCHEMAS: dict[str, dict[str, pl.DataType]] = {
     SILVER_TEXT_SUMMARIES: _schema(
         {
             "transcript_summary": pl.String,
+        }
+    ),
+    SILVER_CONTENT_CLASSIFICATION: _schema(
+        {
+            "domain": pl.String,
+            "subdomain": pl.String,
+            "topic": pl.String,
+            "subtopic": pl.String,
+            "is_educational": pl.Boolean,
+            "is_actionable": pl.Boolean,
+            "admiralty": pl.String,
+            "content_type": pl.String,
+            "style": pl.String,
+            "format": pl.String,
         }
     ),
     SILVER_QUARANTINE: {
@@ -280,10 +303,13 @@ registered here — correct, explicit emptiness, never fabricated rows.
 ``transcript_status`` enum: no_audio_source | pending | done | empty_audio."""
 
 SUPPORTED_CONFORM_WORKLOADS = frozenset(
-    {landing.WORKLOAD_GROWTH_FACETS_VISUAL, landing.WORKLOAD_GROWTH_FACETS_TEXT}
+    {
+        landing.WORKLOAD_GROWTH_FACETS_VISUAL,
+        landing.WORKLOAD_GROWTH_FACETS_TEXT,
+        landing.WORKLOAD_CONTENT_CLASSIFICATION,
+    }
 )
-"""Workloads this conform layer maps. The classification workload is owned by
-a sibling migration — such rows are SKIPPED (counted), never quarantined."""
+"""Workloads this conform layer maps."""
 
 _EXCERPT_CHARS = 500
 """How much of the verbatim response a quarantine row retains for triage."""
@@ -412,6 +438,7 @@ def _provenance(bronze_row: Mapping[str, object], *, now: datetime) -> dict[str,
         "schema_version": bronze_row["schema_version"],
         "run_id": bronze_row["run_id"],
         "input_modality": bronze_row.get("input_modality"),
+        "content_mime_type": bronze_row.get("content_mime_type"),
         "sampling_params_json": bronze_row.get("sampling_params_json"),
         "analysed_at": bronze_row["analysed_at"],
         "conformed_at": now,
@@ -618,6 +645,91 @@ def _transcript_row(
     return _assemble(SILVER_AUDIO_TRANSCRIPTS, bronze_row, row, prov), []
 
 
+# ── Classification workload → silver_content_classification ───────────────
+
+MODEL_LEGACY_NULL = "legacy-unknown"
+"""Sentinel for rows whose producing model was never recorded (ADR-0014 D5):
+an honest "this result is verified, but the model name was never written" —
+NOT a NULL and NOT a fabricated model name."""
+
+CLASSIFICATION_BODY_KEYS: tuple[str, ...] = (
+    "domain",
+    "subdomain",
+    "topic",
+    "subtopic",
+    "is_educational",
+    "is_actionable",
+    "admiralty",
+    "content_type",
+    "style",
+    "format",
+)
+"""The 10 classification body fields (contract: exactly these columns)."""
+
+
+def _coerce_bool(value: object) -> bool | None:
+    """Legacy-cast semantics: real JSON booleans pass, "true"/"1" conform,
+    NULL stays NULL — never silently coerced to False."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in {"true", "1"}:
+        return True
+    if isinstance(value, str) and value.strip().lower() in {"false", "0"}:
+        return False
+    return bool(value)
+
+
+def _classification_body(payload: object) -> tuple[dict | None, list[str]]:
+    """Validate a classification payload into the 10-column body.
+
+    Accepts the dual-shape input (object or single-element array) the legacy
+    serving views' ``$[0]`` fallback tolerated. Returns ``(body, errors)``;
+    ``body is None`` means terminal failure (quarantine, never silent NULL).
+    """
+    if isinstance(payload, list):
+        if len(payload) == 1 and isinstance(payload[0], dict):
+            payload = payload[0]
+        else:
+            return None, [
+                f"expected object, got array of {len(payload)}"
+                if isinstance(payload, list)
+                else "expected object"
+            ]
+    if not isinstance(payload, dict):
+        return None, [f"expected object, got {type(payload).__name__}"]
+    if not any(key in payload for key in CLASSIFICATION_BODY_KEYS):
+        return None, [
+            "missing required classification body keys "
+            f"(none of {len(CLASSIFICATION_BODY_KEYS)} present)"
+        ]
+    return {key: payload.get(key) for key in CLASSIFICATION_BODY_KEYS}, []
+
+
+def _conform_classification(
+    bronze_row: Mapping[str, object],
+    payload: object,
+    *,
+    now: datetime,
+) -> tuple[dict[str, object], list[str]]:
+    """Map one classification payload onto ``silver_content_classification``.
+
+    The platform is the bronze row's ``platform`` KEY column — never the
+    niche ``domain`` body column. ``model IS NULL`` carries the
+    ``legacy-unknown`` sentinel (ADR-0014 D5), never a silent NULL.
+    """
+    body, errors = _classification_body(payload)
+    if errors:
+        return {}, errors
+    model = bronze_row.get("model")
+    if model is None:
+        model = MODEL_LEGACY_NULL
+    prov = _provenance(bronze_row, now=now)
+    prov["model"] = model
+    return _assemble(SILVER_CONTENT_CLASSIFICATION, bronze_row, body, prov), []
+
+
 
 def conform(
     *,
@@ -627,12 +739,12 @@ def conform(
     n_media_by_post: Mapping[str, int] | None = None,
     conn: object | None = None,
 ) -> ConformResult:
-    """Read bronze, conform + validate, publish the five silver tables.
+    """Read bronze, conform + validate, publish the six silver tables.
 
     Preconditions:
     - ``root`` (bronze) is a lake root dir or None (→ bronze lake root);
       the SILVER root defaults to the silver lake root. ``silver_root`` is
-      the destination root for the five tables + quarantine (defaults to
+      the destination root for the six tables + quarantine (defaults to
       ``root`` when given, else the silver lake root) — kept separate so a
       test/consumer never mixes bronze and silver directories.
     - ``n_media_by_post`` optionally maps post_id → media count (e.g. from
@@ -643,7 +755,7 @@ def conform(
 
     Postconditions:
     - ZERO network/API calls — structurally impossible (import graph).
-    - Each of the five tables is keyed ``(post_id, platform)`` and written
+    - Each of the six tables is keyed ``(post_id, platform)`` and written
       atomically as a deterministic snapshot of bronze; re-running over the
       same bronze (same ``now``) is byte-identical (idempotent replay).
     - Every terminally-failed row lands in ``silver_enrichment_quarantine``
@@ -651,7 +763,7 @@ def conform(
       no swallowed exception. Failed landings (``ok=False``) are quarantined
       via ``provider_error`` — failure is READ from bronze, never inferred.
     - ``ConformResult.counts`` accounts for every bronze row
-      (conformed + quarantined + skipped_classification = total).
+      (conformed + quarantined = total).
 
     Raises: any Polars/OS/JSON-encoding error propagates.
     """
@@ -662,18 +774,11 @@ def conform(
     bronze = landing.read_responses(root)
     tables = _empty_tables()
     quarantine_rows: list[dict[str, object]] = []
-    counts: dict[str, int] = dict.fromkeys(
-        ("conformed", "quarantined", "skipped_classification"), 0
-    )
+    counts: dict[str, int] = dict.fromkeys(("conformed", "quarantined"), 0)
 
     candidates = _latest_per_key(bronze)
     for row in candidates.iter_rows(named=True):
         workload = row["workload"]
-
-        if workload == landing.WORKLOAD_CONTENT_CLASSIFICATION:
-            # Sibling unit owns the classification migration — skip loudly.
-            counts["skipped_classification"] += 1
-            continue
 
         if not row["ok"]:
             # Failed provider landing: READ from bronze's explicit ok column.
@@ -725,7 +830,9 @@ def conform(
             )
             counts["quarantined"] += 1
             continue
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) and (
+            workload != landing.WORKLOAD_CONTENT_CLASSIFICATION
+        ):
             quarantine_rows.append(
                 _quarantine_row(
                     row,
@@ -761,7 +868,7 @@ def conform(
             tables[SILVER_VISUAL_SUMMARIES] = tables[
                 SILVER_VISUAL_SUMMARIES
             ].vstack(pl.DataFrame([sum_row], schema=TABLE_SCHEMAS[SILVER_VISUAL_SUMMARIES]))
-        else:  # WORKLOAD_GROWTH_FACETS_TEXT
+        elif workload == landing.WORKLOAD_GROWTH_FACETS_TEXT:
             text_row, errors = _conform_text(row, payload, now=now)
             if errors:
                 quarantine_rows.append(
@@ -777,6 +884,26 @@ def conform(
             tables[SILVER_TEXT_ANNOTATIONS] = tables[
                 SILVER_TEXT_ANNOTATIONS
             ].vstack(pl.DataFrame([text_row], schema=TABLE_SCHEMAS[SILVER_TEXT_ANNOTATIONS]))
+        elif workload == landing.WORKLOAD_CONTENT_CLASSIFICATION:
+            cls_row, errors = _conform_classification(row, payload, now=now)
+            if errors:
+                quarantine_rows.append(
+                    _quarantine_row(
+                        row,
+                        reason_code=classify_reason(errors),
+                        reason_detail="; ".join(errors),
+                        now=now,
+                    )
+                )
+                counts["quarantined"] += 1
+                continue
+            tables[SILVER_CONTENT_CLASSIFICATION] = tables[
+                SILVER_CONTENT_CLASSIFICATION
+            ].vstack(
+                pl.DataFrame(
+                    [cls_row], schema=TABLE_SCHEMAS[SILVER_CONTENT_CLASSIFICATION]
+                )
+            )
         counts["conformed"] += 1
 
     quarantine = (
@@ -805,10 +932,9 @@ def conform(
             .to_list(),
         )
     logger.info(
-        "Conform done: conformed=%d quarantined=%d skipped_classification=%d",
+        "Conform done: conformed=%d quarantined=%d",
         counts["conformed"],
         counts["quarantined"],
-        counts["skipped_classification"],
     )
     return ConformResult(tables=tables, quarantine=quarantine, counts=counts)
 

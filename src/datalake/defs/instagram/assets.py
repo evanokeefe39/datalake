@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
-from dagster import AssetKey, AssetMaterialization, asset
+from dagster import AssetExecutionContext, AssetKey, AssetMaterialization, asset
 
 from ..common.apify import poll_run, stream_dataset, trigger_run
 from ..common.lake import BRONZE_LAKE, bronze_path
@@ -31,6 +31,7 @@ from ..enrichment.partitions import (
     SUBMITTED_ASSET_NAME,
     in_flight_partitions,
     partition_key,
+    post_partition_state,
 )
 from ..enrichment.prompts import CURRENT_PROMPT_HASH
 from .config import (
@@ -1023,10 +1024,6 @@ def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame
 DRAIN_WORKLOAD: str = landing.WORKLOAD_CONTENT_CLASSIFICATION
 """The discovery drain's partition workload — classification enrichment."""
 
-DRAIN_ATTEMPT_ROUND: int = 0
-"""First-attempt round for drain-submitted posts (ADR-0012 decision 5: retry
-is a NEW partition key, round N)."""
-
 
 def drain_in_flight_keys(instance: "PartitionSnapshot") -> frozenset[str]:
     """THE drain's definition of "in flight" (US-EENG-4 AC2/AC5).
@@ -1045,44 +1042,46 @@ def drain_suppressed_post_ids(
 ) -> list[str]:
     """Posts whose in-flight partition suppresses them from the candidate set.
 
-    Partition contract (discovery workload): the partition covering post
-    ``p`` at attempt round 0 is ``partitions.partition_key(WORKLOAD, 0, [p])``
-    — per-post granularity, so suppression is order-independent and stable
-    when other posts complete between runs (batch-level keys derived from the
-    whole candidate set would shift when the set changes and silently
-    re-submit in-flight posts). The submit path materializes
-    ``enrichment_submitted`` under this same key contract.
+    Partition contract (ADR-0014 D1): the partition covering post ``p`` is a
+    readable per-post composite whose round derives from the materialized
+    keys themselves — ``partitions.post_partition_state`` tests EVERY
+    materialized round for the post, so a retry round in flight suppresses
+    exactly as a first attempt does, and a harvested round never suppresses
+    (completion genuinely releases work). Per-post granularity keeps
+    suppression order-independent and stable when other posts complete
+    between runs.
     """
     keys = drain_in_flight_keys(instance)
     return [
         pid
         for pid in candidates
-        if partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid]) in keys
+        if post_partition_state(instance, DRAIN_WORKLOAD, pid).suppressed
     ]
 
 
 def _materialize_submitted_partitions(
-    instance: PartitionSnapshot, post_ids: list[str]
+    instance: PartitionSnapshot,
+    rounds_by_post: dict[str, int],
 ) -> None:
-    """THE drain enqueue (ADR-0012/0013): one ``enrichment_submitted``
-    partition PER POST, materialized runlessly on the SAME instance the
-    in-flight guard reads — never an instance this function opens itself.
+    """THE drain enqueue (ADR-0012/0013/0014): one ``enrichment_submitted``
+    partition PER POST at that post's CURRENT round, materialized runlessly
+    on the SAME instance the in-flight guard reads — never an instance this
+    function opens itself.
 
-    The key contract is IDENTICAL to the guard's derivation
-    (``partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])`` — per
-    post, never per batch): the guard decides "is this post in flight?" by
-    deriving that post's key and testing membership in the instance's
-    in-flight set. Materializing any other key shape would make the two
-    sets never intersect, the guard would never suppress, and the drain
-    would silently double-submit.
+    The key grammar is the ADR-0014 D1 composite
+    (``<workload>\\x00r<N>\\x00<post_id>``), identical to what the guard and
+    the retry driver parse back out. A first attempt enqueues at round 0; a
+    post whose previous round harvested with a failure re-enqueues at
+    round N+1 (the round comes from ``post_partition_state`` — derived from
+    the materialized keys, no ledger).
 
     Sequence mirrors the real-instance roundtrip pinned in
     ``tests/unit/enrichment/test_partitions.py``: register the dynamic
     partition, then report the runless materialization.
     """
     keys = [
-        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
-        for pid in post_ids
+        partition_key(DRAIN_WORKLOAD, rounds_by_post[pid], [pid])
+        for pid in sorted(rounds_by_post)
     ]
     instance.add_dynamic_partitions(SUBMITTED_ASSET_NAME, keys)
     submitted_key = AssetKey(SUBMITTED_ASSET_NAME)
@@ -1118,17 +1117,15 @@ def ig_comments_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     deps=["ig_post_labels"],
 )
 def ig_posts_gen_batches(
+    context: AssetExecutionContext,
     config: GoldConfig,
     duckdb: DuckDBResource,
     ops: SQLiteResource,
-    instance: PartitionSnapshot | None = None,
+    instance: "PartitionSnapshot | None" = None,
 ) -> pl.DataFrame:
-    """Drain label-approved posts into a Gemini batch.
-
-    Dumb drain over ``ig_post_labels`` (US-L4): any post whose label pass
-    approved it for enrichment (standout / control / floor_filler) that has
-    no current-prompt conformed classification and nothing in flight on the
-    Dagster instance is enqueued.
+    """Dumb drain over ``ig_post_labels`` (US-L4): any post whose label pass
+    approved it for enrichment that has no current-prompt conformed
+    classification and nothing in flight on the Dagster instance is enqueued.
     The ``gold_ig`` watermark is retired — the labels table is the discovery
     source. Explicit ``post_ids`` re-enrichment bypasses all guards.
 
@@ -1223,15 +1220,29 @@ def ig_posts_gen_batches(
     # ── In-flight guard (US-EENG-4): instance-derived, never the queue. ──
     # The in-flight set comes from the Dagster instance via
     # partitions.in_flight_partitions — the SAME function the accounting
-    # identity uses, so guard and identity cannot disagree. When batch_items
-    # retires, this guard survives: no queue read anywhere in the drain.
+    # identity uses, so guard and identity cannot disagree. There is NO
+    # DagsterInstance.get() fallback: the instance is injected via the
+    # asset context, and an absent one fails loudly instead of silently
+    # reading a foreign instance.
+    # Test-only injection wins; production uses the CONTEXT-INJECTED
+    # instance. There is NO DagsterInstance.get() fallback anywhere — an
+    # uninjected context is impossible in Dagster, and a missing instance
+    # here raises rather than silently reading a foreign one.
+    instance = instance if instance is not None else context.instance
     suppressed: list[str] = []
-    if candidates and not post_ids:
-        if instance is None:
-            from dagster import DagsterInstance
-
-            instance = DagsterInstance.get()
-        suppressed = drain_suppressed_post_ids(candidates, instance)
+    rounds_by_post: dict[str, int] = {}
+    if candidates:
+        for pid in candidates:
+            state = post_partition_state(instance, DRAIN_WORKLOAD, pid)
+            if state.suppressed and not post_ids:
+                # The in-flight guard: suppressed ONLY on the discovery
+                # path. Explicit post_ids re-enrichment bypasses all guards.
+                suppressed.append(pid)
+            else:
+                # next_round is one past the highest MATERIALIZED harvested
+                # round — a first attempt enqueues at 0; a failed post
+                # re-enqueues at the retry round its harvested keys imply.
+                rounds_by_post[pid] = state.next_round
         if suppressed:
             in_flight_keys = sorted(drain_in_flight_keys(instance))
             logger.warning(
@@ -1245,52 +1256,35 @@ def ig_posts_gen_batches(
 
 
     n_suppressed = len(suppressed)
-    payloads = [
-        json.dumps({"post_id": pid, "domain": "instagram"}) for pid in candidates
-    ]
+    enqueued_ids = sorted(rounds_by_post)
 
-    if not payloads and not post_ids and candidates_seen == 0:
+    if not enqueued_ids and not post_ids and candidates_seen == 0:
         # Distinguish "nothing to do" from the in-flight skip above (AC4):
         # a bare "no run" for both cases is an operator-facing ambiguity.
         logger.info("ig_posts_gen_batches: nothing to do (0 candidates)")
-    elif not payloads and n_suppressed:
+    elif not enqueued_ids and n_suppressed:
         logger.warning(
             "ig_posts_gen_batches: enqueueing nothing — ALL %d candidate(s) "
             "in flight (US-EENG-4 AC4 skip)",
             n_suppressed,
         )
 
-    # Execution mode is tier-driven (batch default, interactive fallback).
-    # The retired queue stored it on batch_jobs for worker claim routing
-    # (ADR-0012); the submit stage now owns execution and enforces the
-    # free-tier gate loudly (RuntimeError in gemini_batch.submit_gemini_batch),
-    # so the drain only SURFACES the mode in the result frame — None when
-    # nothing was enqueued. ``consumer="gemini"`` had the same fate: it was
-    # queue claim routing, replaced by the workload identity carried inside
-    # the partition key (DRAIN_WORKLOAD).
-    mode: str | None = None
-    if payloads:
-        tier = GeminiTierConfig.detect()
-        mode = (
-            "interactive"
-            if config.prefer_interactive or not tier.supports_batch
-            else "gemini-batch"
-        )
-        # ── The enqueue (ADR-0012/0013): Dagster-native, no queue. ──
-        # One enrichment_submitted partition per post, on the SAME instance
-        # the in-flight guard reads — the normal path reuses the fallback
-        # instance the guard resolved above; the post_ids bypass path
-        # (guards skipped) resolves the same fallback here. Materializing
+    # Execution mode is surfaced in the result frame only — the submit stage
+    # owns execution through the seam and enforces the provider readiness
+    # gate loudly there. ``consumer="gemini"`` was queue claim routing,
+    # replaced by the workload identity carried inside the partition key
+    # (DRAIN_WORKLOAD).
+    mode: str | None = "seam" if rounds_by_post else None
+    if rounds_by_post:
+        # ── The enqueue (ADR-0012/0013/0014): Dagster-native, no queue. ──
+        # One enrichment_submitted partition per post at its CURRENT round,
+        # on the SAME instance the in-flight guard reads. Materializing
         # here is what makes the NEXT run's guard suppress these posts.
-        if instance is None:
-            from dagster import DagsterInstance
-
-            instance = DagsterInstance.get()
-        _materialize_submitted_partitions(instance, candidates)
+        _materialize_submitted_partitions(instance, rounds_by_post)
 
     return pl.DataFrame(
         {
-            "enqueued": pl.Series([len(payloads)], dtype=pl.Int32),
+            "enqueued": pl.Series([len(enqueued_ids)], dtype=pl.Int32),
             "candidates_seen": pl.Series([candidates_seen], dtype=pl.Int32),
             "in_flight_suppressed": pl.Series([n_suppressed], dtype=pl.Int32),
             "mode": pl.Series([mode], dtype=pl.Utf8),

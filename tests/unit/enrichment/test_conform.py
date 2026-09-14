@@ -155,7 +155,7 @@ def _row(df: pl.DataFrame) -> dict:
 def test_well_formed_visual_conforms_to_both_visual_tables(bronze_root, silver_root):
     _land_visual(bronze_root, payload=visual_payload(n_images=None))
     result = _run(bronze_root, silver_root)
-    assert result.counts == {"conformed": 1, "quarantined": 0, "skipped_classification": 0}
+    assert result.counts == {"conformed": 1, "quarantined": 0}
 
     ann = _row(conform_mod.read_table(SILVER_VISUAL_ANNOTATIONS, silver_root))
     assert ann["post_id"] == "p1"
@@ -460,6 +460,11 @@ def test_each_table_is_keyed_post_id_platform(bronze_root, silver_root):
     for tid in SILVER_TABLES:
         schema = TABLE_SCHEMAS[tid]
         assert list(schema)[:2] == ["post_id", "platform"], tid
+        if tid == conform_mod.SILVER_CONTENT_CLASSIFICATION:
+            # classification carries `domain` as a BODY column (the niche) —
+            # never as a key. The platform key is `platform`.
+            assert "domain" in schema
+            continue
         # platform is the key — domain is never a key of a silver table.
         assert "domain" not in schema, tid
 
@@ -475,10 +480,22 @@ def test_conformed_keys_are_unique_pairs(bronze_root, silver_root):
         assert df.select(["post_id", "platform"]).n_unique() == df.height, tid
 
 
-# ── Classification is skipped loudly (sibling unit owns it) ────────────────
+# ── Classification conforms (full coverage: test_conform_classification.py) ─
 
 
-def test_classification_rows_are_skipped_not_quarantined(bronze_root, silver_root):
+def test_classification_rows_conform(bronze_root, silver_root):
+    payload = {
+        "domain": "Lifestyle",
+        "subdomain": "Music",
+        "topic": "Live Performance",
+        "subtopic": "Band",
+        "is_educational": False,
+        "is_actionable": False,
+        "admiralty": "C2",
+        "content_type": "other",
+        "style": "casual",
+        "format": "other",
+    }
     land_response(
         post_id="p1",
         platform="instagram",
@@ -488,13 +505,15 @@ def test_classification_rows_are_skipped_not_quarantined(bronze_root, silver_roo
         prompt_hash="ph-cls",
         schema_version="1",
         run_id="job-1",
-        response_text="{}",
+        response_text=json.dumps(payload),
         ok=True,
         root=bronze_root,
     )
     result = _run(bronze_root, silver_root)
-    assert result.counts == {"conformed": 0, "quarantined": 0, "skipped_classification": 1}
-    assert result.quarantine.height == 0
+    assert result.counts == {"conformed": 1, "quarantined": 0}
+    row = _row(conform_mod.read_table(conform_mod.SILVER_CONTENT_CLASSIFICATION, silver_root))
+    assert row["platform"] == "instagram"
+    assert row["domain"] == "Lifestyle"  # the niche, never the platform
 
 
 # ── DuckDB registration (queryability, house pattern) ─────────────────────

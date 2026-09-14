@@ -1,6 +1,9 @@
 # ADR-0014: Orchestration dynamics — the three drivers (harvested, retry, quarantine) and the partition-key shape that survives derivation
 
-- Status: Proposed
+- Status: Accepted (2026-09-14). Ratified under delegated decision
+  authority while the owner was unavailable; panel round 2 had already returned
+  the retirement half of this decision set as sound (SYNTHESIS §3). This ADR
+  supplies the dynamics ADR-0012 described without actors.
 - Decided: 2026-09-14
 - Related: ADR-0012 (Dagster-native orchestration — this ADR completes its
   **dynamics**: it names the actors ADR-0012 only described), ADR-0013 (the

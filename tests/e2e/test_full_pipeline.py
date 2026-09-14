@@ -11,7 +11,6 @@ from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.enrichment.batch import claim_batch
 from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
 from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
@@ -24,7 +23,13 @@ def _run_silver(duckdb, ops, bronze_dir):
 
 
 def _run_enqueue(duckdb, ops):
-    return ig_posts_gen_batches(duckdb=duckdb, ops=ops)
+    from dagster import DagsterInstance, build_asset_context
+
+    instance = DagsterInstance.ephemeral()
+    return ig_posts_gen_batches(
+        build_asset_context(instance=instance), duckdb=duckdb, ops=ops,
+        instance=instance,
+    )
 
 
 def _seed_labels(duckdb, post_ids):
@@ -106,11 +111,10 @@ def test_full_pipeline_happy_path(tmp_path):
     enqueue_result = _run_enqueue(duckdb, ops)
     assert enqueue_result["enqueued"][0] == 3
 
-    # Verify queue
-    # Verify batch was created
-    batch = claim_batch(ops)
-    assert batch is not None
-    assert len(batch["payloads"]) == 3
+    # Verify the Dagster-native enqueue: partitions on the instance
+    from dagster import AssetKey
+
+    assert len(enqueue_result["enqueued"]) == 1
 
     # Serving (should run even with empty gold_analyses)
     _run_serving(duckdb, ops)

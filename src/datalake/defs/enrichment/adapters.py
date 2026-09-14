@@ -25,6 +25,7 @@ records jobs anywhere.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Sequence
 from typing import Any
@@ -35,12 +36,15 @@ from datalake.defs.enrichment.qwen_client import DEFAULT_QWEN_SERVICE_URL
 from datalake.defs.enrichment.seam import (
     _TERMINAL_STATUS,
     COMPLETED,
+    DEFAULT_JOBSPEC,
     FAILED,
+    JobSpec,
     PENDING,
     PROCESSING,
     RETRYABLE,
     TERMINAL,
     TERMINAL_STATES,
+    UNKNOWN,
     Capabilities,
     Item,
     ProviderError,
@@ -91,19 +95,33 @@ class _HttpAdapter:
         return resp.json()
 
     # -- shared policy
-    def is_terminal(self, state: str) -> bool:
-        return state in TERMINAL_STATES
-
     def classify_error(self, exc: BaseException) -> str:
         """4xx-in-_TERMINAL_STATUS is the caller's fault; transient transport
-        failures and other statuses are worth another attempt."""
+        failures and other statuses are worth another attempt. Anything we
+        cannot classify returns UNKNOWN — the caller must FAIL LOUDLY on
+        UNKNOWN, never silently treat it as terminal (Gemini SDK errors
+        must not masquerade as terminal just because they are foreign)."""
         if isinstance(exc, ProviderError):
             if exc.status_code is not None and exc.status_code in _TERMINAL_STATUS:
                 return TERMINAL
             return RETRYABLE
         if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
             return RETRYABLE
-        return TERMINAL
+        return UNKNOWN
+
+
+def handle_codec(names_or_handle: str | Sequence[str]) -> str | list[str]:
+    """THE handle encoding (batch contract): a JSON array of provider job
+    names, produced AND parsed by this one function. A str input is a
+    composite handle to parse (returns list[str]); a sequence input is a
+    set of provider job names to encode (returns the JSON str). Single-
+    chunk and multi-chunk handles share this exact representation — no
+    ``,``/``|`` divergence."""
+    if isinstance(names_or_handle, str):
+        return json.loads(names_or_handle)
+    return json.dumps(list(names_or_handle))
+
+
 
 
 def _media_files(item: Item) -> list[dict[str, Any]] | None:
@@ -166,11 +184,31 @@ class ServiceBackedAdapter(_HttpAdapter):
             "images": list(item.images),
         }
 
-    def submit(self, items: Sequence[Item]) -> str:
+    def require_health(self) -> None:
+        """US-EENG-2: the LOUD /health precondition, at the adapter boundary.
+        A down service RAISES here — callers upstream can never mistake a
+        dead executor for quiet 'nothing to do'."""
+        try:
+            ok = self._client.get(f"{self.base_url}/health").status_code == 200
+        except httpx.HTTPError as exc:
+            raise ProviderError(
+                f"qwen-batch service {self.base_url} is DOWN (/health: {exc}); "
+                "refusing to submit"
+            ) from exc
+        if not ok:
+            raise ProviderError(
+                f"qwen-batch service {self.base_url} health check FAILED; "
+                "refusing to submit"
+            )
+
+    def submit(self, items: Sequence[Item], *, job_spec: JobSpec = DEFAULT_JOBSPEC) -> str:
+        self.require_health()
         body: dict[str, Any] = {
             "items": [self.build_request(i) for i in items],
             "model": self.model,
         }
+        if job_spec.max_tokens is not None:
+            body["max_tokens"] = job_spec.max_tokens
         return str(self._post("/jobs", body)["job_id"])
 
     def poll(self, handle: str) -> dict[str, Any]:
@@ -231,8 +269,9 @@ class DirectBatchAdapter(_HttpAdapter):
 
     ``gemini_batch.submit`` chunks requests under the tier's in-flight token
     cap, so ``submit`` may create SEVERAL provider jobs; the handle is the
-    comma-joined job names, opaque to callers. Gemini access is imported
-    lazily so importing this module never pulls google-genai.
+    shared JSON-array ``handle_codec`` encoding of those job names, opaque
+    to callers. Gemini access is imported lazily so importing this module
+    never pulls google-genai.
     """
 
     name = "direct_batch"
@@ -257,8 +296,9 @@ class DirectBatchAdapter(_HttpAdapter):
         self.max_tokens = max_tokens
         self.display_name = display_name
         # No HTTP transport is needed — Gemini goes through the SDK verbs in
-        # gemini_batch. base_url/model fields exist to satisfy the Protocol.
-        self.base_url = ""
+        # gemini_batch. There is deliberately NO silent base_url fallback here:
+        # this adapter has no HTTP endpoint, and SDK errors classify as
+        # UNKNOWN (fail loudly), never as terminal-by-default.
         self.model = model
 
     def _gemini(self):
@@ -273,7 +313,7 @@ class DirectBatchAdapter(_HttpAdapter):
             "media_files": _media_files(item),
         }
 
-    def submit(self, items: Sequence[Item]) -> str:
+    def submit(self, items: Sequence[Item], *, job_spec: JobSpec = DEFAULT_JOBSPEC) -> str:
         from datalake.defs.enrichment import gemini_batch
 
         requests = [self.build_request(i) for i in items]
@@ -282,9 +322,13 @@ class DirectBatchAdapter(_HttpAdapter):
             self.model,
             requests,
             self.display_name,
-            max_tokens=self.max_tokens,
+            max_tokens=(
+                job_spec.max_tokens
+                if job_spec.max_tokens is not None
+                else self.max_tokens
+            ),
         )
-        return ",".join(names)
+        return handle_codec(names)
 
     def poll(self, handle: str) -> dict[str, Any]:
         from datalake.defs.enrichment import gemini_batch
@@ -292,7 +336,7 @@ class DirectBatchAdapter(_HttpAdapter):
         gemini = self._gemini()
         job_states = [
             gemini_batch.job_state(gemini_batch.poll(gemini, name))
-            for name in handle.split(",")
+            for name in handle_codec(handle)
         ]
         return {"job_states": job_states}
 
@@ -320,7 +364,7 @@ class DirectBatchAdapter(_HttpAdapter):
 
         gemini = self._gemini()
         merged: dict[str, dict] = {}
-        for name in handle.split(","):
+        for name in handle_codec(handle):
             merged.update(gemini_batch.retrieve(gemini, name))
         return [
             Result(

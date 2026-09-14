@@ -1,50 +1,46 @@
-"""Enrichment architecture — batch-based external API processing.
+"""Enrichment architecture — the ADR-0011 layered model.
 
-Operational state lives in ops.sqlite (SQLiteResource).
-Analytical results live in gold_analyses (DuckDB).
+Bronze lands provider responses verbatim (`bronze_enrichment_raw`); silver
+conforms + validates deterministically; gold marts compose the canonical
+views. Orchestration state is Dagster-native (ADR-0012/0013): the retired
+ops.sqlite queue (`batch_jobs`/`batch_items`/`dead_letter`) has no read or
+write on any live path. The loop: drain → submit → harvest (ADR-0014).
 """
 
 from .assets import ENRICHMENT_CHECKS, ensure_gold_analyses, gold_analyses
-from .batch import create_batch, mark_complete
 from .harvest import (
-    gemini_batch_harvest,
-    gemini_batch_harvest_sensor,
-    harvest_gemini_batches,
+    enrichment_harvest_job,
+    harvest_enrichment_op,
+    harvest_pending,
+    mint_retries,
+    report_harvested,
 )
-from .media_upload import (
-    media_upload_pending_batches_job,
-    media_upload_pending_batches_op,
-    upload_media_for_pending_batches,
-)
-from .registry import register_current_prompt, resolve_prompt
 from .submit import (
-    submit_gemini_batches_job,
-    submit_gemini_batches_op,
-    submit_pending_gemini_batches,
+    build_items,
+    discover_pending,
+    enrichment_submit_job,
+    submit_enrichment_op,
+    submit_pending,
 )
 
 __all__ = [
-    # Batch operations
-    "create_batch",
-    "mark_complete",
-    # Prompt/version registry
-    "register_current_prompt",
-    "resolve_prompt",
     # Assets
     "ensure_gold_analyses",
     "gold_analyses",
     "ENRICHMENT_CHECKS",
-    # Harvest (Phase 1, ADR-0007)
-    "gemini_batch_harvest",
-    "gemini_batch_harvest_sensor",
-    "harvest_gemini_batches",
-    # Batch submit (Phase 2, ADR-0007/0008)
-    "submit_gemini_batches_job",
-    "submit_gemini_batches_op",
-    "submit_pending_gemini_batches",
-    # Media pre-upload (Phase 2a, ADR-0007/0008)
-    "upload_media_for_pending_batches",
-    "media_upload_pending_batches_job",
-    "media_upload_pending_batches_op",
+    # Submit (ADR-0014: partition-discovered, seam-mediated)
+    "discover_pending",
+    "build_items",
+    "submit_pending",
+    "submit_enrichment_op",
+    "enrichment_submit_job",
+    # Harvest (ADR-0014 D2/D3: harvested producer + retry driver)
+    "harvest_pending",
+    "report_harvested",
+    "mint_retries",
+    "harvest_enrichment_op",
+    "enrichment_harvest_job",
+    # Prompt/version registry
+    "register_current_prompt",
+    "resolve_prompt",
 ]
-

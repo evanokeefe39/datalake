@@ -20,6 +20,7 @@ from dagster import (
 
 from datalake.defs.enrichment.partitions import (
     HARVESTED_ASSET_NAME,
+    parse_partition_key,
     HARVESTED_PARTITIONS,
     SUBMITTED_ASSET_NAME,
     SUBMITTED_PARTITIONS,
@@ -86,19 +87,20 @@ def _batch(i: int) -> str:
 
 
 class TestPartitionKey:
-    def test_deterministic_and_order_insensitive(self) -> None:
-        a = partition_key("qwen-vision", 0, ["b", "a", "c"])
-        b = partition_key("qwen-vision", 0, ["c", "b", "a"])
-        assert a == b
-        assert partition_key("qwen-vision", 0, ["a", "b", "c"]) == a
+    def test_key_is_the_self_describing_composite(self) -> None:
+        # ADR-0014 D1: the key IS the record — readable, reversible.
+        key = partition_key("qwen-vision", 0, ["p1"])
+        assert key == "qwen-vision\x00r0\x00p1"
+        parsed = parse_partition_key(key)
+        assert (parsed.workload, parsed.attempt_round, parsed.post_id) == (
+            "qwen-vision", 0, "p1",
+        )
 
     def test_inputs_distinguish_keys(self) -> None:
-        base = partition_key("qwen-vision", 0, ["a", "b"])
-        assert partition_key("text-LLM", 0, ["a", "b"]) != base  # workload
-        assert partition_key("qwen-vision", 1, ["a", "b"]) != base  # retry round
-        assert partition_key("qwen-vision", 0, ["a", "b", "c"]) != base  # membership
-        # Subset membership does NOT collide (a shared-prefix batch differs).
-        assert partition_key("qwen-vision", 0, ["a"]) != base
+        base = partition_key("qwen-vision", 0, ["a"])
+        assert partition_key("text-LLM", 0, ["a"]) != base  # workload
+        assert partition_key("qwen-vision", 1, ["a"]) != base  # retry round
+        assert partition_key("qwen-vision", 0, ["b"]) != base  # post
 
     def test_retry_is_a_new_key(self) -> None:
         # ADR-0012 decision 5: retry round N mints a fresh partition.
@@ -107,10 +109,10 @@ class TestPartitionKey:
         )
 
     def test_same_work_is_stable_across_re_runs(self) -> None:
-        # Same inputs -> same key, so a re-run of the same batch re-materializes
+        # Same inputs -> same key, so a re-run of the same post re-materializes
         # the SAME submitted partition (idempotent), not a new one.
-        assert partition_key("qwen-vision", 0, ["x", "y"]) == partition_key(
-            "qwen-vision", 0, ["y", "x"]
+        assert partition_key("qwen-vision", 0, ["x"]) == partition_key(
+            "qwen-vision", 0, ["x"]
         )
 
     def test_error_paths(self) -> None:
@@ -200,8 +202,8 @@ class TestInFlight:
         # deflates to 1 and the identity breaks. This is the guardrail
         # actually firing.
         inst = FakeInstance()
-        k1 = partition_key("qwen-vision", 0, ["p1", "p2"])
-        k2 = partition_key("qwen-vision", 0, ["p3", "p4"])
+        k1 = partition_key("qwen-vision", 0, ["p1"])
+        k2 = partition_key("qwen-vision", 0, ["p3"])
         inst.materialize(SUBMITTED_PARTITIONS, {k1})  # k2's materialization LOST
         # the loss is real, not merely commented: k2 is absent from the snapshot
         assert k2 not in inst.get_materialized_partitions(SUBMITTED_KEY)

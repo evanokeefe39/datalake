@@ -1442,9 +1442,9 @@ def gold_creator_performance(duckdb: DuckDBResource) -> None:
     group_name="serving",
     description=(
         "Q2 mart — what content shape performs. LONG form keyed "
-        "(domain, topic, follower_tier, facet_name, facet_value); facets "
-        "from the silver annotations + classification, measured via the "
-        "canonical views."
+        "(platform, domain, topic, follower_tier, facet_name, facet_value); "
+        "facets from the silver annotations + classification, measured via "
+        "the canonical views."
     ),
     deps=[
         AssetKey(["v_post_metrics"]),
@@ -1464,8 +1464,11 @@ def gold_content_shape_performance(duckdb: DuckDBResource) -> None:
     with the canonical ``engagement_score``/``is_standout``
     (``v_post_metrics``). ``avg_engagement_z`` is the mean of the canonical
     per-post score — not a re-derivation. ``lift_vs_slice_baseline`` is the
-    cell mean over the same (domain, topic, tier, facet) slice's overall
-    mean — a mart-local projection over canonical values, no constant.
+    cell mean over the same (platform, domain, topic, tier, facet) slice's
+    overall mean — a mart-local projection over canonical values, no
+    constant. The grain includes ``platform`` (deliberate deviation from
+    enrichment.md §5.3, which omits it) — facets carry platform, and a
+    domain-less grain would merge posts across platforms.
     """
     with duckdb.get_connection() as conn:
         conn.execute("""
@@ -1541,6 +1544,7 @@ def gold_content_shape_performance(duckdb: DuckDBResource) -> None:
             ),
             facet_posts AS (
                 SELECT
+                    f.platform,
                     pd.gold_domain,
                     pd.gold_topic,
                     fc.follower_tier,
@@ -1560,23 +1564,27 @@ def gold_content_shape_performance(duckdb: DuckDBResource) -> None:
             ),
             cells AS (
                 SELECT
+                    platform,
                     gold_domain, gold_topic, follower_tier,
                     facet_name, facet_value,
                     COUNT(*)               AS n_posts,
                     AVG(engagement_score)  AS avg_engagement_z,
                     AVG(is_standout)       AS standout_rate
                 FROM facet_posts
-                GROUP BY gold_domain, gold_topic, follower_tier,
+                GROUP BY platform, gold_domain, gold_topic, follower_tier,
                          facet_name, facet_value
             ),
             slices AS (
                 SELECT
+                    platform,
                     gold_domain, gold_topic, follower_tier, facet_name,
                     AVG(engagement_score) AS slice_avg_engagement_z
                 FROM facet_posts
-                GROUP BY gold_domain, gold_topic, follower_tier, facet_name
+                GROUP BY platform, gold_domain, gold_topic, follower_tier,
+                         facet_name
             )
             SELECT
+                c.platform,
                 c.gold_domain,
                 c.gold_topic,
                 c.follower_tier,
@@ -1590,10 +1598,11 @@ def gold_content_shape_performance(duckdb: DuckDBResource) -> None:
                     AS lift_vs_slice_baseline
             FROM cells c
             JOIN slices s
-                ON  s.gold_domain   = c.gold_domain
-                AND s.gold_topic    = c.gold_topic
+                ON  s.platform       = c.platform
+                AND s.gold_domain    = c.gold_domain
+                AND s.gold_topic     = c.gold_topic
                 AND s.follower_tier IS NOT DISTINCT FROM c.follower_tier
-                AND s.facet_name    = c.facet_name
+                AND s.facet_name     = c.facet_name
         """)
 
 

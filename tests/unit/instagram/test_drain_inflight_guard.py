@@ -23,7 +23,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from dagster import AssetKey, AssetMaterialization
+from dagster import AssetKey, AssetMaterialization, build_asset_context
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
 from datalake.defs.common.schemas import duckdb_ddl
@@ -36,7 +36,7 @@ from datalake.defs.enrichment.partitions import (
 )
 from datalake.defs.instagram import assets as ig_assets
 from datalake.defs.instagram.assets import (
-    DRAIN_ATTEMPT_ROUND,
+    DRAIN_WORKLOAD,
     DRAIN_WORKLOAD,
     drain_in_flight_keys,
     drain_suppressed_post_ids,
@@ -111,12 +111,12 @@ class FakeInstance:
         """Simulate an EXTERNAL submit (a submit that happened before this
         test, outside the drain) materializing one partition per post."""
         for pid in post_ids:
-            self._submitted.add(partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid]))
+            self._submitted.add(partition_key(DRAIN_WORKLOAD, 0, [pid]))
 
     def harvest(self, post_ids):
         """Simulate the harvest stage materializing those same partitions."""
         for pid in post_ids:
-            self._harvested.add(partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid]))
+            self._harvested.add(partition_key(DRAIN_WORKLOAD, 0, [pid]))
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -152,6 +152,7 @@ def drain(conn, db, ops, monkeypatch):
 
     def run(config=None, instance=None):
         return ig_posts_gen_batches(
+            build_asset_context(),
             config=config or GoldConfig(prefer_interactive=True),
             duckdb=db,
             ops=ops,
@@ -208,7 +209,7 @@ def test_two_consecutive_runs_enqueue_no_post_twice(drain, conn):
     # test-side submit simulation. The second run therefore reads an
     # in-flight state written by the production write path.
     assert fake.submitted_partitions() == {
-        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        partition_key(DRAIN_WORKLOAD, 0, [pid])
         for pid in ("p1", "p2", "p3")
     }
 
@@ -219,7 +220,7 @@ def test_two_consecutive_runs_enqueue_no_post_twice(drain, conn):
     assert second["in_flight_suppressed"][0] == 3
     # The second run enqueued nothing: no new partitions materialized.
     assert fake.submitted_partitions() == {
-        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        partition_key(DRAIN_WORKLOAD, 0, [pid])
         for pid in ("p1", "p2", "p3")
     }
 
@@ -233,7 +234,7 @@ def test_one_post_done_others_in_flight_still_no_double_submit(drain, conn):
     fake = FakeInstance()
     assert _enqueued(drain(instance=fake)) == 3
     assert fake.submitted_partitions() == {
-        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        partition_key(DRAIN_WORKLOAD, 0, [pid])
         for pid in ("p1", "p2", "p3")
     }
 
@@ -270,7 +271,7 @@ def test_enqueue_partition_keys_equal_guard_derived_keys(drain, conn):
         AssetKey(SUBMITTED_ASSET_NAME)
     )
     guard_derived = {
-        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        partition_key(DRAIN_WORKLOAD, 0, [pid])
         for pid in ("a1", "a2", "a3")
     }
     # The enqueue wrote exactly the keys the guard derives — no more, no less.
@@ -283,10 +284,10 @@ def test_enqueue_partition_keys_equal_guard_derived_keys(drain, conn):
         "a1", "a2", "a3"
     ]
     # Negative control pinning the historical failure mode: a per-BATCH key
-    # over the whole candidate set never intersects the per-post keys.
-    assert partition_key(
-        DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, ["a1", "a2", "a3"]
-    ) not in enqueued_keys
+    # over the whole candidate set is no longer a legal key at all — the D1
+    # grammar is strictly per-post (exactly one post id).
+    with pytest.raises(ValueError):
+        partition_key(DRAIN_WORKLOAD, 0, ["a1", "a2", "a3"])
 
 
 def test_two_consecutive_runs_real_instance_no_double_submit(drain, conn):
@@ -308,7 +309,7 @@ def test_two_consecutive_runs_real_instance_no_double_submit(drain, conn):
     first = drain(instance=real)
     assert _enqueued(first) == 2
     assert in_flight_partitions(real) == {
-        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        partition_key(DRAIN_WORKLOAD, 0, [pid])
         for pid in ("r1", "r2")
     }
 
@@ -340,10 +341,13 @@ def test_harvested_partition_does_not_suppress(drain, conn):
 
     result = drain(instance=fake)
     assert _enqueued(result) == 1  # re-eligible (completion guard governs next)
-    # Re-eligible means the drain RE-SUBMITTED: it materialized the
-    # partition again (idempotent — the same per-post key).
+    # Re-eligible means the drain re-enqueued at the NEXT round (ADR-0014 D3):
+    # the round-0 key stays harvested and is never re-materialized.
+    # Round 0 (run 1) + round 1 (run 2's re-enqueue) are both materialized;
+    # the run-2 enqueue ADDED r1 rather than re-materializing r0.
     assert fake.submitted_partitions() == {
-        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, ["p1"])
+        partition_key(DRAIN_WORKLOAD, 0, ["p1"]),
+        partition_key(DRAIN_WORKLOAD, 1, ["p1"]),
     }
 
 
@@ -382,7 +386,7 @@ def test_post_ids_bypass_bypasses_all_guards(drain, conn):
     # The bypass skips the GUARDS, not the materialization: the partition is
     # (re)materialized so the NEXT normal run's guard sees the work.
     assert fake.submitted_partitions() == {
-        partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, ["p1"])
+        partition_key(DRAIN_WORKLOAD, 0, ["p1"])
     }
 
 
@@ -435,14 +439,14 @@ def test_suppression_uses_in_flight_partitions_keys(drain, conn):
     expected = {
         pid
         for pid in candidates
-        if partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid])
+        if partition_key(DRAIN_WORKLOAD, 0, [pid])
         in in_flight_partitions(fake)
     }
     assert set(suppressed) == expected == {"p1"}
     # And the keys the drain saw ARE the identity's in-flight set.
-    assert {partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid]) for pid in suppressed} == (
+    assert {partition_key(DRAIN_WORKLOAD, 0, [pid]) for pid in suppressed} == (
         in_flight_partitions(fake) & {
-            partition_key(DRAIN_WORKLOAD, DRAIN_ATTEMPT_ROUND, [pid]) for pid in candidates
+            partition_key(DRAIN_WORKLOAD, 0, [pid]) for pid in candidates
         }
     )
 

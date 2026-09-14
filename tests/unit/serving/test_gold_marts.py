@@ -18,6 +18,12 @@ import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
+from datalake.defs.common.schemas import (
+    DUCKDB_TABLES,
+    DUCKDB_VIEWS,
+    duckdb_ddl,
+)
+
 serving_assets = importlib.import_module("datalake.defs.serving.assets")
 
 _MART_FNS = [
@@ -545,3 +551,207 @@ class TestNoRestatedConstants:
             assert tok not in marts_src, (
                 f"marts restate canonical constant {tok!r}"
             )
+
+
+# ── Schema catalog reconciliation ──────────────────────────────────────────
+
+
+class TestSchemaCatalog:
+    def test_silver_classification_selectable_from_catalog_ddl(self, tmp_path):
+        """The catalog (schemas.py) — not hand-written DDL — must produce a
+        working ``silver_content_classification``: create it from
+        ``duckdb_ddl``, insert a contract-shaped row, SELECT it back.
+
+        Residual, declared: this exercises the SILVER side from the catalog
+        only; the canonical views in this module's fixture are the real
+        asset code but the ``v_post_detail`` stub is hand-written (the
+        serving views are asset-defined, not catalog-defined).
+        """
+        resource = DuckDBResource(database=str(tmp_path / "cat.duckdb"))
+        with resource.get_connection() as con:
+            con.execute(duckdb_ddl("silver_content_classification"))
+            con.execute(
+                """
+                INSERT INTO silver_content_classification (
+                    post_id, platform, provider, model, prompt_hash,
+                    schema_version, input_modality, content_mime_type,
+                    sampling_params_json, run_id, analysed_at,
+                    domain, subdomain, topic, subtopic,
+                    is_educational, is_actionable, admiralty,
+                    content_type, style, format, result_json
+                ) VALUES (
+                    'p1', 'instagram', 'qwen', 'qwen-text', 'ph', '3',
+                    'text', 'text/plain', NULL, 'r1', '2026-01-11',
+                    'dev', 'software', 'cli', 'tui',
+                    TRUE, FALSE, 'B', 'tutorial', 'terse', 'carousel',
+                    '{"topic":"cli"}'
+                )
+                """
+            )
+            row = con.execute(
+                """
+                SELECT post_id, platform, domain, topic, is_educational,
+                       result_json
+                FROM silver_content_classification
+                """
+            ).fetchone()
+        assert row == ("p1", "instagram", "dev", "cli", True, '{"topic":"cli"}')
+
+    def test_target_objects_in_catalog_maps(self):
+        for name in (
+            "bronze_enrichment_raw",
+            "silver_visual_annotations",
+            "silver_visual_summaries",
+            "silver_audio_transcripts",
+            "silver_text_annotations",
+            "silver_text_summaries",
+            "silver_content_classification",
+        ):
+            assert name in DUCKDB_TABLES, f"{name} missing from catalog"
+        for mart in (
+            "gold_post_enrichment",
+            "gold_creator_performance",
+            "gold_content_shape_performance",
+            "gold_top_posts",
+        ):
+            assert mart in DUCKDB_VIEWS, f"{mart} missing from DUCKDB_VIEWS"
+
+
+# ── Grain: platform (contract deviation from enrichment.md §5.3) ───────────
+
+
+class TestPlatformGrain:
+    @pytest.fixture
+    def multi_platform_db(self, tmp_path) -> DuckDBResource:
+        """Same dev/cli slice on two platforms — cells must NOT merge."""
+        resource = DuckDBResource(database=str(tmp_path / "grain.duckdb"))
+        with resource.get_connection() as con:
+            con.execute(
+                """
+                CREATE TABLE v_post_detail (
+                    post_id TEXT, shortcode TEXT, caption TEXT,
+                    owner_id TEXT, owner_username TEXT,
+                    creator_id INTEGER, creator_name TEXT, channel TEXT,
+                    likes_count BIGINT, comments_count BIGINT,
+                    video_view_count BIGINT, timestamp TIMESTAMP,
+                    source_dataset TEXT,
+                    gold_domain TEXT, gold_subdomain TEXT,
+                    gold_topic TEXT, gold_subtopic TEXT,
+                    content_type TEXT, format TEXT, style TEXT,
+                    admiralty TEXT, is_educational BOOLEAN,
+                    is_actionable BOOLEAN, result_json TEXT, prompt_hash TEXT
+                )
+                """
+            )
+            con.execute(
+                """
+                INSERT INTO v_post_detail
+                    (post_id, owner_id, owner_username, creator_id,
+                     creator_name, channel, likes_count, comments_count,
+                     video_view_count, timestamp, source_dataset,
+                     gold_domain, gold_topic)
+                VALUES
+                ('p1', 'o1', 'jane', 1, 'Jane', 'instagram', 900, 5, 1000,
+                 '2026-01-10', 'ds', 'dev', 'cli'),
+                ('p2', 'o1', 'jane', 1, 'Jane', 'instagram', 300, 2, 400,
+                 '2026-01-05', 'ds', 'dev', 'cli'),
+                ('p3', 'o2', 'bob',  2, 'Bob',  'tiktok',    500, 3, 800,
+                 '2026-01-08', 'ds', 'dev', 'cli')
+                """
+            )
+            con.execute(
+                """
+                CREATE TABLE silver_text_annotations (
+                    post_id TEXT, platform TEXT, hook_type TEXT,
+                    is_sponsored BOOLEAN, cta_type TEXT, value_depth TEXT,
+                    replicable_tactic TEXT, audience_named BOOLEAN,
+                    claimed_results BOOLEAN
+                )
+                """
+            )
+            con.execute(
+                """
+                CREATE TABLE silver_visual_annotations (
+                    post_id TEXT, platform TEXT, face_present BOOLEAN,
+                    value_medium TEXT, text_overlay_present BOOLEAN,
+                    on_screen_claim BOOLEAN
+                )
+                """
+            )
+            con.execute(
+                """
+                CREATE TABLE ig_post_labels (
+                    post_id TEXT PRIMARY KEY, label TEXT, method TEXT,
+                    is_provisional BOOLEAN, baseline_center DOUBLE,
+                    baseline_spread DOUBLE
+                )
+                """
+            )
+            con.execute(
+                """
+                INSERT INTO ig_post_labels VALUES
+                ('p1', 'standout', 'day7_matched', FALSE, 100, 50),
+                ('p2', 'standout', 'day7_matched', FALSE, 100, 50),
+                ('p3', 'standout', 'day7_matched', FALSE, 100, 50)
+                """
+            )
+            con.execute(
+                """
+                CREATE TABLE silver_ig_profile_observations (
+                    owner_id TEXT, owner_username TEXT,
+                    followers_count BIGINT, observed_at TIMESTAMP,
+                    source_dataset TEXT
+                )
+                """
+            )
+            con.execute(
+                """
+                INSERT INTO silver_ig_profile_observations VALUES
+                ('o1', 'jane', 500, '2026-01-15', 'ds'),
+                ('o2', 'bob',  900, '2026-01-15', 'ds')
+                """
+            )
+            con.execute(
+                """
+                INSERT INTO silver_text_annotations
+                    (post_id, platform, hook_type) VALUES
+                ('p1', 'instagram', 'question'),
+                ('p2', 'instagram', 'question'),
+                ('p3', 'tiktok',    'question')
+                """
+            )
+        return resource
+
+    def test_same_facet_on_two_platforms_stays_distinct(self, multi_platform_db):
+        """`platform` is part of the grain: identical facet values for the
+        same (domain, topic, tier) on different platforms are separate
+        cells, never merged."""
+        _run(multi_platform_db, _CANON_FNS + [serving_assets.gold_content_shape_performance])
+        with multi_platform_db.get_connection() as con:
+            rows = con.execute(
+                """
+                SELECT platform, gold_domain, gold_topic, facet_name,
+                       facet_value, n_posts
+                FROM gold_content_shape_performance
+                WHERE facet_name = 'hook_type'
+                ORDER BY platform
+                """
+            ).fetchall()
+        cells = {(r[0], r[4]): r[5] for r in rows}
+        assert cells == {("instagram", "question"): 2, ("tiktok", "question"): 1}
+        assert len(rows) == 2  # a platform-less grain would collapse to 1
+
+    def test_full_grain_is_unique(self, multi_platform_db):
+        _run(multi_platform_db, _CANON_FNS + [serving_assets.gold_content_shape_performance])
+        with multi_platform_db.get_connection() as con:
+            dupes = con.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT platform, gold_domain, gold_topic, follower_tier,
+                           facet_name, facet_value, COUNT(*) AS c
+                    FROM gold_content_shape_performance
+                    GROUP BY 1, 2, 3, 4, 5, 6 HAVING c > 1
+                )
+                """
+            ).fetchone()[0]
+        assert dupes == 0

@@ -33,6 +33,7 @@ TERMINAL_STATES = frozenset({COMPLETED, FAILED})
 
 RETRYABLE = "retryable"
 TERMINAL = "terminal"
+UNKNOWN = "unknown"  # unclassifiable error — consumers must FAIL LOUDLY, never silently treat as terminal
 
 # HTTP statuses that make a retry pointless — a terminal error class.
 _TERMINAL_STATUS = frozenset({400, 401, 403, 404, 422})
@@ -90,6 +91,21 @@ class Capabilities:
     notes: str = ""
 
 
+@dataclass(frozen=True)
+class JobSpec:
+    """Per-CALL job-level options (batch contract). Carries what belongs to
+    the whole provider job — not to any single item — so callers express it
+    at submit time instead of smuggling it through constructor kwargs."""
+
+    max_tokens: int | None = None
+    mode: str | None = None
+
+
+# The one shared empty JobSpec — frozen, so one instance serves every call.
+DEFAULT_JOBSPEC = JobSpec()
+
+
+
 @runtime_checkable
 class ProviderAdapter(Protocol):
     """The seam. Implementations differ; consumers never do."""
@@ -99,7 +115,7 @@ class ProviderAdapter(Protocol):
     capabilities: Capabilities
 
     def build_request(self, item: Item) -> dict[str, Any]: ...
-    def submit(self, items: Sequence[Item]) -> str: ...
+    def submit(self, items: Sequence[Item], *, job_spec: JobSpec = DEFAULT_JOBSPEC) -> str: ...
     def poll(self, handle: str) -> Any: ...
     def normalize_state(self, raw: Any) -> str: ...
     def is_terminal(self, state: str) -> bool: ...
@@ -146,6 +162,7 @@ def run_lifecycle(
     adapter: ProviderAdapter,
     items: Sequence[Item],
     *,
+    job_spec: JobSpec = DEFAULT_JOBSPEC,
     max_polls: int = 50,
     poll_interval: float = 0.0,
 ) -> tuple[list[str], list[Result]]:
@@ -160,7 +177,7 @@ def run_lifecycle(
     """
     if max_polls < 1:
         raise ValueError("max_polls must be >= 1")
-    handle = adapter.submit(items)
+    handle = adapter.submit(items, job_spec=job_spec)
     observed: list[str] = []
     for attempt in range(max_polls):
         if attempt and poll_interval > 0:

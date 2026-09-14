@@ -1,478 +1,335 @@
-"""Dagster-native gemini-batch harvest — the #24 fix.
+"""Dagster-native enrichment harvest — poll to terminal, land verbatim,
+report the harvested partition, mint retries (ADR-0011/0012/0013/0014).
 
-Phase 1 of the batch-native-enrichment migration (ADR-0007): a cursor-based
-**sensor** discovers batch jobs with persisted ``gemini_batch_name`` chunks,
-polls their remote state via the batch verbs
-(``gemini_batch.poll``/``job_state``/``is_terminal``), and issues a RunRequest
-for the short **harvest job** when a chunk reaches a terminal state. The
-harvest run retrieves terminal chunks, applies results to ``gold_analyses``
-with the idempotent ``write_gold`` upsert contract
-(``ON CONFLICT (post_id, domain)``, ordering guard on ``analysed_at``), and
-closes the queue bookkeeping.
+This module is the TARGET harvest stage of the Dagster-native loop::
 
-Design notes:
-- Job names persist in ``ops.sqlite`` (``batch_jobs.gemini_batch_name``), so
-  the sensor survives daemon restarts — the cursor only caches poll results
-  to keep ticks cheap; re-discovery comes from the SQLite row, never memory.
-- The harvest op owns the retrieval semantics (per-item fail/dead-letter
-  routing, attempts-preserving resubmit on job failure, mark_complete when
-  nothing remains) — after Phase 5 it is the only consumer of terminal
-  chunks.
-- ADR-0008 seam: the ONLY API calls (poll/retrieve) happen inside this
-  tagged enrichment boundary. Silver onward stays hermetic.
+    drain (ig_posts_gen_batches) → submit → harvest
 
-Sensor default status is STOPPED (not RUNNING): every tick polls the live
-Gemini API for each in-flight chunk, so enabling it is a deliberate,
-quota-bearing decision until the Phase 1 External Integration Gate smoke
-passes. Flip to RUNNING via the UI once batch is proven.
+Harvest owns two ADR-0014 dynamics:
+
+* **D2 — the harvested driver.** When a provider job reaches terminal state
+  and its responses are landed verbatim in bronze, this run materializes an
+  ``enrichment_harvested`` partition per covered submitted partition —
+  ``instance.report_runless_asset_event(AssetMaterialization(...))``, the
+  exact mechanism the drain uses for ``enrichment_submitted``, on the SAME
+  injected instance the in-flight guard reads. No ``DagsterInstance.get()``
+  fallback exists anywhere: an uninjected instance fails loudly.
+
+* **D3 — the retry driver.** For every terminal-failed item (``ok=False``),
+  harvest mints round N+1 by registering the retry partition key on the
+  submitted space (``add_dynamic_partitions``). The round-N key stays
+  harvested and is NEVER re-materialized. The budget is
+  ``partitions.MAX_ROUNDS`` read straight out of the key — no attempt
+  column, no backoff timer (``MAX_ATTEMPTS`` is retired with the queue).
+
+The provider handle travels on the ``enrichment_submitted`` partition
+materialization the submit run emits (metadata ``handle``) — Dagster-native
+state, no ledger table (ADR-0013). Poll loops are BOUNDED: one pass, one
+poll per handle per run, capped handles, and a poll/retrieve error RAISES —
+never ``logger.warning``-and-continue forever.
+
+Gemini's direct ``gemini_batch`` call sites are DELETED (W-FREEZE / ADR-0014
+remediation): every provider call in this module goes through the seam
+adapter. The retired ``gemini_batch_harvest`` job and its sensor are gone —
+``gemini_batch.py`` survives on disk as inert code only.
 """
+
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import os
-
 from dagster import (
+    AssetKey,
     AssetMaterialization,
-    DefaultSensorStatus,
-    RunRequest,
-    SensorEvaluationContext,
-    SensorResult,
+    DynamicPartitionsDefinition,
     job,
     op,
-    sensor,
 )
 
-from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLiteResource
-from datalake.defs.enrichment import gemini_batch
-from datalake.defs.enrichment.analysis import write_gold
-from datalake.defs.enrichment.assets import ensure_gold_analyses
-from datalake.defs.enrichment.batch import (
-    MAX_ATTEMPTS,
-    _ensure_schema,
-    _now_iso,
-    batch_progress,
-    complete_item,
-    fail_item,
-    mark_complete,
-    set_gemini_batch_status,
-)
-from datalake.defs.enrichment.landing import (
-    WORKLOAD_CONTENT_CLASSIFICATION,
-    land_response,
+from datalake.defs.enrichment import landing, partitions
+from datalake.defs.enrichment.landing import WORKLOAD_CONTENT_CLASSIFICATION
+from datalake.defs.enrichment.partitions import (
+    HARVESTED_ASSET_NAME,
+    MAX_ROUNDS,
+    SUBMITTED_ASSET_NAME,
+    in_flight_partitions,
+    parse_partition_key,
 )
 from datalake.defs.enrichment.prompts import (
-    _DEFAULT_GEMINI_MODEL,
     CURRENT_PROMPT_HASH,
+    IG_GOLD_SCHEMA_VERSION,
 )
+from datalake.defs.enrichment.seam import ProviderAdapter
 
 logger = logging.getLogger("enrichment.harvest")
 
-# Per-chunk statuses that mean "the harvest run has already handled this chunk"
-# — aligned to the '|'-joined gemini_batch_name blob.
-_HANDLED = {"RETRIEVED", "JOB_FAILED"}
+#: Cheap-tick bound: at most this many provider handles are polled per
+#: harvest run. Anything beyond stays for the next run — the in-flight set
+#: is not lost, only deferred.
+_MAX_HANDLES_PER_RUN = 25
 
-# Cheap-tick bound: at most this many remote polls per sensor tick; the cursor
-# caches each polled state so a chunk is polled once per state transition.
-_MAX_POLLS_PER_TICK = 25
+#: Join key is PLATFORM, never ``domain`` (the ADR-0011 duplicate-name rule).
+#: One platform per workload; an unmapped workload fails loudly rather than
+#: landing rows with a guessed platform.
+_PLATFORM_BY_WORKLOAD: dict[str, str] = {
+    WORKLOAD_CONTENT_CLASSIFICATION: "instagram",
+}
 
-# ── Bronze landing provenance (ADR-0011) ────────────────────────────────────
-# Harvest = poll + retrieve + idempotent verbatim landing. The landing happens
-# BEFORE any parsing: the paid/stochastic part ends at bronze, so a schema or
-# mapping change is a bronze replay, never a re-bill. This path serves the
-# content-classification workload (gold_analyses).
-_PROVIDER = "gemini"
-_SCHEMA_VERSION = "1"
+_SUBMITTED_KEY = AssetKey(SUBMITTED_ASSET_NAME)
+_HARVESTED_KEY = AssetKey(HARVESTED_ASSET_NAME)
+
+_SUBMITTED_DYN: DynamicPartitionsDefinition = partitions.SUBMITTED_PARTITIONS
+_HARVESTED_DYN: DynamicPartitionsDefinition = partitions.HARVESTED_PARTITIONS
 
 
-def _land_verbatim(
-    root: str | os.PathLike[str] | None,
-    post_id: str,
-    platform: str,
-    run_id: str,
-    response_text: str | None,
-    ok: bool,
-    error_message: str | None,
-) -> int:
-    """Land ONE provider response (or failure) verbatim into bronze.
+# ── The harvested driver (ADR-0014 D2) ──────────────────────────────────────
 
-    Preconditions: `response_text` is the raw provider body (None only for a
-    failure that produced no body, landed as an empty string); `ok=False`
-    carries a non-null, non-empty `error_message`.
 
-    Postconditions: returns 1 if appended, 0 if the natural key
-    ``(post_id, platform, workload, prompt_hash, run_id)`` was already
-    landed — idempotent, never a duplicate. The provider text reaches the
-    landing UNMODIFIED (no trimming, no re-serialization).
+def report_harvested(
+    instance: partitions.PartitionSnapshot, keys: list[str]
+) -> None:
+    """Materialize ``enrichment_harvested`` per terminal submitted partition.
+
+    Mirrors the drain's ``_materialize_submitted_partitions``: register the
+    dynamic partitions, then report runless materializations on the SAME
+    injected instance the in-flight guard reads. Re-running with the same
+    keys is idempotent (a set membership, not a counter).
     """
-    return land_response(
-        post_id=post_id,
+    if not keys:
+        return
+    instance.add_dynamic_partitions(HARVESTED_ASSET_NAME, list(keys))
+    for key in keys:
+        instance.report_runless_asset_event(
+            AssetMaterialization(asset_key=_HARVESTED_KEY, partition=key)
+        )
+    logger.info("Harvested %d partition(s): %s", len(keys), sorted(keys))
+
+
+# ── The retry driver (ADR-0014 D3) ──────────────────────────────────────────
+
+
+def mint_retries(
+    instance: partitions.PartitionSnapshot, failed: dict[str, str]
+) -> list[str]:
+    """Mint round N+1 partition keys for terminal-failed posts.
+
+    The retry key is REGISTERED on the submitted dynamic-partition space so
+    the retry round is observable, but it is deliberately NOT materialized
+    here: materializing ``enrichment_submitted`` at mint time would put the
+    retry into the in-flight set before the drain admits the post, and the
+    D6 cycle narrative requires the retry round to be "not yet submitted"
+    when the next drain run derives it. The next drain run materializes the
+    submitted partition at the minted key.
+
+    The round-N key stays harvested — it is NEVER re-materialized.
+
+    Returns the list of minted retry keys. A post already at
+    ``round >= MAX_ROUNDS`` mints NOTHING: its bronze-landed (if any) row
+    without a conformed silver counterpart holds the anti-join check red —
+    the loud, derived replacement for the retired ``dead_letter`` table.
+    """
+    minted: list[str] = []
+    for key, error in sorted(failed.items()):
+        parsed = parse_partition_key(key)
+        retry_round = parsed.attempt_round + 1
+        if retry_round >= MAX_ROUNDS:
+            logger.error(
+                "Post %s exhausted retry budget (round %d >= MAX_ROUNDS=%d) "
+                "after: %s — no retry minted; the landed∖conformed anti-join "
+                "check owns its visibility.",
+                parsed.post_id, parsed.attempt_round, MAX_ROUNDS,
+                (error or "")[:200],
+            )
+            continue
+        retry_key = partitions.partition_key(
+            parsed.workload, retry_round, [parsed.post_id]
+        )
+        instance.add_dynamic_partitions(SUBMITTED_ASSET_NAME, [retry_key])
+        minted.append(retry_key)
+        logger.warning(
+            "Terminal failure on %s (round %d): %s — minted retry key %s",
+            parsed.post_id, parsed.attempt_round, (error or "")[:200], retry_key,
+        )
+    return minted
+
+
+# ── Handle discovery (Dagster-native, no ledger) ────────────────────────────
+
+
+def _latest_submitted_metadata(
+    instance: partitions.PartitionSnapshot, key: str
+) -> dict:
+    """Latest ``enrichment_submitted`` materialization metadata for a key."""
+    from dagster._core.event_api import AssetRecordsFilter
+
+    records_filter = AssetRecordsFilter(
+        asset_key=_SUBMITTED_KEY, asset_partitions=[key]
+    )
+    records = instance.fetch_materializations(records_filter, limit=1)
+    if not records.records:
+        return {}
+    materialization = records.records[0].asset_materialization
+    return {
+        name: value.value
+        for name, value in (materialization.metadata or {}).items()
+    }
+
+
+def discover_handles(
+    instance: partitions.PartitionSnapshot,
+) -> dict[str, str]:
+    """Map in-flight partition key → provider handle, from instance state.
+
+    The submit run records the provider job handle as metadata on the
+    ``enrichment_submitted`` materialization of every partition it covered
+    (a JSON array of provider job names via the adapter layer's one handle
+    codec). A partition whose latest submitted materialization carries no
+    handle has been enqueued by the drain but not yet submitted — it is
+    skipped here (the submit stage owns it).
+    """
+    handles: dict[str, str] = {}
+    for key in sorted(in_flight_partitions(instance)):
+        metadata = _latest_submitted_metadata(instance, key)
+        handle = metadata.get("handle")
+        if handle:
+            handles[key] = handle
+    return handles
+
+
+# ── Landing ─────────────────────────────────────────────────────────────────
+
+
+def land_result(
+    result,  # seam.Result
+    *,
+    run_id: str,
+    root: str | None = None,
+) -> str:
+    """Land ONE seam result verbatim into bronze; return its partition key.
+
+    ``result.custom_key`` IS the partition key (submit sets it so), so the
+    post, round, and workload derive from the result itself — no stored
+    mapping. ``ok=False`` results land verbatim too: failure is a landed
+    bronze row, never a dropped one.
+    """
+    parsed = parse_partition_key(result.custom_key)
+    platform = _PLATFORM_BY_WORKLOAD.get(parsed.workload)
+    if platform is None:
+        raise RuntimeError(
+            f"no platform mapping for workload {parsed.workload!r} "
+            f"(partition key {result.custom_key!r}) — refusing to land with "
+            "a guessed platform (join key is platform, never domain)"
+        )
+    landing.land_response(
+        post_id=parsed.post_id,
         platform=platform,
-        workload=WORKLOAD_CONTENT_CLASSIFICATION,
-        provider=_PROVIDER,
-        model=_DEFAULT_GEMINI_MODEL,
+        workload=parsed.workload,
+        provider=result.provider,
+        model=result.model,
         prompt_hash=CURRENT_PROMPT_HASH,
-        schema_version=_SCHEMA_VERSION,
+        schema_version=IG_GOLD_SCHEMA_VERSION,
         run_id=run_id,
-        response_text=response_text if response_text is not None else "",
-        ok=ok,
-        error_message=error_message,
+        response_text=result.response_text or "",
+        ok=bool(result.ok),
+        error_message=result.error,
         root=root,
     )
+    return result.custom_key
 
 
-def _land_job_failure(
-    ops: SQLiteResource,
-    job_id: int,
-    run_id: str,
-    state: str,
-    error: str,
-    root: str | os.PathLike[str] | None,
-) -> None:
-    """Land an ``ok=False`` bronze row for every item affected by a terminally
-    failed chunk, so ``landed ∖ conformed`` can distinguish "ran and failed"
-    from "never ran" (ADR-0011).
-    """
-    conn = ops.get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT payload FROM batch_items "
-            "WHERE job_id = ? AND status IN ('pending', 'processing')",
-            [job_id],
-        ).fetchall()
-    finally:
-        conn.close()
-    message = error or f"gemini batch chunk reached terminal state {state}"
-    for (payload,) in rows:
-        item = json.loads(payload)
-        _land_verbatim(
-            root,
-            item["post_id"],
-            item["domain"],
-            run_id,
-            None,
-            False,
-            message,
-        )
+# ── Harvest run core (one bounded pass) ─────────────────────────────────────
 
 
-# ── Gold upsert ──────────────────────────────────────────────────────────────
-# Consolidated (batch-native migration): ``write_gold`` lives in
-# ``analysis.py`` as the single implementation shared with the submit
-# path — the former byte-identical duplicate here is gone.
-
-
-def _dead_letter_insert(
-    ops: SQLiteResource, post_id: str, domain: str, error: str, attempts: int
-) -> None:
-    """Insert a failed item into dead_letter."""
-    conn = ops.get_connection()
-    try:
-        conn.execute(
-            """INSERT OR REPLACE INTO dead_letter
-               (post_id, domain, error, attempts, failed_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            [post_id, domain, error, attempts, _now_iso()],
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _resubmit_items_preserve_attempts(
-    ops: SQLiteResource, job_id: int, error: str
-) -> None:
-    """Return a job's processing items to pending (attempts preserved)."""
-    conn = ops.get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT id FROM batch_items WHERE job_id = ? AND status = 'processing'",
-            [job_id],
-        ).fetchall()
-    finally:
-        conn.close()
-    for (item_id,) in rows:
-        fail_item(ops, item_id, f"job failed: {error}", backoff=0, preserve_attempts=True)
-
-
-def apply_retrieved(
-    ops: SQLiteResource,
-    duckdb: DuckDBResource,
-    results: dict[str, dict],
+def harvest_pending(
+    instance: partitions.PartitionSnapshot,
+    adapter: ProviderAdapter,
     *,
-    run_id: str,
-    root: str | os.PathLike[str] | None = None,
-) -> tuple[int, int]:
-    """Land retrieved responses verbatim to bronze, write to gold, close items.
-
-    Per item (keyed by ``batch_items.id``): the response is landed VERBATIM
-    into ``bronze_enrichment_raw`` via ``land_response`` BEFORE any parsing
-    (idempotent by the natural key, ``run_id`` = the batch chunk name), then
-    the current gold behavior runs unchanged. Per-item errors route through
-    ``fail_item`` (retry with backoff) and ``dead_letter`` at ``MAX_ATTEMPTS``
-    — and land as ``ok=False`` bronze rows with a populated ``error_message``
-    so failures are visible to the ``landed ∖ conformed`` anti-join.
-    """
-    ensure_gold_analyses(duckdb)
-    processed = failed = 0
-    for custom_key, res in results.items():
-        conn = ops.get_connection()
-        try:
-            row = conn.execute(
-                "SELECT payload FROM batch_items WHERE id = ?", [custom_key]
-            ).fetchone()
-        finally:
-            conn.close()
-        if not row:
-            logger.warning("Response for unknown item %s — skipped", custom_key)
-            continue
-        payload = json.loads(row[0])
-        post_id = payload["post_id"]
-        domain = payload["domain"]
-        text = res.get("text")
-        ok = bool(res.get("ok"))
-        error = res.get("error")
-        # 1) Verbatim bronze landing FIRST — before any parsing of the
-        # provider body. No trimming, no re-serialization, no field extraction.
-        _land_verbatim(
-            root,
-            post_id,
-            domain,
-            run_id,
-            text,
-            ok,
-            error if not ok and error else None,
-        )
-        if not ok:
-            attempts = fail_item(ops, custom_key, error or "unknown error")
-            if attempts >= MAX_ATTEMPTS:
-                _dead_letter_insert(ops, post_id, domain, error or "", attempts)
-            failed += 1
-            continue
-        # 2) The pre-existing downstream behaviour: validate + write gold.
-        try:
-            json.loads(text)
-        except json.JSONDecodeError:
-            attempts = fail_item(ops, custom_key, "Gemini batch returned invalid JSON")
-            if attempts >= MAX_ATTEMPTS:
-                _dead_letter_insert(ops, post_id, domain, "invalid JSON", attempts)
-            failed += 1
-            continue
-        write_gold(duckdb, post_id, domain, text)
-        complete_item(ops, custom_key)
-        processed += 1
-    return processed, failed
-
-
-# ── Harvest run core (one pass) ──────────────────────────────────────────────
-
-
-def harvest_gemini_batches(
-    ops: SQLiteResource,
-    duckdb: DuckDBResource,
-    gemini: GeminiResource,
-    *,
-    root: str | os.PathLike[str] | None = None,
+    root: str | None = None,
+    max_handles: int = _MAX_HANDLES_PER_RUN,
 ) -> dict:
-    """Poll + retrieve every submitted Gemini chunk that reached a terminal
-    state, land each response verbatim to bronze, and apply results to gold.
+    """One harvest pass: poll every known handle to (at most) terminal,
+    land responses verbatim, report harvested partitions, mint retries.
 
-    One pass over the submitted chunks: retrieve terminal state, land the
-    raw provider body (idempotent, BEFORE any parsing), apply results to
-    gold (the op emits an ``AssetMaterialization`` for ``gold_analyses``
-    inside Dagster), and close the bookkeeping. Bounded and short; the
-    sensor re-triggers whenever more chunks terminate.
+    Bounded: at most ``max_handles`` handles polled, ONE poll per handle —
+    non-terminal handles simply wait for the next run. A poll or retrieve
+    error RAISES (fail loudly); it never warns-and-continues forever.
     """
-    _ensure_schema(ops)
-    ensure_gold_analyses(duckdb)
-    conn = ops.get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT id, gemini_batch_name, gemini_batch_status FROM batch_jobs "
-            "WHERE gemini_batch_name IS NOT NULL ORDER BY id"
-        ).fetchall()
-    finally:
-        conn.close()
-
-    total_completed = 0
-    total_failed = 0
-    for job_id, names_blob, statuses_blob in rows:
-        names = [n for n in names_blob.split("|") if n]
-        statuses = (statuses_blob or "").split("|") if statuses_blob else []
-        if len(statuses) != len(names):
-            statuses = ["SUBMITTED"] * len(names)
-        all_terminal = True
-        job_error: str | None = None
-        for i, name in enumerate(names):
-            if statuses[i] in _HANDLED:
-                continue
-            try:
-                job = gemini_batch.poll(gemini, name)
-            except Exception as exc:
-                logger.warning("Poll failed for %s: %s", name, exc)
-                all_terminal = False
-                continue
-            state = gemini_batch.job_state(job)
-            statuses[i] = state
-
-            if not gemini_batch.is_terminal(state):
-                all_terminal = False
-                continue
-
-            if state != "SUCCEEDED":
-                error = str(getattr(job, "error", "") or "")
-                logger.error("Gemini batch job %s %s: %s", name, state, error[:200])
-                statuses[i] = "JOB_FAILED"
-                job_error = error[:500]
-                _land_job_failure(ops, job_id, name, state, error[:500], root)
-                _resubmit_items_preserve_attempts(ops, job_id, error)
-                continue
-
-            # SUCCEEDED — retrieve responses for this chunk only.
-            try:
-                results = gemini_batch.retrieve(gemini, name)
-            except Exception as exc:
-                logger.warning("Retrieve failed for %s: %s", name, exc)
-                all_terminal = False
-                continue
-
-            processed, failed = apply_retrieved(
-                ops, duckdb, results, run_id=name, root=root
-            )
-            total_completed += processed
-            total_failed += failed
-            statuses[i] = "RETRIEVED"
-
-        set_gemini_batch_status(ops, job_id, "|".join(statuses), job_error)
-
-        if all_terminal:
-            progress = batch_progress(ops, job_id)
-            remaining = progress["pending"] + progress["processing"]
-            if remaining == 0:
-                mark_complete(ops, job_id)
-    return {"completed": total_completed, "failed": total_failed}
-
-
-# ── Dagster op + job ─────────────────────────────────────────────────────────
-
-
-@op(tags={"adr": "0008", "seam": "enrichment-api"})
-def harvest_gemini_batches_op(context, ops, duckdb, gemini) -> dict:
-    """Apply terminal gemini-batch chunks to gold_analyses (short, bounded)."""
-    result = harvest_gemini_batches(ops, duckdb, gemini)
-    if result["completed"]:
-        context.log_event(
-            AssetMaterialization(
-                asset_key="gold_analyses",
-                metadata={
-                    "completed": result["completed"],
-                    "failed": result["failed"],
-                    "writer": "gemini_batch_harvest",
-                },
-            )
+    handles = discover_handles(instance)
+    keys_by_handle: dict[str, list[str]] = {}
+    for key, handle in handles.items():
+        keys_by_handle.setdefault(handle, []).append(key)
+    polled = sorted(keys_by_handle)
+    if len(polled) > max_handles:
+        logger.warning(
+            "Harvest capped at %d of %d handles this run",
+            max_handles, len(polled),
         )
+        polled = polled[:max_handles]
+
+    total_landed = 0
+    total_harvested = 0
+    total_minted = 0
+    for handle in polled:
+        keys = keys_by_handle[handle]
+        # Fail loudly on transport errors — a swallowed poll error is the
+        # silent-stall defect this loop exists to kill.
+        state = adapter.normalize_state(adapter.poll(handle))
+        if not adapter.is_terminal(state):
+            logger.info("Handle %s still %s (%d partition(s))", handle, state, len(keys))
+            continue
+        results = adapter.retrieve(handle)
+        landed_keys: list[str] = []
+        for result in results:
+            landed_keys.append(land_result(result, run_id=handle, root=root))
+            total_landed += 1
+        # Harvest is all-or-nothing per provider job (ADR-0012): every
+        # in-flight partition the retrieved results cover flips together.
+        terminal_keys = [k for k in landed_keys if k in handles]
+        report_harvested(instance, terminal_keys)
+        total_harvested += len(terminal_keys)
+        failures = {
+            r.custom_key: (r.error or "unknown failure")
+            for r in results
+            if not r.ok and r.custom_key in handles
+        }
+        total_minted += len(mint_retries(instance, failures))
+
+    return {
+        "landed": total_landed,
+        "harvested": total_harvested,
+        "retried": total_minted,
+        "handles_polled": len(polled),
+        "handles_pending": len(keys_by_handle) - len(polled),
+    }
+
+
+# ── Dagster op + job ────────────────────────────────────────────────────────
+
+
+@op(tags={"adr": "0014", "seam": "enrichment-api"})
+def harvest_enrichment_op(context) -> dict:
+    """One bounded harvest pass over the seam (short, bounded)."""
+    from datalake.defs.enrichment.adapters import detect_provider
+    from datalake.defs.enrichment.seam import build_adapter
+
+    adapter = build_adapter(detect_provider())
+    if not adapter.health():
+        raise RuntimeError(
+            f"enrichment provider '{adapter.name}' failed its readiness gate "
+            "— failing loudly, never a quiet 'nothing to do' (US-EENG-2)"
+        )
+    result = harvest_pending(context.instance, adapter)
     context.log.info(
-        "Harvest pass: %d completed, %d failed",
-        result["completed"],
-        result["failed"],
+        "Harvest pass: %d landed, %d harvested, %d retry key(s) minted "
+        "(%d/%d handles polled)",
+        result["landed"], result["harvested"], result["retried"],
+        result["handles_polled"],
+        result["handles_polled"] + result["handles_pending"],
     )
     return result
 
 
-@job(name="gemini_batch_harvest")
-def gemini_batch_harvest():
-    """Retrieve terminal gemini-batch chunks → gold_analyses."""
-    harvest_gemini_batches_op()
-
-
-# ── Harvest sensor ───────────────────────────────────────────────────────────
-
-
-def _harvestable_jobs(ops: SQLiteResource) -> list[tuple[int, list[str], list[str]]]:
-    """Jobs with persisted Gemini chunk names that are not yet complete."""
-    _ensure_schema(ops)
-    conn = ops.get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT id, gemini_batch_name, gemini_batch_status FROM batch_jobs "
-            "WHERE gemini_batch_name IS NOT NULL AND status != 'complete' "
-            "ORDER BY id"
-        ).fetchall()
-    finally:
-        conn.close()
-    out = []
-    for job_id, names_blob, statuses_blob in rows:
-        names = [n for n in names_blob.split("|") if n]
-        statuses = (statuses_blob or "").split("|") if statuses_blob else []
-        if len(statuses) != len(names):
-            statuses = ["SUBMITTED"] * len(names)
-        out.append((job_id, names, statuses))
-    return out
-
-
-@sensor(
-    job=gemini_batch_harvest,
-    default_status=DefaultSensorStatus.STOPPED,
-    minimum_interval_seconds=300,
-)
-def gemini_batch_harvest_sensor(
-    context: SensorEvaluationContext,
-    ops: SQLiteResource,
-    gemini: GeminiResource,
-) -> SensorResult:
-    """Discover terminal gemini-batch jobs and request a harvest run.
-
-    Cursor: ``{chunk_name: last_polled_state}`` — makes each tick cheap
-    (already-terminal chunks are not re-polled) and resumable across daemon
-    restarts (job names themselves persist in ops.sqlite, so a restart
-    re-discovers in-flight jobs even with a fresh cursor).
-    """
-    try:
-        cursor: dict = json.loads(context.cursor) if context.cursor else {}
-    except (json.JSONDecodeError, TypeError):
-        cursor = {}
-    new_cursor = dict(cursor)
-    polls = 0
-    requests: list[RunRequest] = []
-
-    for job_id, names, statuses in _harvestable_jobs(ops):
-        signature = list(statuses)
-        needs_harvest = False
-        for i, name in enumerate(names):
-            if statuses[i] in _HANDLED:
-                continue
-            cached = cursor.get(name)
-            if cached and gemini_batch.is_terminal(cached):
-                # Known-terminal from a previous tick; request without polling.
-                signature[i] = cached
-                needs_harvest = True
-                continue
-            if polls >= _MAX_POLLS_PER_TICK:
-                continue
-            try:
-                job = gemini_batch.poll(gemini, name)
-                polls += 1
-            except Exception as exc:
-                logger.warning("Sensor poll failed for %s: %s", name, exc)
-                continue
-            state = gemini_batch.job_state(job)
-            new_cursor[name] = state
-            signature[i] = state
-            if gemini_batch.is_terminal(state):
-                needs_harvest = True
-        if needs_harvest:
-            # run_key changes whenever the per-chunk status signature changes;
-            # Dagster dedups identical keys, so a terminal chunk requests
-            # exactly one harvest run (until its status advances — e.g. the
-            # run marks it RETRIEVED or a failed chunk triggers resubmission).
-            sig = hashlib.md5("|".join(signature).encode()).hexdigest()[:8]
-            requests.append(
-                RunRequest(
-                    run_key=f"harvest-{job_id}-{sig}",
-                    tags={"batch_job_id": str(job_id)},
-                )
-            )
-
-    context.update_cursor(json.dumps(new_cursor, sort_keys=True))
-    return SensorResult(run_requests=requests)
+@job(name="enrichment_harvest")
+def enrichment_harvest_job():
+    """Poll terminal enrichment jobs → land verbatim → report harvested →
+    mint retries."""
+    harvest_enrichment_op()

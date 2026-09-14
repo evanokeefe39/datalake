@@ -1,8 +1,9 @@
 """Batch-native growth-facets enrichment — facets → ``gold_growth_facets``.
 
-Runs on the standalone **qwen-batch service** (``qwen_client.py``), NOT the
-Gemini BATCH API. The IG-gold enrichment flow (``analysis.py`` /
-``gemini_batch.py``) is a separate target and still uses Gemini.
+Runs on the standalone **qwen-batch service** (reached ONLY through the
+seam's ``service_backed`` adapter — see ``adapters.py``), NOT the
+Gemini BATCH API. The IG-gold enrichment flow (``analysis.py`` via the
+direct-batch module) is a separate target and still uses Gemini.
 
 Flow (one-shot CLI driver, ``scripts/enrich_facets_batch.py``):
 
@@ -13,9 +14,11 @@ Flow (one-shot CLI driver, ``scripts/enrich_facets_batch.py``):
           (media_paths.media_urls_to_local_paths — the SERVICE frame-samples
           video files with ffmpeg on its own host; the client only hands it
           absolute paths). Text mode sends images=[] (caption only).
-    → submit_facets_batch    (check_health LOUDLY first — US-EENG-2 — then
-          ONE qwen service job via qwen_client.submit_job; the returned
-          service job id IS the in-flight record — ADR-0013: NO ledger)
+    → submit_facets_batch    (the LOUD /health gate — US-EENG-2 — runs at
+          the adapter boundary, then ONE qwen service job via
+          ``seam.build_adapter("service_backed")`` with max_tokens/mode in
+          ``JobSpec``; the returned service job id IS the in-flight record
+          — ADR-0013: NO ledger)
     → wait_for_facets_batches (poll ``GET /jobs/{id}`` via the seam adapter
           to terminal, bounded)
     → harvest_facets_batches (retrieve via the seam → land VERBATIM into
@@ -46,7 +49,7 @@ import os
 import time
 
 from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.enrichment import facets, qwen_client, seam
+from datalake.defs.enrichment import facets, seam
 from datalake.defs.enrichment.growth_facets_schema import (
     GROWTH_FACETS_SCHEMA_VERSION,
     VISUAL_FACET_FIELDS,
@@ -307,30 +310,28 @@ def submit_facets_batch(
     ADR-0013: NO placeholder or ledger row is written. The returned service
     job id IS the in-flight record; the service owns the job store and the
     caller (Dagster partition set or the operator) carries the id until
-    harvest. ``max_tokens`` is per-mode, so submit stays on the HTTP client
-    (the seam adapter's contract is model-only); job-state reads go through
-    the seam (``wait_for_facets_batches`` / ``harvest_facets_batches``).
+    harvest. ``max_tokens`` and ``mode`` travel in ``JobSpec`` at submit
+    time — no constructor kwargs; job-state reads go through the seam
+    (``wait_for_facets_batches`` / ``harvest_facets_batches``).
     """
     if not items:
         raise ValueError("items must not be empty")
     if mode not in _MODE_WORKLOAD:
         raise ValueError(f"unknown mode: {mode}")
-    qwen_client.check_health(base_url)
+    adapter = _service_adapter(base_url, model)
     max_tokens = (
         facets.UNIVERSAL_MAX_OUTPUT_TOKENS if mode == "visual" else 1024
     )
-    job_id = qwen_client.submit_job(
-        base_url,
+    job_id = adapter.submit(
         [
-            {
-                "custom_key": r["custom_key"],
-                "prompt": r["prompt"],
-                "images": r.get("images") or [],
-            }
+            seam.Item(
+                custom_key=r["custom_key"],
+                prompt=r["prompt"],
+                images=tuple(r.get("images") or []),
+            )
             for r in items
         ],
-        model=model,
-        max_tokens=max_tokens,
+        job_spec=seam.JobSpec(max_tokens=max_tokens, mode=mode),
     )
     logger.info(
         "Facets batch (%s): %d items → qwen job %s", mode, len(items), job_id

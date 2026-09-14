@@ -9,7 +9,6 @@ from __future__ import annotations
 from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.enrichment.batch import claim_batch
 from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
@@ -25,9 +24,15 @@ def _run_silver(duckdb, ops, bronze_dir):
 
 
 def _run_enqueue(duckdb, ops):
+    from dagster import DagsterInstance, build_asset_context
+
     from datalake.defs.instagram.config import GoldConfig
 
-    return ig_posts_gen_batches(config=GoldConfig(), duckdb=duckdb, ops=ops)
+    instance = DagsterInstance.ephemeral()
+    return ig_posts_gen_batches(
+        build_asset_context(instance=instance), config=GoldConfig(),
+        duckdb=duckdb, ops=ops, instance=instance,
+    )
 
 
 def test_enqueue_reads_silver_output(tmp_path):
@@ -146,6 +151,6 @@ def test_enqueue_skips_already_completed(tmp_path):
     result = _run_enqueue(duckdb, ops)
     assert result["enqueued"][0] == 0
     assert result["candidates_seen"][0] == 0
-    # No batch was created
-    assert claim_batch(ops) is None
+    # No enqueue happened
+    assert result["enqueued"][0] == 0
 

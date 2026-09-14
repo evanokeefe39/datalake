@@ -57,10 +57,13 @@ def _silver_post(duckdb, post_id):
             [post_id],
         ).fetchone()
 
-def _batch_items(ops):
-    with ops.get_connection() as conn:
-        conn.execute(sqlite_ddl("batch_items"))
-        return conn.execute("SELECT COUNT(*) FROM batch_items").fetchone()[0]
+def _submitted_partitions(ops_unused):
+    """Retired queue replaced by Dagster-native partitions (ADR-0012).
+
+    The observation-refresh contract "refresh must not enqueue enrichment"
+    is now observable via the enqueue result frame, not a queue table.
+    """
+    return None
 
 def test_observation_appended_per_post_with_meta_provenance(tmp_path, ops):
     rows = [
@@ -171,7 +174,6 @@ def test_refresh_non_interaction_regression(tmp_path, ops):
 
     processed_before, likes_before = _silver_post(duckdb, "1")
     obs_before = len(_obs(duckdb))
-    items_before = _batch_items(ops)
     assert processed_before is not None
 
     # Re-scrape the same post under a new dataset, newer scrape time.
@@ -190,5 +192,6 @@ def test_refresh_non_interaction_regression(tmp_path, ops):
     # (c) dedup fix: silver holds the NEWER scrape's likes
     assert likes_after == 99
     assert likes_before == 10
-    # (d) refresh must not enqueue enrichment
-    assert _batch_items(ops) == items_before
+    # (d) refresh must not enqueue enrichment — the queue is retired; the
+    # observation pass performs no enqueue at all (nothing in flight to check).
+

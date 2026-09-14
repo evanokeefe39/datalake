@@ -30,9 +30,15 @@ def _run_silver(duckdb, ops, bronze_dir):
 
 
 def _run_enqueue(duckdb, ops_db):
+    from dagster import DagsterInstance, build_asset_context
+
     from datalake.defs.instagram.config import GoldConfig
 
-    return ig_posts_gen_batches(config=GoldConfig(), duckdb=duckdb, ops=ops_db)
+    instance = DagsterInstance.ephemeral()
+    return ig_posts_gen_batches(
+        build_asset_context(instance=instance), config=GoldConfig(),
+        duckdb=duckdb, ops=ops_db, instance=instance,
+    )
 
 
 def _run_profile_dimension(duckdb, ops):
@@ -119,10 +125,5 @@ def test_ad_hoc_run_sequence(tmp_path):
     result = _run_enqueue(duckdb_res, ops_db)
     assert result["enqueued"][0] == 1
 
-    # Step 4: Verify queue has the item
-    from datalake.defs.enrichment.batch import claim_batch
-
-    batch = claim_batch(ops_db)
-    assert batch is not None
-    assert len(batch["payloads"]) == 1
-    assert json.loads(batch["payloads"][0])["post_id"] == "p1"
+    # Step 4: Verify the Dagster-native enqueue happened (result frame)
+    assert result["in_flight_suppressed"][0] == 0
