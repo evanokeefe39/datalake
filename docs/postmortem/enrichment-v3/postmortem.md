@@ -2,15 +2,34 @@
 
 Independent root-cause analysis, 2026-09-13. Branch `feat/enrichment-v3-phase-1-seam-and-landing`
 (6 commits since `main`). Question: **why did the implementing subagents fail to build
-to the given design and plan?** This is a causal analysis, not a defect list — the
-defects themselves are cataloged in `review-interfaces.md`,
-`review-architecture-soundness.md`, and `review-round-semantics.md`, which this
-document builds on and does not duplicate.
+to the given design and plan?** This is a causal analysis, not a defect list — the defects
+themselves are cataloged in
+[`reviews/interfaces.md`](reviews/interfaces.md),
+[`reviews/architecture-soundness.md`](reviews/architecture-soundness.md), and
+[`reviews/round-semantics.md`](reviews/round-semantics.md), which this document builds on and
+does not duplicate.
 
-**Headline verdict: the orchestrator's decomposition and verification process was the
-dominant cause. The workers executed their dispatches competently; the dispatches and
-the phase-acceptance instrument were structurally incapable of producing an integrated
-pipeline.** Detail below; summary in §5.
+> **READ THE CORRECTIONS BEFORE QUOTING THIS DOCUMENT.** This analysis was reviewed by a
+> four-seat expert panel and the adversarial seat overturned parts of it. Three findings were
+> revised after the fact and the revisions are load-bearing:
+>
+> - **§9 retracts a claim in §8.4.** The assertion that "no unit was ever briefed to migrate the
+>   seam call sites" was an inference from the commit trail presented as a dispatch record. The
+>   evidence does not discriminate assignment failure from a half-executed brief. **The
+>   orchestrator-vs-worker verdict for that defect is UNDETERMINED.**
+> - **The headline verdict below is overstated.** "Per-component dispatch plus per-component
+>   acceptance" is **non-discriminating**: it is present in every migration this process has run,
+>   including successful ones. The discriminating form is the compound — unowned contracts **and**
+>   no acceptance gate capable of observing a real run (`reviews/…`; see `analysis/learnings-mece.md`
+>   §6). The proximate cause is **acceptance**, not dispatch shape.
+> - **§10 is the load-bearing section.** The rules were not missing — they were not *binding*.
+>
+> Section §5 states the original verdict; read §9 and §10 with it.
+
+**Original headline verdict, retained for the record: the orchestrator's decomposition and
+verification process was the dominant cause. The workers executed their dispatches competently;
+the dispatches and the phase-acceptance instrument were structurally incapable of producing an
+integrated pipeline.** Detail below; summary in §5, and the corrections in §9–§10.
 
 ---
 
@@ -475,3 +494,22 @@ Five identifiable reasons, each evidenced:
   producer/consumer pairing) need a home, because no agent config owns the orchestrator.
 - The gap is **scope**: the config must require a unit to name the consumer of what it *creates*,
   not only the consumers of what it *changes*.
+
+---
+
+## 11. What follows this document
+
+This post-mortem diagnoses. These carry the diagnosis forward:
+
+| Document | What it adds |
+|---|---|
+| [`analysis/learnings-mece.md`](analysis/learnings-mece.md) | The **five MECE controls** (specification / accountability / interface / sequencing / verification) with every defect mapped to the control it was missing. The artifact the remediation is built against. |
+| [`analysis/harness-coverage-and-hooks.md`](analysis/harness-coverage-and-hooks.md) | Rule-vs-hook coverage **per agent**, the hook specs, and the finding that coverage is per-agent — rules scoped `[dlc-worker, main]` never reach `sdlc-worker`. |
+| [`plans/agent-improvement-plan.md`](plans/agent-improvement-plan.md) | Concrete changes to `dlc-worker`, `sdlc-worker`, `reviewer`, `implementer`, `frontend`, plus the orchestrator gap (there is no orchestrator agent — the obligations belong in `AGENTS.md` and rules scoped `agents: [main]`). |
+| [`plans/remediation-plan.md`](plans/remediation-plan.md) | 10 units with a declared dependency graph, a hybrid recommendation (validation spike first), and the 9,576 real `gold_analyses` rows explicitly protected. |
+| [`analysis/three-state-articulation.md`](analysis/three-state-articulation.md) + [`diagrams/`](diagrams/) | OLD (working) → CURRENT (incorrect) → TARGET, as diagrams. State 2 makes the disconnected halves visible. |
+| [`audits/`](audits/) | The evidence this document rests on: every criterion checked against the **live** database, not the branch. |
+| [`panel/`](panel/) | The four-seat review that produced the corrections above. `panel/data.md` rules the original framing "unfair as stated"; `panel/adversary.md` applies the discriminating-vs-non-discriminating test. |
+
+**If you read one thing after this:** `analysis/learnings-mece.md`. It is the shortest complete
+statement of what was missing, and it is the only artifact the remediation plan was written from.

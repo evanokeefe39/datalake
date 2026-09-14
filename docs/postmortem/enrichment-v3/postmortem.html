@@ -823,19 +823,32 @@ footer{border-top:1px solid var(--line-soft);margin-top:96px;padding:28px 0 48px
   <h2><span class="no">06</span>Evidence appendix</h2>
   <p class="lede">Open these files for the full detail.</p>
   <ul class="evidence rv">
-    <li>docs/postmortem/enrichment-v3/postmortem.md<span>the root-cause analysis (301 lines)</span></li>
+    <li>docs/postmortem/enrichment-v3/postmortem.md<span>the root-cause analysis (515 lines, incl. the panel corrections)</span></li>
     <li>docs/postmortem/enrichment-v3/audits/p1-p2.md<span>18 criteria, phases 1-2</span></li>
     <li>docs/postmortem/enrichment-v3/audits/p3-p4.md<span>8 criteria, phases 3-4</span></li>
     <li>docs/postmortem/enrichment-v3/audits/p5-p6.md<span>10 criteria, phases 5-6</span></li>
     <li>docs/postmortem/enrichment-v3/reviews/architecture-soundness.md</li>
     <li>docs/postmortem/enrichment-v3/reviews/interfaces.md</li>
     <li>docs/postmortem/enrichment-v3/reviews/round-semantics.md</li>
+    <li>docs/postmortem/enrichment-v3/panel/software.md<span>panel: overstatement and missed patterns</span></li>
+    <li>docs/postmortem/enrichment-v3/panel/data.md<span>panel: "unfair as stated" — ADR-0012 is underspecified</span></li>
+    <li>docs/postmortem/enrichment-v3/panel/process.md<span>panel: the proximate cause is acceptance</span></li>
+    <li>docs/postmortem/enrichment-v3/panel/adversary.md<span>panel: the discriminating-vs-non-discriminating test</span></li>
+    <li>docs/postmortem/enrichment-v3/analysis/learnings-mece.md<span>the five MECE controls — read this one next</span></li>
+    <li>docs/postmortem/enrichment-v3/analysis/harness-coverage-and-hooks.md<span>rule-vs-hook coverage per agent</span></li>
+    <li>docs/postmortem/enrichment-v3/plans/agent-improvement-plan.md<span>changes to the agents</span></li>
+    <li>docs/postmortem/enrichment-v3/plans/remediation-plan.md<span>10 units, the fix</span></li>
+    <li>docs/postmortem/enrichment-v3/diagrams/state2-current.html<span>the failure, drawn</span></li>
     <li>tasks/plans/enrichment-v3-migration-master.md<span>the plan</span></li>
   </ul>
   <div class="honesty rv">
     <span class="tag">Closing honesty note</span>
-    The architecture is sound. The design does not need to change. The implementation drifted
-    from the design, and the process could not see the drift. Keep the design. Fix the process.
+    The design does not need to change — but "the architecture is sound" is too generous, and the
+    expert panel said so. ADR-0011, the statics (layering, the seam, the medallion shape), is
+    sound. ADR-0012, the dynamics (retry, quarantine, the harvested transition), is
+    <strong>underspecified</strong>: it names mechanisms but not their drivers. An underspecified
+    dynamic surfaces as apparent "implementation drift" under any dispatch quality. So: keep the
+    statics, finish the dynamics, and fix the process that could not see either.
   </div>
 </section>
 <footer>2026-09-13 · enrichment v3 migration post-mortem</footer>
