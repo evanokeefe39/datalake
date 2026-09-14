@@ -125,6 +125,67 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   lands in quarantine, is read by its named consumer, and redrives. **[HUMAN APPROVAL: the
   spec sign-off gates the fork decision.]**
 
+### W-FREEZE — Freeze the old write path (decided 2026-09-14: cut over, bin Gemini *usage*)
+
+Owner decision: stop maintaining the intermediate stages. Rather than run the old and new
+paths side by side through a long migration, **freeze the old write path and cut over.**
+Gemini-batch *usage* is retired; the Gemini *code* (the client and the `DirectBatchAdapter`)
+stays as a supported seam provider per ADR-0008/0009.
+
+**This is a precondition, ordered BEFORE W1, not a step inside the migration** — the spike and
+W6's reconciliation both measure against `gold_analyses`, and a baseline that can still move is
+not a baseline.
+
+- **What**: (1) Disable/retire the Dagster entry points that drive the old path —
+  `submit_gemini_batches_job` (`submit.py:227`) and `gemini_batch_harvest_sensor`
+  (`harvest.py:419`) — so nothing can write `gold_analyses` again. (2) Disposition the stuck
+  artifacts: `batch_jobs` id=6 has sat in `processing` since 2026-09-05 and will never complete;
+  record it as abandoned. The 776 `dead_letter` rows are terminal history for a retired path —
+  leave them, they are W9 archive material. (3) Record the frozen `gold_analyses` count as the
+  migration baseline.
+- **Why it is safe (measured 2026-09-14, not assumed)**: the old path is **already dormant**.
+  Zero instigator records in the Dagster instance (nothing enabled); last `batch_jobs` write
+  2026-09-05, last `dead_letter` 2026-09-08, last `facets_batch_jobs` 2026-09-09. This unit
+  formalizes an existing fact rather than stopping a running pipeline — which is exactly why it
+  is cheap and why leaving it implicit is fragile (nothing but convention stops a manual trigger).
+- **Files**: `src/datalake/defs/enrichment/submit.py`, `src/datalake/defs/enrichment/harvest.py`,
+  `src/datalake/defs/enrichment/__init__.py`, `data/ops.sqlite` (via script only).
+- **Deps**: W0 (so the retirement is recorded against the spec). **Blocks W1** — the freeze
+  precedes any measurement.
+- **Control**: C4 (sequencing) + C1 (the old path's end state must be declared, not inferred).
+- **Acceptance (round-trip)**: the entry points are gone from the Dagster definitions
+  (observed by registry listing, not by reading source); a manual attempt to write
+  `gold_analyses` fails loudly rather than silently succeeding; the frozen count is recorded
+  with the date it was read. Then: `gold_analyses` count is unchanged after 24h of normal
+  operation — a cheap empirical proof that nothing writes it.
+
+**Consequence 1 — W5 shrinks by ~80%.** Measured against the working tree: of the bypass call
+sites the plan enumerated, **9 are Gemini and only 2 are qwen**
+(`facets_batch.py:318,322`). Binning Gemini usage converts nine *migrations* into nine
+*deletions*, because those sites are the bypass being removed anyway:
+
+| Site | Was (W5) | Becomes |
+|---|---|---|
+| `submit.py:152` (`gemini_batch.submit`) | migrate to the seam | **delete** with the retired entry point |
+| `harvest.py:311,316,319,334` (poll/job_state/is_terminal/retrieve) | migrate | **delete** |
+| `harvest.py:446,454,459,462` (second poll path) | migrate | **delete** |
+| `facets_batch.py:318,322` (`qwen_client`) | migrate to the seam | **migrate** (unchanged — this is the live path) |
+
+The seam's `DirectBatchAdapter` already wraps Gemini, so the *capability* is not lost — only the
+direct, un-seamed calls. That is the same thing W5 was trying to achieve, reached by deletion
+instead of adaptation. W5 keeps its CI grep (provider names only inside adapter modules) and
+its qwen transport consolidation; it loses the nine-site migration.
+
+**Consequence 2 — the coexistence window closes.** W2/W3 no longer have to keep a live old write
+path green while building the new one, and the "6 live `batch_jobs` rows reconciled before the
+read-path dies" item in §3 becomes a static reconciliation against a frozen set rather than a
+race. W6's reconciliation identity now has a stable right-hand side.
+
+**Consequence 3 — Gemini remains a supported provider, unused.** `gemini_batch.py` and
+`DirectBatchAdapter` stay; `build_adapter("gemini")` must still construct. Guard it with a test
+asserting the adapter is *constructible but not wired into any Dagster entry point* — so the
+provider is available for a future swap without remaining a live cost or a drift source.
+
 ### W1 — Validation spike (the fork instrument)
 - **What**: One real post (multi-image, one workload) driven end-to-end against the real
   providers: drain enqueue → submit through the seam → verbatim bronze landing → conform (zero
@@ -265,12 +326,18 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   Retry: a forced terminal failure produces a round-1 key, distinct from round-0, and the guard
   admits it without double-submitting round 0.
 
-### W5 — Seam call-site migration (the 12 bypasses) + one transport per service
-- **What**: Route all 12 sites through the seam: `submit.py:152,170`;
-  `harvest.py:311,316,319,334,446,454,459,462`; `facets_batch.py:318,322`. Fix the
+### W5 — Seam call-site migration + one transport per service  *(shrunk by W-FREEZE)*
+- **What**: Measured against the working tree, the "12 bypasses" are **9 Gemini and 2 qwen**.
+  W-FREEZE retires Gemini *usage*, so the nine Gemini sites are **deleted with their entry
+  points, not migrated** (§ W-FREEZE, Consequence 1): `submit.py:152`;
+  `harvest.py:311,316,319,334`; `harvest.py:446,454,459,462`. What remains to *migrate* is the
+  live qwen path: `facets_batch.py:318,322` routed through the seam, plus fixing the
   `max_tokens` interface defect by adding `JobSpec` to the seam's submit verb (the documented
-  bypass reason). Delete `qwen_client`'s direct HTTP path (`qwen_client.py` submit/poll/retrieve
-  usage) so `ServiceBackedAdapter` is the only qwen transport with one terminal predicate.
+  bypass reason), and consolidating `qwen_client`'s direct HTTP path so `ServiceBackedAdapter`
+  is the only qwen transport with one terminal predicate.
+- **Note the ordering interaction**: W-FREEZE deletes the Gemini entry points; W5 deletes what
+  remains of their call sites. Doing W5 first would mean migrating nine sites that W-FREEZE then
+  deletes — the double work this unit exists to avoid. **W-FREEZE precedes W5.**
 - **Files**: `src/datalake/defs/enrichment/submit.py`, `src/datalake/defs/enrichment/harvest.py`, `src/datalake/defs/enrichment/facets_batch.py`, `src/datalake/defs/enrichment/seam.py`, `src/datalake/defs/enrichment/qwen_client.py` (delete/retire).
 - **Deps**: W3 (submit already rewired; avoids conflicting edits to `submit.py`). Blocks W1-grade
   real runs of the converged path; parallel with W4 only if W4's `harvest.py` edits are
@@ -359,15 +426,18 @@ specification / C2 accountability / C3 interface / C4 sequencing / C5 verificati
   export is not a copy, and a copy that was never counted is not safe. Record each export path
   + measured count in the W9 log.
 - **The gate is SELF-REFERENTIAL: export count == live count at archive time.** It is
-  deliberately NOT a comparison against the numbers below, and the distinction matters:
-  `gold_analyses` is still a **live write target** today (`analysis.py:179` does
-  `INSERT INTO gold_analyses`; the gemini-batch path "remains until its own migration"), so it
-  will have GROWN by the time W9 runs. A frozen `== 9,576` would fail the retirement on a
-  phantom mismatch. Use these only as a **drift signal** — a dated baseline snapshot:
+  deliberately NOT a comparison against the numbers below. **W-FREEZE removes the growth source**
+  (`analysis.py:179` does `INSERT INTO gold_analyses` — that path is retired by W-FREEZE), so
+  the count should be static from the freeze to W9. The self-referential form is kept anyway as
+  defence in depth: the freeze is a convention enforced by removing entry points, and a gate that
+  depends on a convention holding for weeks is a gate with a hidden assumption. A frozen
+  `== 9,576` would fail on any drift — a manual trigger, a restored job, a backfilled row — and
+  report it as an archive error rather than as what it is. Use these only as a **drift signal** —
+  a dated baseline snapshot:
   `gold_analyses` 9,576 · `dead_letter` 776 · `gold_growth_facets` 205 · `facets_batch_jobs` 4
-  (read from the live DBs 2026-09-14). If the live count differs at W9, that is expected for
-  `gold_analyses` and is information (the corpus grew), not a failure — but it means W6's
-  reconciliation must have run against the grown count, so re-check W6 before archiving.
+  (read from the live DBs 2026-09-14). If the live count differs at W9, it means something wrote
+  the table after W-FREEZE, which contradicts that unit's acceptance. Treat it as a W-FREEZE regression
+  first and a reconciliation problem second: re-check W6 before archiving.
   Note the ordering that makes this safe: `gold_analyses` must NOT be archived-and-dropped
   before W6 migrates its rows and W7 proves parity against it — W7's acceptance is a side-by-side
   diff with the live table. Sequence is W6 migrate → W7 parity → archive → approval → drop.
@@ -427,13 +497,14 @@ new tables only).
 > re-run; the marts and serving views expose it; harvest reaches terminal state and the
 > `enrichment_harvested` producer materializes; drain run 2 re-enqueues nothing in-flight and
 > nothing already-conformed. Meanwhile `gold_analyses` is still intact — it holds every row it
-> held when the run started, and is never smaller (measure it before and after; the corpus is
-> live and may legitimately GROW mid-run via the still-active gemini-batch path, so assert
-> non-shrinkage, never equality) — and the dashboard serves coherently throughout.
+> held when the run started, and is never smaller (measure before and after; assert
+> non-shrinkage, never equality — after W-FREEZE it should in fact be *unchanged*, and a change
+> is a W-FREEZE regression rather than expected corpus growth) — and the dashboard serves
+> coherently throughout.
 
 **Mechanical non-vacuity checks** (each can fail, each targets a specific vacuity found in the
 audits):
-1. **Reconciliation identity**: `count(silver_content_classification) + count(silver_enrichment_quarantine) == count(gold_analyses)` at migration time, every legacy row accounted (C5 — replaces the unmet C5.4). **Self-referential, not `== 9,576`**: `gold_analyses` is still a live write target and will have grown; a frozen constant would pass or fail for the wrong reason.
+1. **Reconciliation identity**: `count(silver_content_classification) + count(silver_enrichment_quarantine) == count(gold_analyses)` at migration time, every legacy row accounted (C5 — replaces the unmet C5.4). **Self-referential, not `== 9,576`**: W-FREEZE makes the right-hand side static, but a frozen constant still asserts a convention rather than a measurement — and it would report a W-FREEZE regression as a reconciliation error.
 2. **Provider-name grep in CI**: `gemini_batch\.|qwen_client\.` matches only adapter modules (C2/C3 — kills the 12-bypass class).
 3. **Zero-row gate**: any new object referenced by a consumer with zero rows fails the merge (C5 — "every new object has rows").
 4. **Catalog-vs-target reconciliation**: `DUCKDB_TABLES` names the TARGET world and the live DB matches — not the status quo (C5 — the vacuous-gate fix; reconciliation is against the *target* schema, per postmortem §10.2's correction).
@@ -448,11 +519,16 @@ audits):
 ### Declared DAG
 
 ```
-W0 ──► W1 ──► [FORK DECISION — human] ──► W2 ──► W3 ──► W5 ──► W6 ──► W7 ──► W9
-                                              │                ▲       ▲
-                                              └──► W4 ─────────┘        │
-                                                   W8 ──────────────────┘ (independent of W7)
+W0 ──► W-FREEZE ──► W1 ──► [FORK DECISION — human] ──► W2 ──► W3 ──► W5 ──► W6 ──► W7 ──► W9
+                                                              │        ▲       ▲
+                                                              └──► W4 ─┘       │
+                                                                   W8 ────────┘ (independent of W7)
 ```
+
+- **W-FREEZE precedes W1**, and precedes W5 specifically. It freezes `gold_analyses` so the
+  baseline W1 measures and W6 reconciles against cannot move mid-migration, and it deletes the
+  Gemini entry points so W5 deletes their call sites rather than migrating nine of them into
+  code that is about to disappear. Ordered wrong, both units do double work.
 
 - **W0, W2** start immediately and in parallel (no deps). W1 after W0.
 - **W3 → W5 serial**: both edit `submit.py`; shared-file edits are one ownership boundary.
@@ -616,7 +692,8 @@ no freshness gate. Two consequences, both mandatory:
    + count in the W9 log. The archive is what makes the drop reversible in substance even though
    it is not reversible in place — without it, "superseded" is an assertion and the rows are
    simply gone. (Baseline for drift: 9,576 as of 2026-09-14, read live. Do not assert against
-   it — `gold_analyses` is still written by the gemini-batch path and will grow.)
+   it — W-FREEZE should hold it static, so any change is a freeze regression worth investigating
+   before the archive.)
 2. **Retirement is TARGET state, not current state.** `gold_analyses` stays fully live and
    readable through W6's backfill and W7's parity gate — W7's whole acceptance is a side-by-side
    diff against it. It becomes dormant only once the parity proof passes and no view reads it.
