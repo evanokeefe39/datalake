@@ -12,12 +12,15 @@ from __future__ import annotations
 import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
-
 from orchestration.defs.serving.views import v_creator_outlier_rate as _v_creator_outlier_rate
-from orchestration.defs.serving.views import v_creator_underperformer_rate as _v_creator_underperformer_rate
+from orchestration.defs.serving.views import (
+    v_creator_underperformer_rate as _v_creator_underperformer_rate,
+)
 from orchestration.defs.serving.views import v_engagement_outliers as _v_engagement_outliers
 from orchestration.defs.serving.views import v_outlier_posts as _v_outlier_posts
 from orchestration.defs.serving.views import v_underperformer_posts as _v_underperformer_posts
+
+
 @pytest.fixture
 def db(tmp_path) -> DuckDBResource:
     """DuckDB resource seeded with minimal v_post_detail + ig_post_labels.

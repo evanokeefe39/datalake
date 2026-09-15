@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
-from orchestration.defs.platform.schemas import sqlite_ddl_for
+from opsdb.schema import sqlite_ddl_for
 
 logger = logging.getLogger("migrate_curated_creator_merge")
 

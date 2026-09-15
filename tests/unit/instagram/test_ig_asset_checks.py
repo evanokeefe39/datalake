@@ -13,10 +13,10 @@ import polars as pl
 import pytest
 from dagster import build_asset_check_context
 from dagster_duckdb import DuckDBResource
-
 from orchestration.defs.ig_core.slv.checks import (
     ig_checks,
 )
+
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Resolve individual check functions by name ─────────────────────────────

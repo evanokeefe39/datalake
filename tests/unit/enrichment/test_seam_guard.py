@@ -111,8 +111,7 @@ class TestSeamGuard:
         """check_enrichment_seam_purity is registered on the gold asset and
         passes on the current package state."""
         from dagster import AssetCheckResult
-
-        from orchestration.defs.ig_enriched.slv.assets import (
+        from orchestration.defs.ig_enriched.slv.checks import (
             ENRICHMENT_CHECKS,
             check_enrichment_seam_purity,
         )

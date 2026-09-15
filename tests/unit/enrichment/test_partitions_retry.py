@@ -7,7 +7,6 @@ retired queue's ``MAX_ATTEMPTS``.
 """
 
 import pytest
-
 from orchestration.defs.engine.partitions import (
     HARVESTED_ASSET_NAME,
     MAX_ROUNDS,
@@ -159,8 +158,8 @@ def test_guard_raises_when_retry_budget_is_exhausted():
     unreachable (the caller skips in-flight posts first), so a partition
     stuck at the ceiling was silently re-submitted forever.
     """
-    from orchestration.defs.engine.submit import _guard_round
     from orchestration.defs.engine.partitions import partition_key
+    from orchestration.defs.engine.submit import _guard_round
 
     inst = FakeInstance()
     _drained_to_ceiling(inst, "P1")
@@ -179,8 +178,8 @@ def test_guard_allows_a_post_with_budget_left():
     WHEN the guard runs
     THEN it does not raise — the budget is not yet spent.
     """
-    from orchestration.defs.engine.submit import _guard_round
     from orchestration.defs.engine.partitions import partition_key
+    from orchestration.defs.engine.submit import _guard_round
 
     inst = FakeInstance()
     for round_no in range(MAX_ROUNDS - 1):

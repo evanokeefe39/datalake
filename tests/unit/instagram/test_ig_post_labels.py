@@ -10,10 +10,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
+from orchestration.defs.ig_core.slv.labels import LABEL_VERSION, run_label_pass
 from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
 from orchestration.defs.platform.schemas import duckdb_ddl
-from orchestration.defs.ig_core.slv.labels import LABEL_VERSION, run_label_pass
 
 NOW = datetime(2026, 8, 31, tzinfo=timezone.utc)
 
@@ -230,8 +229,8 @@ def test_floor_filler_requires_standout(conn):
 
 
 def test_label_pass_asset_and_schedule(tmp_path, ops):
-    from orchestration.defs.platform.schedules import daily_medallion
     from orchestration.defs.ig_core.slv.posts import ig_post_labels
+    from orchestration.defs.platform.schedules import daily_medallion
 
     _core_ops(ops, "alice")
     db = DuckDBResource(database=str(tmp_path / "state.duckdb"))

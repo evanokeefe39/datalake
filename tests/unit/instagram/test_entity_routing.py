@@ -14,13 +14,13 @@ import polars as pl
 import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
-from pydantic import ValidationError
-
-from orchestration.defs.platform.resources import SQLiteResource
+from orchestration.defs.ig_core.bnz.scrape import ResultsType, ScrapeConfig
 from orchestration.defs.ig_core.slv.comments import ig_comments_slv
 from orchestration.defs.ig_core.slv.posts import _classify_bronze, ig_posts_slv
 from orchestration.defs.ig_core.slv.profiles import ig_profiles_slv
-from orchestration.defs.ig_core.bnz.scrape import ResultsType, ScrapeConfig
+from orchestration.defs.platform.resources import SQLiteResource
+from pydantic import ValidationError
+
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Classifier (US-01) ───────────────────────────────────────────────────

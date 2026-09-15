@@ -17,6 +17,7 @@ import importlib
 import json
 import logging
 
+import orchestration.defs.engine.provider as seam
 import pytest
 from dagster import (
     AssetKey,
@@ -25,8 +26,6 @@ from dagster import (
     RunRequest,
     build_sensor_context,
 )
-
-import orchestration.defs.engine.provider as seam
 from orchestration.defs.engine.harvest import discover_handles
 from orchestration.defs.engine.partitions import (
     SUBMITTED_ASSET_NAME,
@@ -81,7 +80,14 @@ class FakeAdapter:
 
 @pytest.fixture
 def fake_adapter(monkeypatch: pytest.MonkeyPatch):
-    """Route build_adapter(detect_provider()) at a scripted FakeAdapter."""
+    """Route ``build_adapter(service_backed.PROVIDER_NAME)`` at a scripted adapter.
+
+    The engine names no provider: callers pass ``PROVIDER_NAME`` from the
+    service-backed module and only ``build_adapter`` resolves it. Pointing that
+    name at the probe is therefore the whole hook — there is no
+    ``detect_provider`` to patch (it was deleted with the Gemini path,
+    ADR-0015).
+    """
     holder: dict[str, FakeAdapter] = {}
 
     def factory(**kwargs):
@@ -89,7 +95,7 @@ def fake_adapter(monkeypatch: pytest.MonkeyPatch):
 
     adapters_mod = importlib.import_module("orchestration.defs.engine.service_backed")
     seam.register_adapter("fake_sensor_probe", factory)
-    monkeypatch.setattr(adapters_mod, "detect_provider", lambda: "fake_sensor_probe")
+    monkeypatch.setattr(adapters_mod, "PROVIDER_NAME", "fake_sensor_probe")
 
     def install(adapter: FakeAdapter) -> FakeAdapter:
         holder["adapter"] = adapter

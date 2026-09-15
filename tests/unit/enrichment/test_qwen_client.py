@@ -8,9 +8,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 import orchestration.defs.integration.batch_client as qwen_client
+import pytest
 
 DEFAULT_JOBS_SERVICE_URL = qwen_client.DEFAULT_JOBS_SERVICE_URL
 BatchServiceError = qwen_client.BatchServiceError  # re-exported for test ergonomics
@@ -57,8 +56,7 @@ def test_check_health_connection_error_raises_loudly():
         with pytest.raises(qwen_client.BatchServiceError) as exc:
             check_health()
     msg = str(exc.value)
-    assert "qwen-batch service" in msg
-    assert "uv run qwen-batch" in msg
+    assert "inference service" in msg
     assert "docker compose up" in msg
     assert exc.value.base_url == DEFAULT_JOBS_SERVICE_URL
 

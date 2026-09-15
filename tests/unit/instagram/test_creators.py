@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
-from orchestration.defs.platform.resources import SQLiteResource
-from opsdb.schema import SQLITE_TABLES
 from opsdb.roster import (
     add_profile,
     batch_add_profiles,
@@ -21,6 +18,8 @@ from opsdb.roster import (
     remove_profile,
     rename_creator,
 )
+from opsdb.schema import SQLITE_TABLES
+from orchestration.defs.platform.resources import SQLiteResource
 
 
 @pytest.fixture

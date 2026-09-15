@@ -36,8 +36,8 @@ import duckdb
 import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
-
 from orchestration.defs.platform.schemas import duckdb_ddl
+
 from tests.operational.expected_schema import EXPECTED_DUCKDB_VIEWS
 from tests.operational.test_state_compatibility import (
     _BANNED_VIEW_SOURCES_RE,

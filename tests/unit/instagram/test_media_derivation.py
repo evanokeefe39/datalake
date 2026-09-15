@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 
 import polars as pl
-
 from orchestration.defs.ig_core.slv.posts import _derive_media
 
 

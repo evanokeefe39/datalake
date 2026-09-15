@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 from .defs.engine.harvest import enrichment_harvest_job
 from .defs.engine.sensor import enrichment_harvest_sensor, enrichment_submit_sensor
-from .defs.engine.silver_rt import silver_enrichment
+from .defs.engine.silver_asset import silver_enrichment
 from .defs.engine.submit import enrichment_submit_job
 from .defs.ig_core.bnz.scrape import ig_posts_raw
 from .defs.ig_core.slv.checks import ig_checks

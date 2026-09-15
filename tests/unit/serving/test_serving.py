@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import pytest
 from dagster import build_asset_context
-
 from orchestration.defs.ig_enriched.slv.classification import CLASSIFICATION_DDL
 from orchestration.defs.serving.dims import dim_date as _dim_date_asset
 from orchestration.defs.serving.dims import profile_dimension as _profile_dimension_asset
 from orchestration.defs.serving.views import v_post_detail as _v_post_detail_asset
+
 from tests.fixtures.silver_factories import seed_silver_posts
 
 
