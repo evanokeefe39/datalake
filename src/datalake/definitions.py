@@ -19,6 +19,7 @@ from .defs.common import (
 )
 from .defs.enrichment import (
     ENRICHMENT_CHECKS,
+    ENRICHMENT_DQ_CHECKS,
     enrichment_harvest_job,
     enrichment_submit_job,
     gold_analyses,
@@ -69,7 +70,7 @@ all_assets = [
 
 defs = Definitions(
     assets=all_assets,
-    asset_checks=[*ig_checks, *ENRICHMENT_CHECKS, *serving_checks],
+    asset_checks=[*ig_checks, *ENRICHMENT_CHECKS, *ENRICHMENT_DQ_CHECKS, *serving_checks],
     resources=all_resources,
     schedules=[daily_medallion, core_refresh],
     jobs=[enrichment_harvest_job, enrichment_submit_job],

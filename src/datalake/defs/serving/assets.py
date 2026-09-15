@@ -1654,12 +1654,84 @@ def gold_top_posts(duckdb: DuckDBResource) -> None:
         """)
 
 
+@asset(
+    name="v_quarantine_triage",
+    group_name="serving",
+    description=(
+        "Operator triage surface for the enrichment quarantine (W8): each "
+        "quarantined row joined to its offending bronze excerpt and post "
+        "context."
+    ),
+    deps=[AssetKey(["silver_enrichment_conform"])],
+)
+def v_quarantine_triage(duckdb: DuckDBResource) -> None:
+    """Create the quarantine triage view.
+
+    ``silver_enrichment_quarantine``'s named consumer (ADR-0012/W8): one row
+    per quarantined key with the reason, the verbatim bronze
+    ``response_text``/``error_message`` (latest landing per key, read from
+    the bronze Parquet — quarantined rows exist precisely because silver
+    does NOT have them), and the owning post's context from
+    ``silver_ig_posts``. LEFT JOINs throughout — a triage row must never
+    disappear because its bronze file was pruned or the post left silver.
+    """
+    from datalake.defs.common import lake
+    from datalake.defs.enrichment import landing
+
+    bronze_file = landing.response_path(lake.BRONZE_LAKE)
+    with duckdb.get_connection() as conn:
+        conn.execute(f"""
+            CREATE OR REPLACE VIEW v_quarantine_triage AS
+            WITH bronze_latest AS (
+                SELECT
+                    post_id, platform, workload, provider, model,
+                    ok, error_message, response_text, landing_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY post_id, platform, workload
+                        ORDER BY landing_at DESC
+                    ) AS rn
+                FROM read_parquet('{bronze_file.as_posix()}')
+            )
+            SELECT
+                q.post_id,
+                q.platform,
+                q.workload,
+                q.reason_code,
+                q.reason_detail,
+                q.response_excerpt,
+                q.quarantined_at,
+                q.derivation_version,
+                q.schema_version,
+                q.prompt_hash,
+                q.run_id,
+                q.provider,
+                q.model,
+                b.ok                              AS bronze_ok,
+                b.error_message                   AS bronze_error_message,
+                b.response_text                   AS bronze_response_text,
+                b.landing_at                      AS bronze_landing_at,
+                sp.owner_username,
+                sp.caption,
+                sp.timestamp                      AS posted_at
+            FROM silver_enrichment_quarantine q
+            LEFT JOIN bronze_latest b
+                ON b.post_id = q.post_id
+               AND b.platform = q.platform
+               AND b.workload = q.workload
+               AND b.rn = 1
+            LEFT JOIN silver_ig_posts sp
+                ON sp.post_id = q.post_id
+        """)
+
+
+
 # ── Exported for definitions.py ─────────────────────────────────────────────
 
 assets: list = [
     profile_dimension,
     dim_date,
     v_post_detail,
+    v_quarantine_triage,
     v_post_baselines,
     v_signal,
     v_quality_trend,

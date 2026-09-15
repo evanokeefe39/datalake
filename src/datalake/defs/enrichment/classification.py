@@ -50,6 +50,7 @@ import duckdb
 import polars as pl
 
 from datalake.defs.common import lake
+from datalake.defs.common.schemas import MODEL_LEGACY_NULL
 from datalake.defs.enrichment import landing
 
 # ── Table identity ──────────────────────────────────────────────────────────
@@ -178,8 +179,6 @@ SILVER_SCHEMA: dict[str, pl.DataType] = {
     "analysed_at": pl.String,
 }
 
-MODEL_LEGACY_NULL = "unrecorded-legacy-null"
-"""Explicit gap marker for rows whose legacy gold `model` was NULL (AC5)."""
 
 
 @dataclass

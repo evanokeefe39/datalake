@@ -430,13 +430,22 @@ supported path.
   NOT a re-hash/quarantine fork — verified live, all 8 carry `prompt_hash 24c8e291`
   and valid classification JSON, so quarantining would misrepresent valid data and
   re-hashing `prompt_identity_v1` is void (the model is unknowable by construction).
-  The disposition is **migrate with sentinel provenance**: `model='legacy-unknown'`,
+  The disposition is **migrate with sentinel provenance**: `model='unrecorded-legacy-null'`,
   `provider='gemini'`, `prompt_hash` unchanged, and the migration asserts
   `count(model IS NULL rows dispositioned) == 8`, failing loudly if a ninth appears
   between audit and migration. The reconciliation identity becomes genuinely
-  checkable: `count(silver_content_classification where model='legacy-unknown') == 8`
+  checkable: `count(silver_content_classification where model='unrecorded-legacy-null') == 8`
   AND `count(gold_analyses where model IS NULL) == 0` after migration, asserted in
   `tests/operational/test_backfill_idempotency.py`.
+
+  > **Corrected 2026-09-15 (ISSUES.md #26).** This section originally named the
+  > sentinel `legacy-unknown` and the acceptance criterion asserted that literal.
+  > ADR-0014:214 amends the literal to `unrecorded-legacy-null`, but a second copy
+  > of the constant survived in `conform.py` with the OLD value, so the
+  > `legacy-gold-classification-backfill` run wrote the rejected literal into all
+  > 8 live rows. Both texts above are now corrected: `count(... = 'legacy-unknown')`
+  > must be **0**, not 8. The constant now has a single definition in
+  > `defs/common/schemas.py`, imported by both sibling producers.
 
 ### W7 — Serving rebind + schema-catalog/target reconciliation
 - **What**: Rebind the 22 transitive views from `gold_analyses` to silver/marts (the silver-bound

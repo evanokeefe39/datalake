@@ -1,5 +1,6 @@
 """Canonical schema catalog — single source of truth for all DB tables.
 
+
 This module DEFINES what tables, columns, types, and constraints the pipeline
 expects across both DuckDB and SQLite. Every other reference — runtime DDL,
 migration scripts, asset column lists — derives from here.
@@ -21,7 +22,17 @@ derive:
   runtime assets execute, so the DDL can never drift from the catalog.
 """
 
+
 from __future__ import annotations
+
+MODEL_LEGACY_NULL = "unrecorded-legacy-null"
+"""Sentinel for silver enrichment rows whose producing model was never
+recorded (ADR-0014 D5): an honest "this result is verified, but the model
+name was never written" — NOT a NULL and NOT a fabricated model name.
+
+Single definition shared by both classification silver producers
+(`classification.py`, `conform.py`); never redefine it locally."""
+
 
 from dataclasses import dataclass
 

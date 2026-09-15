@@ -57,6 +57,7 @@ from pathlib import Path
 import polars as pl
 
 from datalake.defs.common import lake
+from datalake.defs.common.schemas import MODEL_LEGACY_NULL
 from datalake.defs.enrichment import landing
 from datalake.defs.enrichment.growth_facets_schema import (
     validate_text_facets,
@@ -651,10 +652,6 @@ def _transcript_row(
 
 # ── Classification workload → silver_content_classification ───────────────
 
-MODEL_LEGACY_NULL = "legacy-unknown"
-"""Sentinel for rows whose producing model was never recorded (ADR-0014 D5):
-an honest "this result is verified, but the model name was never written" —
-NOT a NULL and NOT a fabricated model name."""
 
 CLASSIFICATION_BODY_KEYS: tuple[str, ...] = (
     "domain",
@@ -721,7 +718,7 @@ def _conform_classification(
 
     The platform is the bronze row's ``platform`` KEY column — never the
     niche ``domain`` body column. ``model IS NULL`` carries the
-    ``legacy-unknown`` sentinel (ADR-0014 D5), never a silent NULL.
+    ``unrecorded-legacy-null`` sentinel (ADR-0014 D5), never a silent NULL.
     """
 
     body, errors = _classification_body(payload)

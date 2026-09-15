@@ -4,7 +4,7 @@ Covers (AC):
 - the platform/domain mapping: the legacy `domain` KEY value ('instagram')
   populates the silver `platform` KEY column; the niche `domain` BODY column
   is never the platform string;
-- `model IS NULL` → the ADR-0014 D5 `legacy-unknown` sentinel, never NULL;
+- `model IS NULL` → the ADR-0014 D5 `unrecorded-legacy-null` sentinel, never NULL;
 - a malformed payload (trailing-comma JSON) QUARANTINES with `parse_error`
   rather than disappearing;
 - the bronze conform path conforms the classification workload (no skip);
@@ -25,9 +25,9 @@ import duckdb
 import polars as pl
 import pytest
 
+from datalake.defs.common.schemas import MODEL_LEGACY_NULL
 from datalake.defs.enrichment import classification, conform as conform_mod
 from datalake.defs.enrichment.conform import (
-    MODEL_LEGACY_NULL,
     SILVER_CONTENT_CLASSIFICATION,
     TABLE_SCHEMAS,
     conform,
@@ -142,7 +142,7 @@ def test_model_null_carries_legacy_unknown_sentinel(bronze_root, silver_root):
     row = conform_mod.read_table(SILVER_CONTENT_CLASSIFICATION, silver_root).row(
         0, named=True
     )
-    assert row["model"] == MODEL_LEGACY_NULL == "legacy-unknown"
+    assert row["model"] == MODEL_LEGACY_NULL == "unrecorded-legacy-null"
     assert row["model"] is not None
 
 

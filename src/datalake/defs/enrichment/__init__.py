@@ -13,6 +13,7 @@ from .assets import (
     gold_analyses,
     silver_enrichment_conform,
 )
+from .checks import ENRICHMENT_DQ_CHECKS
 from .harvest import (
     enrichment_harvest_job,
     harvest_enrichment_op,
@@ -34,6 +35,7 @@ __all__ = [
     "gold_analyses",
     "silver_enrichment_conform",
     "ENRICHMENT_CHECKS",
+    "ENRICHMENT_DQ_CHECKS",
     # Submit (ADR-0014: partition-discovered, seam-mediated)
     "discover_pending",
     "build_items",
