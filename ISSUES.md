@@ -228,6 +228,61 @@ and the schema drift detector catches table mismatches.
 
 ## Active
 
+### Retired tables kept coming back (retirement was not durable)
+
+**Status:** RESOLVED (2026-09-15) — W9 follow-up.
+
+**Symptom.** The W9 retirement dropped seven tables (`gold_analyses`,
+`gold_growth_facets`, `dead_letter`, `batch_jobs`, `batch_items`,
+`facets_batch_jobs`, `media_metadata`) with export-count == live-count verified
+in the same run. The drop was real. It was not DURABLE: live code and six
+migration paths still created those tables, so any run of them would bring a
+retired table back.
+
+**Root cause.** "Dropped" was treated as a property of the database rather than
+a property of the system. Nothing checked that the SET OF CREATORS was empty.
+The `retire_queue_tables.py` script asserted the KEEP set after the drop, but
+that only proves the tables were gone at that instant — not that they would
+stay gone.
+
+**Why it was invisible.** The readiness test
+(`tests/operational/test_state_compatibility.py`) compares the live DB against
+the catalog. With the tables dropped and their specs still in the catalog, it
+reported three failures — which read as a test that needed updating, when it was
+in fact correctly reporting a half-finished migration.
+
+**The defect class, named:** removing a producer without removing its writers,
+or vice versa. A half-cut converts a resurrection bug into a runtime failure.
+The rule adopted: retire a cluster WHOLE — creator + writers + readers together
+— or not at all.
+
+**Fix.** Producers retired in `src/` (`ensure_gold_analyses`,
+`_GOLD_ANALYSES_DDL`, `_GOLD_FACETS_DDL`, `_GOLD_FACETS_UPSERT`, the five
+`gold_analyses`-reading asset checks, the AssetSpec, the exports); six migration
+paths retired; the three catalog specs removed.
+
+**Statements are DELETED, never renamed.** An earlier attempt renamed retired
+tables to a `retired_*_NEVER` suffix — that CREATES a junk table on every run,
+the same defect class as the raw DDL it was meant to replace. Both attempts were
+reverted.
+
+**Verification (this is the part that makes it a fix rather than a claim).**
+1. `migrate_schema_drift.migrate()` — the one migration the README marks "RUN
+   against live" — was executed against a COPY of live `state.duckdb` +
+   `ops.sqlite`. Afterwards no retired table and no `analytics_views` existed in
+   either database.
+2. `read_gold` was executed against live `state.duckdb`; its guard fired with
+   the intended message instead of a raw `CatalogException`.
+3. `tests/operational/test_state_compatibility.py`: 96 passed, 0 failed. The
+   three W9 failures resolved because the producers are gone — NOT by weakening
+   the assertions.
+
+**Lesson.** A drop is not done until the set of creators is empty, and emptiness
+must be demonstrated by RUNNING the paths, not by grepping for the names. Greps
+also miss half-cuts: a sweep for `CREATE TABLE` finds creators but not the
+surviving `INSERT`/`UPDATE`/`SELECT` writers.
+
+
 ### 14. Creator growth analysis — baseline cohort + follower history (Q9-Q11)
 
 **Status:** Proposed (2026-08-31) — design discussion in
