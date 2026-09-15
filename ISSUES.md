@@ -328,6 +328,40 @@ procedure. Treat any future smoke run's instance state as UNVERIFIED until measu
 
 ---
 
+### 37. Retry-budget guard: was unreachable, now over-broad (2026-09-15)
+
+**Status:** the unreachable half is FIXED; the over-broad half is **OPEN**.
+
+**Symptom (fixed).** `_guard_round` in `engine/submit.py` was supposed to refuse a
+re-submission once a post's retry budget was exhausted. It tested
+`state.next_round >= MAX_ROUNDS and state.suppressed` — but the caller `continue`s past
+suppressed posts *before* reaching the guard, so `suppressed` was always `False` and the
+raise could never fire. A partition stuck at the ceiling was therefore re-submitted
+forever, silently, at cost.
+
+**Fix.** The guard now keys on the round alone. Regression test
+`test_guard_raises_when_retry_budget_is_exhausted` in
+`tests/unit/enrichment/test_partitions_retry.py`, verified discriminating (it fails on
+the old condition). Landed in `3b4b410`.
+
+**Open — the fix is now over-broad.** Keyed on `next_round` alone, a post that has
+reached the ceiling raises on **any** future eligibility. That includes the legitimate
+case: a post whose earlier rounds failed under an OLD prompt hash, which under ADR-0011
+/ADR-0016 is supposed to be *re-enrichable* when the prompt changes. Today it raises
+instead of being re-submitted.
+
+**Required fix.** Scope the budget to the **current prompt hash** — the retry budget is
+per (post, workload, prompt_hash), not per post for all time. `compute_round` already
+has the key material; the guard needs the prompt hash passed in and compared, so a
+prompt change resets the budget while a genuine retry loop still terminates.
+
+**Why it matters.** This is the difference between "a retry loop cannot burn money
+forever" and "a stale-prompt post can never be refreshed" — the exact failure mode
+US-L5 exists to prevent. It is currently masked because no prompt has changed since the
+guard landed.
+
+---
+
 ### Dagster event log reset — repo-reorganization branches 1-3 (2026-09-15)
 
 **Status:** RESOLVED (instance state) — recorded because it is destructive and
