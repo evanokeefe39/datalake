@@ -132,17 +132,23 @@ def make_result(pid: str, ok: bool, round_n: int = 0) -> Result:
 
 
 def approve(duckdb, post_ids: list[str]) -> None:
-    """Label-approve posts, which is what makes them discovery-eligible."""
+    """Label-approve posts, which is what makes them discovery-eligible.
+
+    Inserts into the CATALOG's ``ig_post_labels`` (created by the ``dbs``
+    fixture), naming the columns discovery reads and filling the other NOT NULL
+    columns with a fixed representative value. The table SHAPE is never
+    redefined here — that belongs to the catalog, and a second hand-written
+    definition drifts the moment a column changes.
+    """
     from orchestration.defs.ig_core.slv.labels import LABEL_VERSION
 
     with duckdb.get_connection() as conn:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS ig_post_labels ("
-            "post_id VARCHAR, enrich_decision VARCHAR, label_version INTEGER)"
-        )
         for pid in post_ids:
             conn.execute(
-                "INSERT INTO ig_post_labels VALUES (?, 'standout', ?)",
+                "INSERT INTO ig_post_labels ("
+                "  post_id, label, method, enrich_decision, judged_at,"
+                "  is_provisional, label_version"
+                ") VALUES (?, 'standout', 'test', 'standout', now(), false, ?)",
                 [pid, LABEL_VERSION],
             )
 
@@ -256,16 +262,12 @@ def dbs(tmp_path):
             "INSERT INTO silver_ig_posts (post_id, caption, source_dataset) VALUES"
             " ('P1', 'caption one', 'test'), ('P2', 'caption two', 'test')"
         )
-        # The classification workload reads labels and guards on the conformed
-        # table; create both so a whole-registry submit is runnable in tests.
-        conn.execute(
-            "CREATE TABLE ig_post_labels ("
-            "post_id VARCHAR, enrich_decision VARCHAR, label_version INTEGER)"
-        )
-        conn.execute(
-            "CREATE TABLE silver_content_classification ("
-            "post_id VARCHAR, platform VARCHAR, prompt_hash VARCHAR)"
-        )
+        # Created from the CATALOG, never hand-written: the classification
+        # workload reads ig_post_labels and guards on the conformed table, and
+        # a test-only copy of a table's shape is a second definition that
+        # drifts from the real one the moment a column changes.
+        conn.execute(duckdb_ddl("ig_post_labels"))
+        conn.execute(duckdb_ddl("silver_content_classification"))
     return ops, duckdb
 
 
