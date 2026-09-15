@@ -141,13 +141,13 @@ def ops(tmp_path):
 
 
 @pytest.fixture()
-def drain(conn, db, ops, monkeypatch):
-    """Call the asset directly; batch mode pinned to interactive."""
+def drain(conn, db, ops):
+    """Call the asset directly.
 
-    class _Tier:
-        supports_batch = True
-
-    monkeypatch.setattr(ig_assets.GeminiTierConfig, "detect", lambda: _Tier())
+    No tier patch: the drain no longer consults GeminiTierConfig — the
+    execution mode is surfaced as ``seam`` and the submit stage owns the
+    provider readiness gate (ADR-0012 retirement cleanup).
+    """
 
     def run(config=None, instance=None):
         ig_assets._drain_instance = instance

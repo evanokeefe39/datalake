@@ -19,7 +19,7 @@ import pytest
 
 SCRIPT = (
     Path(__file__).resolve().parents[3]
-    / "scripts"
+    / "migrations"
     / "migrate_backfill_owner_id.py"
 )
 

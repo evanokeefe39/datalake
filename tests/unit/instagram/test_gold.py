@@ -245,19 +245,13 @@ def test_enqueue_asset_writes_batch(tmp_path):
     }
 
 
-class _FakeTier:
-    def __init__(self, supports_batch: bool):
-        self.supports_batch = supports_batch
-
-
-def _run_enqueue(tmp_path, tier, config=None):
-    """Seed one label-approved post and run ig_posts_gen_batches under a
-    faked GeminiTierConfig.detect(), with an INJECTED FakeInstance. Returns
-    (result, instance, surfaced_mode) — the mode the drain SURFACES in the
-    result frame (the retired queue recorded it on batch_jobs; ADR-0012).
+def _run_enqueue(tmp_path, config=None):
+    """Seed one label-approved post and run ig_posts_gen_batches with an
+    INJECTED FakeInstance. Returns (result, instance, surfaced_mode) — the
+    mode the drain SURFACES in the result frame. No tier faking: the drain
+    no longer consults GeminiTierConfig (ADR-0009/0012 retirement) — the
+    submit stage owns the execution mode and the provider readiness gate.
     """
-    from unittest.mock import patch
-
     from datalake.defs.instagram.config import GoldConfig
 
     db = _make_duckdb(tmp_path)
@@ -268,61 +262,60 @@ def _run_enqueue(tmp_path, tier, config=None):
     _seed_silver(db, [("p1", "Test caption", now)])
     _seed_labels(db, [("p1", "standout", "day7_matched", None)])
 
-    with patch(
-        "datalake.defs.instagram.assets.GeminiTierConfig.detect",
-        classmethod(lambda cls: _FakeTier(tier)),
-    ):
-        result = _run_drain(
-            instance,
-            build_asset_context(),
-            duckdb=db, ops=ops, config=config or GoldConfig()
-        )
+    result = _run_drain(
+        instance,
+        build_asset_context(),
+        duckdb=db, ops=ops, config=config or GoldConfig()
+    )
     return result, instance, result["mode"][0]
 
 
-def test_enqueue_defaults_to_gemini_batch_when_tier_supports(tmp_path):
-    """GIVEN the active tier supports batch and a curated (non-whole-corpus)
-    selection
+def test_enqueue_surfaces_seam_mode_for_curated_selection(tmp_path):
+    """GIVEN a curated (non-whole-corpus) label-approved selection
     WHEN ig_posts_gen_batches runs
-    THEN the drain surfaces gemini-batch mode (batch is the default).
+    THEN the drain enqueues each approved post and surfaces ``seam`` mode
+    (the submit stage owns execution through the seam; ADR-0012).
     """
-    result, _instance, mode = _run_enqueue(tmp_path, tier=True)
+    result, _instance, mode = _run_enqueue(tmp_path)
     assert result["enqueued"][0] == 1
     assert mode == "seam"
 
 
-def test_enqueue_defaults_to_gemini_batch_whole_corpus(tmp_path):
-    """GIVEN the active tier supports batch and whole_corpus admission
+def test_enqueue_surfaces_seam_mode_whole_corpus(tmp_path):
+    """GIVEN whole_corpus admission
     WHEN ig_posts_gen_batches runs
-    THEN the drain surfaces gemini-batch mode.
+    THEN the drain still surfaces ``seam`` mode.
     """
     from datalake.defs.instagram.config import GoldConfig
 
     _result, _instance, mode = _run_enqueue(
-        tmp_path, tier=True, config=GoldConfig(whole_corpus=True)
+        tmp_path, config=GoldConfig(whole_corpus=True)
     )
     assert mode == "seam"
 
 
-def test_enqueue_falls_back_to_interactive_on_free_tier(tmp_path):
-    """GIVEN the active tier does NOT support batch (free tier)
+def test_enqueue_mode_is_independent_of_retired_tier_selection(tmp_path):
+    """GIVEN the drain runs with default GoldConfig (no tier consulted)
     WHEN ig_posts_gen_batches runs
-    THEN the drain surfaces interactive mode.
+    THEN the surfaced mode is ``seam`` — the retired gemini-batch/interactive
+    tier split no longer exists at the drain (ADR-0009/0012 retirement);
+    GeminiTierConfig.detect() is only consumed by the submit-stage adapters.
     """
-    _result, _instance, mode = _run_enqueue(tmp_path, tier=False)
+    _result, _instance, mode = _run_enqueue(tmp_path)
     assert mode == "seam"
 
 
-def test_enqueue_prefer_interactive_opt_out(tmp_path):
-    """GIVEN an operator sets GoldConfig(prefer_interactive=True) on a
-    batch-capable tier
+def test_enqueue_tolerates_prefer_interactive_opt_out(tmp_path):
+    """GIVEN an operator sets GoldConfig(prefer_interactive=True)
     WHEN ig_posts_gen_batches runs
-    THEN the drain surfaces interactive mode (explicit opt-out wins).
+    THEN the drain still enqueues and surfaces ``seam`` mode — the retired
+    interactive opt-out is inert at the drain; execution mode is decided by
+    the submit stage through the seam.
     """
     from datalake.defs.instagram.config import GoldConfig
 
     _result, _instance, mode = _run_enqueue(
-        tmp_path, tier=True, config=GoldConfig(prefer_interactive=True)
+        tmp_path, config=GoldConfig(prefer_interactive=True)
     )
     assert mode == "seam"
 

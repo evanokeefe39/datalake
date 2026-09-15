@@ -27,6 +27,16 @@ from scripts.make_smoke_slice import (  # noqa: E402
     enrichment_plan_check,
 )
 
+# These tests fingerprint and read the LIVE lake read-only; they require the
+# off-repo live roots (data/state.duckdb, data/ops.sqlite, data/lake/bronze —
+# ISSUES #31). Skip cleanly where the roots don't exist (CI) instead of
+# erroring at fixture setup.
+pytestmark = pytest.mark.skipif(
+    not LIVE_STATE_DB.exists(),
+    reason="live lake roots (data/) not present in this environment",
+)
+
+
 SIX_SILVER = (
     "silver_visual_annotations",
     "silver_visual_summaries",
