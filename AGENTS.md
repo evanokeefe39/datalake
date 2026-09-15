@@ -749,3 +749,41 @@ suite. Full ledger: `tasks/lessons.md` 2026-09-15.
 
 **The done bar, in one line:** green suite AND materialized destination AND one observed run
 through the slice. Any one alone is not done.
+
+### Enrichment v3 — verified state, 2026-09-15
+
+Remediation units W0–W9 are discharged. Verified against the live store, not
+against claims:
+
+- **Layered model live.** `bronze_enrichment_raw` 9,576 rows (verbatim, Parquet);
+  six `silver_*` tables published; four gold marts materialized; all 27 serving
+  assets materialize.
+- **Parity PASS.** Pre-migration `gold_analyses` vs live
+  `silver_content_classification`: 9,576 rows both sides, joined on `post_id`,
+  **0 both-non-null conflicts**. 30 rows differ only where the old value was NULL
+  and silver populates it — better data, never divergent data.
+- **Replay purity proven (the keystone claim).** Re-publishing silver from bronze
+  changed ONLY the 8 sentinel rows; the other 9,568 were byte-identical across 15
+  business columns. A schema/mapping change is a replay, not a re-bill.
+- **Sentinel defect fixed.** Two sibling producers defined `MODEL_LEGACY_NULL`
+  differently, so 8 live rows carried the ADR-REJECTED literal. Now a single
+  definition in `defs/common/schemas.py` imported by both; the 8 rows read
+  `unrecorded-legacy-null`.
+- **DQ gates exist and FIRE.** `check_no_silent_loss` (blocking anti-join),
+  `check_quarantine_growth`, `check_silver_snapshot_freshness`, plus
+  `v_quarantine_triage`. Each is proven to fail on injected bad state — a check
+  that only ever passes is the defect that unit exists to fix.
+- **Queue retirement EXECUTED 2026-09-15** (owner-approved). All 7 tables archived
+  (export count == live count, same run, 26,465 rows) then dropped per-table;
+  KEEP set asserted intact and non-empty after. Every live count matched the
+  2026-09-14 baseline — zero drift. **Proof the rebind held: all seven serving
+  views still resolve with `gold_analyses` gone.** Pre-drop snapshots in
+  `data/backups/*.pre-w9-drop`; log in `data/logs/w9-retirement-<utc>.json`.
+
+**Still open (logged in ISSUES.md, not silently carried):** #27 (`conform_silver.py`
+`--silver-root` defaults to the live lake), #28 (Gemini module removal blockers),
+#29 (`--plan` has no Dagster equivalent), #30 (no test constructs the asset graph,
+no pytest markers), #31 (full suite does not finish clean; cause UNVERIFIED), #32
+(reconciliation is now gated; the open qwen job was accepted as a recorded
+decision). The qwen facets pass is still driven by the hand-rolled CLI — promoting
+it into Dagster ops is the remaining ADR-0012 work.
