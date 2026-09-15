@@ -45,7 +45,6 @@ from dagster import (
 )
 
 from orchestration.defs.engine import landing, partitions
-from orchestration.defs.engine.landing import WORKLOAD_CONTENT_CLASSIFICATION
 from orchestration.defs.engine.partitions import (
     HARVESTED_ASSET_NAME,
     MAX_ROUNDS,
@@ -55,9 +54,9 @@ from orchestration.defs.engine.partitions import (
 )
 from orchestration.defs.engine.provider import ProviderAdapter
 from orchestration.defs.ig_enriched.slv.prompts import (
-    CURRENT_PROMPT_HASH,
     IG_GOLD_SCHEMA_VERSION,
 )
+from orchestration.defs.ig_enriched.slv.workloads import WORKLOAD_BY_NAME
 
 logger = logging.getLogger("enrichment.harvest")
 
@@ -67,10 +66,13 @@ logger = logging.getLogger("enrichment.harvest")
 _MAX_HANDLES_PER_RUN = 25
 
 #: Join key is PLATFORM, never ``domain`` (the ADR-0011 duplicate-name rule).
-#: One platform per workload; an unmapped workload fails loudly rather than
-#: landing rows with a guessed platform.
+#: Derived from the workload registry, so a newly registered workload is
+#: landable without editing this module — and an unregistered one still fails
+#: loudly rather than landing a row with a guessed platform. Today every
+#: workload is Instagram; the map exists so a second platform is a registry
+#: entry, not a harvest change.
 _PLATFORM_BY_WORKLOAD: dict[str, str] = {
-    WORKLOAD_CONTENT_CLASSIFICATION: "instagram",
+    name: "instagram" for name in WORKLOAD_BY_NAME
 }
 
 _SUBMITTED_KEY = AssetKey(SUBMITTED_ASSET_NAME)
@@ -218,14 +220,25 @@ def land_result(
             f"(partition key {result.custom_key!r}) — refusing to land with "
             "a guessed platform (join key is platform, never domain)"
         )
+    # Provenance comes from the WORKLOAD, never from this module: a facet
+    # response stamped with the classification prompt's hash would poison the
+    # bronze→silver replay (ADR-0011). A workload absent from the registry is
+    # unknown, and landing with guessed provenance is the defect this refuses.
+    workload = WORKLOAD_BY_NAME.get(parsed.workload)
+    if workload is None:
+        raise RuntimeError(
+            f"workload {parsed.workload!r} (partition key "
+            f"{result.custom_key!r}) is not registered — refusing to land "
+            "with guessed provenance"
+        )
     landing.land_response(
         post_id=parsed.post_id,
         platform=platform,
         workload=parsed.workload,
         provider=result.provider,
         model=result.model,
-        prompt_hash=CURRENT_PROMPT_HASH,
-        schema_version=IG_GOLD_SCHEMA_VERSION,
+        prompt_hash=workload.prompt_hash,
+        schema_version=workload.schema_version or IG_GOLD_SCHEMA_VERSION,
         run_id=run_id,
         response_text=result.response_text or "",
         ok=bool(result.ok),

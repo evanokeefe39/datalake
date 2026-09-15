@@ -422,8 +422,6 @@ tables, `bronze_enrichment_raw`, four gold marts appear, and `batch_jobs`/
 | `migrations/migrate_from_ig_pipeline.py` | Import bronze Parquet from legacy ig-pipeline repo. |
 | `migrations/migrate_owner_username.py` | Backfill null ``owner_username`` in silver from bronze ``username`` fallback. Idempotent. |
 | `migrations/migrate_creators_profiles.py` | Split `scrape_targets` → `creators` + `profiles` (1:1 backfill), create `media_metadata`, drop `scrape_targets`. Idempotent. |
-| `scripts/enrich_facets_batch.py` | The growth-facets enrichment driver (qwen-batch service): `--plan` (offline cost projection) / `--run` (discover→submit→poll→harvest) / `--harvest`; `--mode visual\|text`, `--limit`/`--posts`, scratch DBs via `--state-db`/`--ops-db`. Resume-safe — re-running polls+harvests any still-submitted ledger job. |
-| `scripts/poll_qwen_run.py` | Read-only progress poller for a live qwen-batch job. Reads the service job store (QWEN_BATCH_DB or `~/.qwen-batch/state.sqlite`), prints state / done / failed / rate / ETA, and shows the harvest+continue command once the newest job is terminal. |
 | `scripts/conform_silver.py` | Publish + register the six v3 silver tables from `bronze_enrichment_raw` — the live silver publisher (zero API calls; deterministic replay). |
 | `scripts/make_smoke_slice.py` | Deterministic dev/smoke slice builder for the verification plane. |
 | `scripts/reconcile_facets_jobs.py` | Reconcile `facets_batch_jobs` against the qwen service job store. Superseded by the reconciliation step built into `retire_queue_tables.py --apply`. |

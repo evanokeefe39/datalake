@@ -38,10 +38,8 @@ import argparse
 import hashlib
 import json
 import random
-import re
 import shutil
 import sqlite3
-import subprocess
 import sys
 import time
 from datetime import date
@@ -453,39 +451,39 @@ pipeline write to the live roots from this directory.
 
 
 def enrichment_plan_check(out: Path, modes: list[str]) -> dict[str, int]:
-    """Run the REAL enrichment plan against the slice via its CLI flags.
+    """Run the REAL enrichment plan against the slice, in-process.
 
-    Returns {mode: submittable}. Raises SystemExit when visual submittable == 0
-    — that single assertion is what makes the slice worth having.
+    Calls the workload registry's ``candidates`` — the same code the submit
+    stage runs — so the check cannot drift from production discovery the way
+    a re-implemented query would. Counts what is genuinely submittable: a
+    candidate whose media will not resolve is not work.
+
+    Returns {mode: submittable}. Raises SystemExit when visual submittable ==
+    0 — that single assertion is what makes the slice worth having.
     """
+    import duckdb
+    from orchestration.defs.ig_enriched.slv import workloads
+    from orchestration.defs.platform.resources import SQLiteResource
+
+    ops = SQLiteResource(database=str(out / "ops.sqlite"))
     submittable: dict[str, int] = {}
-    for mode in modes:
-        proc = subprocess.run(
-            [
-                sys.executable,
-                str(REPO_ROOT / "scripts" / "enrich_facets_batch.py"),
-                "--plan",
-                "--mode",
-                mode,
-                "--state-db",
-                str(out / "state.duckdb"),
-                "--ops-db",
-                str(out / "ops.sqlite"),
-            ],
-            capture_output=True,
-            text=True,
-            cwd=REPO_ROOT,
-            timeout=300,
-        )
-        if proc.returncode != 0:
-            raise SystemExit(
-                f"Enrichment plan failed for mode={mode} (rc={proc.returncode}):\n"
-                f"{proc.stdout}\n{proc.stderr}"
-            )
-        m = re.search(r"targets=(\d+) submittable=(\d+)", proc.stdout)
-        if not m:
-            raise SystemExit(f"Unparseable plan output for mode={mode}: {proc.stdout}")
-        submittable[mode] = int(m.group(2))
+    conn = duckdb.connect(str(out / "state.duckdb"), read_only=True)
+    try:
+        for mode in modes:
+            workload = workloads.WORKLOAD_BY_NAME[
+                "growth-facets-visual" if mode == "visual" else "growth-facets-text"
+            ]
+            targets = workload.candidates(conn, workloads.SubmitConfig())
+            built = 0
+            for candidate in targets:
+                try:
+                    workload.build_item(ops, conn, candidate)
+                except Exception:  # unbuildable candidate is not work
+                    continue
+                built += 1
+            submittable[mode] = built
+    finally:
+        conn.close()
     if submittable.get("visual", 0) <= 0:
         raise SystemExit(
             f"Smoke slice FAILED its usability check: visual submittable = 0 "
