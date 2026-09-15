@@ -456,9 +456,13 @@ class Workload:
     """
 
     name: str
-    #: The silver table a completed pass lands in — the anti-join check's
-    #: left-hand side. A workload with no entry here is invisible to
-    #: ``check_no_silent_loss``.
+    #: The PRIMARY silver table this pass's responses land in, named for a
+    #: human reading the registry. NOT the anti-join's left-hand side: a pass
+    #: may land in more than one table (each facet pass writes an annotations
+    #: AND a summaries table), and ``check_no_silent_loss`` reads the complete
+    #: mapping from ``ig_enriched/slv/checks.py::WORKLOAD_SILVER_TABLES``.
+    #: The two MUST agree on the primary table; that mapping is the contract,
+    #: this is the human-readable summary of it.
     silver_table: str
     candidates: Callable[..., list[dict]]
     build_item: Callable[..., Item]
