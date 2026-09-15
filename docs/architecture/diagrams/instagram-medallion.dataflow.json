@@ -1,0 +1,326 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Datalake — Instagram Medallion Pipeline (as-built)",
+    "subtitle": "bronze → silver → enqueue → qwen batch → gold → serving views",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "visual_preset": "blueprint",
+    "viewBox": [
+      1068,
+      620
+    ],
+    "views": [
+      {
+        "id": "primary-path",
+        "label": "Primary data path",
+        "focus": [
+          "ig",
+          "apify",
+          "raw",
+          "slv",
+          "batches",
+          "qwen",
+          "gold",
+          "serving",
+          "dash"
+        ],
+        "note": "Harvest to consumer: land bronze, dedup to silver, enqueue, enrich, conform, serve."
+      },
+      {
+        "id": "enrichment-entry",
+        "label": "Where model work enters",
+        "focus": [
+          "slv",
+          "batches",
+          "qwen",
+          "gold"
+        ],
+        "note": "Enrichment crosses the API seam here; gold_analyses is written externally, not by a transform."
+      },
+      {
+        "id": "ops-state",
+        "label": "Ops state",
+        "focus": [
+          "batches",
+          "ops",
+          "qwen"
+        ],
+        "note": "ops.sqlite carries the queue, the media cache and dead letters."
+      },
+      {
+        "id": "serving-layer",
+        "label": "Serving layer",
+        "focus": [
+          "gold",
+          "serving",
+          "dash"
+        ],
+        "note": "Metrics live in warehouse views; the dashboard only projects them."
+      }
+    ]
+  },
+  "stages": [
+    {
+      "label": "Sources"
+    },
+    {
+      "label": "Ingest & Bronze"
+    },
+    {
+      "label": "Silver"
+    },
+    {
+      "label": "Enrichment"
+    },
+    {
+      "label": "Gold & Serving"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "ig",
+      "type": "external",
+      "label": "Instagram",
+      "sublabel": "creator posts",
+      "stage": 0,
+      "row": 1,
+      "tag": "observed"
+    },
+    {
+      "id": "apify",
+      "type": "cloud",
+      "label": "Apify Actor",
+      "sublabel": "harvest run",
+      "stage": 1,
+      "row": 0,
+      "tag": "rate-limited"
+    },
+    {
+      "id": "raw",
+      "type": "database",
+      "label": "ig_posts_raw",
+      "sublabel": "bronze · Parquet",
+      "stage": 1,
+      "row": 2,
+      "tag": "as-observed"
+    },
+    {
+      "id": "slv",
+      "type": "database",
+      "label": "ig_posts_slv",
+      "sublabel": "silver · Parquet",
+      "stage": 2,
+      "row": 1,
+      "tag": "dedup · DuckDB",
+      "width": 130
+    },
+    {
+      "id": "qwen",
+      "type": "external",
+      "label": "Qwen Batch",
+      "sublabel": "standalone worker",
+      "stage": 3,
+      "row": 0,
+      "tag": "ADR-0009"
+    },
+    {
+      "id": "batches",
+      "type": "backend",
+      "label": "ig_posts_gen_batches",
+      "sublabel": "partition enqueue",
+      "stage": 3,
+      "row": 1,
+      "tag": "Dagster asset",
+      "width": 140
+    },
+    {
+      "id": "ops",
+      "type": "database",
+      "label": "ops.sqlite",
+      "sublabel": "queue · media cache · DLQ",
+      "stage": 3,
+      "row": 2,
+      "tag": "ADR-0004"
+    },
+    {
+      "id": "gold",
+      "type": "database",
+      "label": "gold_analyses",
+      "sublabel": "DuckDB · AssetSpec",
+      "stage": 4,
+      "row": 0,
+      "tag": "externally written"
+    },
+    {
+      "id": "serving",
+      "type": "backend",
+      "label": "Serving",
+      "sublabel": "dims + v_* views",
+      "stage": 4,
+      "row": 1,
+      "tag": "warehouse views"
+    },
+    {
+      "id": "dash",
+      "type": "backend",
+      "label": "Dashboard",
+      "sublabel": "thin projector",
+      "stage": 4,
+      "row": 2,
+      "tag": "ADR-0005"
+    }
+  ],
+  "flows": [
+    {
+      "id": "creator-posts",
+      "from": "ig",
+      "to": "apify",
+      "label": "creator posts",
+      "classification": "external source",
+      "variant": "emphasis"
+    },
+    {
+      "id": "raw-posts",
+      "from": "apify",
+      "to": "raw",
+      "label": "raw posts",
+      "classification": "append-only bronze",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight",
+      "labelAt": [
+        315,
+        271
+      ]
+    },
+    {
+      "id": "dedup",
+      "from": "raw",
+      "to": "slv",
+      "label": "dedup + media refs",
+      "classification": "silver transform",
+      "variant": "default"
+    },
+    {
+      "id": "enqueue",
+      "from": "slv",
+      "to": "batches",
+      "label": "pending partitions",
+      "classification": "enqueue",
+      "variant": "emphasis",
+      "labelAt": [
+        631,
+        314
+      ]
+    },
+    {
+      "id": "submit",
+      "from": "batches",
+      "to": "qwen",
+      "label": "submit + poll",
+      "classification": "external API call",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "route": "straight",
+      "labelAt": [
+        745,
+        214
+      ]
+    },
+    {
+      "id": "ledger",
+      "from": "batches",
+      "to": "ops",
+      "label": "batch_jobs · batch_items",
+      "classification": "durable queue",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight",
+      "labelAt": [
+        745,
+        328
+      ]
+    },
+    {
+      "id": "analyses",
+      "from": "qwen",
+      "to": "gold",
+      "label": "analyses",
+      "classification": "model output",
+      "variant": "emphasis"
+    },
+    {
+      "id": "conform",
+      "from": "gold",
+      "to": "serving",
+      "label": "conform",
+      "classification": "dims + views",
+      "variant": "default",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight",
+      "labelAt": [
+        960,
+        214
+      ]
+    },
+    {
+      "id": "metric-sql",
+      "from": "serving",
+      "to": "dash",
+      "label": "metric SQL",
+      "classification": "read-only",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight",
+      "labelAt": [
+        960,
+        328
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Medallion discipline",
+      "items": [
+        "Bronze Parquet is as-observed; nothing derived is stored back on it",
+        "Silver carries the deduped posts table plus DuckDB watermarks",
+        "Enrichment output is an ingested source (ADR-0001), not a transform"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Where the model work enters",
+      "items": [
+        "ig_posts_gen_batches enqueues partitions; the worker submits and polls",
+        "gold_analyses is an AssetSpec — written externally, never by the transform layer",
+        "ops.sqlite holds the queue, the media cache and dead letters"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Serving contract",
+      "items": [
+        "Metrics live in warehouse views; the dashboard is a thin projector (ADR-0005)",
+        "Metrics are point-in-time at-post-time baselines, not all-time averages (ADR-0006)",
+        "dim_profile, dim_date and v_post_detail anchor the downstream views"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Target — accepted, not built",
+      "items": [
+        "ADR-0011: bronze_enrichment_raw → six silver_* conform tables → four gold marts",
+        "ADR-0012: Dagster-native orchestration, retiring the ops.sqlite queue",
+        "ADR-0013 / 0008 / 0009: the single inference seam is not the running path today"
+      ]
+    }
+  ]
+}

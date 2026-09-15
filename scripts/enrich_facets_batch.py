@@ -1,9 +1,6 @@
 """Batch-native growth-facets driver — THE enrichment execution vehicle.
 
-The synchronous interactive paths (``enrich_interactive.py``,
-``enrich_facets_pilot.py``, ``enrich_facets_full.py``) were removed
-2026-09-08; enrichment is BATCH-NATIVE ONLY. This driver runs the facets →
-``gold_growth_facets`` path end-to-end on the standalone **qwen-batch
+Drives the ``gold_growth_facets`` path end-to-end on the standalone **qwen-batch
 service** (``defs.enrichment.qwen_client``, default
 ``http://127.0.0.1:8462``, override with ``QWEN_SERVICE_URL`` or
 ``--service-url``) via ``defs.enrichment.facets_batch``:
@@ -11,13 +8,15 @@ service** (``defs.enrichment.qwen_client``, default
     enumerate targets → build items (visual: media resolved to cached local
       paths; the service frame-samples videos with ffmpeg on its own host)
       → check_health (LOUD fail if the service is down) → submit ONE service
-      job → poll to terminal state (bounded) → harvest → validate → MERGE upsert
+      job → poll to terminal state (bounded) → harvest (land VERBATIM into
+      bronze_enrichment_raw BEFORE parsing) → validate → MERGE upsert
 
-Resume-safe: submitted service job ids are persisted in the
-``facets_batch_jobs`` ledger on ops.sqlite; a re-run polls + harvests any
-still-SUBMITTED ledger jobs before discovering new targets, and target
-enumeration skips posts already done under the current prompt hash (visual)
-or already carrying the full text-layer sub-schema (text).
+Resume-safe (ADR-0013): there is NO ledger. The service owns its job store;
+each submit prints the returned service job id — the in-flight record. A
+later ``--harvest`` pass takes those job ids explicitly (``--job-ids`` with
+``--mode``). Target enumeration skips posts already done under the current
+prompt hash (visual) or already carrying the full text-layer sub-schema
+(text).
 
 Subcommands:
     --plan       offline dry-run: target count + qwen cost projection.
@@ -25,13 +24,15 @@ Subcommands:
     --run        health-check + build + submit + poll + harvest (bounded by
                  --limit / --posts; the FULL corpus is intentionally never
                  implicit).
-    --harvest    health-check + poll + harvest only (ledger jobs), no new
-                 submissions.
+    --harvest    health-check + poll + harvest only (explicit --job-ids +
+                 --mode), no new submissions.
 
 Examples:
     uv run python scripts/enrich_facets_batch.py --plan --mode visual
     uv run python scripts/enrich_facets_batch.py --run --mode visual --limit 2 \
         --state-db data/_gate.duckdb --posts <id1>,<id2>
+    uv run python scripts/enrich_facets_batch.py --harvest --mode visual \
+        --job-ids <svc-job-id>
 """
 
 from __future__ import annotations
@@ -106,27 +107,35 @@ def run_plan(args: argparse.Namespace) -> int:
 
 
 def run_harvest(args: argparse.Namespace) -> int:
+    """Poll + harvest explicit job ids (no ledger — the caller supplies them)."""
     args.model = args.model or _DEFAULT_QWEN_MODEL
     base_url = _service_url(args)
     # US-EENG-2: loud health check — never a quiet 'nothing to do'.
     qwen_client.check_health(base_url)
-    ops = SQLiteResource(database=args.ops_db)
+    if not args.job_ids:
+        print(
+            "No job ids to harvest — pass --job-ids (there is no ledger; "
+            "job ids are printed by --run and owned by the service)."
+        )
+        return 2
+    if not args.mode:
+        print("Pass --mode (visual|text) with --job-ids.")
+        return 2
     conn = _open_state(args.state_db)
     try:
-        pending = facets_batch.pending_ledger_jobs(ops)
-        if not pending:
-            print("No pending facet batch jobs in the ledger.")
-            return 0
         facets_batch.wait_for_facets_batches(
-            [j["job_id"] for j in pending],
+            _csv(args.job_ids),
             poll_seconds=args.poll_seconds,
             timeout_seconds=args.timeout_seconds,
             base_url=base_url,
+            model=args.model,
         )
         print(
             "Harvest:",
             facets_batch.harvest_facets_batches(
-                ops, conn, model=args.model, base_url=base_url
+                conn, _csv(args.job_ids), args.mode,
+                model=args.model, base_url=base_url,
+                root=args.bronze_root,
             ),
         )
     finally:
@@ -142,23 +151,6 @@ def run_batch(args: argparse.Namespace) -> int:
     ops = SQLiteResource(database=args.ops_db)
     conn = _open_state(args.state_db)
     try:
-        # Resume: poll + harvest anything still in flight first.
-        pending = facets_batch.pending_ledger_jobs(ops)
-        if pending:
-            logger.info("Resuming %d pending ledger job(s)", len(pending))
-            facets_batch.wait_for_facets_batches(
-                [j["job_id"] for j in pending],
-                poll_seconds=args.poll_seconds,
-                timeout_seconds=args.timeout_seconds,
-                base_url=base_url,
-            )
-            print(
-                "Resumed:",
-                facets_batch.harvest_facets_batches(
-                    ops, conn, model=args.model, base_url=base_url
-                ),
-            )
-
         for mode in _modes(args):
             targets = facets_batch.enumerate_targets(
                 conn, mode, limit=args.limit, post_ids=_csv(args.posts)
@@ -178,19 +170,20 @@ def run_batch(args: argparse.Namespace) -> int:
                 f"(~{input_tokens} est. tokens, qwen cost ~${cost:.4f})"
             )
             job_id = facets_batch.submit_facets_batch(
-                ops, items, mode, model=args.model, base_url=base_url
+                items, mode, model=args.model, base_url=base_url
             )
             facets_batch.wait_for_facets_batches(
                 [job_id],
                 poll_seconds=args.poll_seconds,
                 timeout_seconds=args.timeout_seconds,
                 base_url=base_url,
+                model=args.model,
             )
             print(
                 f"[{mode}] harvest:",
                 facets_batch.harvest_facets_batches(
-                    ops, conn, job_ids=[job_id], model=args.model,
-                    base_url=base_url,
+                    conn, [job_id], mode, model=args.model,
+                    base_url=base_url, root=args.bronze_root,
                 ),
             )
     finally:
@@ -202,13 +195,26 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--plan", action="store_true", help="offline dry-run (no spend)")
     p.add_argument("--run", action="store_true", help="submit + poll + harvest")
-    p.add_argument("--harvest", action="store_true", help="poll + harvest only")
+    p.add_argument(
+        "--harvest", action="store_true",
+        help="poll + harvest only (requires --job-ids and --mode)",
+    )
     p.add_argument("--mode", choices=["visual", "text"], default=None)
     p.add_argument("--limit", type=int, default=None, help="max targets this run")
     p.add_argument("--posts", default=None, help="comma-separated post_id subset")
+    p.add_argument(
+        "--job-ids", default=None,
+        help="comma-separated qwen service job ids to harvest (--harvest)",
+    )
     p.add_argument("--state-db", default=DEFAULT_STATE_DB)
     p.add_argument("--ops-db", default=DEFAULT_OPS_DB)
     p.add_argument("--model", default=None, help="model override for this run")
+    p.add_argument(
+        "--bronze-root", default=None,
+        help="bronze landing root (default: the live lake root — pass the "
+        "smoke/test root for dev runs; the landing guard refuses unknown "
+        "providers on the default root)",
+    )
     p.add_argument(
         "--service-url",
         default=os.environ.get("QWEN_SERVICE_URL")

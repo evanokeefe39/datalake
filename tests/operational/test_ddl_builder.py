@@ -88,8 +88,18 @@ def test_duckdb_all_ddl_creates_every_table():
     assert set(DUCKDB_TABLES) == actual
 
 
-def test_sqlite_all_ddl_creates_indexes():
-    """``sqlite_all_ddl`` creates the declared batch_items index."""
+def test_sqlite_all_ddl_creates_no_retired_queue_index():
+    """``sqlite_all_ddl`` must not resurrect the retired queue, index included.
+
+    This test previously asserted ``idx_batch_items_job_status`` was created —
+    an index on ``batch_items``, a table retired by ADR-0012. It was the last
+    place in the tree that still demanded a retired queue artefact exist, so it
+    is inverted rather than deleted: the assertion now protects the retirement.
+
+    Plan-level indexes are still rendered by ``_render_indexes`` when a spec
+    declares them (see ``Table.indexes``); no RETAINED table declares one today,
+    so an empty index set is the correct current state.
+    """
     con = sqlite3.connect(":memory:")
     try:
         con.executescript(sqlite_all_ddl())
@@ -99,7 +109,26 @@ def test_sqlite_all_ddl_creates_indexes():
                 "SELECT type, name FROM sqlite_master WHERE type = 'index'"
             ).fetchall()
         }
+        tables = {
+            r[0]
+            for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        }
     finally:
         con.close()
 
-    assert "idx_batch_items_job_status" in indexes
+    # The retired queue must not come back through the DDL builder.
+    assert "idx_batch_items_job_status" not in indexes
+    assert "batch_items" not in tables
+    assert not {"batch_jobs", "dead_letter", "facets_batch_jobs"} & tables
+
+    # The retained set is exactly what the catalog declares.
+    assert tables == {
+        "media_cache",
+        "creators",
+        "profiles",
+        "creator_merges",
+        "prompt_registry",
+    }, f"unexpected retained table set: {sorted(tables)}"

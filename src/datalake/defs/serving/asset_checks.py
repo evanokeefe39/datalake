@@ -148,8 +148,8 @@ def _v_post_detail_row_count_positive(context) -> AssetCheckResult:
     name="v_post_detail_gold_attribute_coverage",
     required_resource_keys={"duckdb"},
     description=(
-        "Fail when gold_analyses rows store attributes that v_post_detail's "
-        "JSON extraction fails to surface; report overall attribute coverage."
+        "Fail when silver_content_classification rows store attributes the "
+        "serving view fails to surface; report overall attribute coverage."
     ),
 )
 def _v_post_detail_gold_attribute_coverage(context) -> AssetCheckResult:
@@ -160,7 +160,8 @@ def _v_post_detail_gold_attribute_coverage(context) -> AssetCheckResult:
             return AssetCheckResult(passed=True, metadata={"row_count": 0})
         missing, unsurfaced = conn.execute("""
             WITH g AS (
-                SELECT result_json FROM gold_analyses WHERE domain = 'instagram'
+                SELECT result_json FROM silver_content_classification
+                WHERE platform = 'instagram'
             )
             SELECT
                 (SELECT COUNT(*) FROM v_post_detail WHERE gold_topic IS NULL),
@@ -177,7 +178,7 @@ def _v_post_detail_gold_attribute_coverage(context) -> AssetCheckResult:
     metadata = {
         "row_count": total,
         "missing_gold_topic": missing,
-        "no_gold_analyses_row": no_gold,
+        "no_classification_row": no_gold,
         "coverage_ratio_topic": round(1 - missing / total, 4) if total else 1.0,
         "stored_but_unsurfaced_rows": unsurfaced,
     }
@@ -186,7 +187,7 @@ def _v_post_detail_gold_attribute_coverage(context) -> AssetCheckResult:
             passed=False,
             severity=AssetCheckSeverity.WARN,
             description=(
-                f"{unsurfaced} gold_analyses rows store attributes in "
+                f"{unsurfaced} classification rows store attributes in "
                 "result_json that v_post_detail fails to surface (extraction gap)."
             ),
             metadata=metadata,

@@ -129,8 +129,10 @@ code still runs the model described in the sections below.
 - **Orchestration (ADR-0012).** Orchestration state moves into the Dagster
   instance + the lake; the `ops.sqlite` queue (`batch_jobs`, `batch_items`,
   `dead_letter`, `facets_batch_jobs`) is retired. `ops.sqlite` retains
-  `media_cache`, `media_metadata`, `creators`, `profiles`, `creator_merges`,
-  `prompt_registry`. Not implemented — the queue tables are live today.
+  `media_cache`, `creators`, `profiles`, `creator_merges`, `prompt_registry`
+  (`media_metadata` was dropped with the queue — it was a Gemini File-API
+  cache for a retired provider). **EXECUTED 2026-09-15**: all seven tables
+  archived then dropped; see `scripts/retire_queue_tables.py`.
 
 ### Multimodal status (2026-09-08) — BATCH-NATIVE ONLY; interactive removed (PRE-PIVOT)
 
@@ -172,10 +174,10 @@ interactive worker hard-crash on very long runs is moot with interactive gone.
 | Gold | DuckDB table | Dagster enrichment jobs (submit → harvest) | `gold_analyses` (AssetSpec, externally materialized) — CURRENT; target is four ADR-0011 marts |
 | Serving | DuckDB views + tables | DuckDB | `dim_profile` (SCD2), `dim_date`, 14 analytics views (incl. 5 canonical metric views) |
 
-**Enrichment layered model (ADR-0011) — ACCEPTED 2026-09-10, NOT YET IMPLEMENTED.**
+**Enrichment layered model (ADR-0011) — LIVE since 2026-09-15.**
 Canonical spec: `docs/architecture/pipelines/enrichment.md` (v3; supersedes
-`docs/architecture/enrichment-design-v1-superseded.md` v1, retained as rationale only). The
-table above describes what runs today; this is the target:
+`docs/architecture/enrichment-design-v1-superseded.md` v1, retained as rationale only). The table above described the pre-migration world; this is what RUNS
+TODAY (verified 2026-09-15 against `data/state.duckdb`):
 
 | Layer | Job | Contract |
 |---|---|---|
@@ -217,7 +219,9 @@ the service is what makes the synchronous OpenRouter/qwen provider async) and
 `facets_batch_jobs`) is retired; `ops.sqlite` retains `media_cache`,
 `media_metadata`, `creators`, `profiles`, `creator_merges`, `prompt_registry`.
 Retry becomes a new partition key; failures surface via the anti-join
-`landed(bronze) ∖ conformed(silver)` plus a BLOCKING asset check. NOT IMPLEMENTED.
+`landed(bronze) ∖ conformed(silver)` plus a BLOCKING asset check — the blocking
+check is IMPLEMENTED (`defs/enrichment/checks.py::check_no_silent_loss`). The
+queue-table DROP itself is still pending human approval (see `scripts/retire_queue_tables.py`).
 
 **Current vs target, in one line:** today `gold_analyses` + `gold_growth_facets`
 + the `batch_*`/`dead_letter` queue in `ops.sqlite`; target the six silver
@@ -239,7 +243,7 @@ src/datalake/defs/
 **Storage split:**
 - **Parquet lake** — bulk data, lock-free parallel writes
 - **DuckDB** (`data/state.duckdb`) — authoritative current state, watermarks, SCD2 dims, views
-- **Lake layers (target, ADR-0011)** — `bronze_enrichment_raw` + six `silver_*` tables + four gold marts as Parquet/DuckDB per the layered model above (not yet built)
+- **Lake layers (ADR-0011, LIVE)** — `bronze_enrichment_raw` (9,576 rows) + six `silver_*` tables + four gold marts, per the layered model above
 
 **Engine boundary:**
 - Polars handles all Parquet I/O (read/write NDJSON and Parquet)
@@ -272,8 +276,10 @@ Under the accepted v3 model, `gold_analyses` is replaced by
 `silver_visual_annotations` + `silver_visual_summaries` +
 `silver_text_annotations` + `silver_text_summaries`, and `batch_jobs`/
 `batch_items`/`dead_letter` are retired in favor of Dagster-native
-orchestration state (`media_metadata`, `media_cache`, `creators`, `profiles`,
-`creator_merges`, `prompt_registry` retained). None of this is implemented yet.
+orchestration state (`media_cache`, `creators`, `profiles`, `creator_merges`,
+`prompt_registry` retained). **EXECUTED 2026-09-15** — the queue tables are
+gone from the live DBs; Dagster-native state has been live since the W3/W4
+units landed.
 
 **DuckDB views:** `v_post_detail` (foundational), `v_signal`, `v_quality_trend`, `v_creator_quality`, `v_rising_creators`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`, `v_post_baselines` (serving-layer comments/views point-in-time baselines), `v_post_metrics` (canonical per-post metrics), `v_creator_metrics` (gate-free per-creator activity), `v_creator_profile` (per-creator canonical rollup: momentum + dominant domain), `v_creator_topics` (per-creator top-5 topics by count and performance), `v_recent_hot_posts` (recent 28-day hot feed), `v_profile_metrics` (per-profile counts), `v_overview` (single-row), `v_standout_calendar` (standouts per day-of-month)
 
@@ -289,7 +295,7 @@ CREATE TABLE watermarks (name TEXT PRIMARY KEY, timestamp TIMESTAMP NOT NULL);
 - Silver reads/writes `watermarks WHERE name = 'silver_ig'`
 ## Dead letter pattern
 
-> **ADR-0012 (accepted 2026-09-10, NOT IMPLEMENTED):** the `dead_letter` table
+> **ADR-0012 (accepted 2026-09-10; DROPPED 2026-09-15):** the `dead_letter` table
 > is scheduled for retirement alongside the `ops.sqlite` queue — failures will
 > surface via the anti-join `landed(bronze) ∖ conformed(silver)` plus a BLOCKING
 > asset check. Everything below describes the CURRENT (pre-ADR-0012) behavior
@@ -365,8 +371,21 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 `tests/operational/expected_schema.py` re-exports it for backward compatibility.
 Any table the pipeline reads or writes must be listed here. The readiness test
 (`test_state_compatibility.py`) asserts the catalog matches the running databases.
-**DuckDB tables:** `silver_ig_posts`, `gold_analyses`, `watermarks`, `dim_profile`, `dim_date`
-**SQLite tables:** `batch_jobs`, `batch_items`, `media_metadata`, `media_cache`, `dead_letter`, `creators`, `profiles`, `creator_merges`
+**DuckDB tables:** `silver_ig_posts`, `watermarks`, `dim_profile`, `dim_date`,
+plus the v3 layer: the six `silver_*` enrichment tables
+(`silver_content_classification`, `silver_visual_annotations`,
+`silver_visual_summaries`, `silver_text_annotations`, `silver_text_summaries`,
+`silver_audio_transcripts`) and the four gold marts (`gold_post_enrichment`,
+`gold_creator_performance`, `gold_content_shape_performance`, `gold_top_posts`).
+**SQLite tables:** `media_cache`, `creators`, `profiles`, `creator_merges`,
+`prompt_registry`
+
+**Dropped by the W9 retirement (2026-09-15)** — these are NOT expected and their
+absence is correct: `gold_analyses`, `gold_growth_facets` (DuckDB);
+`batch_jobs`, `batch_items`, `dead_letter`, `facets_batch_jobs`,
+`media_metadata` (SQLite). All archived to `data/lake/archive/<table>/<utc>/`
+with export count == live count verified in the same run. `bronze_enrichment_raw`
+is Parquet-backed and is never a registered DuckDB table.
 **Views:** `v_post_detail`, `v_signal`, `v_quality_trend`, `v_creator_quality`, `v_rising_creators`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`, `v_post_metrics`, `v_creator_metrics`, `v_profile_metrics`, `v_overview`, `v_standout_calendar`
 
 - **Missing tables/columns** — fails with "run the pipeline or migration"
@@ -385,13 +404,17 @@ tables, `bronze_enrichment_raw`, four gold marts appear, and `batch_jobs`/
 | Script | Purpose |
 |---|---|
 | `scripts/run_pipeline.py` | Thin entry point → delegates to ``python -m datalake.cli``. Subcommands: ``run`` (pipeline), ``batches`` (inspect/reset), ``watermarks`` (inspect/reset). |
-| `scripts/migrate_schema_drift.py` | Apply schema migrations: rename tables, move data between DBs, drop vestigial tables. Idempotent. |
-| `scripts/migrate_to_v2.py` | One-shot migration from Phase 1-4 schema to v2 domain-scoped tables. |
-| `scripts/migrate_from_ig_pipeline.py` | Import bronze Parquet from legacy ig-pipeline repo. |
-| `scripts/migrate_owner_username.py` | Backfill null ``owner_username`` in silver from bronze ``username`` fallback. Idempotent. |
-| `scripts/migrate_creators_profiles.py` | Split `scrape_targets` → `creators` + `profiles` (1:1 backfill), recreate lost batch tables, drop `scrape_targets`. Idempotent. |
+| `migrations/migrate_schema_drift.py` | Apply schema migrations: rename tables, move data between DBs, drop vestigial tables. Idempotent. |
+| `migrations/migrate_to_v2.py` | One-shot migration from Phase 1-4 schema to v2 domain-scoped tables. |
+| `migrations/migrate_from_ig_pipeline.py` | Import bronze Parquet from legacy ig-pipeline repo. |
+| `migrations/migrate_owner_username.py` | Backfill null ``owner_username`` in silver from bronze ``username`` fallback. Idempotent. |
+| `migrations/migrate_creators_profiles.py` | Split `scrape_targets` → `creators` + `profiles` (1:1 backfill), create `media_metadata`, drop `scrape_targets`. Idempotent. |
 | `scripts/enrich_facets_batch.py` | The growth-facets enrichment driver (qwen-batch service): `--plan` (offline cost projection) / `--run` (discover→submit→poll→harvest) / `--harvest`; `--mode visual\|text`, `--limit`/`--posts`, scratch DBs via `--state-db`/`--ops-db`. Resume-safe — re-running polls+harvests any still-submitted ledger job. |
 | `scripts/poll_qwen_run.py` | Read-only progress poller for a live qwen-batch job. Reads the service job store (QWEN_BATCH_DB or `~/.qwen-batch/state.sqlite`), prints state / done / failed / rate / ETA, and shows the harvest+continue command once the newest job is terminal. |
+| `scripts/conform_silver.py` | Publish + register the six v3 silver tables from `bronze_enrichment_raw` — the live silver publisher (zero API calls; deterministic replay). |
+| `scripts/make_smoke_slice.py` | Deterministic dev/smoke slice builder for the verification plane. |
+| `scripts/reconcile_facets_jobs.py` | Reconcile `facets_batch_jobs` against the qwen service job store. Superseded by the reconciliation step built into `retire_queue_tables.py --apply`. |
+| `scripts/retire_queue_tables.py` | W9 retirement: reconcile handles → archive+verify (export count == live count, same run) → per-table drop → KEEP-set assertion. Modes: `--plan` / `--rehearse` / `--apply --i-have-approval [--accept-open-handles]`. |
 ## Stale analysis update
 
 When the enrichment prompt or model changes, existing `gold_analyses` rows have stale `prompt_hash`.
@@ -442,11 +465,12 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
   enrichment logic lives in `defs/enrichment/analysis.py`.
 - **Retry:** exponential backoff with jitter, `MAX_ATTEMPTS=5`, terminal failures → `dead_letter`
 
-> **Driver sensor ships STOPPED.** The `gemini_batch_harvest_sensor` (and any
-> schedules) are defined but not enabled — the user turns them on deliberately.
-> A green Dagster UI with no activity is the expected state, not a failure.
+> **Driver sensor (2026-09-15):** `enrichment_harvest_sensor` (interval, ADR-0012 D2) is
+> wired and ENABLED — it re-derives the full in-flight set each tick and requests harvest
+> runs for terminal partitions only. The retired `gemini_batch_harvest_sensor` is deleted.
+> Any schedule still ships stopped; the user enables those deliberately.
 
-> **Target (ADR-0012, NOT IMPLEMENTED):** this section describes the current
+> **Target (ADR-0012; queue DROPPED 2026-09-15):** this section describes the pre-drop
 > batch queue model. In the target state the lifecycle becomes
 > submit → harvest-as-partition-landing into `bronze_enrichment_raw`, with
 > orchestration state in the Dagster instance instead of `batch_jobs`/`batch_items`.
@@ -696,7 +720,88 @@ Set in `.env`:
 | 2026-07-01 | Panel of experts for architecture review | Data Architect + ML Engineer + Dagster Expert review non-trivial design decisions |
 | 2026-07-01 | Smoke tests between phases | Temp DB with subset of data, wiped after verification. Self-steering during implementation |
 | 2026-08-14 | `creators` + `profiles` split (replaces `scrape_targets`) | Multi-platform enabler: creator (person/brand) owns 1..N profiles (account per platform). `dim_profile` carries `creator_id`/`creator_name` for click-through without cross-DB joins. Depth is per-profile. Backfill is 1:1 (IG-only today). |
-| 2026-09-10 | Enrichment layered model (ADR-0011) — bronze verbatim → six `silver_*` → four gold marts, keyed `(post_id, platform)` | Deterministic remap from `bronze_enrichment_raw` means schema/mapping changes are replays, not re-bills. ACCEPTED, NOT IMPLEMENTED. Spec: `docs/architecture/pipelines/enrichment.md` (v3) |
-| 2026-09-10 | Dagster-native orchestration (ADR-0012) | Retires the `ops.sqlite` queue (`batch_jobs`/`batch_items`/`dead_letter`/`facets_batch_jobs`); retains media/identity/prompt tables. ACCEPTED, NOT IMPLEMENTED |
+| 2026-09-10 | Enrichment layered model (ADR-0011) — bronze verbatim → six `silver_*` → four gold marts, keyed `(post_id, platform)` | Deterministic remap from `bronze_enrichment_raw` means schema/mapping changes are replays, not re-bills. LIVE 2026-09-15. Spec: `docs/architecture/pipelines/enrichment.md` (v3) |
+| 2026-09-10 | Dagster-native orchestration (ADR-0012) | Retires the `ops.sqlite` queue (`batch_jobs`/`batch_items`/`dead_letter`/`facets_batch_jobs`); retains media/identity/prompt tables. Queue DROP EXECUTED 2026-09-15 (archived first) |
 | 2026-09-10 | Inference seam (ADR-0008/0009): three verbs + `submit`/`poll-to-terminal`/`retrieve`, `ProviderAdapter` swap | One seam serves both the qwen-batch-service (async wrapper over a synchronous provider) and Gemini's native batch. Proven in the enrichment spike; not yet wired in |
-| 2026-09-10 | The seam keeps **no ledger** (ADR-0013) — the service owns its job store, Dagster polls it; Dagster state is instance-native | ADR-0007 Amd 1 / ADR-0010 dec 5 specified a shared `external_jobs` table; the spike's S5 negative assertion tested for it by name and found it unnecessary. Reconciles ADR-0012 with the seam. ACCEPTED, NOT IMPLEMENTED |
+| 2026-09-10 | The seam keeps **no ledger** (ADR-0013) — the service owns its job store, Dagster polls it; Dagster state is instance-native | ADR-0007 Amd 1 / ADR-0010 dec 5 specified a shared `external_jobs` table; the spike's S5 negative assertion tested for it by name and found it unnecessary. Reconciles ADR-0012 with the seam. LIVE 2026-09-15 (no ledger exists; the service owns its job store) |
+
+## Verification plane — defense in depth (2026-09-15, BINDING)
+
+**The principle:** "unit tests green" is evidence that a process ran, not that the system
+works. Unit tests raise the PROBABILITY that something works; they are not confirmation.
+Confirmation is a tracer shot: one real run of the changed path, end-to-end, through a slice,
+with the destination verified. Every agent and subagent in this repo is bound by this —
+"tests pass" is never an acceptable completion claim on its own.
+
+This is not theoretical. The Enrichment v3 migration shipped with ~700 green tests and a
+pipeline that could not run one cycle. The remediation session's FIRST real enrichment run
+surfaced three defects in minutes (empty adapter registry, a Protocol method neither adapter
+implemented, a CLI argument iterated character-by-character) — every one invisible to a green
+suite. Full ledger: `tasks/lessons.md` 2026-09-15.
+
+### The four controls (binding on orchestrator and subagents alike)
+
+1. **Read before dispatch.** Before any unit that touches an existing subsystem, the
+   orchestrator greps the test tree and docs for that subsystem and attaches what it finds to
+   the brief. An existing test that imports a symbol encoding a design IS a specification.
+2. **Story ACs in every brief.** A worker's acceptance includes the user story's binary AC
+   list, not just the unit's own criteria. "The unit is green" says nothing about the
+   consumer the story names.
+3. **Conformance over existence.** For any Protocol, schema catalog, or prompt schema: a
+   runtime check (`isinstance` against a `runtime_checkable` Protocol, catalog-vs-producer
+   column diff, fake-accepts-full-signature) runs in CI. "X exists" is not "X conforms".
+4. **One real run as the acceptance gate.** The deterministic smoke slice
+   (`scripts/make_smoke_slice.py`, ~100 posts with media bytes, own roots) makes a real
+   end-to-end run cheap (~$0.03). "Done" = the changed path executed against it and the
+   destination was verified — never the log line.
+
+### The enforcement plane (layered so one miss does not sink the migration)
+
+| Layer | Gate | Catches |
+|---|---|---|
+| 0 — author | runtime Protocol conformance; catalog-vs-producer column diff; fakes accept the FULL current signature | missing methods, schema drift, fake drift |
+| 1 — unit | scoped pytest on the changed files | slice-local logic |
+| 2 — load | `uv run dagster definitions validate -m datalake.definitions`; full suite on a SETTLED tree only | unloadable graphs, cross-module breakage |
+| 3 — integration | smoke-slice e2e: real provider call -> verbatim bronze -> conform -> silver -> mart query returns rows | everything the unit layer structurally cannot see |
+| 4 — retirement | archive count == live count in the SAME run; blocking anti-join check; per-table drops with the KEEP-set assertion | silent loss, destructive-DDL drift |
+
+**The done bar, in one line:** green suite AND materialized destination AND one observed run
+through the slice. Any one alone is not done.
+
+### Enrichment v3 — verified state, 2026-09-15
+
+Remediation units W0–W9 are discharged. Verified against the live store, not
+against claims:
+
+- **Layered model live.** `bronze_enrichment_raw` 9,576 rows (verbatim, Parquet);
+  six `silver_*` tables published; four gold marts materialized; all 27 serving
+  assets materialize.
+- **Parity PASS.** Pre-migration `gold_analyses` vs live
+  `silver_content_classification`: 9,576 rows both sides, joined on `post_id`,
+  **0 both-non-null conflicts**. 30 rows differ only where the old value was NULL
+  and silver populates it — better data, never divergent data.
+- **Replay purity proven (the keystone claim).** Re-publishing silver from bronze
+  changed ONLY the 8 sentinel rows; the other 9,568 were byte-identical across 15
+  business columns. A schema/mapping change is a replay, not a re-bill.
+- **Sentinel defect fixed.** Two sibling producers defined `MODEL_LEGACY_NULL`
+  differently, so 8 live rows carried the ADR-REJECTED literal. Now a single
+  definition in `defs/common/schemas.py` imported by both; the 8 rows read
+  `unrecorded-legacy-null`.
+- **DQ gates exist and FIRE.** `check_no_silent_loss` (blocking anti-join),
+  `check_quarantine_growth`, `check_silver_snapshot_freshness`, plus
+  `v_quarantine_triage`. Each is proven to fail on injected bad state — a check
+  that only ever passes is the defect that unit exists to fix.
+- **Queue retirement EXECUTED 2026-09-15** (owner-approved). All 7 tables archived
+  (export count == live count, same run, 26,465 rows) then dropped per-table;
+  KEEP set asserted intact and non-empty after. Every live count matched the
+  2026-09-14 baseline — zero drift. **Proof the rebind held: all seven serving
+  views still resolve with `gold_analyses` gone.** Pre-drop snapshots in
+  `data/backups/*.pre-w9-drop`; log in `data/logs/w9-retirement-<utc>.json`.
+
+**Still open (logged in ISSUES.md, not silently carried):** #27 (`conform_silver.py`
+`--silver-root` defaults to the live lake), #28 (Gemini module removal blockers),
+#29 (`--plan` has no Dagster equivalent), #30 (no test constructs the asset graph,
+no pytest markers), #31 (full suite does not finish clean; cause UNVERIFIED), #32
+(reconciliation is now gated; the open qwen job was accepted as a recorded
+decision). The qwen facets pass is still driven by the hand-rolled CLI — promoting
+it into Dagster ops is the remaining ADR-0012 work.

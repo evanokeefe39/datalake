@@ -112,6 +112,7 @@ def _seed(con, posts: list[tuple], labels: list[tuple]) -> None:
     )
     for row in posts:
         con.execute(insert_post, row)
+
     insert_label = (
         f"INSERT INTO ig_post_labels ({LABEL_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
@@ -147,6 +148,18 @@ def db(tmp_path) -> DuckDBResource:
                 baseline_center DOUBLE, baseline_spread DOUBLE
             )
         """)
+        # gold_post_enrichment is a real gold mart (ADR-0011) and
+        # v_creator_topics reads it directly. Without this stub DuckDB's
+        # replacement scan resolves the bare table name to the AssetsDefinition
+        # imported into this module's namespace and raises
+        # InvalidInputException — a confusing failure that names the asset,
+        # not the missing table.
+        con.execute("""
+            CREATE TABLE gold_post_enrichment (
+                post_id TEXT, creator_id INTEGER, gold_topic TEXT,
+                engagement_score DOUBLE
+            )
+        """)
         con.execute("""
             CREATE VIEW v_engagement_outliers AS
             SELECT d.*, l.label, l.method, l.is_provisional,
@@ -158,10 +171,27 @@ def db(tmp_path) -> DuckDBResource:
 
 
 def _run_metrics_chain(db: DuckDBResource) -> None:
-    """Materialize the five views under test in dependency order."""
+    """Materialize the five views under test in dependency order.
+
+    gold_post_enrichment (a real gold mart, ADR-0011) is populated between
+    v_post_metrics and v_creator_topics: the mart carries engagement_score, and
+    the honest source for it is the producer's own column — duplicating the
+    blend here would silently diverge from v_post_metrics the moment a fixture
+    seeds comments/views priors. Enriched-only semantics come from the
+    gold_topic IS NOT NULL filter, matching the mart.
+    """
     ctx = build_asset_context(resources={"duckdb": db})
     _v_post_baselines(ctx)
     _v_post_metrics(ctx)
+    with db.get_connection() as con:
+        con.execute("""
+            INSERT INTO gold_post_enrichment
+                (post_id, creator_id, gold_topic, engagement_score)
+            SELECT d.post_id, d.creator_id, d.gold_topic, m.engagement_score
+            FROM v_post_detail d
+            LEFT JOIN v_post_metrics m ON d.post_id = m.post_id
+            WHERE d.gold_topic IS NOT NULL
+        """)
     _v_creator_profile(ctx)
     _v_creator_topics(ctx)
     _v_rising_creators(ctx)

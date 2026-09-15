@@ -17,7 +17,7 @@ re-judgment (they only recompute on a version bump); provisional
 ``day0_heuristic`` rows upgrade exactly once to ``day7_matched`` when the
 post matures.
 
-``bootstrap=True`` (scripts/migrate_backfill_labels.py) forces every row
+``bootstrap=True`` (migrations/migrate_backfill_labels.py) forces every row
 to ``day0_heuristic``/provisional — the bootstrap is a point-in-time
 snapshot, never a day7 judgment.
 """

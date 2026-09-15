@@ -8,7 +8,6 @@ Per test-hardening plan Phase 3:
 
 from __future__ import annotations
 
-import json
 from unittest.mock import patch
 
 from dagster import build_asset_context, build_schedule_context
@@ -30,9 +29,15 @@ def _run_silver(duckdb, ops, bronze_dir):
 
 
 def _run_enqueue(duckdb, ops_db):
+    from dagster import DagsterInstance, build_asset_context
+
     from datalake.defs.instagram.config import GoldConfig
 
-    return ig_posts_gen_batches(config=GoldConfig(), duckdb=duckdb, ops=ops_db)
+    instance = DagsterInstance.ephemeral()
+    return ig_posts_gen_batches(
+        build_asset_context(instance=instance), config=GoldConfig(),
+        duckdb=duckdb, ops=ops_db,
+    )
 
 
 def _run_profile_dimension(duckdb, ops):
@@ -94,9 +99,9 @@ def test_ad_hoc_run_sequence(tmp_path):
 
     db_path = tmp_path / "test.duckdb"
     duckdb_res = DuckDBResource(database=str(db_path))
-    # Create state tables for the enqueue drain (labels + gold guard)
+    # Create state tables for the enqueue drain (labels + classification guard)
     with duckdb_res.get_connection() as conn:
-        for t in ("gold_analyses", "ig_post_labels",
+        for t in ("silver_content_classification", "ig_post_labels",
                   "silver_ig_post_observations"):
             conn.execute(duckdb_ddl(t))
 
@@ -119,10 +124,5 @@ def test_ad_hoc_run_sequence(tmp_path):
     result = _run_enqueue(duckdb_res, ops_db)
     assert result["enqueued"][0] == 1
 
-    # Step 4: Verify queue has the item
-    from datalake.defs.enrichment.batch import claim_batch
-
-    batch = claim_batch(ops_db)
-    assert batch is not None
-    assert len(batch["payloads"]) == 1
-    assert json.loads(batch["payloads"][0])["post_id"] == "p1"
+    # Step 4: Verify the Dagster-native enqueue happened (result frame)
+    assert result["in_flight_suppressed"][0] == 0

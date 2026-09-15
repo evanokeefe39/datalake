@@ -178,23 +178,30 @@ def dim_date(duckdb: DuckDBResource) -> None:
 # ── Foundational view ───────────────────────────────────────────────────────
 
 
-_GOLD_KEY = AssetKey(["gold_analyses"])
+_CLASSIFICATION_KEY = AssetKey(["silver_content_classification"])
 
 
 @asset(
     name="v_post_detail",
     group_name="serving",
-    description="Foundational flat view: silver posts + gold analyses + profile + date.",
-    deps=[_GOLD_KEY, AssetKey(["dim_profile"]), AssetKey(["dim_date"])],
+    description="Foundational flat view: silver posts + content classification + profile + date.",
+    deps=[_CLASSIFICATION_KEY, AssetKey(["dim_profile"]), AssetKey(["dim_date"])],
 )
 def v_post_detail(duckdb: DuckDBResource) -> None:
     """Create the foundational analytics view.
 
-    Extracts JSON fields from gold_analyses.result_json into typed columns.
-    LEFT JOINs are used throughout — posts without enrichment still appear,
-    and posts without profiles still appear.
+    Reads the typed columns from ``silver_content_classification`` (keyed
+    ``(post_id, platform)``) — no JSON extraction. LEFT JOINs are used
+    throughout — posts without enrichment still appear, and posts without
+    profiles still appear.
     """
     with duckdb.get_connection() as conn:
+        # Clean cutover (US-ESA-2): ``analytics_views`` was retired with the
+        # serving refactor to per-view assets, but it still exists in state
+        # DBs created before the refactor — still reading ``gold_analyses``.
+        # It is not in the catalog (DUCKDB_VIEWS) and nothing selects it;
+        # drop it so no serving view can keep referencing the retired table.
+        conn.execute("DROP VIEW IF EXISTS analytics_views")
         conn.execute("""
             CREATE OR REPLACE VIEW v_post_detail AS
             SELECT
@@ -217,34 +224,22 @@ def v_post_detail(duckdb: DuckDBResource) -> None:
                 sp.source_dataset,
                 sp.processed_on,
 
-                -- Gold enrichment fields (extracted from JSON)
-                ga.result_json,
-                ga.analysed_at                                 AS gold_analysed_at,
-                ga.prompt_hash,
-                -- Gold enrichment fields (extracted from JSON).
-                -- Some model responses are stored as a single-element JSON
-                -- ARRAY rather than an object; COALESCE the $[0] path so
-                -- those rows do not silently surface NULL for every field.
-                COALESCE(ga.result_json->>'$.admiralty',
-                         ga.result_json->>'$[0].admiralty')    AS admiralty,
-                COALESCE(ga.result_json->>'$.domain',
-                         ga.result_json->>'$[0].domain')       AS gold_domain,
-                COALESCE(ga.result_json->>'$.subdomain',
-                         ga.result_json->>'$[0].subdomain')    AS gold_subdomain,
-                COALESCE(ga.result_json->>'$.topic',
-                         ga.result_json->>'$[0].topic')        AS gold_topic,
-                COALESCE(ga.result_json->>'$.subtopic',
-                         ga.result_json->>'$[0].subtopic')     AS gold_subtopic,
-                COALESCE(ga.result_json->>'$.content_type',
-                         ga.result_json->>'$[0].content_type') AS content_type,
-                COALESCE(ga.result_json->>'$.style',
-                         ga.result_json->>'$[0].style')        AS style,
-                COALESCE(ga.result_json->>'$.format',
-                         ga.result_json->>'$[0].format')       AS format,
-                COALESCE((ga.result_json->>'$.is_educational')::BOOLEAN,
-                         (ga.result_json->>'$[0].is_educational')::BOOLEAN) AS is_educational,
-                COALESCE((ga.result_json->>'$.is_actionable')::BOOLEAN,
-                         (ga.result_json->>'$[0].is_actionable')::BOOLEAN) AS is_actionable,
+                -- Content classification fields (typed silver columns).
+                -- ``result_json`` is the verbatim bronze payload, byte-identical
+                -- to what ``gold_analyses`` served.
+                scc.result_json,
+                scc.analysed_at                                AS gold_analysed_at,
+                scc.prompt_hash,
+                scc.admiralty                                  AS admiralty,
+                scc.domain                                     AS gold_domain,
+                scc.subdomain                                  AS gold_subdomain,
+                scc.topic                                      AS gold_topic,
+                scc.subtopic                                   AS gold_subtopic,
+                scc.content_type                               AS content_type,
+                scc.style                                      AS style,
+                scc.format                                     AS format,
+                scc.is_educational                             AS is_educational,
+                scc.is_actionable                              AS is_actionable,
 
                 -- Profile dimension (current row only)
                 dp.profile_key,
@@ -268,8 +263,8 @@ def v_post_detail(duckdb: DuckDBResource) -> None:
                 dd.financial_year
 
             FROM silver_ig_posts sp
-            LEFT JOIN gold_analyses ga
-                ON sp.post_id = ga.post_id AND ga.domain = 'instagram'
+            LEFT JOIN silver_content_classification scc
+                ON sp.post_id = scc.post_id AND scc.platform = 'instagram'
             LEFT JOIN dim_profile dp
                 ON sp.owner_id = dp.owner_id AND dp.is_current = TRUE
             LEFT JOIN dim_date dd
@@ -1074,12 +1069,17 @@ def v_creator_profile(duckdb: DuckDBResource) -> None:
         "Long-form per-creator topics: top-5 by post count and top-5 by "
         "baseline-normalized weighted performance."
     ),
-    deps=[AssetKey(["v_post_metrics"]), AssetKey(["v_post_detail"])],
+    deps=[AssetKey(["gold_post_enrichment"])],
 )
 def v_creator_topics(duckdb: DuckDBResource) -> None:
     """Top topics per creator for the creators-page topic chips.
 
     Grain: one row per ``(creator_id, gold_topic)`` over ENRICHED posts.
+    Reads the wide per-post mart ``gold_post_enrichment`` — the correct
+    upstream for topic + engagement: it already composes the canonical
+    ``v_post_metrics`` (``engagement_score``, ``creator_id``) and
+    ``v_post_detail`` (``gold_topic``) on the ``(post_id, platform)`` key,
+    so no metric is re-derived here (WATCHDOG metrics-centralization).
     ``perf_score`` = mean of member posts' baseline-normalized weighted
     ``engagement_score`` (posts without a score drop out of the mean).
     ``perf_rank`` ranks topics by ``perf_score`` DESC within a creator;
@@ -1092,15 +1092,14 @@ def v_creator_topics(duckdb: DuckDBResource) -> None:
             CREATE OR REPLACE VIEW v_creator_topics AS
             WITH topics AS (
                 SELECT
-                    pm.creator_id,
-                    pd.gold_topic                AS topic,
+                    gpe.creator_id,
+                    gpe.gold_topic               AS topic,
                     COUNT(*)                     AS post_count,
-                    AVG(pm.engagement_score)     AS perf_score
-                FROM v_post_metrics pm
-                JOIN v_post_detail pd ON pd.post_id = pm.post_id
-                WHERE pm.creator_id IS NOT NULL
-                  AND pd.gold_topic IS NOT NULL
-                GROUP BY pm.creator_id, pd.gold_topic
+                    AVG(gpe.engagement_score)    AS perf_score
+                FROM gold_post_enrichment gpe
+                WHERE gpe.creator_id IS NOT NULL
+                  AND gpe.gold_topic IS NOT NULL
+                GROUP BY gpe.creator_id, gpe.gold_topic
             ),
             ranked AS (
                 SELECT
@@ -1141,12 +1140,13 @@ def v_overview(duckdb: DuckDBResource) -> None:
             CREATE OR REPLACE VIEW v_overview AS
             SELECT
                 (SELECT COUNT(*) FROM silver_ig_posts) AS total_posts,
-                (SELECT COUNT(*) FROM gold_analyses
-                 WHERE domain = 'instagram')           AS total_enriched,
+                (SELECT COUNT(*) FROM silver_content_classification
+                 WHERE platform = 'instagram')         AS total_enriched,
                 (SELECT COUNT(DISTINCT owner_username)
                  FROM silver_ig_posts)                 AS total_profiles,
                 ROUND(
-                    (SELECT COUNT(*) FROM gold_analyses WHERE domain = 'instagram')
+                    (SELECT COUNT(*) FROM silver_content_classification
+                     WHERE platform = 'instagram')
                     / NULLIF((SELECT COUNT(*) FROM silver_ig_posts), 0) * 100,
                     1
                 )                                      AS enrichment_pct,
@@ -1220,12 +1220,518 @@ def v_recent_hot_posts(duckdb: DuckDBResource) -> None:
         """)
 
 
+
+
+# ── Gold marts (US-ESA-1 / ADR-0011 §5) ────────────────────────────────────
+# Four analytic marts answering the owner's three questions. They COMPOSE the
+# canonical metric views + the silver enrichment outputs; they never restate
+# a tier bucket, momentum constant/window, baseline, or z-score (single
+# definition lives upstream — WATCHDOG metrics-centralization).
+
+
+@asset(
+    name="gold_post_enrichment",
+    group_name="serving",
+    description=(
+        "Wide per-post enrichment mart: canonical engagement metrics + "
+        "classification shape + all five silver channel outputs + provenance. "
+        "PK (post_id, platform)."
+    ),
+    deps=[
+        AssetKey(["v_post_metrics"]),
+        AssetKey(["v_post_detail"]),
+        AssetKey(["silver_visual_annotations"]),
+        AssetKey(["silver_visual_summaries"]),
+        AssetKey(["silver_audio_transcripts"]),
+        AssetKey(["silver_text_annotations"]),
+        AssetKey(["silver_text_summaries"]),
+    ],
+)
+def gold_post_enrichment(duckdb: DuckDBResource) -> None:
+    """AC1 — the wide per-post shape.
+
+    Every metric is SELECTED from a canonical view (``v_post_metrics`` for
+    engagement, ``v_post_detail`` for the typed classification columns);
+    the five silver channel tables join on ``(post_id, platform)`` — the
+    platform key, never ``domain``. ``platform`` is sourced from
+    ``dim_profile.channel`` via ``v_post_detail`` (no literal restated).
+    Creator identity (``creator_id``/``owner_username``) is carried so
+    creator-grain consumers can read the mart without re-joining
+    ``v_post_metrics``.
+    LEFT JOINs throughout: a post missing a channel output still appears.
+    """
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE OR REPLACE VIEW gold_post_enrichment AS
+            SELECT
+                pm.post_id,
+                pm.creator_id,
+                pm.owner_username,
+                pd.channel                             AS platform,
+                -- Engagement metrics — canonical (v_post_metrics).
+                pm.likes_count,
+                pm.comments_count,
+                pm.video_view_count,
+                pm.timestamp,
+                pm.likes_zscore,
+                pm.comments_zscore,
+                pm.views_zscore,
+                pm.engagement_score,
+                pm.sigma_tier,
+                pm.is_standout,
+                pm.is_hot,
+                pm.relative_performance,
+                pm.breakout_multiple,
+                -- Content classification shape — canonical (v_post_detail).
+                pd.gold_domain,
+                pd.gold_subdomain,
+                pd.gold_topic,
+                pd.gold_subtopic,
+                pd.content_type,
+                pd.style,
+                pd.format,
+                pd.is_educational,
+                pd.is_actionable,
+                pd.admiralty,
+                -- Per-pass provenance (envelope metadata, one prefix/channel).
+                sva.provider        AS visual_provider,
+                sva.model           AS visual_model,
+                sva.run_id          AS visual_run_id,
+                sva.schema_version  AS visual_schema_version,
+                sva.analysed_at     AS visual_analysed_at,
+                svs.provider        AS visual_summary_provider,
+                svs.model           AS visual_summary_model,
+                svs.run_id          AS visual_summary_run_id,
+                svs.analysed_at     AS visual_summary_analysed_at,
+                sat.provider        AS transcript_provider,
+                sat.model           AS transcript_model,
+                sat.run_id          AS transcript_run_id,
+                sat.analysed_at     AS transcript_analysed_at,
+                sta.provider        AS text_provider,
+                sta.model           AS text_model,
+                sta.run_id          AS text_run_id,
+                sta.schema_version  AS text_schema_version,
+                sta.analysed_at     AS text_analysed_at,
+                sts.provider        AS text_summary_provider,
+                sts.model           AS text_summary_model,
+                sts.run_id          AS text_summary_run_id,
+                sts.analysed_at     AS text_summary_analysed_at,
+                -- Visual annotations (visual pass).
+                sva.face_present,
+                sva.value_medium,
+                sva.brand_logos_json,
+                sva.text_overlay_present,
+                sva.on_screen_claim,
+                -- Visual summaries (same visual pass; overall + per-image).
+                svs.content_summary,
+                svs.image_summaries_json,
+                -- Transcript (whisper; explicit status, never a silent NULL).
+                sat.transcript,
+                sat.transcript_status,
+                sat.audio_present,
+                sat.asr_model,
+                sat.language,
+                -- Text annotations (text-LLM pass).
+                sta.hook_content,
+                sta.hook_type,
+                sta.is_sponsored,
+                sta.sponsorship_signal,
+                sta.claimed_results,
+                sta.cta_type,
+                sta.audience_named,
+                sta.value_depth,
+                sta.replicable_tactic,
+                sta.hashtag_strategy,
+                sta.evidence,
+                sta.brand_safety_json,
+                -- Text summary (text-LLM pass).
+                sts.transcript_summary
+            FROM v_post_metrics pm
+            JOIN v_post_detail pd
+                ON pd.post_id = pm.post_id
+            LEFT JOIN silver_visual_annotations sva
+                ON sva.post_id = pm.post_id AND sva.platform = pd.channel
+            LEFT JOIN silver_visual_summaries svs
+                ON svs.post_id = pm.post_id AND svs.platform = pd.channel
+            LEFT JOIN silver_audio_transcripts sat
+                ON sat.post_id = pm.post_id AND sat.platform = pd.channel
+            LEFT JOIN silver_text_annotations sta
+                ON sta.post_id = pm.post_id AND sta.platform = pd.channel
+            LEFT JOIN silver_text_summaries sts
+                ON sts.post_id = pm.post_id AND sts.platform = pd.channel
+        """)
+
+
+@asset(
+    name="gold_creator_performance",
+    group_name="serving",
+    description=(
+        "Q1 mart — who performs well in X domain. Composes v_creator_profile "
+        "+ v_post_metrics + v_post_follower_context; PK (creator_id, platform)."
+    ),
+    deps=[
+        AssetKey(["v_creator_profile"]),
+        AssetKey(["v_post_metrics"]),
+        AssetKey(["v_post_follower_context"]),
+        AssetKey(["v_post_detail"]),
+    ],
+)
+def gold_creator_performance(duckdb: DuckDBResource) -> None:
+    """AC2 — one row per creator (no row inflation: followers/median are
+    per-creator aggregates, joined 1:1 onto ``v_creator_profile``).
+
+    ``post_count``/``avg_engagement_score``/``standout_count``/
+    ``momentum_ratio``/``is_rising``/``dominant_domain`` are SELECTED from
+    ``v_creator_profile`` — never re-aggregated or re-gated. The mart adds
+    ONLY: the at-post-time ``follower_count``/``follower_tier`` (latest
+    observation per creator, from ``v_post_follower_context`` — the tier
+    buckets stay canonical), the ``median_engagement_score`` (median over
+    the canonical per-post ``engagement_score``), and ``standout_rate``
+    (the ratio of the canonical counts). ``platform`` is sourced from
+    ``dim_profile.channel`` via ``v_post_detail``.
+    Filter by ``dominant_domain`` for "who performs well in X domain".
+    """
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE OR REPLACE VIEW gold_creator_performance AS
+            WITH channel AS (
+                SELECT
+                    pd.creator_id,
+                    MIN(pd.channel) AS platform
+                FROM v_post_detail pd
+                WHERE pd.creator_id IS NOT NULL
+                GROUP BY pd.creator_id
+            ),
+            follower AS (
+                SELECT
+                    pm.creator_id,
+                    arg_max(fc.followers_count, fc.follower_observed_at)
+                        AS follower_count,
+                    arg_max(fc.follower_tier, fc.follower_observed_at)
+                        AS follower_tier
+                FROM v_post_metrics pm
+                JOIN v_post_follower_context fc
+                    ON fc.post_id = pm.post_id
+                WHERE pm.creator_id IS NOT NULL
+                  AND fc.follower_observed_at IS NOT NULL
+                GROUP BY pm.creator_id
+            ),
+            median_score AS (
+                SELECT
+                    creator_id,
+                    median(engagement_score) AS median_engagement_score
+                FROM v_post_metrics
+                WHERE creator_id IS NOT NULL
+                  AND engagement_score IS NOT NULL
+                GROUP BY creator_id
+            )
+            SELECT
+                cp.creator_id,
+                cp.creator_name,
+                ch.platform,
+                f.follower_count,
+                f.follower_tier,
+                cp.total_posts            AS post_count,
+                cp.standout_count,
+                cp.standout_count / NULLIF(cp.total_posts, 0)
+                                          AS standout_rate,
+                m.median_engagement_score,
+                cp.avg_engagement_score,
+                cp.avg_likes,
+                cp.max_likes,
+                cp.momentum_ratio,
+                cp.is_rising,
+                cp.dominant_domain
+            FROM v_creator_profile cp
+            LEFT JOIN channel ch
+                ON ch.creator_id = cp.creator_id
+            LEFT JOIN follower f
+                ON f.creator_id = cp.creator_id
+            LEFT JOIN median_score m
+                ON m.creator_id = cp.creator_id
+        """)
+
+
+@asset(
+    name="gold_content_shape_performance",
+    group_name="serving",
+    description=(
+        "Q2 mart — what content shape performs. LONG form keyed "
+        "(platform, domain, topic, follower_tier, facet_name, facet_value); "
+        "facets from the silver annotations + classification, measured via "
+        "the canonical views."
+    ),
+    deps=[
+        AssetKey(["v_post_metrics"]),
+        AssetKey(["v_post_detail"]),
+        AssetKey(["v_post_follower_context"]),
+        AssetKey(["silver_visual_annotations"]),
+        AssetKey(["silver_text_annotations"]),
+    ],
+)
+def gold_content_shape_performance(duckdb: DuckDBResource) -> None:
+    """AC3 — long-form facet cells so facet-schema evolution is new rows,
+    not a migration.
+
+    Each enrichment facet is unpivoted to ``(facet_name, facet_value)``
+    (one value per post per facet ⇒ no double counting), attached to the
+    canonical ``follower_tier`` (``v_post_follower_context``) and measured
+    with the canonical ``engagement_score``/``is_standout``
+    (``v_post_metrics``). ``avg_engagement_z`` is the mean of the canonical
+    per-post score — not a re-derivation. ``lift_vs_slice_baseline`` is the
+    cell mean over the same (platform, domain, topic, tier, facet) slice's
+    overall mean — a mart-local projection over canonical values, no
+    constant. The grain includes ``platform`` (deliberate deviation from
+    enrichment.md §5.3, which omits it) — facets carry platform, and a
+    domain-less grain would merge posts across platforms.
+    """
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE OR REPLACE VIEW gold_content_shape_performance AS
+            WITH facets AS (
+                -- Visual annotations (visual pass).
+                SELECT post_id, platform,
+                       'value_medium' AS facet_name,
+                       value_medium   AS facet_value
+                FROM silver_visual_annotations
+                WHERE value_medium IS NOT NULL
+                UNION ALL
+                SELECT post_id, platform, 'face_present',
+                       face_present::VARCHAR
+                FROM silver_visual_annotations
+                WHERE face_present IS NOT NULL
+                UNION ALL
+                SELECT post_id, platform, 'text_overlay_present',
+                       text_overlay_present::VARCHAR
+                FROM silver_visual_annotations
+                WHERE text_overlay_present IS NOT NULL
+                UNION ALL
+                SELECT post_id, platform, 'on_screen_claim',
+                       on_screen_claim::VARCHAR
+                FROM silver_visual_annotations
+                WHERE on_screen_claim IS NOT NULL
+                -- Text annotations (text-LLM pass).
+                UNION ALL
+                SELECT post_id, platform, 'hook_type', hook_type
+                FROM silver_text_annotations WHERE hook_type IS NOT NULL
+                UNION ALL
+                SELECT post_id, platform, 'is_sponsored',
+                       is_sponsored::VARCHAR
+                FROM silver_text_annotations
+                WHERE is_sponsored IS NOT NULL
+                UNION ALL
+                SELECT post_id, platform, 'cta_type', cta_type
+                FROM silver_text_annotations WHERE cta_type IS NOT NULL
+                UNION ALL
+                SELECT post_id, platform, 'value_depth', value_depth
+                FROM silver_text_annotations WHERE value_depth IS NOT NULL
+                UNION ALL
+                SELECT post_id, platform, 'replicable_tactic', replicable_tactic
+                FROM silver_text_annotations
+                WHERE replicable_tactic IS NOT NULL
+                UNION ALL
+                SELECT post_id, platform, 'audience_named',
+                       audience_named::VARCHAR
+                FROM silver_text_annotations
+                WHERE audience_named IS NOT NULL
+                UNION ALL
+                SELECT post_id, platform, 'claimed_results',
+                       claimed_results::VARCHAR
+                FROM silver_text_annotations
+                WHERE claimed_results IS NOT NULL
+                -- Classification metadata (canonical v_post_detail columns).
+                UNION ALL
+                SELECT post_id, channel, 'content_type', content_type
+                FROM v_post_detail WHERE content_type IS NOT NULL
+                UNION ALL
+                SELECT post_id, channel, 'format', format
+                FROM v_post_detail WHERE format IS NOT NULL
+                UNION ALL
+                SELECT post_id, channel, 'style', style
+                FROM v_post_detail WHERE style IS NOT NULL
+                UNION ALL
+                SELECT post_id, channel, 'admiralty', admiralty
+                FROM v_post_detail WHERE admiralty IS NOT NULL
+                UNION ALL
+                SELECT post_id, channel, 'is_educational',
+                       is_educational::VARCHAR
+                FROM v_post_detail WHERE is_educational IS NOT NULL
+            ),
+            facet_posts AS (
+                SELECT
+                    f.platform,
+                    pd.gold_domain,
+                    pd.gold_topic,
+                    fc.follower_tier,
+                    f.facet_name,
+                    f.facet_value,
+                    pm.engagement_score,
+                    pm.is_standout
+                FROM facets f
+                JOIN v_post_detail pd
+                    ON pd.post_id = f.post_id AND pd.channel = f.platform
+                JOIN v_post_metrics pm
+                    ON pm.post_id = f.post_id
+                LEFT JOIN v_post_follower_context fc
+                    ON fc.post_id = f.post_id
+                WHERE pd.gold_domain IS NOT NULL
+                  AND pd.gold_topic IS NOT NULL
+            ),
+            cells AS (
+                SELECT
+                    platform,
+                    gold_domain, gold_topic, follower_tier,
+                    facet_name, facet_value,
+                    COUNT(*)               AS n_posts,
+                    AVG(engagement_score)  AS avg_engagement_z,
+                    AVG(is_standout)       AS standout_rate
+                FROM facet_posts
+                GROUP BY platform, gold_domain, gold_topic, follower_tier,
+                         facet_name, facet_value
+            ),
+            slices AS (
+                SELECT
+                    platform,
+                    gold_domain, gold_topic, follower_tier, facet_name,
+                    AVG(engagement_score) AS slice_avg_engagement_z
+                FROM facet_posts
+                GROUP BY platform, gold_domain, gold_topic, follower_tier,
+                         facet_name
+            )
+            SELECT
+                c.platform,
+                c.gold_domain,
+                c.gold_topic,
+                c.follower_tier,
+                c.facet_name,
+                c.facet_value,
+                c.n_posts,
+                c.avg_engagement_z,
+                c.standout_rate,
+                c.avg_engagement_z
+                    / NULLIF(s.slice_avg_engagement_z, 0)
+                    AS lift_vs_slice_baseline
+            FROM cells c
+            JOIN slices s
+                ON  s.platform       = c.platform
+                AND s.gold_domain    = c.gold_domain
+                AND s.gold_topic     = c.gold_topic
+                AND s.follower_tier IS NOT DISTINCT FROM c.follower_tier
+                AND s.facet_name     = c.facet_name
+        """)
+
+
+@asset(
+    name="gold_top_posts",
+    group_name="serving",
+    description=(
+        "Q3 mart — what performs across ALL domains: rank/percentile over "
+        "the canonical engagement score, joined to the full content shape. "
+        "PK (post_id, platform)."
+    ),
+    deps=[AssetKey(["gold_post_enrichment"])],
+)
+def gold_top_posts(duckdb: DuckDBResource) -> None:
+    """AC4 — a thin projection over ``gold_post_enrichment``: every scored
+    post with its cross-domain rank/percentile and the full qualitative
+    shape (summary/transcript) for reading. No metric is re-derived —
+    ``engagement_score`` flows straight from ``v_post_metrics``; consumers
+    filter ``overall_rank``/``is_hot`` rather than this mart ranking again.
+    """
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            CREATE OR REPLACE VIEW gold_top_posts AS
+            SELECT
+                gpe.*,
+                RANK() OVER (
+                    ORDER BY gpe.engagement_score DESC NULLS LAST
+                ) AS overall_rank,
+                PERCENT_RANK() OVER (
+                    ORDER BY gpe.engagement_score DESC NULLS LAST
+                ) AS overall_percentile
+            FROM gold_post_enrichment gpe
+            WHERE gpe.engagement_score IS NOT NULL
+        """)
+
+
+@asset(
+    name="v_quarantine_triage",
+    group_name="serving",
+    description=(
+        "Operator triage surface for the enrichment quarantine (W8): each "
+        "quarantined row joined to its offending bronze excerpt and post "
+        "context."
+    ),
+    deps=[AssetKey(["silver_enrichment_conform"])],
+)
+def v_quarantine_triage(duckdb: DuckDBResource) -> None:
+    """Create the quarantine triage view.
+
+    ``silver_enrichment_quarantine``'s named consumer (ADR-0012/W8): one row
+    per quarantined key with the reason, the verbatim bronze
+    ``response_text``/``error_message`` (latest landing per key, read from
+    the bronze Parquet — quarantined rows exist precisely because silver
+    does NOT have them), and the owning post's context from
+    ``silver_ig_posts``. LEFT JOINs throughout — a triage row must never
+    disappear because its bronze file was pruned or the post left silver.
+    """
+    from datalake.defs.common import lake
+    from datalake.defs.enrichment import landing
+
+    bronze_file = landing.response_path(lake.BRONZE_LAKE)
+    with duckdb.get_connection() as conn:
+        conn.execute(f"""
+            CREATE OR REPLACE VIEW v_quarantine_triage AS
+            WITH bronze_latest AS (
+                SELECT
+                    post_id, platform, workload, provider, model,
+                    ok, error_message, response_text, landing_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY post_id, platform, workload
+                        ORDER BY landing_at DESC
+                    ) AS rn
+                FROM read_parquet('{bronze_file.as_posix()}')
+            )
+            SELECT
+                q.post_id,
+                q.platform,
+                q.workload,
+                q.reason_code,
+                q.reason_detail,
+                q.response_excerpt,
+                q.quarantined_at,
+                q.derivation_version,
+                q.schema_version,
+                q.prompt_hash,
+                q.run_id,
+                q.provider,
+                q.model,
+                b.ok                              AS bronze_ok,
+                b.error_message                   AS bronze_error_message,
+                b.response_text                   AS bronze_response_text,
+                b.landing_at                      AS bronze_landing_at,
+                sp.owner_username,
+                sp.caption,
+                sp.timestamp                      AS posted_at
+            FROM silver_enrichment_quarantine q
+            LEFT JOIN bronze_latest b
+                ON b.post_id = q.post_id
+               AND b.platform = q.platform
+               AND b.workload = q.workload
+               AND b.rn = 1
+            LEFT JOIN silver_ig_posts sp
+                ON sp.post_id = q.post_id
+        """)
+
+
+
 # ── Exported for definitions.py ─────────────────────────────────────────────
 
 assets: list = [
     profile_dimension,
     dim_date,
     v_post_detail,
+    v_quarantine_triage,
     v_post_baselines,
     v_signal,
     v_quality_trend,
@@ -1246,4 +1752,8 @@ assets: list = [
     v_overview,
     v_standout_calendar,
     v_recent_hot_posts,
+    gold_post_enrichment,
+    gold_creator_performance,
+    gold_content_shape_performance,
+    gold_top_posts,
 ]

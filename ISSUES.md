@@ -2,16 +2,15 @@
 
 Issue tracking is local — this file, not GitHub Issues.
 
-> **Before reading the entries below: the enrichment architecture they describe is
-> scheduled for retirement.** ADR-0011 (layered enrichment: `bronze_enrichment_raw`
-> → six `silver_*` tables → four gold marts) and ADR-0012 (Dagster-native
-> orchestration, retiring the `ops.sqlite` queue) are **accepted but not yet
-> implemented**. The entries in this file accurately describe the CURRENT world —
-> `gold_analyses`, `gold_growth_facets`, `batch_jobs`/`batch_items`, `dead_letter` —
-> so read them as current-state, not target-state. The target design and the traps
-> to watch for are in `WATCHDOG.md` (section "v3 enrichment / orchestration / seam
-> — accepted, NOT yet live") and `docs/architecture/pipelines/enrichment.md`. Work items for the
-> migration live in `tasks/epics/` and `tasks/plans/`, not in this backlog.
+> **Currency note, 2026-09-15.** ADR-0011 is now **LIVE**: `bronze_enrichment_raw`
+> → six `silver_*` tables → four gold marts all materialize, and `gold_analyses`
+> parity is verified (9,576 rows, 0 both-non-null conflicts). ADR-0012's
+> Dagster-native state is live for the classification workload; what remains is the
+> queue-table DROP (staged in `scripts/retire_queue_tables.py`, awaiting human
+> approval) and promoting the qwen facets path off the hand-rolled CLI.
+> **Older entries below still describe the pre-migration world** — read them as
+> history unless the entry says otherwise. Current state: `AGENTS.md`
+> ("Enrichment v3 — verified state, 2026-09-15") and `WATCHDOG.md`.
 
 ## Complete — `feat/media-and-entity-routing` (2026-08-12)
 
@@ -228,6 +227,61 @@ and the schema drift detector catches table mismatches.
 - [ ] State readiness test updated and passing
 
 ## Active
+
+### Retired tables kept coming back (retirement was not durable)
+
+**Status:** RESOLVED (2026-09-15) — W9 follow-up.
+
+**Symptom.** The W9 retirement dropped seven tables (`gold_analyses`,
+`gold_growth_facets`, `dead_letter`, `batch_jobs`, `batch_items`,
+`facets_batch_jobs`, `media_metadata`) with export-count == live-count verified
+in the same run. The drop was real. It was not DURABLE: live code and six
+migration paths still created those tables, so any run of them would bring a
+retired table back.
+
+**Root cause.** "Dropped" was treated as a property of the database rather than
+a property of the system. Nothing checked that the SET OF CREATORS was empty.
+The `retire_queue_tables.py` script asserted the KEEP set after the drop, but
+that only proves the tables were gone at that instant — not that they would
+stay gone.
+
+**Why it was invisible.** The readiness test
+(`tests/operational/test_state_compatibility.py`) compares the live DB against
+the catalog. With the tables dropped and their specs still in the catalog, it
+reported three failures — which read as a test that needed updating, when it was
+in fact correctly reporting a half-finished migration.
+
+**The defect class, named:** removing a producer without removing its writers,
+or vice versa. A half-cut converts a resurrection bug into a runtime failure.
+The rule adopted: retire a cluster WHOLE — creator + writers + readers together
+— or not at all.
+
+**Fix.** Producers retired in `src/` (`ensure_gold_analyses`,
+`_GOLD_ANALYSES_DDL`, `_GOLD_FACETS_DDL`, `_GOLD_FACETS_UPSERT`, the five
+`gold_analyses`-reading asset checks, the AssetSpec, the exports); six migration
+paths retired; the three catalog specs removed.
+
+**Statements are DELETED, never renamed.** An earlier attempt renamed retired
+tables to a `retired_*_NEVER` suffix — that CREATES a junk table on every run,
+the same defect class as the raw DDL it was meant to replace. Both attempts were
+reverted.
+
+**Verification (this is the part that makes it a fix rather than a claim).**
+1. `migrate_schema_drift.migrate()` — the one migration the README marks "RUN
+   against live" — was executed against a COPY of live `state.duckdb` +
+   `ops.sqlite`. Afterwards no retired table and no `analytics_views` existed in
+   either database.
+2. `read_gold` was executed against live `state.duckdb`; its guard fired with
+   the intended message instead of a raw `CatalogException`.
+3. `tests/operational/test_state_compatibility.py`: 96 passed, 0 failed. The
+   three W9 failures resolved because the producers are gone — NOT by weakening
+   the assertions.
+
+**Lesson.** A drop is not done until the set of creators is empty, and emptiness
+must be demonstrated by RUNNING the paths, not by grepping for the names. Greps
+also miss half-cuts: a sweep for `CREATE TABLE` finds creators but not the
+surviving `INSERT`/`UPDATE`/`SELECT` writers.
+
 
 ### 14. Creator growth analysis — baseline cohort + follower history (Q9-Q11)
 
@@ -942,7 +996,336 @@ owner) and `analysis/output/rescrape_owners_2026-09-08.csv` (owner rollup).
 3. **Re-run the census + pick the Apify rescrape set** — posts whose missing
    bytes aren't recoverable from surviving bronze local files genuinely need a
    rescrape (Apify, by profile); recoverable ones just need a re-seed (no Apify).
-   Whole-profile wipeouts + 45d+ are the safest first rescrape targets.
+### 26. Sentinel literal diverged across sibling silver producers — 8 live rows carry the REJECTED value
+
+**Found 2026-09-15** by the W10 conformance panel (DataArchitect lens), then
+verified against the live store — this is a published-data defect, not a style nit.
+
+Two modules define `MODEL_LEGACY_NULL` with different values:
+
+| File | Value |
+|---|---|
+| `src/datalake/defs/enrichment/classification.py:181` | `unrecorded-legacy-null` |
+| `src/datalake/defs/enrichment/conform.py:654` | `legacy-unknown` |
+
+ADR-0014:214 records the owner **selecting `unrecorded-legacy-null` over the
+original `legacy-unknown`**, and names `classification.MODEL_LEGACY_NULL` as "the
+single definition". So `conform.py`'s copy is the stale superseded value — and
+`conform.py` is the live silver publisher that actually wrote the rows.
+
+Live state confirms the divergence reached the warehouse:
+
+```
+silver_content_classification: gemini-3.5-flash-lite × 9568, legacy-unknown × 8
+```
+
+All 8 rows carry `run_id='legacy-gold-classification-backfill'`,
+`provider='gemini'`, `prompt_hash='24c8e291fdfc28ed'`. ADR-0014:322 already flags
+that the sentinel "leaks into serving".
+
+**Fix — three parts, in order:**
+1. Define the constant ONCE in the shared schema module
+   (`src/datalake/defs/common/schemas.py`) and have BOTH producers import it. Do
+   NOT have one producer import from the other: they are sibling producers on the
+   same target table, and coupling them recreates the silent-divergence trap this
+   bug came from.
+2. Correct `conform.py`'s literal (the cause — it makes the next replay right).
+3. **Re-publish silver via `scripts/conform_silver.py`** (deterministic replay from
+   bronze). NEVER a hand `UPDATE`: bronze holds all 9,576 classification rows
+   including the 8 NULL-model ones, so the sentinel is a pure function of bronze,
+   and an UPDATE would leave bronze and silver disagreeing on a table whose entire
+   contract is "silver is a pure function of bronze".
+
+Verify the other 9,568 rows are byte-identical after the replay — a replay that
+silently changed anything else would be a worse defect than the one being fixed.
+Update the two tests asserting mutually exclusive sentinels
+(`test_classification.py:307`, `test_conform_classification.py:145`).
+
+**Blast radius**: contained. The sentinel appears in no serving view
+(`v_post_detail`/`v_post_metrics` carry no model column), so there is no consumer
+to migrate. The 8 rows are silent, mislabelled provenance.
+
+### 27. `conform_silver.py` defaults `--silver-root` to the LIVE silver lake
+
+**Found 2026-09-15** (panel, PlatformEngineer lens; surfaced while planning the
+sentinel republish in #26).
+
+`resolve_roots` defaults `silver_root` to `lake.SILVER_LAKE`, and the plan
+documented `--state-db` as the writable-copy lever without naming `--silver-root`.
+So a plain `--apply` run writes **new Parquet snapshots into the live silver lake**
+— the artifact serving and the gold marts read — while registering them into
+whatever copy `--state-db` points at. The copy's registration and the live parquet
+then disagree.
+
+**Fix**: make the pairing explicit. Either (a) require both roots to be passed
+together and refuse a mixed live/scratch pair, or (b) refuse `--apply` when
+`--silver-root` is left at its default while `--state-db` is overridden. Also
+document the rule: plan-first (default mode writes nothing) at the exact live roots
+to capture the "before" tuple, then apply deliberately in one shot.
+
+**Related hazard (same class)**: `state.duckdb` is single-writer. Run this when no
+Dagster daemon/dashboard holds the file, or the write fails or interleaves
+(ADR-0012 decision 8 records the observed `Cannot open file … being used by
+another process`).
+
+### 28. Retired Gemini modules are inert but LIVE-imported — removal has 4 blockers
+
+**Found 2026-09-15** (panel, DataArchitect lens). My initial triage called
+`classification.py` dead. It is not — and the same audit found the Gemini set is
+safe-with-changes, not free.
+
+**`classification.py` is LIVE**: `defs/instagram/assets.py:1174-1176` imports it and
+executes `_cls.CLASSIFICATION_DDL` on **every** `ig_posts_gen_batches` drain. It is
+also NOT superseded by `conform.py` — `conform.SUPPORTED_CONFORM_WORKLOADS`
+explicitly skips the classification workload. They are sibling producers. Deleting
+it raises `ImportError` at runtime *inside the function body*, so `dg dev` stays
+green and the drain crashes only when it runs.
+
+**Removing `gemini_batch.py`/`submit.py`/`harvest.py`/`media_upload.py`/`batch.py`/
+`registry.py` requires 4 rewires first:**
+1. `definitions.py:17-22` imports + `:69-74` (`jobs=[...]`, `sensors=[...]`,
+   `*ENRICHMENT_CHECKS`).
+2. `defs/enrichment/__init__.py:16-32` re-export hub.
+3. `defs/enrichment/assets.py:174` (registry), `:201` (media_upload), and the
+   `check_enrichment_health` body at `:80-146`.
+4. `defs/enrichment/analysis.py:23` and `registry.py:12` both import `_now_iso` from
+   `batch.py` — a pair that must be severed together.
+
+**Contradiction to resolve**: `check_enrichment_health` (`assets.py:90-99`) reads
+`batch_items` and `dead_letter` at runtime, while `__init__.py:5-7` claims the
+retired queue "has no read or write on any live path". The code says the docstring
+is wrong. Resolve as part of W8/W9.
+
+**Ordering**: promoting facets to Dagster (W11) is a PRECONDITION of removing
+submit/harvest — `sensor.py:27-30` drives `harvest_enrichment_job`, so deleting them
+without a replacement loses all orchestration.
+
+### 29. `--plan` (offline cost projection) has no Dagster equivalent
+
+**Found 2026-09-15** (panel, DagsterExpert lens). Dagster has no dry-run primitive,
+so the pre-spend cost gate does not come for free when the CLI is retired.
+
+`scripts/enrich_facets_batch.py --plan` → `facets_batch.estimate_facets_cost` is the
+ONLY pre-spend gate in the facets path. It is also a real dependency:
+`scripts/make_smoke_slice.py:448-478` shells out to it and asserts visual submittable
+> 0 — deleting the CLI breaks the smoke slice's usability check.
+
+**Fix**: re-express as an explicit dry-run job (`facets_plan_job`) whose op runs
+enumerate + build + estimate and emits `AssetObservation`/`AssetCheckResult` metadata
+`{targets, submittable, est_input_tokens, cost_usd}` while submitting nothing. Do not
+retire the `--plan` arm until that exists.
+
+**Related (same lens)**: `DRAIN_WORKLOAD` is a hardcoded module constant
+(`instagram/assets.py:1024`), so facets posts can never enter the existing
+single-workload drain. Generalizing it is small — every helper it calls already
+derives workload from the partition key — but it is a prerequisite for W11.
+### 30. No test constructs the asset graph — `materialize` / `execute_in_process` are absent
+
+**Found 2026-09-15** while auditing test coverage against Dagster's own testing
+model. Logged for after the migration; do not chase it mid-close-out.
+
+**The gap.** `grep -rn "materialize(\|execute_in_process" tests/` returns
+**nothing**. No test anywhere constructs the asset graph. Every layer below that
+exists and works — the unit tests are real, and the e2e files genuinely exercise
+live v3 assets (`ig_posts_gen_batches`, `ig_posts_slv`, `v_post_detail`,
+`daily_medallion`, `dim_profile`) with `DagsterInstance.ephemeral()` +
+`build_asset_context(instance=...)`. What no test does is ask Dagster to *assemble
+and run the graph*.
+
+**Why that matters — the falsifier.** An `instance: "PartitionSnapshot | None"`
+signature shipped an unloadable graph past a fully green suite. Unit tests call
+functions directly; nothing ever asked Dagster to resolve the graph's
+dependencies, so a signature Dagster cannot load went unnoticed. `dg dev` and
+`dagster definitions validate` catch load-time breakage, but neither is run by
+`pytest`, so a green suite is not evidence the graph loads.
+
+**The four layers Dagster prescribes** (docs.dagster.io/guides/test):
+
+| Layer | Mechanism | Status here |
+|---|---|---|
+| Unit | call the asset fn directly | present, extensive |
+| Integration | `dg.materialize(assets=[...], resources={...})` | **ABSENT** |
+| Job | `job.execute_in_process(instance=DagsterInstance.ephemeral())` | **ABSENT** |
+| Runtime DQ | `@asset_check` | present (W8) |
+
+**Fix — two tests, not a suite.** Both are small and high-value:
+1. One `dg.materialize(...)` over the **enrichment cycle** (bronze landing →
+   conform → silver) against tmp roots, asserting `result.success` and reading a
+   real conformed row back. This is the integration layer the manual smoke-slice
+   runs have been standing in for.
+2. One `execute_in_process(...)` over the **enqueue → submit → harvest** graph on
+   an ephemeral instance, so the graph is actually constructed.
+
+**Also add pytest markers.** None are configured (`pyproject.toml`
+`[tool.pytest.ini_options]` has only `asyncio_mode` and `testpaths`), so
+`pytest tests/` is an undifferentiated ~15-minute monolith with no way to scope
+unit vs integration vs e2e. Add `integration`/`e2e`/`slow` markers and default
+`addopts = "-m 'not slow'"`.
+
+**Framing note.** This is NOT "add instance testing" — instance-based testing is
+already present. The missing layer is specifically **graph assembly**: proving
+Dagster can construct and run the graph, which is the only thing that would have
+caught the unloadable signature.
+
+### 31. `data/media` has no verified off-repo copy — the one asset nothing can regenerate
+>
+Listed FIRST among the post-W9 items because it is the only one whose loss is
+permanent, and because the queue retirement does NOT close it.
+
+**Status: UNVERIFIED. Open. Carried forward deliberately — not resolved by W9.**
+
+`data/media/` is 27,806 files / **55.36 GB** and is not a cache in the disposable
+sense: it is the **only copy** of the scraped bytes. CDN URLs expire in ~4-5 days,
+so no re-enrichment and no downstream action recovers it. The plan says this
+plainly (`remediation-plan.md:565-567`).
+
+The §3.0 gate records it as **"UNVERIFIED — do not treat as satisfied."** The
+owner's belief was *"i think we have the media backed up in a google storage
+bucket rn"* — a hypothesis, not a read-back.
+
+**Why W9 was still safe to run.** The drop's blast radius (§3.2,
+`remediation-plan.md:612`) is queue + enrichment tables only. `data/media` and
+`media_cache` are on the KEEP list, and the retirement verified `media_cache`
+intact at 27,748 rows after the drops. The unverified item is genuinely outside
+that drop's reach — which is why proceeding on owner approval was defensible, and
+also exactly why the retirement must not be read as clearing it.
+
+**What would close it.** List the bucket and spot-read N objects — an actual
+read-back, not a recollection. A local file count is not evidence of an off-repo
+copy; the count above only proves the bytes are still on this disk, which is the
+disk the backup exists to survive.
+
+**Recorded automatically.** `scripts/retire_queue_tables.py` now records §3.0 gate
+evidence into the W9 log on every `--apply`/`--rehearse` (step 0), and prints
+UNVERIFIED items as carried-forward. See
+`data/logs/w9-retirement-20260915T110342Z.json` for the drop that ran before this
+recording was added, and subsequent runs for the full record.
+
+### 32. `media_metadata` is dropped but still recreates itself — retirement not durable
+
+**Found 2026-09-15** by the catalog-reconciliation worker, which correctly STOPPED
+rather than deleting the spec.
+
+W9 dropped `media_metadata` from live `ops.sqlite`, but the drop is not durable:
+
+- `defs/enrichment/media_cache.py:63` `_ensure_schema()` still executes
+  `sqlite_ddl("media_metadata")` — plus two `ALTER TABLE` migrations (`:68`, `:70`)
+  — on the live path, so the next call recreates it.
+- `tests/unit/instagram/test_migrate_creators_profiles.py:111-113` asserts it
+  survives retirement, contradicting the drop.
+
+**Evidence it is dead weight (checked, not assumed):**
+- It only ever cached **Gemini File-API uploads** — `file_api_uri`,
+  `upload_state = 'uploaded'` (`media_cache.py:583-593`). Gemini batch is
+  permanently retired (ADR-0009).
+- Its **only** producer is `lookup_or_upload_all` (`media_cache.py:626`), and the
+  sole caller is `scripts/experiments/facet_experiment.py:211` — a scratch
+  experiment, not a pipeline path.
+- It has **no reader** anywhere: the live path now resolves media to scrape-time
+  cached local paths (`media_paths.media_urls_to_local_paths`).
+
+**Decision (owner principle: "stalled jobs from the queue we are retiring don't
+matter, can delete safely" — applied by analogy):** retire it fully. Remove the
+`_ensure_schema` creation and the surviving-table assertion, drop the spec from
+`schemas.py`, and add it to `_STALE_SQLITE_TABLES` with a DROPPED hint pointing at
+`data/lake/archive/media_metadata/`.
+
+**Acceptance falsifier:** after the change, nothing in `src/` executes DDL or
+DML for `media_metadata`, and a fresh ops.sqlite never grows the table.
+
+**Same defect class as #33** (`gold_analyses`/`gold_growth_facets` recreated by
+`ensure_gold_analyses` and `_GOLD_FACETS_DDL`): W9 dropped tables whose producers
+survived. See #34 — the "starve, don't drop" control (C4) was not satisfied
+before the drop.
+
+### 33. Full `pytest tests/` run does not finish clean — cause UNVERIFIED
+
+**Observed, 2026-09-15. Cause is NOT established — nothing below is a diagnosis.**
+
+Three full-suite runs on essentially the same tree produced three different shapes:
+
+| Run | Result | Duration |
+|---|---|---|
+| 1st | collection error — 2 errors, no tests ran (stale `scripts/` paths; since fixed) | 3.85s |
+| 2nd | **34 failed, 746 passed, 4 skipped, 4 errors** | 323.72s |
+| 3rd | ended in `sqlite3.ProgrammingError: Cannot operate on a closed database` during teardown; **no clean summary line produced** | 996.74s |
+
+The 3rd run's traceback pointed at SQLAlchemy pool teardown
+(`pool._dialect.do_rollback` → `dbapi_connection.rollback()`). **That is where the
+traceback surfaced, not a verified cause.** No test in `tests/` calls `dispose(`,
+configures pool settings, or constructs an engine — `grep` for all three returns
+nothing — so the owning connection is unattributed. A plausible-sounding root
+cause was deliberately NOT recorded.
+
+**Why its own entry rather than absorption into #30.** `Cannot operate on a closed
+database` under parallel/teardown execution is the *shared-connection* failure
+shape this branch has already been burned by — the DuckDB single-writer
+constraint (ADR-0012 decision 8: "Cannot open file … being used by another
+process, observed") and the concurrent-agents-on-one-checkout incident are in that
+family. Whether this is the same family is unknown.
+
+**Needed before closing:**
+1. Identify the 34 failures and 4 errors **by name** — scoped per-directory runs,
+   not another full run (which is what #30's markers exist to make cheap).
+2. Test for order dependence (same tests, fixed order vs single-file) — order
+   dependence is what would connect it to the shared-connection family.
+3. Only then attribute a cause.
+
+**Note on run-to-run variance:** 323.72s vs 996.74s for the same suite is itself a
+signal and is unexplained. Both figures are recorded because the variance is part
+of the observation.
+
+**Not blocking the migration close-out.** The branch's acceptance evidence is the
+verified destination state, not this suite. Recorded so a failing suite is never
+mistaken for a green gate.
+
+### 34. W9 must reconcile the 4 `facets_batch_jobs` rows BEFORE the drop
+
+**Found 2026-09-15** reviewing `scripts/retire_queue_tables.py` against the plan
+(`remediation-plan.md:473-478`).
+
+**The gap.** The plan requires the 4 `facets_batch_jobs` rows be reconciled into
+the service's job store *before* the drop. The script archives the table to Parquet
+then drops it — which preserves the handles in an archive file, but leaves the live
+service holding job `2214532df4d3` (1,339 completed / 5 failed / 6,830 pending,
+still `processing`) with **no local record pointing at it**.
+
+Job ids are minted service-side, so this ledger is the only local index of which
+service jobs matter. After the drop, nothing on this host says which ids are live.
+That is the loss of a pointer, not merely of history.
+
+**Fix.** Make reconciliation a *durable output of `--apply`*, never a manual step
+that can be skipped. On `--apply`: resolve each of the 4 job ids against the service
+store (`~/.qwen-batch/state.sqlite`, table `jobs`, column **`id`** — not `job_id`),
+write the mapping `ledger_id → service_state → n_completed/n_failed/n_pending →
+disposition` into the W9 log, AND record open-handle ids in ISSUES.md before the
+drop proceeds. A Parquet file nobody reads is not a pointer.
+
+**Reconciliation as observed 2026-09-15** (the service store is authoritative and
+mutable — re-read at apply time):
+
+| ledger job_id | ledger status | n_req | service state | completed | failed |
+|---|---|---|---|---|---|
+| `4de3befc10e7…` | JOB_FAILED | 5 | failed | 0 | 5 |
+| `58dbe69c5828…` | RETRIEVED | 5 | completed | 5 | 0 |
+| `c28c34d0c387…` | RETRIEVED | 98 | completed | 98 | 0 |
+| `2214532df4d3…` | SUBMITTED | 8178 | **processing** | 1339 | 5 |
+
+The first three are terminal and need no action. **The fourth is open.**
+
+**Stalled job `2214532df4d34f828adfb90fbf87f253` — OPEN DECISION.** 1,339 completed
+/ 5 failed / 6,830 pending / 4 processing; `updated` is ~5.9 days after `created`,
+so it is not progressing at the expected rate. **Re-read 2026-09-15 at rehearsal
+time: 6,693 pending** — the count moved from 6,830, so the worker is crawling
+rather than frozen. That makes "harvest-and-continue" more viable than a stalled
+job would; re-check the count immediately before deciding. It landed **zero** bronze rows (live bronze
+carries only the 9,576 legacy classification rows). Disposition is one of:
+harvest-and-continue (~$2-3 for the remaining ~83%), harvest-and-abandon (keeps the
+already-paid 1,339 for free), or declare it a dead pilot explicitly. **Must be
+decided before W9 drops the table.**
+
+The script's archive-verify gate and KEEP-set assertion are correct as written —
+only the reconciliation output is missing.
 
 ## Resolved
 

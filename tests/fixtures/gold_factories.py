@@ -5,7 +5,7 @@ from __future__ import annotations
 FAKE_ANALYSIS = {
     "is_educational": True,
     "is_actionable": True,
-    "admirality": "B1",
+    "admiralty": "B1",
     "domain": "Business",
     "subdomain": "Marketing",
     "topic": "AI Content",

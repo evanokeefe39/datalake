@@ -1,0 +1,512 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "PRE-MIGRATION STATE — the queue-driven pipeline that worked",
+    "subtitle": "One Dagster boundary owns the assets; ops.sqlite and the Gemini Batch API sit OUTSIDE it. Dagster polls SQLite — the queue IS the job registry.",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "medallion-axis",
+        "label": "The medallion axis, left to right",
+        "focus": [
+          "ig_posts_raw",
+          "ig_posts_slv",
+          "ig_post_labels",
+          "gold_analyses",
+          "serving_views"
+        ],
+        "note": "BRONZE ig_posts_raw -> SILVER ig_posts_slv / ig_post_labels -> GOLD gold_analyses -> SERVING views. One Dagster boundary holds all four."
+      },
+      {
+        "id": "the-poll",
+        "label": "The poll: Dagster asks SQLite, not the service",
+        "focus": [
+          "harvest_sensor",
+          "batch_jobs",
+          "batch_items"
+        ],
+        "note": "Sensor ticks every 300s, reads batch_jobs.gemini_batch_status from ops.sqlite. Handles persist in the table — re-discovery from the row."
+      },
+      {
+        "id": "gold-to-gold",
+        "label": "The honest difference: a gold-to-gold loop",
+        "focus": [
+          "gemini_batch_api",
+          "gold_analyses",
+          "batch_items"
+        ],
+        "note": "Results land straight in gold_analyses — gold-to-gold loop. gold_analyses is an AssetSpec; an external worker is its only writer."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "schedules",
+      "type": "cloud",
+      "label": "daily_medallion · core_refresh",
+      "sublabel": "the two schedules",
+      "pos": [
+        40,
+        50
+      ],
+      "size": [
+        200,
+        80
+      ]
+    },
+    {
+      "id": "enrichment_jobs",
+      "type": "backend",
+      "label": "3 one-op jobs",
+      "sublabel": "submit · media_upload · gemini_batch_harvest",
+      "pos": [
+        300,
+        50
+      ],
+      "size": [
+        240,
+        80
+      ]
+    },
+    {
+      "id": "harvest_sensor",
+      "type": "external",
+      "label": "gemini_batch_harvest_sensor",
+      "sublabel": "ticks every 300s · ships STOPPED",
+      "pos": [
+        600,
+        50
+      ],
+      "size": [
+        240,
+        80
+      ]
+    },
+    {
+      "id": "gemini_batch_api",
+      "type": "external",
+      "label": "Gemini Batch API",
+      "sublabel": "OUTSIDE Dagster — external inference service",
+      "pos": [
+        1150,
+        50
+      ],
+      "size": [
+        230,
+        96
+      ]
+    },
+    {
+      "id": "ig_posts_raw",
+      "type": "database",
+      "label": "ig_posts_raw",
+      "sublabel": "1 · BRONZE — posts arrive (Apify -> Parquet)",
+      "pos": [
+        40,
+        280
+      ],
+      "size": [
+        190,
+        84
+      ]
+    },
+    {
+      "id": "ig_posts_slv",
+      "type": "database",
+      "label": "ig_posts_slv",
+      "sublabel": "SILVER · dedupe -> silver_ig_posts · 10,038",
+      "pos": [
+        300,
+        280
+      ],
+      "size": [
+        190,
+        84
+      ]
+    },
+    {
+      "id": "ig_post_labels",
+      "type": "database",
+      "label": "ig_post_labels",
+      "sublabel": "SILVER · triage enrich_decision · 10,038",
+      "pos": [
+        300,
+        410
+      ],
+      "size": [
+        190,
+        84
+      ]
+    },
+    {
+      "id": "gold_analyses",
+      "type": "database",
+      "label": "gold_analyses",
+      "sublabel": "GOLD · AssetSpec — external worker is the only writer",
+      "pos": [
+        560,
+        280
+      ],
+      "size": [
+        240,
+        96
+      ]
+    },
+    {
+      "id": "serving_views",
+      "type": "backend",
+      "label": "serving views",
+      "sublabel": "SERVING · v_post_detail, v_signal, … read gold",
+      "pos": [
+        870,
+        280
+      ],
+      "size": [
+        210,
+        96
+      ]
+    },
+    {
+      "id": "batch_items",
+      "type": "database",
+      "label": "batch_items",
+      "sublabel": "10,285 rows · scheduled_for backoff · MAX_ATTEMPTS=5",
+      "pos": [
+        300,
+        600
+      ],
+      "size": [
+        300,
+        90
+      ]
+    },
+    {
+      "id": "batch_jobs",
+      "type": "database",
+      "label": "batch_jobs",
+      "sublabel": "gemini_batch_name + gemini_batch_status — JOB REGISTRY · 6 rows",
+      "pos": [
+        945,
+        600
+      ],
+      "size": [
+        300,
+        90
+      ]
+    },
+    {
+      "id": "dead_letter",
+      "type": "database",
+      "label": "dead_letter",
+      "sublabel": "terminal failures · 776 rows",
+      "pos": [
+        40,
+        600
+      ],
+      "size": [
+        220,
+        90
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Dagster Definitions — data assets + trigger machinery",
+      "wraps": [
+        "schedules",
+        "enrichment_jobs",
+        "harvest_sensor",
+        "ig_posts_raw",
+        "ig_posts_slv",
+        "ig_post_labels",
+        "gold_analyses",
+        "serving_views"
+      ],
+      "pad": 22
+    },
+    {
+      "kind": "region",
+      "label": "BRONZE",
+      "wraps": [
+        "ig_posts_raw"
+      ],
+      "pad": 16
+    },
+    {
+      "kind": "region",
+      "label": "SILVER",
+      "wraps": [
+        "ig_posts_slv",
+        "ig_post_labels"
+      ],
+      "pad": 16
+    },
+    {
+      "kind": "region",
+      "label": "GOLD",
+      "wraps": [
+        "gold_analyses"
+      ],
+      "pad": 16
+    },
+    {
+      "kind": "region",
+      "label": "SERVING",
+      "wraps": [
+        "serving_views"
+      ],
+      "pad": 16
+    },
+    {
+      "kind": "region",
+      "label": "ops.sqlite — OUTSIDE Dagster: the queue IS the job registry",
+      "wraps": [
+        "batch_items",
+        "batch_jobs",
+        "dead_letter"
+      ],
+      "pad": 20
+    }
+  ],
+  "connections": [
+    {
+      "from": "schedules",
+      "to": "enrichment_jobs",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "from": "ig_posts_raw",
+      "to": "ig_posts_slv",
+      "label": "2 · bronze->silver",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "labelAt": [
+        265,
+        382
+      ],
+      "via": [
+        [
+          135,
+          545
+        ],
+        [
+          265,
+          545
+        ],
+        [
+          265,
+          322
+        ]
+      ]
+    },
+    {
+      "from": "ig_posts_slv",
+      "to": "ig_post_labels",
+      "label": "3 · triage",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        430,
+        387
+      ]
+    },
+    {
+      "from": "ig_post_labels",
+      "to": "batch_items",
+      "label": "4 · ig_posts_gen_batches drains labels into the queue",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          395,
+          560
+        ],
+        [
+          450,
+          560
+        ]
+      ],
+      "labelAt": [
+        300,
+        567
+      ]
+    },
+    {
+      "from": "enrichment_jobs",
+      "to": "gemini_batch_api",
+      "label": "5 · submit_gemini_batches_job submits ONE pending batch",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          420,
+          36
+        ],
+        [
+          1265,
+          36
+        ]
+      ],
+      "labelAt": [
+        1000,
+        30
+      ]
+    },
+    {
+      "from": "gemini_batch_api",
+      "to": "batch_jobs",
+      "label": "6 · handle persists in batch_jobs.gemini_batch_name",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          1265,
+          560
+        ],
+        [
+          1095,
+          560
+        ]
+      ],
+      "labelAt": [
+        1180,
+        545
+      ]
+    },
+    {
+      "from": "harvest_sensor",
+      "to": "batch_jobs",
+      "label": "7 · THE POLL — reads batch_jobs.gemini_batch_status every 300s",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [
+        [
+          720,
+          230
+        ],
+        [
+          30,
+          230
+        ],
+        [
+          30,
+          725
+        ],
+        [
+          1095,
+          725
+        ]
+      ],
+      "labelAt": [
+        400,
+        220
+      ]
+    },
+    {
+      "from": "gemini_batch_api",
+      "to": "gold_analyses",
+      "label": "8 · harvest — results land straight in GOLD",
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [
+        [
+          855,
+          98
+        ],
+        [
+          855,
+          328
+        ]
+      ],
+      "labelAt": [
+        1000,
+        88
+      ]
+    },
+    {
+      "from": "gold_analyses",
+      "to": "serving_views",
+      "label": "9 · gold->serving",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [
+        [
+          680,
+          420
+        ],
+        [
+          975,
+          420
+        ]
+      ],
+      "labelAt": [
+        817,
+        432
+      ]
+    },
+    {
+      "from": "batch_items",
+      "to": "dead_letter",
+      "label": "attempts > MAX_ATTEMPTS=5",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [
+        [
+          280,
+          645
+        ]
+      ],
+      "labelAt": [
+        270,
+        700
+      ]
+    },
+    {
+      "from": "harvest_sensor",
+      "to": "enrichment_jobs",
+      "label": "(ships STOPPED)",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "right",
+      "labelAt": [
+        640,
+        144
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "This state WORKED",
+      "items": [
+        "Main path fully live: 9,576 gold_analyses rows, 10,038 silver_ig_posts",
+        "Retry owned by batch_items.scheduled_for backoff — MAX_ATTEMPTS=5, 776 dead_letter rows",
+        "Neutral colour: a working workaround, not a failure"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "The poll reads a DATABASE",
+      "items": [
+        "ops.sqlite sits OUTSIDE the Dagster boundary — the queue IS the job registry",
+        "Sensor ticks every 300s and reads batch_jobs.gemini_batch_status",
+        "Handles persist in the table — re-discovery from the SQLite row, never memory",
+        "The three one-op jobs consume the queue; Dagster never asks the Gemini Batch API for status"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "The honest difference from the target",
+      "items": [
+        "Results land straight in gold_analyses — a gold-to-gold loop, NOT back through bronze",
+        "gold_analyses is an AssetSpec: its only writer is an external worker emitting AssetMaterialization",
+        "Orchestration state lives in ops.sqlite, not Dagster — Dagster is a trigger shell",
+        "The sensor ships STOPPED; growth facets run on a parallel queue (gold_growth_facets, 205)"
+      ]
+    }
+  ]
+}

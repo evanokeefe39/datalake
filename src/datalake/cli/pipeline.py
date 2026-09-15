@@ -1,4 +1,4 @@
-"""Pipeline commands: run, batches, watermarks."""
+"""Pipeline commands: run, watermarks."""
 
 from __future__ import annotations
 
@@ -8,65 +8,26 @@ import typer
 from dagster import build_asset_context
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
-from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
-from datalake.defs.instagram.config import GoldConfig
+from datalake.defs.instagram.assets import ig_posts_slv
 from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
 
 from ._state import (
     DEFAULT_RESET_DATE,
     parse_datetime,
-    print_batches,
     print_full_state,
     print_watermarks,
-    reset_batches,
     reset_watermarks,
 )
 
 app = typer.Typer(
     name="pipeline",
-    help="Run medallion pipeline: silver → batches → serving.",
+    help="Run medallion pipeline: silver → serving.",
     no_args_is_help=True,
 )
 
 DB_PATH = "data/state.duckdb"
 
-
-# ── Stale update ───────────────────────────────────────────────────────────
-
-
-def _run_update_stale(ops: SQLiteResource) -> int:
-    """Create a batch for posts whose prompt_hash is stale or missing."""
-    import duckdb as _duckdb
-
-    from datalake.defs.enrichment.batch import create_batch
-    from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
-
-    print("\n--- Update stale analyses ---")
-    db = _duckdb.connect(DB_PATH, read_only=True)
-    stale_rows = db.execute(
-        "SELECT post_id, domain FROM gold_analyses "
-        "WHERE prompt_hash IS NULL OR prompt_hash != ?",
-        [CURRENT_PROMPT_HASH],
-    ).fetchall()
-    db.close()
-
-    if not stale_rows:
-        print("  No stale analyses found.")
-        return 0
-
-    import json
-
-    payloads = [
-        json.dumps({"post_id": r[0], "domain": r[1]})
-        for r in stale_rows
-    ]
-    create_batch(ops, payloads, consumer="gemini")
-    print(f"  Created batch with {len(stale_rows)} stale analyses for re-processing")
-    return len(stale_rows)
-
-
 # ── Pipeline steps ─────────────────────────────────────────────────────────
-
 
 def _run_silver(duckdb: DuckDBResource) -> int:
     print("\n--- Silver (ig_posts_slv) ---")
@@ -76,15 +37,6 @@ def _run_silver(duckdb: DuckDBResource) -> int:
     print(f"  Output: {n} rows, {result['post_id'].n_unique()} unique post_ids")
     return n
 
-
-def _run_enqueue(duckdb: DuckDBResource, ops: SQLiteResource) -> int:
-    print("\n--- Enqueue (ig_posts_gen_batches) ---")
-    result = ig_posts_gen_batches(
-        config=GoldConfig(), duckdb=duckdb, ops=ops
-    )
-    n = result["enqueued"][0] if len(result) > 0 else 0
-    print(f"  Enqueued: {n} posts")
-    return n
 
 
 def _run_serving(duckdb: DuckDBResource, ops: SQLiteResource) -> None:
@@ -116,16 +68,10 @@ def run(
         "--date",
         help="Date for watermark reset (ISO 8601)",
     ),
-    update_stale: bool = typer.Option(
-        False,
-        "--update-stale",
-        help="Re-enqueue analyses with stale/missing prompt_hash",
-    ),
 ) -> None:
-    """Run the full pipeline: silver → batches → serving.
+    """Run the full pipeline: silver → serving.
 
-    Without flags, runs incrementally — only new bronze files are processed,
-    and only unenriched silver posts are batched.
+    Without flags, runs incrementally — only new bronze files are processed.
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -138,16 +84,6 @@ def run(
         raise typer.Exit()
 
     ops = SQLiteResource()
-
-    if update_stale:
-        _run_update_stale(ops)
-        print_full_state("After stale update")
-        print(
-            "\nDone. Re-process stale analyses via the Dagster enrichment "
-            "jobs (`submit_gemini_batches_job` → `gemini_batch_harvest`)."
-        )
-        raise typer.Exit()
-
     duckdb = DuckDBResource(database=DB_PATH)
 
     if reset_watermarks_flag:
@@ -157,29 +93,9 @@ def run(
     print_full_state("Before")
 
     _run_silver(duckdb)
-    enqueued = _run_enqueue(duckdb, ops)
     _run_serving(duckdb, ops)
 
     print_full_state("After")
-
-    print(
-        f"\nDone. {enqueued} posts enqueued. Process via the Dagster "
-        "enrichment jobs (`submit_gemini_batches_job` → `gemini_batch_harvest`) "
-        "or `scripts/enrich_facets_batch.py` for batch-native growth facets."
-    )
-
-
-@app.command()
-def batches(
-    reset: bool = typer.Option(
-        False, "--reset", help="Delete all batch_jobs and batch_items"
-    ),
-) -> None:
-    """Inspect or reset batch state."""
-    logging.basicConfig(level=logging.WARNING)
-    if reset:
-        reset_batches()
-    print_batches()
 
 
 @app.command()

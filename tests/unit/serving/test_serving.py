@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 from dagster import build_asset_context
 
+from datalake.defs.enrichment.classification import CLASSIFICATION_DDL
 from datalake.defs.serving.assets import (
     dim_date as _dim_date_asset,
 )
@@ -21,19 +22,12 @@ from datalake.defs.serving.assets import (
 from tests.fixtures.silver_factories import seed_silver_posts
 
 
-def _ensure_gold_table(db):
-    """Create an empty gold_analyses table so v_post_detail can LEFT JOIN it."""
+def _ensure_classification_table(db):
+    """Create an empty silver_content_classification so v_post_detail can
+    LEFT JOIN it. DDL is imported, never hand-rolled, so the fixture schema
+    cannot drift from the real table."""
     with db.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id TEXT NOT NULL,
-                domain TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash TEXT,
-                result_json TEXT,
-                analysed_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
+        conn.execute(CLASSIFICATION_DDL)
 
 
 def _run_profile_dimension(db, ops):
@@ -178,7 +172,7 @@ def test_v_post_detail_joins_correctly(db, ops):
         owner_id_idx=1,
         owner_username_idx=2,
     )
-    _ensure_gold_table(db)
+    _ensure_classification_table(db)
     _run_profile_dimension(db, ops)
     _run_v_post_detail(build_asset_context(resources={"duckdb": db}))
 
@@ -193,7 +187,7 @@ def test_v_post_detail_joins_correctly(db, ops):
 def test_v_post_detail_empty_data(db, ops):
     """v_post_detail runs cleanly with empty silver_ig_posts."""
     seed_silver_posts(db, [])
-    _ensure_gold_table(db)
+    _ensure_classification_table(db)
     _run_profile_dimension(db, ops)
     _run_v_post_detail(build_asset_context(resources={"duckdb": db}))
 

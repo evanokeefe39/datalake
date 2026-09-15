@@ -1,0 +1,1006 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enrichment v3 migration — post-mortem</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=IBM+Plex+Sans:ital,wght@0,400;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0b0f14;
+  --bg2:#0f151c;
+  --panel:#121a23;
+  --line:#223040;
+  --line-soft:#1a242f;
+  --text:#e6edf3;
+  --muted:#8ba0b3;
+  --dim:#849bb0;
+  --teal:#3fc6d8;
+  --teal-deep:#0e7490;
+  --blue:#5c9ade;
+  --french:#3d7cc4;
+  --red:#e26d5a;
+  --amber:none;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+  --sans:"IBM Plex Sans",system-ui,sans-serif;
+  --disp:"VT323",monospace;
+}
+html{scroll-behavior:smooth;overflow-x:hidden}
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font-family:var(--sans);font-size:16px;line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+  overflow-wrap:break-word;
+}
+/* ---------- layout ---------- */
+.wrap{max-width:1200px;margin:0 auto;padding:0 20px}
+.layout{display:grid;grid-template-columns:1fr;gap:0}
+@media(min-width:960px){
+  .layout{grid-template-columns:200px 1fr;gap:48px;align-items:start}
+}
+main{min-width:0;padding-bottom:96px}
+section{margin-top:72px;scroll-margin-top:24px}
+@media(min-width:960px){section{margin-top:104px}}
+/* ---------- TOC ---------- */
+.toc{display:none}
+@media(min-width:960px){
+  .toc{display:block;position:sticky;top:0;padding:32px 0}
+  .toc ol{list-style:none;margin:0;padding:0;counter-reset:t}
+  .toc li{counter-increment:t}
+  .toc a{
+    display:block;padding:7px 0 7px 34px;color:var(--dim);text-decoration:none;
+    font-family:var(--mono);font-size:12.5px;line-height:1.45;position:relative;
+    border-left:1px solid var(--line-soft);transition:color .2s;
+  }
+  .toc a::before{content:counter(t,decimal-leading-zero);position:absolute;left:0;font-size:10.5px;top:9px;color:var(--dim)}
+  .toc a:hover{color:var(--text)}
+  .toc a.active{color:var(--teal);border-left-color:var(--teal)}
+  .toc a.active::before{color:var(--teal)}
+}
+/* ---------- masthead ---------- */
+header.mast{padding:56px 0 0}
+@media(min-width:960px){header.mast{padding:88px 0 0}}
+.kicker{
+  font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--teal);margin:0 0 18px;
+}
+h1{
+  font-family:var(--disp);font-weight:400;color:var(--text);
+  font-size:clamp(34px,11vw,96px);line-height:.95;margin:0 0 20px;letter-spacing:.01em;
+  overflow-wrap:break-word;
+}
+h1 .thin{color:var(--dim)}
+.subtitle{color:var(--muted);font-size:18px;max-width:44ch;margin:0 0 28px}
+.meta{
+  font-family:var(--mono);font-size:12.5px;color:var(--dim);
+  display:flex;flex-wrap:wrap;gap:6px 28px;margin:0 0 36px;
+}
+.meta span{overflow-wrap:anywhere}
+.meta b{color:var(--muted);font-weight:500}
+.verdict{
+  border:1px solid var(--red);background:rgba(226,109,90,.07);
+  padding:20px 22px;margin:0;
+}
+.verdict p{
+  margin:0;font-family:var(--disp);color:var(--text);
+  font-size:clamp(26px,4.6vw,44px);line-height:1.12;
+}
+.verdict p b{color:var(--red);font-weight:400}
+.verdict .sub{font-family:var(--mono);font-size:12px;color:var(--dim);margin-top:10px;letter-spacing:.08em;text-transform:uppercase}
+/* ---------- KPI strip ---------- */
+.kpis{
+  display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--line);
+  border:1px solid var(--line);margin-top:40px;
+}
+@media(min-width:760px){.kpis{grid-template-columns:repeat(3,1fr)}}
+@media(min-width:1020px){.kpis{grid-template-columns:repeat(6,1fr)}}
+.kpi{background:var(--bg);padding:18px 16px 16px}
+.kpi .v{
+  font-family:var(--disp);font-size:clamp(34px,5vw,52px);line-height:1;
+  color:var(--teal);display:block;white-space:nowrap;
+}
+.kpi.bad .v{color:var(--red)}
+.kpi .l{
+  display:block;font-family:var(--mono);font-size:11px;color:var(--dim);
+  margin-top:10px;line-height:1.5;text-transform:uppercase;letter-spacing:.06em;
+}
+/* ---------- section headers ---------- */
+h2{
+  font-family:var(--disp);font-weight:400;color:var(--text);
+  font-size:clamp(34px,5.5vw,58px);line-height:1;margin:0 0 8px;
+}
+h2 .no{color:var(--teal);margin-right:.35em}
+.lede{color:var(--muted);max-width:62ch;margin:0 0 8px;font-size:16.5px}
+h3{
+  font-family:var(--sans);font-weight:600;font-size:19px;color:var(--text);
+  margin:0 0 4px;line-height:1.3;
+}
+/* ---------- two-register finding component ---------- */
+.finding{
+  border:1px solid var(--line);background:var(--bg2);
+  margin:28px 0;padding:22px 22px 20px;
+  border-left:3px solid var(--teal);
+}
+.finding h3{font-size:20px}
+.finding .plain{
+  color:var(--text);font-size:17.5px;line-height:1.6;margin:10px 0 16px;
+  max-width:64ch;
+}
+.finding .plain .reg{
+  display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--dim);margin-bottom:6px;
+}
+.detail{
+  border:1px solid var(--line-soft);background:var(--panel);
+  padding:16px 18px;font-family:var(--mono);font-size:13px;line-height:1.75;
+  color:var(--muted);
+}
+.detail .reg{
+  display:block;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--teal);margin-bottom:8px;
+}
+.detail code, .finding code{
+  font-family:var(--mono);color:var(--text);background:#1a2530;
+  padding:1px 5px;font-size:.92em;border-radius:3px;overflow-wrap:anywhere;
+}
+.detail .file{color:var(--blue)}
+.finding ul{margin:0;padding-left:20px;color:var(--muted)}
+.finding li{margin:6px 0}
+.finding li::marker{color:var(--dim)}
+/* ---------- vacuous gate callout ---------- */
+.callout{
+  border:1px solid var(--red);background:rgba(226,109,90,.05);
+  border-left:4px solid var(--red);padding:26px 24px;margin:40px 0;
+}
+.callout .tag{
+  font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--red);display:block;margin-bottom:14px;
+}
+.callout h3{color:var(--text);font-size:21px;margin:0 0 10px}
+.callout .plain{color:var(--text);font-size:17.5px;max-width:64ch;margin:0 0 16px}
+.callout .lesson{
+  margin:20px 0 0;padding-top:16px;border-top:1px solid rgba(226,109,90,.3);
+  font-family:var(--disp);font-size:clamp(22px,3.4vw,30px);line-height:1.2;color:var(--text);
+}
+/* ---------- five whys chain ---------- */
+.whys{border-left:2px solid var(--line);margin:28px 0 0;padding-left:0;list-style:none}
+.why{
+  position:relative;padding:0 0 30px 26px;
+}
+.why::before{
+  content:"";position:absolute;left:-6px;top:6px;width:10px;height:10px;
+  background:var(--bg);border:2px solid var(--teal);border-radius:50%;
+}
+.why .q{
+  font-family:var(--mono);font-size:13px;color:var(--teal);margin:0 0 8px;
+  font-weight:600;
+}
+.why .a{color:var(--muted);max-width:62ch;margin:0;font-size:15.5px}
+.why.root{
+  margin-top:8px;padding:24px 24px;border:1px solid var(--french);border-left:4px solid var(--french);
+  background:rgba(0,85,164,.1);
+}
+.why.root::before{display:none}
+.why.root .q{color:var(--blue);font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:500}
+.why.root .a{
+  font-family:var(--disp);font-size:clamp(24px,4vw,38px);line-height:1.15;color:var(--text);
+}
+.conclusion{
+  border:1px solid var(--line);border-left:4px solid var(--teal);
+  background:var(--panel);padding:18px 22px;margin:28px 0 0;
+  color:var(--text);font-size:16.5px;max-width:none;
+}
+/* ---------- fault allocation ---------- */
+.verdict-bar{
+  margin:32px 0 0;padding:18px 22px;border:1px solid var(--line);
+  background:var(--panel);
+  font-family:var(--disp);font-size:clamp(22px,3.6vw,32px);color:var(--text);line-height:1.2;
+}
+/* ---------- lessons ---------- */
+.layer{border:1px solid var(--line);margin:32px 0}
+.layer>.lh{
+  padding:16px 22px;border-bottom:1px solid var(--line);background:var(--panel);
+  display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 16px;
+}
+.layer>.lh .ln{
+  font-family:var(--disp);font-size:30px;color:var(--teal);
+}
+.layer>.lh .lt{font-weight:600;color:var(--text);font-size:16px}
+.layer>.lh .ls{
+  font-family:var(--mono);font-size:11.5px;color:var(--dim);width:100%;
+}
+.layer-b>.lh .ln{color:var(--blue)}
+.layer-b{border-color:#1d3550}
+.layer-b>.lh{background:#0d1620;border-color:#1d3550}
+.layer-c>.lh .ln{color:var(--dim)}
+.lesson{
+  padding:20px 22px;border-bottom:1px solid var(--line-soft);
+}
+.lesson:last-child{border-bottom:0}
+.lesson .p{color:var(--text);font-weight:600;margin:0 0 8px;font-size:15.5px;line-height:1.5}
+.lesson .p .n{font-family:var(--mono);color:var(--dim);font-weight:400;margin-right:10px;font-size:13px}
+.lesson .w,.lesson .c{
+  font-family:var(--mono);font-size:12.5px;color:var(--muted);margin:4px 0;
+  line-height:1.7;
+}
+.lesson .w::before{content:"WHY HERE ";color:var(--dim);font-size:10px;letter-spacing:.12em}
+.lesson .c::before{content:"CHECK ";color:var(--teal);font-size:10px;letter-spacing:.12em}
+.layer-b .lesson .c::before{color:var(--blue)}
+/* ---------- harness improvements ---------- */
+.imp{border:1px solid var(--line);background:var(--bg2);margin:24px 0}
+.imp>.ih{
+  padding:14px 22px;border-bottom:1px solid var(--line);
+  font-family:var(--disp);font-size:26px;color:var(--teal);
+}
+.imp ol{margin:0;padding:0;list-style:none;counter-reset:i}
+.imp li{padding:18px 22px;border-bottom:1px solid var(--line-soft);counter-increment:i}
+.imp li:last-child{border-bottom:0}
+.imp li>.p{margin:0 0 8px}
+.imp li>.p::before{
+  content:counter(i,decimal-leading-zero);font-family:var(--mono);font-size:12px;
+  color:var(--teal);margin-right:12px;
+}
+.imp .prevents{
+  font-family:var(--mono);font-size:12px;color:var(--blue);
+  margin:6px 0 0;
+}
+.imp .prevents::before{content:"PREVENTS: ";color:var(--dim);letter-spacing:.1em;font-size:10px}
+/* ---------- evidence appendix ---------- */
+.evidence{margin:24px 0;padding:0;list-style:none}
+.evidence li{
+  padding:12px 0;border-bottom:1px solid var(--line-soft);
+  font-family:var(--mono);font-size:13px;color:var(--text);
+}
+.evidence li span{color:var(--dim);display:block;font-size:12px;margin-top:2px}
+.honesty{
+  border:1px solid var(--teal-deep);background:rgba(14,116,144,.08);
+  padding:20px 22px;margin:40px 0 0;color:var(--text);
+}
+.honesty .tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--teal);display:block;margin-bottom:10px}
+/* ---------- footer ---------- */
+footer{border-top:1px solid var(--line-soft);margin-top:96px;padding:28px 0 48px;font-family:var(--mono);font-size:12px;color:var(--dim)}
+/* ---------- reveal ---------- */
+@media(prefers-reduced-motion:no-preference){
+  .rv{opacity:0;transform:translateY(14px);transition:opacity .5s ease,transform .5s ease}
+  .rv.in{opacity:1;transform:none}
+}
+/* ---------- mobile fixes ---------- */
+/* ---------- visual aids ---------- */
+.fig{border:1px solid var(--line);background:var(--bg2);margin:28px 0;padding:22px}
+.fig .fig-t{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 16px}
+.fig .fig-t b{color:var(--muted);font-weight:500}
+/* 1. phase coverage: stacked bar + dot grid */
+.cov{display:flex;flex-direction:column;gap:24px}
+.covbar{display:flex;height:44px;border:1px solid var(--line);overflow:hidden}
+.covseg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:13px;color:var(--bg);min-width:0}
+.covseg span{overflow:hidden;white-space:nowrap}
+.cov-met{background:var(--teal)}
+.cov-part{background:var(--blue)}
+.cov-vac{background:var(--red)}
+.cov-unmet{background:var(--french)}
+.cov-unmet span{color:var(--text)}
+.cov-part span,.cov-vac span{color:var(--bg)}
+@media(max-width:560px){.covseg{font-size:0}.covseg::after{content:attr(data-n);font-family:var(--mono);font-size:13px}}
+.covlegend{display:flex;flex-wrap:wrap;gap:8px 20px;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.covlegend i{display:inline-block;width:11px;height:11px;margin-right:7px;vertical-align:-1px}
+.covdot{display:grid;grid-template-columns:repeat(auto-fill,minmax(16px,1fr));gap:5px;max-width:760px}
+.covdot i{aspect-ratio:1;display:block;border:1px solid var(--line)}
+.covdot .d-met{background:var(--teal);border-color:var(--teal)}
+.covdot .d-part{background:rgba(92,154,222,.35);border-color:var(--blue)}
+.covdot .d-vac{background:rgba(226,109,90,.3);border-color:var(--red);border-style:dashed}
+.covdot .d-unmet{border-color:var(--french)}
+/* 2. code vs live panel */
+.covseg.cov-unmet{background:linear-gradient(rgba(11,15,20,.45),rgba(11,15,20,.45)),var(--french)}
+.cov-unmet span{color:var(--text)}
+.ccl-col{background:var(--panel);padding:18px}
+.ccl-col h4{margin:0 0 12px;font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:600}
+.ccl-code h4{color:var(--red)}
+.ccl-live h4{color:var(--teal)}
+.ccl-col ul{list-style:none;margin:0;padding:0;font-family:var(--mono);font-size:12px;line-height:1.5}
+.ccl-col li{padding:5px 0;border-bottom:1px solid var(--line-soft);color:var(--muted);overflow-wrap:anywhere}
+.ccl-col li:last-child{border-bottom:0}
+.ccl-col .rows{color:var(--text);font-weight:600}
+.ccl-note{grid-column:1/-1;background:var(--bg2);padding:12px 18px;font-family:var(--mono);font-size:12px;color:var(--dim)}
+/* 3. disconnected halves figure */
+.halves{font-family:var(--mono);font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:4px}
+.half{border:1px solid var(--line);background:var(--panel);padding:14px 16px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px}
+.half .hlab{width:100%;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:2px}
+.hnode{border:1px solid var(--line);background:var(--bg2);padding:5px 9px;color:var(--text);overflow-wrap:anywhere}
+.harrow{color:var(--dim)}
+.half.writes .hnode{border-color:var(--blue)}
+.half.reads .hnode{border-color:var(--red)}
+.gapfig{position:relative;margin:2px 0 2px 16px;padding:14px 0 14px 24px;border-left:2px dashed var(--red)}
+.gapfig .glabel{font-family:var(--mono);font-size:12px;color:var(--red);letter-spacing:.1em;text-transform:uppercase}
+.gapfig .gsub{color:var(--dim);display:block;font-size:11.5px;text-transform:none;letter-spacing:0;margin-top:4px}
+/* 4. row count comparison */
+.rowcmp{display:flex;flex-direction:column;gap:14px;font-family:var(--mono);font-size:12.5px}
+.rowrow{display:grid;grid-template-columns:1fr;gap:4px}
+@media(min-width:560px){.rowrow{grid-template-columns:230px 1fr;align-items:center;gap:12px}}
+.rowrow .rname{color:var(--muted);overflow-wrap:anywhere}
+.rbar{height:16px;position:relative;border:1px solid var(--line);background:var(--bg2)}
+.rfill{position:absolute;inset:0 auto 0 0;background:var(--teal)}
+.rfill.zero{width:6px;background:var(--red)}
+.rval{color:var(--text)}
+.rval.zero{color:var(--red)}
+@media(max-width:700px){
+  .finding,.callout,.why.root,.conclusion,.layer,.imp{margin-left:-20px;margin-right:-20px;border-left:0;border-right:0}
+  .finding,.callout{padding:18px 20px 16px}
+  .layer>.lh{padding:14px 20px}
+  .lesson{padding:16px 20px}
+  .imp li{padding:16px 20px}
+  .why.root{padding:20px}
+  .verdict{padding:16px 18px}
+  .kpis{margin-left:-20px;margin-right:-20px}
+}
+
+/* ---------- three-state figures ---------- */
+.state{margin:32px 0 0;border:1px solid var(--line);background:var(--bg2);
+  overflow:hidden;border-left:3px solid var(--line)}
+.state.s1{border-left-color:var(--teal)}
+.state.s3{border-left-color:var(--blue)}
+.state.s2{border-left-color:var(--red)}
+.state a{display:block;line-height:0}
+.state img{width:100%;height:auto;display:block;border-bottom:1px solid var(--line)}
+.state figcaption{padding:18px 22px 20px;font-size:14.5px;line-height:1.68;
+  color:var(--muted);max-width:96ch}
+.state figcaption b{color:var(--text);font-weight:600}
+.state code{font-family:var(--mono);font-size:12.5px;color:var(--text)}
+.state .reg{margin-bottom:5px}
+.state .open{font-family:var(--mono);font-size:11px;letter-spacing:.06em;
+  color:var(--dim);display:block;margin-top:10px}
+.arrow{font-family:var(--mono);font-size:11.5px;color:var(--dim);text-align:center;
+  margin:18px 0;letter-spacing:.12em;text-transform:uppercase}
+</style>
+</head>
+<body>
+<div class="wrap layout">
+<aside class="toc">
+  <ol>
+    <li><a href="#summary">Summary</a></li>
+    <li><a href="#states">The three states</a></li>
+    <li><a href="#failures">Six failures</a></li>
+    <li><a href="#rootcause">Root cause</a></li>
+    <li><a href="#fault">Who is at fault</a></li>
+    <li><a href="#lessons">Lessons</a></li>
+    <li><a href="#harness">Harness fixes</a></li>
+    <li><a href="#evidence">Evidence</a></li>
+  </ol>
+</aside>
+<main id="top">
+
+<header class="mast">
+  <p class="kicker">Post-mortem · datalake</p>
+  <h1>Enrichment v3 migration<br><span class="thin">— post-mortem</span></h1>
+  <p class="subtitle">Where the work went wrong, and what would have caught it.</p>
+  <p class="meta">
+    <span>Date <b>2026-09-13</b></span>
+    <span>Branch <b>feat/enrichment-v3-phase-1-seam-and-landing</b></span>
+  </p>
+  <div class="verdict">
+    <p><b>7 of 36</b> exit criteria are met. The code branch is green. The system does not run.</p>
+    <p class="sub">Independent audit against the live database</p>
+  </div>
+</header>
+
+<div class="honesty rv" style="margin:0 0 8px">
+  <span class="tag">Read this first — the verdict below has been revised</span>
+  Two independent reviews changed this document after it was written, and the changes cut against
+  its original confidence. <b>§03's root cause does not discriminate</b> — "orchestration failed" is
+  true of every migration this process has run, including the successful ones, so it explains
+  neither; the discriminating form is the compound <i>unowned contracts AND no acceptance gate
+  capable of observing a real run</i>, which makes <b>acceptance the proximate cause</b>. And
+  <b>one claim was retracted</b>: the assertion that no unit was briefed to migrate the seam call
+  sites was inferred from the commit trail, which shows what ran, not what was assigned.
+  Assignment-versus-execution is <b>undetermined</b>. The §03 correction carries the full detail.
+  What survives untouched is the <i>measurement</i>: 7 of 36 criteria met, verified against the
+  live database. That is the part this document is actually entitled to assert.
+</div>
+
+<section id="summary">
+  <h2>Summary</h2>
+  <p class="lede">The bottom line, first.</p>
+  <div class="finding">
+    <p class="plain"><span class="reg">Plain statement</span>
+      A migration was planned in 7 phases. Subagents built each phase. Each phase reported
+      complete. The test suite was green. An independent audit then checked each exit criterion
+      against the live database, not against the branch.</p>
+    <div class="detail"><span class="reg">Detail</span>
+      Result: 7 of 36 criteria are genuinely met. 5 are vacuous. 12 are unmet. 7 are partial.<br>
+      12 objects exist as code only. Nothing materialized them in the live database.<br>
+      The pipeline cannot complete one cycle.</div>
+  </div>
+  <div class="finding">
+    <p class="plain"><span class="reg">Plain statement</span>
+      The cause is the process, not the workers. The plan divided the work by component.
+      No unit owned the connections between components. Each worker did what its brief said.
+      The briefs did not name the connections.</p>
+  </div>
+<div class="fig rv" role="img" aria-label="Stacked bar of 36 exit criteria: 7 met, 7 partial, 5 vacuous, 12 unmet. A dot grid below shows the same 36 individually.">
+  <p class="fig-t"><b>Figure 1.</b> The 36 exit criteria, by audit outcome</p>
+  <div class="cov">
+    <div class="covbar">
+      <div class="covseg cov-met" style="flex:7" data-n="7"><span>7 met</span></div>
+      <div class="covseg cov-part" style="flex:7" data-n="7"><span>7 partial</span></div>
+      <div class="covseg cov-vac" style="flex:5" data-n="5"><span>5 vacuous</span></div>
+      <div class="covseg cov-unmet" style="flex:12" data-n="12"><span>12 unmet</span></div>
+    </div>
+    <div class="covdot" aria-hidden="true">
+      <i class="d-met"></i><i class="d-met"></i><i class="d-met"></i><i class="d-met"></i><i class="d-met"></i><i class="d-met"></i><i class="d-met"></i>
+      <i class="d-part"></i><i class="d-part"></i><i class="d-part"></i><i class="d-part"></i><i class="d-part"></i><i class="d-part"></i><i class="d-part"></i>
+      <i class="d-vac"></i><i class="d-vac"></i><i class="d-vac"></i><i class="d-vac"></i><i class="d-vac"></i>
+      <i class="d-unmet"></i><i class="d-unmet"></i><i class="d-unmet"></i><i class="d-unmet"></i><i class="d-unmet"></i><i class="d-unmet"></i><i class="d-unmet"></i><i class="d-unmet"></i><i class="d-unmet"></i><i class="d-unmet"></i><i class="d-unmet"></i><i class="d-unmet"></i>
+    </div>
+    <div class="covlegend">
+      <span><i class="cov-met"></i>genuinely met (7)</span>
+      <span><i class="cov-part"></i>partial (7)</span>
+      <span><i class="cov-vac"></i>vacuous (5)</span>
+      <span><i class="cov-unmet"></i>unmet (12)</span>
+    </div>
+  </div>
+</div>
+  <div class="kpis" role="list" aria-label="Key numbers">
+    <div class="kpi bad" role="listitem"><span class="v">7 / 36</span><span class="l">Criteria genuinely met</span></div>
+    <div class="kpi bad" role="listitem"><span class="v">5</span><span class="l">Criteria that are vacuous</span></div>
+    <div class="kpi bad" role="listitem"><span class="v">12</span><span class="l">Objects defined in code, materialized nowhere</span></div>
+    <div class="kpi bad" role="listitem"><span class="v">0</span><span class="l">Bronze rows ever landed</span></div>
+    <div class="kpi bad" role="listitem"><span class="v">701</span><span class="l">Unit tests passing while the pipeline cannot run</span></div>
+    <div class="kpi" role="listitem"><span class="v">1 of 4</span><span class="l">Production seam adoption</span></div>
+  </div>
+</section>
+
+<section id="states">
+  <h2>The three states</h2>
+  <p class="lede">Where we came from, where we were going, and where we actually went.</p>
+
+  <figure class="state s1 rv">
+    <a href="diagrams/state1-old.html" title="Open the full interactive diagram">
+      <img src="diagrams/state1-old.visual-check.2048x1320.dark.png"
+        alt="State 1: the queue-driven pipeline that worked. Apify scrape to bronze Parquet, silver_ig_posts, ig_post_labels, a SQLite batch queue in ops.sqlite, Gemini submit and harvest, into gold_analyses holding 9,576 rows, feeding the serving views.">
+    </a>
+    <figcaption>
+      <span class="reg">Where we came from</span>
+      <b>STATE 1 — OLD. The pipeline that worked.</b> A SQLite work queue in
+      <code>ops.sqlite</code> drove everything: the scraper wrote bronze, silver deduped it, the
+      label pass decided what was worth enriching, and <code>ig_posts_gen_batches</code> enqueued
+      work that submit and harvest consumed. It produced real output — <b>9,576</b> rows in
+      <code>gold_analyses</code>, <b>205</b> in <code>gold_growth_facets</code>, <b>10,038</b>
+      posts in silver, and the dashboard read it. Its limits are what motivated the migration:
+      Instagram-only, a hardcoded <code>domain</code>, media effectively text-only, and a bespoke
+      queue serving exactly one path.
+      <span class="open">→ diagrams/state1-old.html</span>
+    </figcaption>
+  </figure>
+
+  <div class="arrow">↓ &nbsp; the migration was aimed here &nbsp; ↓</div>
+
+  <figure class="state s3 rv">
+    <a href="diagrams/state3-target.html" title="Open the full interactive diagram">
+      <img src="diagrams/state3-target.visual-check.2048x1320.dark.png"
+        alt="State 3: the target layered model. Providers reached only through the seam, verbatim bronze landing, deterministic conform, six silver tables keyed by post_id and platform, four gold marts, and Dagster-native orchestration with the queue retired.">
+    </a>
+    <figcaption>
+      <span class="reg">Where we were going</span>
+      <b>STATE 3 — TARGET. The layered model (ADR-0011 / 0012 / 0013).</b> One direction, one
+      seam, no queue. Providers are reached <i>only</i> through the seam, so
+      <code>build_adapter(name)</code> is the single place a provider is ever named. Every model
+      response lands <b>verbatim</b> in <code>bronze_enrichment_raw</code> — the paid and
+      stochastic part ends there. Conform is a pure function of bronze with <b>zero API calls</b>,
+      so a schema change is a replay, never a re-bill. Six silver tables keyed
+      <code>(post_id, platform)</code> — never <code>domain</code>. Four gold marts that compose
+      the canonical metrics instead of re-deriving them. Orchestration moves into the Dagster
+      instance and the queue is retired.
+      <span class="open">→ diagrams/state3-target.html</span>
+    </figcaption>
+  </figure>
+
+  <div class="arrow">↓ &nbsp; this is where it actually arrived &nbsp; ↓</div>
+
+  <figure class="state s2 rv">
+    <a href="diagrams/state2-current.html" title="Open the full interactive diagram">
+      <img src="diagrams/state2-current.visual-check.2048x1320.dark.png"
+        alt="State 2: the current incorrect state. A green branch where the system does not run. Twelve objects are declared in code and materialized nowhere, the live database still holds State 1, and the two halves of the new pipeline do not meet.">
+    </a>
+    <figcaption>
+      <span class="reg">Where we actually went</span>
+      <b>STATE 2 — CURRENT. The branch is green and the system does not run.</b> Twelve objects
+      exist as code and are materialized nowhere; the live database still holds State 1. Four
+      breakages do the damage. The two halves are <b>disconnected</b> — the drain writes
+      <code>enrichment_submitted</code> partitions that nothing reads, while submit discovers work
+      by reading a <code>batch_jobs</code> table nothing writes. The <b>producer is missing</b>:
+      <code>enrichment_harvested</code> has no writer anywhere in <code>src/</code>, so the
+      in-flight set only grows and the guard suppresses everything after the first cycle. The
+      <b>queue is retired but still called</b> — <code>_require_legacy_queue_tables</code> raises
+      if the retired table is absent, and five modules still call those shims, so the drop is
+      blocked on caller migration rather than on intent. And the
+      <b>seam is bypassed</b>: one seam was built, one of four flows uses it, twelve call sites go
+      around it, and <code>seam.run_lifecycle</code> has zero production callers. The gate that
+      should have caught all of this passes — the schema catalog still lists
+      <code>gold_analyses</code> and never expected <code>silver_content_classification</code>, so
+      the readiness test certifies a world that no longer matches intent.
+      <span class="open">→ diagrams/state2-current.html</span>
+    </figcaption>
+  </figure>
+</section>
+<section id="failures">
+  <h2><span class="no">01</span>Where it went wrong</h2>
+  <p class="lede">Six concrete failures. Each one has a plain statement and a detail block.</p>
+
+  <div class="finding rv">
+    <h3>3.1 Twelve objects exist only as code</h3>
+    <p class="plain"><span class="reg">Plain statement</span>
+      The migration created 12 new tables and views. None of them exists in the live database.
+      The old tables are still the source of truth.</p>
+    <div class="detail"><span class="reg">Detail</span>
+      The code-only objects are <code>silver_content_classification</code>, the five conform tables
+      (<code>silver_visual_annotations</code>, <code>silver_visual_summaries</code>,
+      <code>silver_audio_transcripts</code>, <code>silver_text_annotations</code>,
+      <code>silver_text_summaries</code>), <code>silver_enrichment_quarantine</code>,
+      <code>silver_classification_incoming</code>, and all four gold marts
+      (<code>gold_post_enrichment</code>, <code>gold_creator_performance</code>,
+      <code>gold_content_shape_performance</code>, <code>gold_top_posts</code>).<br>
+      The live <code>state.duckdb</code> still holds <code>gold_analyses</code> (9,576 rows) and
+      <code>gold_growth_facets</code> (205 rows). The four gold marts are
+      <code>CREATE OR REPLACE VIEW</code> statements in code. They are not even tables.</div>
+  </div>
+<div class="fig rv" role="img" aria-label="Two columns: 12 declared objects with no live rows, against the live database which holds only the two old tables.">
+  <p class="fig-t"><b>Figure 2.</b> Declared in code vs present in the live <code>state.duckdb</code></p>
+  <div class="codeclive">
+    <div class="ccl-col ccl-code">
+      <h4>In code only — 12 objects, 0 rows</h4>
+      <ul>
+        <li>silver_content_classification</li>
+        <li>silver_visual_annotations</li>
+        <li>silver_visual_summaries</li>
+        <li>silver_audio_transcripts</li>
+        <li>silver_text_annotations</li>
+        <li>silver_text_summaries</li>
+        <li>silver_enrichment_quarantine</li>
+        <li>silver_classification_incoming</li>
+        <li>gold_post_enrichment (view)</li>
+        <li>gold_creator_performance (view)</li>
+        <li>gold_content_shape_performance (view)</li>
+        <li>gold_top_posts (view)</li>
+      </ul>
+    </div>
+    <div class="ccl-col ccl-live">
+      <h4>Live in state.duckdb — the old tables</h4>
+      <ul>
+        <li>gold_analyses <span class="rows">9,576 rows</span></li>
+        <li>gold_growth_facets <span class="rows">205 rows</span></li>
+      </ul>
+    </div>
+    <p class="ccl-note">The four gold marts are CREATE OR REPLACE VIEW statements in code. They are not even tables. The old tables are still the source of truth.</p>
+  </div>
+</div>
+
+  <div class="finding rv">
+    <h3>3.2 No view reads the new table</h3>
+    <p class="plain"><span class="reg">Plain statement</span>
+      The dashboard reads the old enrichment table. It has never read the new one.</p>
+    <div class="detail"><span class="reg">Detail</span>
+      Zero views read <code>silver_content_classification</code>. Three views still read
+      <code>gold_analyses</code>. The live <code>v_post_detail</code> reads <code>ga.result_json</code>
+      and <code>ga.prompt_hash</code> directly. The silver-bound version of that view exists only
+      inside the <code>serving/assets.py</code> asset body, and it has never executed.</div>
+  </div>
+
+  <div class="finding rv">
+    <h3>3.3 No data ever landed in bronze</h3>
+    <p class="plain"><span class="reg">Plain statement</span>
+      The new bronze landing table is the foundation of the whole design. It has zero rows.</p>
+    <div class="detail"><span class="reg">Detail</span>
+      <code>bronze_enrichment_raw</code> has zero landed rows. Worse, the test mocks use a flat
+      envelope. The real provider responses nest. So the landing code has never met a real payload
+      shape. The first real run may fail on the real shape.</div>
+  </div>
+<div class="fig rv" role="img" aria-label="Bar comparison of row counts: gold_analyses 9,576 rows, gold_growth_facets 205 rows, bronze_enrichment_raw 0 rows.">
+  <p class="fig-t"><b>Figure 3.</b> Rows landed, by table</p>
+  <div class="rowcmp">
+    <div class="rowrow"><span class="rname">gold_analyses (live, old)</span><span class="rbar"><span class="rfill" style="width:100%"></span></span><span class="rval">9,576</span></div>
+    <div class="rowrow"><span class="rname">gold_growth_facets (live, old)</span><span class="rbar"><span class="rfill" style="width:2.2%"></span></span><span class="rval">205</span></div>
+    <div class="rowrow"><span class="rname">bronze_enrichment_raw (new)</span><span class="rbar"><span class="rfill zero"></span></span><span class="rval zero">0</span></div>
+  </div>
+</div>
+
+  <div class="finding rv">
+    <h3>3.4 The conform layer has no caller</h3>
+    <p class="plain"><span class="reg">Plain statement</span>
+      The team built the layer that turns bronze into silver. Nothing calls it.</p>
+    <div class="detail"><span class="reg">Detail</span>
+      Phase 4's conform module has no asset, no invocation, and no reference anywhere in
+      <code>src/</code>. The five silver tables exist only in test fixtures.</div>
+  </div>
+
+  <div class="finding rv">
+    <h3>3.5 The pipeline has two halves, and they do not touch</h3>
+    <p class="plain"><span class="reg">Plain statement</span>
+      One half writes work to a new place. The other half looks for work in the old place.
+      So the pipeline runs once, then stops.</p>
+    <div class="detail"><span class="reg">Detail</span>
+      The drain materializes <code>enrichment_submitted</code> partitions
+      (<code><span class="file">instagram/assets.py:1289</span></code>) that no consumer reads.
+      <code><span class="file">submit.py:77</span></code> discovers work by reading
+      <code>batch_jobs</code>, and nothing writes <code>batch_jobs</code> any more.
+      <code>_require_legacy_queue_tables</code> (<code><span class="file">batch.py:51</span></code>)
+      even raises an error if that retired table is absent. The code actively preserves the dead
+      contract. Separately, <code>enrichment_harvested</code> has no production writer at all.
+      The in-flight set never shrinks, and the drain suppresses everything after the first run.</div>
+  </div>
+<div class="fig rv" role="img" aria-label="Two chains: the drain writes enrichment_submitted partitions, but submit.py reads batch_jobs, which nobody writes. The chains do not meet.">
+  <p class="fig-t"><b>Figure 4.</b> Two halves that never meet</p>
+  <div class="halves">
+    <div class="half writes">
+      <span class="hlab">What the drain writes</span>
+      <span class="hnode">drain</span><span class="harrow">&#8594;</span><span class="hnode">enrichment_submitted partitions</span><span class="harrow">&#8594;</span><span class="hnode">(no consumer reads these)</span>
+    </div>
+    <div class="gapfig">
+      <span class="glabel">&#215; no connection</span>
+      <span class="gsub">No brief, criterion, or test connects the two halves.</span>
+    </div>
+    <div class="half reads">
+      <span class="hlab">What submit.py reads</span>
+      <span class="hnode">(nothing writes batch_jobs any more)</span><span class="harrow">&#8594;</span><span class="hnode">batch_jobs</span><span class="harrow">&#8594;</span><span class="hnode">submit.py discovers work here</span>
+    </div>
+  </div>
+</div>
+
+  <div class="finding rv">
+    <h3>3.6 The seam is built but not used</h3>
+    <p class="plain"><span class="reg">Plain statement</span>
+      One phase created a single boundary for all external providers. Four production flows
+      should use it. One does.</p>
+    <div class="detail"><span class="reg">Detail</span>
+      12 bypass sites exist: <code><span class="file">submit.py:152</span></code>,
+      <code><span class="file">submit.py:170</span></code>, eight sites in
+      <code>harvest.py</code> (311, 316, 319, 334, 446, 454, 459, 462),
+      <code><span class="file">facets_batch.py:318</span></code>, and
+      <code><span class="file">facets_batch.py:322</span></code>.
+      <code>harvest.py</code> never imports <code>seam</code> at all.
+      <code>seam.run_lifecycle</code> has zero production callers.</div>
+  </div>
+
+  <div class="callout rv">
+    <span class="tag">§3.7 — the most important single finding</span>
+    <h3>The vacuous gate</h3>
+    <p class="plain"><span class="reg" style="color:var(--dim)">Plain statement</span>
+      The team relied on one test to prove "no regression". That test cannot detect the failure.
+      It asserts the old status quo.</p>
+    <div class="detail" style="border-color:rgba(226,109,90,.3)"><span class="reg" style="color:var(--red)">Detail</span>
+      <code>tests/operational/test_state_compatibility.py</code> passes with 77 tests. It passes
+      because the schema catalog still lists <code>gold_analyses</code> and does not expect
+      <code>silver_content_classification</code>. So the test asserts the status quo. It cannot
+      detect that the migration never happened.<br>
+      It also checks only that each view can be SELECT-ed. It never checks that the view
+      DEFINITION is unchanged. So the criterion "19 transitive views are asserted, not assumed"
+      has no assertion anywhere in the repository.</div>
+    <p class="lesson">A gate gives evidence of the things it can assert. A gate that asserts the status quo cannot certify a migration.</p>
+  </div>
+</section>
+<section id="rootcause">
+  <h2><span class="no">02</span>Root cause: the five whys</h2>
+  <p class="lede">Each why is visible. The chain ends at the root cause.</p>
+  <ol class="whys">
+    <li class="why rv">
+      <p class="q">Why 1 — Why are the two pipeline halves disconnected?</p>
+      <p class="a">Each half implemented its own brief against the state in front of it.
+      The drain writes to partitions. <code>submit.py</code> reads a table.
+      No brief mentioned the other half.</p>
+    </li>
+    <li class="why rv">
+      <p class="q">Why 2 — Why did no unit own the connection?</p>
+      <p class="a">The plan divided the work by component. Integration was nobody's task.
+      The plan knew the coupling: §4 names the drain as Phase 2's consumer, and Phase 2's text
+      says the drain rewrite "must land with the queue retirement". But the retirement was in
+      Phase 7, and no criterion in any phase said "submit consumes what the drain produces".</p>
+    </li>
+    <li class="why rv">
+      <p class="q">Why 3 — Why did phase verification accept this?</p>
+      <p class="a">Each phase's test suite injects a fake on one side of every seam.
+      The drain tests against a fake instance. The submit tests against a fake table.
+      No test asserts a handoff between the two real halves.</p>
+    </li>
+    <li class="why rv">
+      <p class="q">Why 4 — Why did the exit criteria not force integration?</p>
+      <p class="a">The criteria state that a component EXISTS. They do not state that data moves
+      between components. "build_adapter is the ONLY place a provider is named" passes by
+      unit-testing the registry, while 12 production sites bypass it. "Two drain runs enqueue
+      no post twice" passes because run 2 enqueues nothing at all.</p>
+    </li>
+    <li class="why root rv">
+      <p class="q">Root cause</p>
+      <p class="a">The plan treated integration as a result that would appear by itself when all
+      components were complete. Integration was not an owned, tested deliverable.</p>
+    </li>
+  </ol>
+  <div class="conclusion rv">
+    The failure was set at dispatch-design time, before any worker read a prompt.
+    The workers' tests passed because the tests were true statements about their own small slices.
+  </div>
+</section>
+
+<section id="fault">
+  <h2><span class="no">03</span>Who is at fault, and who is not</h2>
+  <p class="lede">"The subagents failed" is not accurate. Read the record.</p>
+
+  <div class="finding rv">
+    <h3>Worker correct, interface defective</h3>
+    <p class="plain"><span class="reg">Plain statement</span>
+      In three cases, the workers did their briefs. The briefs did not name the connections.</p>
+    <div class="detail"><span class="reg">Detail</span>
+      <b>The <code>max_tokens</code> bypass.</b> The seam's <code>Item</code> is per-item.
+      <code>max_tokens</code> is per-job. The worker could not express it.
+      The worker wrote the reason in a docstring.<br>
+      <b>The <code>DRAIN_ATTEMPT_ROUND = 0</code> hardcode.</b> The ADR mandates distinct retry
+      keys, but says nothing about the key shape. The worker implemented the guard honestly
+      for round 0.<br>
+      <b>The missing <code>enrichment_harvested</code> writer.</b> The brief said "derive in-flight
+      from the instance". That is a guard instruction. No brief named the writer.</div>
+  </div>
+
+  <div class="finding rv">
+    <h3>Worker faults, both small</h3>
+    <p class="plain"><span class="reg">Plain statement</span>
+      Two cases are worker faults. Both are small.</p>
+    <div class="detail"><span class="reg">Detail</span>
+      <b><code>DagsterInstance.get()</code> fallbacks.</b> The asset already accepted an injected
+      instance. The worker chose the permissive path.<br>
+      <b>Silent failure paths.</b> <code>classify_error</code> sends unknown exceptions to
+      TERMINAL. Poll loops warn and continue with no bound. Asset checks pass on unread parquet.</div>
+  </div>
+
+  <div class="verdict-bar rv">Orchestration is the dominant cause. The workers' faults are second-order.</div>
+
+  <div class="honesty rv">
+    <span class="tag">Correction — supersedes the allocation above</span>
+    Two revisions, both from the panel, and both weaken how confidently this section can be read.
+    <br><br>
+    <b>One claim was retracted.</b> An earlier draft stated that no unit was ever briefed to
+    migrate the seam call sites. That was an inference from the commit trail — which shows what
+    was <i>executed</i>, not what was <i>assigned</i>. Presented as a dispatch record it was not
+    evidence. The assignment-versus-execution question is <b>undetermined</b> on the current
+    record, and the "worker correct" framing above rests partly on it.
+    <br><br>
+    <b>And the root cause as stated does not discriminate.</b> "Orchestration failed" describes
+    every migration this process has run, including the ones that succeeded. A cause present in
+    both outcomes explains neither. The discriminating form is the compound:
+    <b>unowned contracts AND no acceptance gate capable of observing a real run.</b> Remove either
+    half and the failure does not occur. That makes the proximate cause
+    <b>acceptance</b> — the check that could not see the drift — rather than the shape of the
+    dispatch.
+  </div>
+</section>
+<section id="lessons">
+  <h2><span class="no">04</span>Lessons, in three layers</h2>
+  <p class="lede">Juniors read the principles. Seniors use the checks. Each layer is separate.</p>
+
+  <div class="layer layer-a rv">
+    <div class="lh">
+      <span class="ln">A</span><span class="lt">Generic software design and migration principles</span>
+      <span class="ls">These apply to any migration, in any language, of any system.</span>
+    </div>
+    <div class="lesson"><p class="p"><span class="n">01</span>A contract between two components needs an owner.</p>
+      <p class="w">a component is not done when it works alone. It is done when its caller uses it and its provider feeds it. The seam was built and 12 sites bypassed it.</p>
+      <p class="c">name the production consumer of everything you write, and the production producer of everything you read. Write both names in the brief.</p></div>
+    <div class="lesson"><p class="p"><span class="n">02</span>Test the round trip, not the existence.</p>
+      <p class="w">a test that asks "does this function exist" passes while the system is broken. A test that asks "does data arrive at the other end" fails when the system is broken. Every criterion here was an existence claim.</p>
+      <p class="c">for every new component, add one test that runs producer and consumer against the same fake and asserts a non-empty handoff.</p></div>
+    <div class="lesson"><p class="p"><span class="n">03</span>A green gate is only evidence of what it asserts.</p>
+      <p class="w">know what your gate cannot see. <code>test_state_compatibility.py</code> asserted the status quo.</p>
+      <p class="c">for each gate, write the sentence "this gate cannot detect X". If X is a real risk, the gate is wrong.</p></div>
+    <div class="lesson"><p class="p"><span class="n">04</span>Delete what you replace, in the same change.</p>
+      <p class="w">a retired path that still exists will be used. The queue's DDL stopped being created, but five modules kept calling its shims — so the retired queue stayed a hard runtime dependency and could not be dropped. Retirement that stops at the writer is not retirement.</p>
+      <p class="c">make "delete everything you supersede" an explicit item in the brief and the acceptance.</p></div>
+    <div class="lesson"><p class="p"><span class="n">05</span>Do not defer retirement to a later phase than the rewiring.</p>
+      <p class="w">if phase N stops writing to a store, phase N must also move the readers. The drain was rewired in Phase 2; the queue retirement was in Phase 7.</p>
+      <p class="c">for each phase, list the producers and the consumers of every store it touches.</p></div>
+    <div class="lesson"><p class="p"><span class="n">06</span>An abstraction that only one caller uses is not adopted.</p>
+      <p class="w">adoption is a count, not a design. Seam adoption was 1 of 4 flows.</p>
+      <p class="c">express adoption criteria as a count or a grep test, never as "the abstraction exists".</p></div>
+    <div class="lesson"><p class="p"><span class="n">07</span>Every mechanism needs a driver.</p>
+      <p class="w">a retry, a quarantine, a reconciliation must name the actor and the trigger. A mechanism with no driver never runs. Retry, quarantine, and the harvested writer all had no actor.</p>
+      <p class="c">for each mechanism, write "who calls this, and when".</p></div>
+    <div class="lesson"><p class="p"><span class="n">08</span>Fail loudly, and bound every loop.</p>
+      <p class="w">a silent default turns a small error into permanent bad data. <code>classify_error</code> sent unknown exceptions to TERMINAL. Poll loops had no bound.</p>
+      <p class="c">each error path names its behaviour for an unknown error, and each loop names its exit.</p></div>
+    <div class="lesson"><p class="p"><span class="n">09</span>Keep dependencies pointing inward.</p>
+      <p class="w">a shared module must not import from one of its consumers. <code>adapters.py</code> imported <code>GeminiTierConfig</code> from the Instagram module.</p>
+      <p class="c">list every import that leaves your assigned slice. Flag each one.</p></div>
+    <div class="lesson"><p class="p"><span class="n">10</span>Verify against the real artifact, not the test double.</p>
+      <p class="w">a mock encodes your assumptions. Real data does not. The mocks were flat; the real envelopes nest.</p>
+      <p class="c">before you trust a module, run it once on one real payload.</p></div>
+  </div>
+  <div class="layer layer-b rv">
+    <div class="lh">
+      <span class="ln">B</span><span class="lt">Data architecture and migration best practice</span>
+      <span class="ls">These apply to moving or reshaping data structures.</span>
+    </div>
+    <div class="lesson"><p class="p"><span class="n">01</span>A schema change is a contract change.</p>
+      <p class="w">name the contract and the requirement before you change it. <code>gold_content_shape_performance</code> dropped <code>platform</code> from its grain.</p>
+      <p class="c">for each schema change, list every consumer and say how you refresh it.</p></div>
+    <div class="lesson"><p class="p"><span class="n">02</span>A migration is not done until it runs against the live store.</p>
+      <p class="w">code that defines a table is not a table. 12 objects were defined and never materialized.</p>
+      <p class="c">the acceptance query is <code>SELECT count(*) FROM &lt;new object&gt;</code> against the real database. A code search is not evidence.</p></div>
+    <div class="lesson"><p class="p"><span class="n">03</span>Never drop or replace a live table without a backup and a review.</p>
+      <p class="w">read every migration before you run it. This repository lost 391 real rows to a <code>DROP TABLE</code> in a numbered migration.</p>
+      <p class="c">additive DDL only in numbered migrations. A drop needs its own reviewed step.</p></div>
+    <div class="lesson"><p class="p"><span class="n">04</span>Keep the schema catalog in step with the migration.</p>
+      <p class="w">if the catalog still describes the old world, the compatibility test proves nothing. The catalog still lists <code>gold_analyses</code>. That made the gate vacuous.</p>
+      <p class="c">update the catalog in the same commit as the schema change.</p></div>
+    <div class="lesson"><p class="p"><span class="n">05</span>Every derived layer needs provenance.</p>
+      <p class="w">a derived value must record what made it, from what, with which logic, and when. The design says this. The implementation has no materialized derived layer at all.</p></div>
+    <div class="lesson"><p class="p"><span class="n">06</span>Raw data is immutable.</p>
+      <p class="w">never rewrite what the source sent. Conform it later. The design is correct on this point: bronze keeps the verbatim response. The code is right; the data is absent.</p></div>
+    <div class="lesson"><p class="p"><span class="n">07</span>A key must be unique at the grain you claim.</p>
+      <p class="w">check the grain against every dimension the data carries. A mart keyed by <code>(domain, topic, follower_tier, facet_name, facet_value)</code> dropped <code>platform</code>, though the source carries it. Cross-platform rows would merge.</p></div>
+    <div class="lesson"><p class="p"><span class="n">08</span>Quarantine needs a consumer.</p>
+      <p class="w">a dead-letter table that nothing reads is a log, not a control. <code>silver_enrichment_quarantine</code> has no reader and no check on its growth.</p>
+      <p class="c">for every quarantine, name the alert or the query that reads it.</p></div>
+    <div class="lesson"><p class="p"><span class="n">09</span>Version the derivation.</p>
+      <p class="w">when logic changes, old rows must be detectable as old. The prompt hash is versioned correctly. That part is a good example to cite.</p></div>
+  </div>
+
+  <div class="layer layer-c rv">
+    <div class="lh">
+      <span class="ln">C</span><span class="lt">Data pipeline migration best practice</span>
+      <span class="ls">These apply to pipelines that move and transform data on a schedule.</span>
+    </div>
+    <div class="lesson"><p class="p"><span class="n">01</span>Declare dependencies. Do not hope for order.</p>
+      <p class="w">each asset states its inputs and its outputs. No criterion connected the drain's output to submit's input.</p></div>
+    <div class="lesson"><p class="p"><span class="n">02</span>Write, audit, then publish.</p>
+      <p class="w">write to a place no consumer reads. Check it against the quality contract. Then swap it in. Objects were defined and treated as done before any check ran on real data.</p></div>
+    <div class="lesson"><p class="p"><span class="n">03</span>Prove idempotency by running twice and comparing.</p>
+      <p class="w">a second run must produce the same state, not a duplicate and not a stall. The "no post twice" test passed because run 2 suppressed everything. The real system stalls after one cycle.</p></div>
+    <div class="lesson"><p class="p"><span class="n">04</span>A guard must tell a dormant source from a broken one.</p>
+      <p class="w">a quiet source is either retired or dead. The system must know which. The in-flight set grows and never shrinks. The system cannot tell "all work finished" from "nothing is running".</p></div>
+    <div class="lesson"><p class="p"><span class="n">05</span>Every pipeline needs an end-to-end smoke run on real data before you call it finished.</p>
+      <p class="w">one real item through the whole path. Zero bronze rows landed. The path never ran end to end.</p></div>
+    <div class="lesson"><p class="p"><span class="n">06</span>Check the freshness and the volume of each layer, not only its existence.</p>
+      <p class="w">a layer with zero rows is not a healthy layer. The audits asked "exists and populated / exists and empty / code only". That three-way question is the check.</p></div>
+    <div class="lesson"><p class="p"><span class="n">07</span>Instrument the boundary.</p>
+      <p class="w">a guarantee you cannot observe is not a guarantee. The accounting identity exists and is good. Use it as the example of correct design.</p></div>
+  </div>
+</section>
+<section id="harness">
+  <h2><span class="no">05</span>Harness fixes</h2>
+  <p class="lede">Read this first. The config already says most of what follows. The problem is that the rules did not bind.</p>
+
+  <div class="callout rv">
+    <span class="tag">the finding that changes this whole section</span>
+    <h3>The rules were not missing. They were not binding.</h3>
+    <p class="plain"><span class="reg" style="color:var(--dim)">Plain statement</span>
+      The <code>dlc-worker</code> config already orders the blast-radius list, the consumer
+      check, the fresh review, the producer guardrail, and "never trust a self-report". The
+      migration ran under that config and failed anyway.</p>
+    <div class="detail" style="border-color:rgba(226,109,90,.3)"><span class="reg" style="color:var(--red)">Detail</span>
+      The agent's own CHANGELOG recorded the lesson before the migration. On 2026-09-02 it
+      learned that defects "survived a '~95% done' self-report", and that claims must be tested
+      with real fixtures, not structure checks. This migration's exit criteria were structure
+      checks: "does this table exist", "is this the only place a provider is named". They passed
+      while the substance was wrong. The lesson was written down and changed no behaviour.</div>
+    <p class="lesson">A lesson in a file that is not loaded during work is a record, not a control. Promote it to a hook or a failing test, or it will not bind.</p>
+  </div>
+
+  <div class="imp rv">
+    <div class="ih">Agents — dlc-worker and sdlc-worker</div>
+    <ol>
+      <li><p class="p">Add a contract-inventory step to the dispatch, before any code. The dispatcher lists every producer and every consumer that the unit touches. Any connection with no owner becomes its own unit.</p>
+        <p class="prevents">the disconnected halves</p></li>
+      <li><p class="p">Add a mandatory "consumer/producer" line to the unit brief. The brief must state: "You write to X. Who reads X? You read Y. Who writes Y?"</p>
+        <p class="prevents">the missing <code>enrichment_harvested</code> writer</p></li>
+      <li><p class="p">Change the acceptance from existence to round trip. The worker must show data arriving at the other end, not a function existing.</p>
+        <p class="prevents">the 12 bypass sites, the unadopted seam</p></li>
+      <li><p class="p">Make "delete what you supersede" an explicit deliverable in every unit.</p>
+        <p class="prevents">the preserved dead queue contract</p></li>
+      <li><p class="p">Add a mandatory real-data smoke step. One real item end to end before the unit is done.</p>
+        <p class="prevents">the zero bronze rows and the flat-mock / nested-real mismatch</p></li>
+      <li><p class="p">Require the worker to report what it could NOT see. The worker names the callers it does not control. The dispatcher assigns those to another unit.</p>
+        <p class="prevents">the unassigned call-site migration</p></li>
+      <li><p class="p">Give the worker a budget and a bounded retry. Three attempts, then escalate.</p></li>
+    </ol>
+  </div>
+
+  <div class="imp rv">
+    <div class="ih">Skills</div>
+    <ol>
+      <li><p class="p">Add a <code>migration-verification</code> skill. It carries the four round-trip assertions: handle round trip with a multi-chunk case, partition-key round trip, seam adoption through the production entry point, and a grep test for bypasses.</p></li>
+      <li><p class="p">Add a <code>contract-mapping</code> skill. It gives a repeatable method to list producers, consumers, and owners for a change.</p></li>
+      <li><p class="p">Add a <code>schema-migration</code> skill that encodes the datalake rules. Additive DDL only. Read every migration before you run it. Back up before a drop. Update the schema catalog in the same commit.</p></li>
+      <li><p class="p">Extend the existing verification skill with the "could this test fail?" question. The reviewer must write one sentence that says what bug the test would catch. If there is no such bug, the test is vacuous.</p></li>
+    </ol>
+  </div>
+
+  <div class="imp rv">
+    <div class="ih">Rules</div>
+    <ol>
+      <li><p class="p">A rule that a gate must declare what it cannot detect. Each gate states the failures it is blind to.</p></li>
+      <li><p class="p">A rule that existence is never acceptance. An acceptance criterion phrased as "X exists" or "X is the only place" must be paired with an adoption assertion.</p></li>
+      <li><p class="p">A rule that integration is an owned deliverable. Every multi-unit plan names the units that own each seam, or states that a seam has no owner and why.</p></li>
+      <li><p class="p">A rule that a mechanism names its driver. Retry, quarantine, reconciliation, and cleanup each name the actor and the trigger.</p></li>
+      <li><p class="p">A rule that a phase must not defer retirement of a store that it stops writing to. The readers move in the same phase.</p></li>
+      <li><p class="p">A rule for layering. A shared module must not import from a consumer module.</p></li>
+      <li><p class="p">A rule that the raw data is immutable and the derived data carries provenance.</p></li>
+    </ol>
+  </div>
+
+  <div class="imp rv">
+    <div class="ih">Hooks</div>
+    <ol>
+      <li><p class="p">A pre-commit or CI hook that greps for provider names outside the adapter modules. <code>gemini_batch.</code> and <code>qwen_client.</code> may appear only in the adapter files. This is a mechanical check; it catches every bypass.</p></li>
+      <li><p class="p">A hook that fails the build when a schema catalog and the live database disagree. The catalog must expect the new objects and must not expect the retired ones.</p></li>
+      <li><p class="p">A hook that fails when a defined table is never materialized. A code-only object is a failure, not a warning.</p></li>
+      <li><p class="p">A hook that checks the grain of every new key against the dimensions the data carries.</p></li>
+      <li><p class="p">A hook that reports the count of rows in every new object. Zero rows blocks the merge.</p></li>
+      <li><p class="p">A hook that runs the views' definitions as a diff. Assert the definition equals the expected text, not only that the view can be selected.</p></li>
+      <li><p class="p">A hook that parses the CSS custom properties of every report and fails if any text colour is below 4.5:1 against its background. This page shipped with three such bugs: an undefined colour variable, a malformed rule block, and two low-contrast colours. The worker reported that visual QA passed. The verifier could not see the page. A contrast assertion catches all three.</p></li>
+    </ol>
+  </div>
+
+  <div class="conclusion rv">
+    The hooks are the cheapest control and the rules are the strongest. The agents and the skills
+    change behaviour; the hooks catch what behaviour misses. Use the hooks for the mechanical
+    checks and the agents for the judgment.
+  </div>
+</section>
+
+<section id="evidence">
+  <h2><span class="no">06</span>Evidence appendix</h2>
+  <p class="lede">Open these files for the full detail.</p>
+  <ul class="evidence rv">
+    <li><a href="postmortem.md">docs/postmortem/enrichment-v3/postmortem.md</a><span>the root-cause analysis (515 lines, incl. the panel corrections)</span></li>
+    <li><a href="audits/p1-p2.md">docs/postmortem/enrichment-v3/audits/p1-p2.md</a><span>18 criteria, phases 1-2</span></li>
+    <li><a href="audits/p3-p4.md">docs/postmortem/enrichment-v3/audits/p3-p4.md</a><span>8 criteria, phases 3-4</span></li>
+    <li><a href="audits/p5-p6.md">docs/postmortem/enrichment-v3/audits/p5-p6.md</a><span>10 criteria, phases 5-6</span></li>
+    <li><a href="reviews/architecture-soundness.md">docs/postmortem/enrichment-v3/reviews/architecture-soundness.md</a></li>
+    <li><a href="reviews/interfaces.md">docs/postmortem/enrichment-v3/reviews/interfaces.md</a></li>
+    <li><a href="reviews/round-semantics.md">docs/postmortem/enrichment-v3/reviews/round-semantics.md</a></li>
+    <li><a href="panel/software.md">docs/postmortem/enrichment-v3/panel/software.md</a><span>panel: overstatement and missed patterns</span></li>
+    <li><a href="panel/data.md">docs/postmortem/enrichment-v3/panel/data.md</a><span>panel: "unfair as stated" — ADR-0012 is underspecified</span></li>
+    <li><a href="panel/process.md">docs/postmortem/enrichment-v3/panel/process.md</a><span>panel: the proximate cause is acceptance</span></li>
+    <li><a href="panel/adversary.md">docs/postmortem/enrichment-v3/panel/adversary.md</a><span>panel: the discriminating-vs-non-discriminating test</span></li>
+    <li><a href="analysis/learnings-mece.md">docs/postmortem/enrichment-v3/analysis/learnings-mece.md</a><span>the five MECE controls — read this one next</span></li>
+    <li><a href="analysis/harness-coverage-and-hooks.md">docs/postmortem/enrichment-v3/analysis/harness-coverage-and-hooks.md</a><span>rule-vs-hook coverage per agent</span></li>
+    <li><a href="plans/agent-improvement-plan.md">docs/postmortem/enrichment-v3/plans/agent-improvement-plan.md</a><span>changes to the agents</span></li>
+    <li><a href="plans/remediation-plan.md">docs/postmortem/enrichment-v3/plans/remediation-plan.md</a><span>10 units, the fix</span></li>
+    <li><a href="diagrams/state1-old.html">docs/postmortem/enrichment-v3/diagrams/state1-old.html</a><span>state 1, drawn — the pipeline that worked</span></li>
+    <li><a href="diagrams/state3-target.html">docs/postmortem/enrichment-v3/diagrams/state3-target.html</a><span>state 3, drawn — the target model</span></li>
+    <li><a href="diagrams/state2-current.html">docs/postmortem/enrichment-v3/diagrams/state2-current.html</a><span>state 2, drawn — the failure</span></li>
+    <li><a href="../../../tasks/plans/enrichment-v3-migration-master.md">tasks/plans/enrichment-v3-migration-master.md</a><span>the plan</span></li>
+  </ul>
+  <div class="honesty rv">
+    <span class="tag">Closing honesty note</span>
+    The design does not need to change — but "the architecture is sound" is too generous, and the
+    expert panel said so. ADR-0011, the statics (layering, the seam, the medallion shape), is
+    sound. ADR-0012, the dynamics (retry, quarantine, the harvested transition), is
+    <strong>underspecified</strong>: it names mechanisms but not their drivers. An underspecified
+    dynamic surfaces as apparent "implementation drift" under any dispatch quality. So: keep the
+    statics, finish the dynamics, and fix the process that could not see either.
+  </div>
+</section>
+<footer>2026-09-13 · enrichment v3 migration post-mortem</footer>
+<script>
+(function(){
+  if(!matchMedia('(prefers-reduced-motion: no-preference)').matches) return;
+  var els=document.querySelectorAll('main .rv, main > section');
+  var io=new IntersectionObserver(function(es){
+    es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});
+  },{threshold:.06});
+  els.forEach(function(el){el.classList.add('rv');io.observe(el);});
+  var links=[].slice.call(document.querySelectorAll('.toc a'));
+  var secs=links.map(function(a){return document.querySelector(a.getAttribute('href'))});
+  var io2=new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      if(e.isIntersecting){
+        links.forEach(function(l){l.classList.toggle('active',l.getAttribute('href')==='#'+e.target.id)});
+      }
+    });
+  },{rootMargin:'-20% 0px -70% 0px'});
+  secs.forEach(function(s){if(s)io2.observe(s)});
+})();
+</script>
+</main>
+</div>
+</body>
+</html>

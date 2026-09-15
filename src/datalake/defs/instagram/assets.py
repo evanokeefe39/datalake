@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
-from dagster import asset
+from dagster import AssetExecutionContext, AssetKey, AssetMaterialization, asset
 
 from ..common.apify import poll_run, stream_dataset, trigger_run
 from ..common.lake import BRONZE_LAKE, bronze_path
@@ -24,11 +24,18 @@ from ..common.resources import (
     SQLiteResource,
 )
 from ..common.schemas import SILVER_COLUMNS, duckdb_ddl
+from ..enrichment import landing
 from ..enrichment.media_cache import cache_media_bytes, seed_media_from_file
+from ..enrichment.partitions import (
+    SUBMITTED_ASSET_NAME,
+    PartitionSnapshot,
+    in_flight_partitions,
+    partition_key,
+    post_partition_state,
+)
 from ..enrichment.prompts import CURRENT_PROMPT_HASH
 from .config import (
     LOCAL_INGEST_DIR,
-    GeminiTierConfig,
     GoldConfig,
     ScrapeConfig,
 )
@@ -1013,6 +1020,85 @@ def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame
     return unified
 
 
+DRAIN_WORKLOAD: str = landing.WORKLOAD_CONTENT_CLASSIFICATION
+"""The discovery drain's partition workload — classification enrichment."""
+
+_drain_instance: "PartitionSnapshot | None" = None
+"""TEST-ONLY override for the drain's Dagster instance.
+
+Production code NEVER sets this and the asset NEVER falls back to
+``DagsterInstance.get()``: when it is unset, ``ig_posts_gen_batches`` uses
+``context.instance``. It exists only so unit tests can inject a fake
+``PartitionSnapshot`` — ``build_asset_context(instance=<fake>)`` is not an
+option because Dagster type-checks that against the REAL instance class.
+"""
+
+
+def drain_in_flight_keys(instance: "PartitionSnapshot") -> frozenset[str]:
+    """THE drain's definition of "in flight" (US-EENG-4 AC2/AC5).
+
+    ``partitions.in_flight_partitions(instance)`` — the Dagster instance's
+    ``materialized(enrichment_submitted) − materialized(enrichment_harvested)``
+    — verbatim. The drain MUST NOT derive in-flight state any other way: the
+    accounting identity and the guard below share this one function, so they
+    cannot disagree. A divergence here is a silent double-submit.
+    """
+    return frozenset(in_flight_partitions(instance))
+
+
+def drain_suppressed_post_ids(
+    candidates: list[str], instance: "PartitionSnapshot"
+) -> list[str]:
+    """Posts whose in-flight partition suppresses them from the candidate set.
+
+    Partition contract (ADR-0014 D1): the partition covering post ``p`` is a
+    readable per-post composite whose round derives from the materialized
+    keys themselves — ``partitions.post_partition_state`` tests EVERY
+    materialized round for the post, so a retry round in flight suppresses
+    exactly as a first attempt does, and a harvested round never suppresses
+    (completion genuinely releases work). Per-post granularity keeps
+    suppression order-independent and stable when other posts complete
+    between runs.
+    """
+    return [
+        pid
+        for pid in candidates
+        if post_partition_state(instance, DRAIN_WORKLOAD, pid).suppressed
+    ]
+
+
+def _materialize_submitted_partitions(
+    instance: PartitionSnapshot,
+    rounds_by_post: dict[str, int],
+) -> None:
+    """THE drain enqueue (ADR-0012/0013/0014): one ``enrichment_submitted``
+    partition PER POST at that post's CURRENT round, materialized runlessly
+    on the SAME instance the in-flight guard reads — never an instance this
+    function opens itself.
+
+    The key grammar is the ADR-0014 D1 composite
+    (``<workload>\\x00r<N>\\x00<post_id>``), identical to what the guard and
+    the retry driver parse back out. A first attempt enqueues at round 0; a
+    post whose previous round harvested with a failure re-enqueues at
+    round N+1 (the round comes from ``post_partition_state`` — derived from
+    the materialized keys, no ledger).
+
+    Sequence mirrors the real-instance roundtrip pinned in
+    ``tests/unit/enrichment/test_partitions.py``: register the dynamic
+    partition, then report the runless materialization.
+    """
+    keys = [
+        partition_key(DRAIN_WORKLOAD, rounds_by_post[pid], [pid])
+        for pid in sorted(rounds_by_post)
+    ]
+    instance.add_dynamic_partitions(SUBMITTED_ASSET_NAME, keys)
+    submitted_key = AssetKey(SUBMITTED_ASSET_NAME)
+    for key in keys:
+        instance.report_runless_asset_event(
+            AssetMaterialization(asset_key=submitted_key, partition=key)
+        )
+
+
 @asset(
     name="ig_comments_slv",
     group_name="instagram",
@@ -1039,19 +1125,18 @@ def ig_comments_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     deps=["ig_post_labels"],
 )
 def ig_posts_gen_batches(
+    context: AssetExecutionContext,
     config: GoldConfig,
     duckdb: DuckDBResource,
     ops: SQLiteResource,
 ) -> pl.DataFrame:
-    """Drain label-approved posts into a Gemini batch.
-
-    Dumb drain over ``ig_post_labels`` (US-L4): any post whose label pass
-    approved it for enrichment (standout / control / floor_filler) that has
-    no current-prompt gold analysis and no open batch item is enqueued.
+    """Dumb drain over ``ig_post_labels`` (US-L4): any post whose label pass
+    approved it for enrichment that has no current-prompt conformed
+    classification and nothing in flight on the Dagster instance is enqueued.
     The ``gold_ig`` watermark is retired — the labels table is the discovery
     source. Explicit ``post_ids`` re-enrichment bypasses all guards.
 
-    Stale gold rows (prompt_hash != CURRENT_PROMPT_HASH, e.g. pre-multimodal
+    Stale rows (prompt_hash != CURRENT_PROMPT_HASH, e.g. pre-multimodal
     text-only analyses) are re-enqueue-eligible (US-L5) — only a current
     prompt_hash blocks. Empty-caption posts never reach this asset: the
     label pass sets enrich_decision='skip' for them (US-L6).
@@ -1059,31 +1144,37 @@ def ig_posts_gen_batches(
     ``whole_corpus`` (GoldConfig) opts into corpus-wide admission: ALL silver
     posts with non-empty captions (including the label pass's ``skip``
     posts) are enqueued for a text-only pass (ADR-0001). Still excludes
-    current-prompt gold rows + open batch items so a re-run never re-pays.
+    current-prompt conformed rows + in-flight work so a re-run never re-pays.
 
-    Mode selection: batches default to ``gemini-batch`` (BATCH API, ~50%
-    cheaper) whenever the active Gemini tier supports it
-    (``GeminiTierConfig.detect().supports_batch``, i.e. Tier 1+) — for
-    curated subsets as well as whole-corpus runs. Batches fall back to
-    ``interactive`` when the tier does NOT support batch (free tier) or
-    when ``GoldConfig.prefer_interactive`` is set. Drain the batch jobs
-    with the ``--mode gemini-batch`` worker cycle (submit + poll/retrieve);
-    submit-side enforcement is loud: the free tier cannot submit a
-    gemini-batch job (RuntimeError in gemini_batch.submit_gemini_batch).
+    Execution mode stays tier-driven — batches default to ``gemini-batch``
+    (BATCH API, ~50% cheaper) whenever the active Gemini tier supports it
+    (``GeminiTierConfig.detect().supports_batch``, i.e. Tier 1+), falling
+    back to ``interactive`` on the free tier or by explicit
+    ``GoldConfig.prefer_interactive`` opt-out. The retired queue stored the
+    mode on ``batch_jobs`` for worker claim routing (ADR-0012); the submit
+    stage now owns execution, so the drain only SURFACES the mode in the
+    result frame and the free-tier gate stays loud at the submit call
+    (RuntimeError in ``gemini_batch.submit_gemini_batch``).
+
+    The enqueue itself is Dagster-native (ADR-0012/0013): one
+    ``enrichment_submitted`` partition PER POST on the injected instance,
+    under the same per-post key contract the in-flight guard derives.
     """
-    import json
-
-    from datalake.defs.enrichment.batch import _ensure_schema, create_batch
-
     db = duckdb
     _ensure_state_tables(db)
 
     post_ids = list(config.post_ids or [])
 
     with db.get_connection() as conn:
+        # The completed-work record is silver post-ADR-0011: guard against
+        # silver_content_classification (which exists and is populated), not
+        # gold_analyses (whose domain='instagram' overload is the known bug).
+        from datalake.defs.enrichment import classification as _cls
+
+        conn.execute(_cls.CLASSIFICATION_DDL)  # additive, idempotent
         if post_ids:
             # Targeted re-enrichment: ad-hoc post_ids bypass labels, the
-            # gold guard, and open-batch guards (re-process at will).
+            # completion guard, and the in-flight guard (re-process at will).
             pending = conn.execute(
                 """SELECT sp.post_id
                    FROM silver_ig_posts sp
@@ -1102,10 +1193,10 @@ def ig_posts_gen_batches(
                     FROM silver_ig_posts sp
                     WHERE sp.caption IS NOT NULL AND trim(sp.caption) <> ''
                       AND NOT EXISTS (
-                          SELECT 1 FROM gold_analyses g
-                          WHERE g.post_id = sp.post_id
-                            AND g.domain = 'instagram'
-                            AND g.prompt_hash = ?
+                          SELECT 1 FROM silver_content_classification c
+                          WHERE c.post_id = sp.post_id
+                            AND c.platform = 'instagram'
+                            AND c.prompt_hash = ?
                       )
                     """,
                     [CURRENT_PROMPT_HASH],
@@ -1122,10 +1213,10 @@ def ig_posts_gen_batches(
                     WHERE l.enrich_decision IN ('standout', 'control', 'floor_filler')
                       AND l.label_version = ?
                       AND NOT EXISTS (
-                          SELECT 1 FROM gold_analyses g
-                          WHERE g.post_id = l.post_id
-                            AND g.domain = 'instagram'
-                            AND g.prompt_hash = ?
+                          SELECT 1 FROM silver_content_classification c
+                          WHERE c.post_id = l.post_id
+                            AND c.platform = 'instagram'
+                            AND c.prompt_hash = ?
                       )
                     """,
                     [LABEL_VERSION, CURRENT_PROMPT_HASH],
@@ -1133,41 +1224,80 @@ def ig_posts_gen_batches(
             ]
             candidates_seen = len(candidates)
 
-    _ensure_schema(ops)
+    # ── In-flight guard (US-EENG-4): instance-derived, never the queue. ──
+    # The in-flight set comes from the Dagster instance via
+    # partitions.in_flight_partitions — the SAME function the accounting
+    # identity uses, so guard and identity cannot disagree. The instance
+    # ALWAYS comes from the asset context (context.instance): ONE instance
+    # serves both the in-flight guard here and the enqueue materialization
+    # in _materialize_submitted_partitions below. A non-resource, non-config
+    # `instance` function parameter would be misread by Dagster as an asset
+    # INPUT named "instance" (DagsterInvalidDefinitionError) — which is why
+    # the parameter is banned. The module-level _drain_instance is a
+    # TEST-ONLY override; production never sets it. There is NO
+    # DagsterInstance.get() fallback: an instance the drain cannot obtain
+    # from the context fails loudly rather than silently reading a foreign
+    # one.
+    instance = _drain_instance if _drain_instance is not None else context.instance
+    suppressed: list[str] = []
+    rounds_by_post: dict[str, int] = {}
     if candidates:
-        ops_conn = ops.get_connection()
-        try:
-            open_ids = {
-                (json.loads(r[0]) or {}).get("post_id")
-                for r in ops_conn.execute(
-                    "SELECT payload FROM batch_items "
-                    "WHERE status IN ('pending', 'processing')"
-                ).fetchall()
-            }
-        finally:
-            ops_conn.close()
-        candidates = [pid for pid in candidates if pid not in open_ids]
+        for pid in candidates:
+            state = post_partition_state(instance, DRAIN_WORKLOAD, pid)
+            if state.suppressed and not post_ids:
+                # The in-flight guard: suppressed ONLY on the discovery
+                # path. Explicit post_ids re-enrichment bypasses all guards.
+                suppressed.append(pid)
+            else:
+                # next_round is one past the highest MATERIALIZED harvested
+                # round — a first attempt enqueues at 0; a failed post
+                # re-enqueues at the retry round its harvested keys imply.
+                rounds_by_post[pid] = state.next_round
+        if suppressed:
+            in_flight_keys = sorted(drain_in_flight_keys(instance))
+            logger.warning(
+                "ig_posts_gen_batches: %d post(s) IN FLIGHT — not re-enqueued "
+                "(post_ids=%s; in-flight partition keys=%s)",
+                len(suppressed),
+                suppressed,
+                in_flight_keys,
+            )
+            candidates = [pid for pid in candidates if pid not in set(suppressed)]
 
-    payloads = [
-        json.dumps({"post_id": pid, "domain": "instagram"}) for pid in candidates
-    ]
 
-    if payloads:
-        # Batch mode is the DEFAULT: tag jobs so the gemini-batch worker
-        # claims them (~50% cheaper). Interactive only when the active tier
-        # cannot use the BATCH API (free tier) or the operator opts out.
-        tier = GeminiTierConfig.detect()
-        mode = (
-            "interactive"
-            if config.prefer_interactive or not tier.supports_batch
-            else "gemini-batch"
+    n_suppressed = len(suppressed)
+    enqueued_ids = sorted(rounds_by_post)
+
+    if not enqueued_ids and not post_ids and candidates_seen == 0:
+        # Distinguish "nothing to do" from the in-flight skip above (AC4):
+        # a bare "no run" for both cases is an operator-facing ambiguity.
+        logger.info("ig_posts_gen_batches: nothing to do (0 candidates)")
+    elif not enqueued_ids and n_suppressed:
+        logger.warning(
+            "ig_posts_gen_batches: enqueueing nothing — ALL %d candidate(s) "
+            "in flight (US-EENG-4 AC4 skip)",
+            n_suppressed,
         )
-        create_batch(ops, payloads, consumer="gemini", mode=mode)
+
+    # Execution mode is surfaced in the result frame only — the submit stage
+    # owns execution through the seam and enforces the provider readiness
+    # gate loudly there. ``consumer="gemini"`` was queue claim routing,
+    # replaced by the workload identity carried inside the partition key
+    # (DRAIN_WORKLOAD).
+    mode: str | None = "seam" if rounds_by_post else None
+    if rounds_by_post:
+        # ── The enqueue (ADR-0012/0013/0014): Dagster-native, no queue. ──
+        # One enrichment_submitted partition per post at its CURRENT round,
+        # on the SAME instance the in-flight guard reads. Materializing
+        # here is what makes the NEXT run's guard suppress these posts.
+        _materialize_submitted_partitions(instance, rounds_by_post)
 
     return pl.DataFrame(
         {
-            "enqueued": pl.Series([len(payloads)], dtype=pl.Int32),
+            "enqueued": pl.Series([len(enqueued_ids)], dtype=pl.Int32),
             "candidates_seen": pl.Series([candidates_seen], dtype=pl.Int32),
+            "in_flight_suppressed": pl.Series([n_suppressed], dtype=pl.Int32),
+            "mode": pl.Series([mode], dtype=pl.Utf8),
         }
     )
 
@@ -1179,7 +1309,6 @@ def _ensure_state_tables(db: DuckDBResource) -> None:
     """Create shared state tables if they don't exist."""
     with db.get_connection() as conn:
         for name in (
-            "gold_analyses",
             "ig_post_labels",
             "silver_ig_post_observations",
             "silver_ig_profile_observations",

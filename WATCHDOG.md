@@ -54,12 +54,28 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
 ## Operational state
 
 - Never commit `data/ops.sqlite` / `data/state.duckdb`.
-- `scripts/migrate_creators_profiles.py` mutates live ops state (drops
-  `scrape_targets`, recreates batch tables). Do **not** run it against live
-  `data/ops.sqlite` without explicit approval. The live DB currently carries
-  two known local-only drifts this test suite flags: the vestigial
-  `scrape_targets` table and a missing `batch_items.scheduled_for` (self-heals
-  on the next batch/worker run).
+- `migrations/migrate_creators_profiles.py` mutates live ops state (drops
+  `scrape_targets`). Do **not** run it against live `data/ops.sqlite` without
+  explicit approval. **Corrected 2026-09-14:** it no longer recreates batch
+  tables. It used to call `sqlite_ddl_for("batch_jobs", "batch_items",
+  "media_metadata", "dead_letter")`, which raised KeyError once those names left
+  `_SQLITE_SPECS` — and re-adding the specs to silence that would have
+  resurrected the retired queue on live ops.sqlite. It now creates
+  `media_metadata` only. If you see a review claiming this script recreates the
+  queue, that review predates the fix.
+- The live DB carries one known local-only drift this test suite flags: the
+  vestigial `scrape_targets` table. (The former second drift — a missing
+  `batch_items.scheduled_for` that "self-healed on the next batch run" — no
+  longer applies under ADR-0012: the queue is retired, so it will never
+  self-heal. Do not wait for it.)
+- **Retirement leaves holes in scripts, and raw DDL hides them.** Four scripts
+  once owned the retired queue. `migrate_enrichment_queue.py:31,41` used RAW
+  `CREATE TABLE IF NOT EXISTS batch_jobs` / `batch_items` — raw DDL cannot fail
+  loudly on a retired name, it just recreates the tables. That script was
+  **DELETED 2026-09-15** (not "to delete at W9"): a migration script that
+  silently resurrects retired tables is not fixable by editing it. A red test
+  is visible; silent resurrection is not. `scripts/conform_silver.py`
+  references remain valid.
 
 ## Test boundaries
 
@@ -127,7 +143,7 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
   creator-avg: `tests/unit/dashboard/test_hot_posts_semantics.py`.
 - **Creator identity is a human decision.** Auto-creating creators from
   silver owners (owner_username keying) duplicates curated `creators` rows.
-  Any merge must go through `scripts/migrate_curated_creator_merge.py`
+  Any merge must go through `migrations/migrate_curated_creator_merge.py`
   (ledgered in `creator_merges`, reversible with `--undo`, idempotent) and the
   handle attribution surfaced for sign-off — the profile handle drives future
   scrapes. Guard: `tests/unit/instagram/test_curated_creator_merge.py`.
@@ -194,3 +210,109 @@ Canonical facts: `docs/architecture/pipelines/enrichment.md` (v3, supersedes
   artifacts. One submit per pass, harvest fans out to every table the pass
   produced. Adapters swap only via `build_adapter(name)` — no provider named
   anywhere else.
+## Orchestration, live-state and concurrency traps (added 2026-09-14)
+
+These are traps for the reviewer/advisor, not the executor. Each one produced a
+real defect during the v3 materialization.
+
+### Dagster definitions must LOAD — treat it as the first gate
+
+- **Every parameter of an `@asset`-decorated function that is not a resource or a
+  config is read by Dagster as an ASSET INPUT.** `ig_posts_gen_batches` declared
+  `instance: "PartitionSnapshot | None" = None`; Dagster resolved an input named
+  `instance` and the whole graph failed to load
+  (`DagsterInvalidDefinitionError: Input asset "["instance"]" is not produced by
+  any of the provided asset ops`). The instance comes from `context.instance`.
+- Gate: `uv run dagster definitions validate -m datalake.definitions`. An asset the
+  worker "verified" by calling it as a plain function can still be un-loadable in
+  Dagster. Watch for test-only injection globals too (`_drain_instance` in
+  `defs/instagram/assets.py`) — acceptable, but it is a test seam, not production.
+
+### Never run an enrichment backfill with DEFAULT roots
+
+- `backfill_bronze(root=None)` takes `else: bronze = incoming` and **writes nothing**,
+  while `run_migration` then conforms via `landing.read_responses(root=None)` — from
+  DISK. The run printed `conformed: 9576` and materialized 0 rows; the silver table
+  appeared in `state.duckdb` with zero rows. **Read the default branch before
+  pointing a script at live state, and verify the destination, never the log line.**
+- A default-root run leaked synthetic rows (`provider='fake'`, `run_id='job1'`,
+  post_ids `P/P0/P1`) into the LIVE `data/lake/bronze/bronze_enrichment_raw.parquet`.
+  Require a known-provider guard before landing, and keep fixtures structurally
+  unable to reach the default lake root.
+- `data/lake/bronze/bronze_enrichment_raw.parquet` is the ENRICHMENT landing — NOT
+  scraped data. Enrichment is replaceable by locked decision, so resetting a polluted
+  landing file is safe. The other `data/lake/bronze/*.parquet` (Apify) and
+  `data/media` are irreplaceable. Never conflate them.
+- Bronze is write-once and discovery keys on file mtime: rewriting an existing bronze
+  file re-triggers silver for it. New data = new file.
+
+### Concurrent agents on one checkout
+
+- A stray `git reset --hard` (reflog `reset: moving to HEAD`) reverted concurrent
+  uncommitted edits and put ~762 insertions at risk; neither worker admitted it.
+  **Commit per phase.** Before a multi-worker burst, protect in-flight work without
+  touching the tree: `SHA=$(git stash create "wip"); git update-ref refs/safety/<name> $SHA`.
+  `reset --hard` spares untracked files, not modified tracked ones.
+- Instruct workers to never run tree-mutating git (`reset`, `checkout`, `stash`,
+  `clean`) — one worker's "get a clean baseline" can destroy a sibling's work.
+- A full test-suite run while workers hold the tree yields a MIXED-VERSION reading.
+  It is invalid as a baseline and must not be reported as a correction.
+
+### Current v3 residuals (known, do not mistake for done)
+
+- **Only `silver_content_classification` has rows** (9,576, `platform='instagram'`).
+  The other five silver tables have NO producer yet: `conform.TRANSCRIPT_WORKLOADS`
+  is deliberately empty, and the visual/text passes have not been run.
+- `bronze_enrichment_raw` holds the classification workload only.
+- `conform.py`'s `TABLE_SCHEMAS` duplicates the `schemas.py` catalog for the six silver
+  tables — two definitions of the same tables. Unresolved.
+- `gold_content_shape_performance` grain includes `platform`
+  (`(platform, domain, topic, follower_tier, facet_name, facet_value)`) as a deliberate
+  deviation from `enrichment.md` §5.3, which omits it. **The spec needs correcting** —
+  do not "fix" the code back to the spec.
+- The three §9 open decisions remain OPEN (form-taxonomy overlap;
+  parser-enum all-or-nothing; `asr_model` vs envelope `model`). Do not resolve silently.
+- **The `result_json` passthrough is load-bearing.** `v_post_detail` selects
+  `scc.result_json`; conform populates it from bronze `response_text` verbatim
+  (US-ESA-2 AC6, byte-identity tested). Removing it from conform's schema silently
+  breaks the ENTIRE serving surface (Binder Error on every view), because the conform
+  replay is `CREATE OR REPLACE TABLE AS SELECT * FROM read_parquet` — the catalog
+  cannot rescue a producer that omits a column. This exact bug took serving down on
+  2026-09-14. The `conform.py` vs `schemas.py` duplication is therefore a defect
+  class, not a style nit: treat any divergence between them as a bug.
+- **`classification.py::CLASSIFICATION_DDL` does NOT match the live
+  `silver_content_classification`** (missing provenance columns its own schema adds;
+  different column order). Replaying `migrate_classification_to_silver.py::
+  register_silver` (positional `INSERT ... SELECT *`) against a conform-built table
+  would CORRUPT rows positionally. The live publisher is
+  `scripts/conform_silver.py`; reconcile `classification.py` before any replay.
+- Marts are now MATERIALIZED live (2026-09-14): `gold_post_enrichment` 10,038,
+  `gold_creator_performance` 661, `gold_content_shape_performance` 31,811,
+  `gold_top_posts` 8,262 — over the classification backfill alone. Their
+  `silver_visual_*`/`silver_text_*` inputs are typed-empty until the visual/text
+  passes run, so shape-analytics rows are classification-only today.
+
+### Failure taxonomy for review (2026-09-15) — what the advisor looks FOR
+
+The binding controls live in AGENTS.md "Verification plane — defense in depth". The advisor's
+job is to hunt the one failure class that survives every layer: **a contract carried to the
+wrong side of a boundary**. Concretely, check:
+
+- **Dispatch hand-off**: does the worker's brief include the story's binary ACs, and did the
+  orchestrator grep for pre-existing tests/specs on every subsystem it touches? (The
+  classification conform shipped gold->silver because `test_classification.py` — the real
+  spec, encoding gold->bronze->silver — was never read.)
+- **Delegated-to-nobody**: every "sibling will handle it" in an assumption log is an unowned
+  contract. The `result_json` passthrough was logged, delegated, and dropped — it took the
+  entire serving surface down.
+- **Protocol/impl drift**: for every `Protocol` with a runtime check, assert conformance at
+  build time. `is_terminal` was declared, unimplemented, and found at poll time — after billing.
+- **Fake drift**: when a signature changes, enumerate the fakes implementing it. Three drifted
+  this cycle; a fake accepting the full signature is the cheap guard.
+- **The done bar**: green suite + materialized destination + one observed run through
+  `data/smoke`. A worker claiming done on "tests pass" is the failure mode; the slice exists so
+  that objection is cheap to make and cheap to satisfy.
+- **Open data-quality decision (owner)**: 21/86 visual responses quarantined for 1-based
+  `image_summaries` indices ([1..8] vs the schema's [0..7]). Relax the validator, fix the
+  prompt, or leave for ADR-0014 D4 triage — do NOT silently relax the validator; this is
+  adjacent to §9's "parser all-or-nothing" open decision.

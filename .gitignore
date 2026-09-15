@@ -1,16 +1,14 @@
-data/lake/
-data/state.duckdb
-data/state.duckdb.wal
-data/state.duckdb-shm
-data/state.*.duckdb
-data/ops.sqlite
-data/ops.sqlite-wal
-data/ops.sqlite-shm
-data/media/
-data/*_bak_*
-data/lake/bronze/*.jsonl
-data/lake/bronze/*.meta
-data/investigation/
+# ── /data: ignore EVERYTHING, opt back in explicitly ────────────────────────
+# Use `data/**` + `!` negations — NOT a bare `data/` dir-ignore. Git cannot
+# re-include a child of an excluded directory, so `data/` + `!data/keep` is a
+# no-op; `data/**` keeps the parent eligible for negation.
+data/**
+# Tracked exceptions (small, genuinely versioned):
+!data/scrape50_config.yaml
+!data/gold_labeling_20260907.csv
+# To track anything else under /data, add `!data/<path>` here — and remember
+# every DB/backup/media file under /data is derived or operational state.
+# Root tidiness (2026-09-15): backups -> data/backups/, logs -> data/logs/.
 __pycache__/
 *.pyc
 .venv/
@@ -32,9 +30,6 @@ dagster_home/
 *.db
 tasks/*
 !tasks/epics/
-data/backups/
-data/_tmp_*/
 scripts/_diag_*
 scripts/pilot_*
 
-data/dev/

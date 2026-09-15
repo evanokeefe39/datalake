@@ -23,7 +23,7 @@ def conn(tmp_path):
     db = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     with db.get_connection() as c:
         for t in ("silver_ig_posts", "silver_ig_post_observations",
-                  "ig_post_labels", "gold_analyses"):
+                  "ig_post_labels"):
             c.execute(duckdb_ddl(t))
         yield c
 
@@ -237,7 +237,7 @@ def test_label_pass_asset_and_schedule(tmp_path, ops):
     db = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     with db.get_connection() as conn:
         for t in ("silver_ig_posts", "silver_ig_post_observations",
-                  "ig_post_labels", "gold_analyses"):
+                  "ig_post_labels"):
             conn.execute(duckdb_ddl(t))
         _history(conn, "alice", 20, username="alice")
         _post(conn, "px", "alice", 1000, NOW - timedelta(days=10),

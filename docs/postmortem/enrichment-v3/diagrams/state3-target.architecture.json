@@ -1,0 +1,373 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "TARGET STATE — the layered model (ADR-0011 / 0012 / 0013)",
+    "output": "state3-target.html",
+    "quality_profile": "showcase"
+  },
+  "layout": {
+    "mode": "grid"
+  },
+  "components": [
+    {
+      "id": "apify",
+      "type": "external",
+      "label": "Apify scrape",
+      "sublabel": "posts arrive",
+      "pos": [
+        35,
+        20
+      ],
+      "size": [
+        200,
+        56
+      ]
+    },
+    {
+      "id": "bronze",
+      "type": "database",
+      "label": "bronze_enrichment_raw",
+      "sublabel": "VERBATIM, append-only, immutable",
+      "tag": "6. paid + stochastic ENDS here",
+      "pos": [
+        40,
+        150
+      ],
+      "size": [
+        190,
+        84
+      ]
+    },
+    {
+      "id": "silver",
+      "type": "database",
+      "label": "six silver tables",
+      "sublabel": "keyed (post_id, platform)",
+      "tag": "replay, never re-bill",
+      "pos": [
+        260,
+        150
+      ],
+      "size": [
+        190,
+        84
+      ]
+    },
+    {
+      "id": "gold",
+      "type": "database",
+      "label": "four gold marts",
+      "sublabel": "gold_post_enrichment",
+      "tag": "+ gold_creator_performance",
+      "pos": [
+        480,
+        150
+      ],
+      "size": [
+        190,
+        84
+      ]
+    },
+    {
+      "id": "serving",
+      "type": "backend",
+      "label": "serving views",
+      "sublabel": "read silver + marts,",
+      "tag": "never a legacy table",
+      "pos": [
+        700,
+        150
+      ],
+      "size": [
+        180,
+        84
+      ]
+    },
+    {
+      "id": "partitions",
+      "type": "messagebus",
+      "label": "enrichment_submitted / enrichment_harvested",
+      "sublabel": "dynamic partitions",
+      "tag": "key = retry round (replaces batch_items.scheduled_for)",
+      "pos": [
+        240,
+        280
+      ],
+      "size": [
+        320,
+        84
+      ]
+    },
+    {
+      "id": "seam",
+      "type": "backend",
+      "label": "run_lifecycle — the seam",
+      "sublabel": "build_adapter(name): sole provider naming",
+      "tag": "NO ledger (ADR-0013): handle lives in-run",
+      "pos": [
+        600,
+        280
+      ],
+      "size": [
+        240,
+        84
+      ]
+    },
+    {
+      "id": "service",
+      "type": "external",
+      "label": "qwen-batch-service",
+      "sublabel": "+ Gemini, behind ONE seam",
+      "tag": "OUTSIDE Dagster — job status HERE",
+      "pos": [
+        900,
+        388
+      ],
+      "size": [
+        200,
+        84
+      ]
+    },
+    {
+      "id": "ops_retired",
+      "type": "database",
+      "label": "ops.sqlite",
+      "sublabel": "queue retired (ADR-0013)",
+      "tag": "keeps media_cache, media_metadata, creators, profiles, creator_merges, prompt_registry",
+      "pos": [
+        40,
+        408
+      ],
+      "size": [
+        340,
+        84
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "DAGSTER — data assets, partitions, checks",
+      "wraps": [
+        "bronze",
+        "silver",
+        "gold",
+        "serving",
+        "partitions",
+        "seam"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "BRONZE",
+      "wraps": [
+        "bronze"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "SILVER — deterministic",
+      "wraps": [
+        "silver"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "GOLD",
+      "wraps": [
+        "gold"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "SERVING",
+      "wraps": [
+        "serving"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "arrive",
+      "from": "apify",
+      "to": "bronze",
+      "label": "1. posts arrive",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        135,
+        90
+      ]
+    },
+    {
+      "id": "first_pass",
+      "from": "bronze",
+      "to": "silver",
+      "label": "2. dedupe / normalize + triage",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        245,
+        255
+      ]
+    },
+    {
+      "id": "reconform",
+      "from": "bronze",
+      "to": "silver",
+      "label": "7. conform again — ZERO API calls",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          135,
+          110
+        ],
+        [
+          355,
+          110
+        ]
+      ],
+      "labelAt": [
+        330,
+        96
+      ]
+    },
+    {
+      "id": "drain",
+      "from": "silver",
+      "to": "partitions",
+      "label": "3. drain materializes enrichment_submitted",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        500,
+        250
+      ]
+    },
+    {
+      "id": "submit",
+      "from": "partitions",
+      "to": "seam",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "job",
+      "from": "seam",
+      "to": "service",
+      "label": "4. submit(items) -> handle — async job OUTSIDE Dagster",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          870,
+          322
+        ],
+        [
+          870,
+          430
+        ]
+      ],
+      "labelAt": [
+        1010,
+        508
+      ]
+    },
+    {
+      "id": "poll",
+      "from": "service",
+      "to": "seam",
+      "label": "5. THE POLL: poll(handle) asks the SERVICE — GET /jobs/{id} — NO ledger",
+      "variant": "emphasis",
+      "width": 2,
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [
+        [
+          890,
+          430
+        ],
+        [
+          890,
+          322
+        ]
+      ],
+      "labelAt": [
+        560,
+        396
+      ]
+    },
+    {
+      "id": "land_back",
+      "from": "seam",
+      "to": "bronze",
+      "label": "6. the response lands VERBATIM back in BRONZE",
+      "variant": "emphasis",
+      "width": 2,
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [
+        [
+          720,
+          378
+        ],
+        [
+          135,
+          378
+        ]
+      ],
+      "labelAt": [
+        250,
+        396
+      ]
+    },
+    {
+      "id": "to_gold",
+      "from": "silver",
+      "to": "gold",
+      "label": "8. four marts",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        490,
+        268
+      ]
+    },
+    {
+      "id": "to_serving",
+      "from": "gold",
+      "to": "serving",
+      "label": "9. views read gold",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        690,
+        268
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "The loop: submit -> poll the SERVICE -> land back in BRONZE",
+      "items": [
+        "4-6: seam submits (build_adapter(name) names the provider); async job OUTSIDE Dagster; Dagster polls THE SERVICE: GET /jobs/{id} -> pending/processing/completed/failed until is_terminal (max_polls) - NO ledger (ADR-0013): handle + loop live in the Dagster run, never a queue",
+        "retrieve(handle) lands responses VERBATIM in bronze_enrichment_raw (append-only, immutable) - the paid + stochastic part ENDS there",
+        "7: conform re-reads bronze with ZERO API calls - a schema change is a REPLAY, never a re-bill"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "What replaces the queue",
+      "items": [
+        "Retry: batch_items.scheduled_for -> NEW dynamic partition key (enrichment_submitted / enrichment_harvested); failures: dead_letter -> BLOCKING landed MINUS conformed anti-join",
+        "ops.sqlite keeps media_cache, media_metadata, creators, profiles, creator_merges, prompt_registry; GOLD marts: gold_post_enrichment, gold_creator_performance, gold_content_shape_performance, gold_top_posts. Dagster owns ALL data assets in ONE boundary; the inference service and ops.sqlite sit OUTSIDE it"
+      ]
+    }
+  ]
+}

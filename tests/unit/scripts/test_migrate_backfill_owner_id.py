@@ -1,4 +1,4 @@
-"""Tests for the owner_id backfill migration (scripts/migrate_backfill_owner_id.py).
+"""Tests for the owner_id backfill migration (migrations/migrate_backfill_owner_id.py).
 
 Root-cause regression: legacy bronze datasets carry the author's ``ownerId``
 on every post row, but rows ingested before the ``ownerId`` → ``owner_id``
@@ -19,7 +19,7 @@ import pytest
 
 SCRIPT = (
     Path(__file__).resolve().parents[3]
-    / "scripts"
+    / "migrations"
     / "migrate_backfill_owner_id.py"
 )
 

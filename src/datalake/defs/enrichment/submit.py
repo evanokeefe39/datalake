@@ -1,230 +1,351 @@
-"""Dagster-native gemini-batch submit — Phase 2 of the batch-native migration.
+"""Dagster-native enrichment submit — seam-mediated, partition-discovered
+(ADR-0012/0013/0014).
 
-ADR-0007/0008: consumes ONE pending, unsubmitted ``gemini-batch``-mode batch
-per run (as created by ``ig_posts_gen_batches``), pre-uploads media with the
-Phase-2a core (``upload_media_for_pending_batches``), builds requests with the
-relocated builder (``analysis.build_requests_for_items``), submits via
-``gemini_batch.submit`` and persists the returned chunk names on the queue
-batch job. The existing harvest sensor picks terminal chunks up from there —
-the orchestrated loop is::
+The submit stage consumes the work the drain enqueued: the Dagster
+instance's materialized ``enrichment_submitted`` partitions that have no
+``enrichment_harvested`` counterpart yet (the in-flight set,
+``partitions.in_flight_partitions``). There is NO queue read anywhere —
+``batch_jobs``/``batch_items`` are retired (ADR-0012) and their helpers are
+deleted from this module.
 
-    gen_batches → media_upload → submit → harvest
+Flow per bounded run:
 
-Semantics:
-- **First-submission only**: batches that already carry a ``gemini_batch_name``
-  are skipped (idempotent re-runs never re-submit in-flight chunks).
-  Resubmission of failed/retrieved chunks happens through this same submit
-  path: rescheduled items return to ``pending`` and a later submit run
-  picks the batch back up.
-- **Tier gate**: raises ``RuntimeError`` on tiers without BATCH API before any
-  queue mutation (the tier gate inside ``gemini_batch.submit``).
-- **Failure isolation**: a submission failure reschedules the claimed items
-  with attempts preserved (backoff 300s).
-- **Bounded**: one batch per run (``DEFAULT_SUBMIT_LIMIT``), media pre-warm
-  bounded by ``media_upload.DEFAULT_UPLOAD_LIMIT``.
-- ADR-0008 seam: every API call (File API upload, ``batches.create``) happens
-  inside the seam-tagged op below or the shared seam modules it calls.
+1. ``discover_pending`` — parse composite partition keys
+   (``<workload>\\x00r<N>\\x00<post_id>``, ADR-0014 D1) out of the in-flight
+   set, filter to this stage's workload. A key already at
+   ``partitions.MAX_ROUNDS`` while still in flight is a stuck state and
+   fails loudly.
+2. ``build_items`` — resolve each post from silver (caption + cached media
+   bytes) into a seam ``Item`` whose ``custom_key`` IS the partition key,
+   so harvest maps results back with no stored mapping. A post that cannot
+   be built becomes a TERMINAL FAILURE (an ``ok=False`` bronze row +
+   harvested partition + retry mint) — never a silent skip that strands the
+   partition in flight forever.
+3. ONE ``adapter.submit(items, job_spec=...)`` call per run (bounded);
+   the returned handle is recorded as metadata on every covered
+   ``enrichment_submitted`` partition — Dagster-native state, no ledger
+   (ADR-0013). Harvest reads it back via :mod:`harvest.discover_handles`.
+
+Every provider call goes through the seam adapter. Gemini's direct
+``gemini_batch.submit`` call site and the ``submit_gemini_batches_job``
+entry point are DELETED (W-FREEZE / ADR-0014 remediation).
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from dataclasses import dataclass
 
-from dagster import job, op
+from dagster import AssetKey, AssetMaterialization, job, op
 
-from datalake.defs.common.resources import DuckDBResource, GeminiResource, SQLiteResource
-from datalake.defs.enrichment import gemini_batch
-from datalake.defs.enrichment.analysis import build_requests_for_items
-from datalake.defs.enrichment.batch import (
-    _ensure_schema,
-    claim_pending_items,
-    fail_item,
-    set_gemini_batch_name,
+from datalake.defs.common.resources import DuckDBResource, SQLiteResource
+from datalake.defs.enrichment import harvest, landing, partitions
+from datalake.defs.enrichment.landing import WORKLOAD_CONTENT_CLASSIFICATION
+from datalake.defs.enrichment.media_cache import cached_local_path
+from datalake.defs.enrichment.partitions import (
+    MAX_ROUNDS,
+    SUBMITTED_ASSET_NAME,
+    in_flight_partitions,
+    parse_partition_key,
 )
-from datalake.defs.enrichment.media_upload import (
-    DEFAULT_UPLOAD_LIMIT,
-    SEAM_TAGS,
-    upload_media_for_pending_batches,
-)
-from datalake.defs.enrichment.prompts import _DEFAULT_GEMINI_MODEL
-from datalake.defs.instagram.config import GeminiTierConfig
+from datalake.defs.enrichment.prompts import IG_GOLD_PROMPT
+from datalake.defs.enrichment.seam import DEFAULT_JOBSPEC, Item, JobSpec
 
 logger = logging.getLogger("enrichment.submit")
 
-# Bounded runs: at most this many batches submit per run — one batch per
-# cycle keeps chunk bookkeeping simple.
-DEFAULT_SUBMIT_LIMIT = 1
+#: Bounded runs: at most this many partitions (posts) submit per run.
+DEFAULT_SUBMIT_LIMIT = 250
 
-# Backoff applied to claimed items when the submission itself fails.
-_SUBMIT_FAILURE_BACKOFF_SECONDS = 300
+_SUBMITTED_KEY = AssetKey(SUBMITTED_ASSET_NAME)
+
+#: Join key is PLATFORM, never ``domain`` (the ADR-0011 duplicate-name
+#: rule). The classification workload reads Instagram silver posts.
+_PLATFORM_BY_WORKLOAD: dict[str, str] = {
+    WORKLOAD_CONTENT_CLASSIFICATION: "instagram",
+}
+
+_SILVER_TABLES: dict[str, str] = {"instagram": "silver_ig_posts"}
 
 
-# ── Discovery ────────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class PendingPartition:
+    """One unit of discovered work, parsed out of the in-flight set."""
+
+    key: str
+    workload: str
+    round: int
+    post_id: str
 
 
-def unsubmitted_batch_ids(ops: SQLiteResource, limit: int) -> list[int]:
-    """Pending, unsubmitted gemini-batch jobs with claimable items.
+@dataclass(frozen=True)
+class TerminalFailure:
+    """A post that can never reach the provider this cycle.
 
-    Oldest first. Excludes already-submitted jobs (``gemini_batch_name IS
-    NULL``), completed jobs, and jobs whose items are all claimed/terminal —
-    so a re-run after a crashed submit picks the batch back up, and a re-run
-    after a successful submit finds nothing.
+    ``retryable`` — True when the cause may clear on a later cycle (e.g. a
+    media cache miss); False for deterministic skips (empty caption, missing
+    silver row), which mint no retry and surface via the anti-join check.
     """
-    _ensure_schema(ops)
-    conn = ops.get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT id FROM batch_jobs "
-            "WHERE mode = 'gemini-batch' "
-            "AND status IN ('pending', 'processing') "
-            "AND gemini_batch_name IS NULL "
-            "AND EXISTS (SELECT 1 FROM batch_items i "
-            "            WHERE i.job_id = batch_jobs.id AND i.status = 'pending') "
-            "ORDER BY created_at ASC LIMIT ?",
-            [limit],
-        ).fetchall()
-    finally:
-        conn.close()
-    return [r[0] for r in rows]
+
+    key: str
+    error: str
+    retryable: bool
 
 
-# ── Core (mock-testable) ─────────────────────────────────────────────────────
+# ── Discovery ───────────────────────────────────────────────────────────────
 
 
-def submit_batch(
-    ops: SQLiteResource,
-    duckdb: DuckDBResource,
-    gemini: GeminiResource,
-    job_id: int,
-) -> dict:
-    """Claim + build + submit + persist for ONE batch job.
+def discover_pending(
+    instance: partitions.PartitionSnapshot,
+    *,
+    workload: str = WORKLOAD_CONTENT_CLASSIFICATION,
+) -> list[PendingPartition]:
+    """Discover work from the instance's materialized ``enrichment_submitted``
+    partitions (the in-flight set) — NEVER from a queue table.
 
-    Returns ``{"submitted": <chunk count>}`` (plus ``"skipped": True`` when
-    the batch already carried a name). Assumes a batch-capable tier — the
-    tier gate lives in :func:`submit_pending_gemini_batches` and inside
-    ``gemini_batch.submit``.
+    A malformed partition key raises: keys are the orchestration record, and
+    an unreadable one means the key grammar was violated somewhere upstream.
+    A key at ``round >= MAX_ROUNDS`` still in flight is stuck (the retry
+    driver never mints past the budget) and raises rather than stalling
+    silently.
     """
-    _ensure_schema(ops)
-
-    # Defensive idempotency re-read: the batch may have been submitted by a
-    # concurrent submit run after discovery picked it.
-    conn = ops.get_connection()
-    try:
-        row = conn.execute(
-            "SELECT gemini_batch_name FROM batch_jobs WHERE id = ?", [job_id]
-        ).fetchone()
-    finally:
-        conn.close()
-    if row and row[0]:
-        logger.info("Batch %d already submitted (%s) — skipping", job_id, row[0])
-        return {"submitted": 0, "skipped": True}
-
-    # Claim every claimable pending item — they are in-flight from now on.
-    items: list[dict] = []
-    while True:
-        chunk = claim_pending_items(ops, job_id, limit=1000)
-        if not chunk:
-            break
-        items.extend(chunk)
-    if not items:
-        logger.info("Batch %d: no claimable pending items — skipping", job_id)
-        return {"submitted": 0}
-
-    # Claimed transition (mirrors claim_batch's status update).
-    conn = ops.get_connection()
-    try:
-        conn.execute(
-            "UPDATE batch_jobs SET status = 'processing' WHERE id = ?", [job_id]
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    requests = build_requests_for_items(ops, duckdb, gemini, items)
-    if not requests:
-        # Everything was completed (empty captions / unknown domains) or
-        # per-item failed with backoff by the builder — nothing to submit
-        # this cycle; backoff items rejoin discovery once scheduled_for passes.
-        logger.info("Batch %d: nothing submittable this cycle", job_id)
-        return {"submitted": 0}
-
-    try:
-        names = gemini_batch.submit(
-            gemini,
-            _DEFAULT_GEMINI_MODEL,
-            requests,
-            display_name=f"enrich-job{job_id}",
-        )
-    except Exception as exc:
-        # Submission failed (API error, quota, precondition): reschedule the
-        # claimed items so they are retried on a later cycle instead of
-        # stranding in 'processing'. Attempts preserved — not their fault.
-        logger.error("Batch %d: submit failed — rescheduling items: %s", job_id, exc)
-        for item in items:
-            fail_item(
-                ops, item["id"], f"submit failed: {exc}",
-                backoff=_SUBMIT_FAILURE_BACKOFF_SECONDS, preserve_attempts=True,
+    pending: list[PendingPartition] = []
+    for key in sorted(in_flight_partitions(instance)):
+        try:
+            parsed = parse_partition_key(key)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"unparseable in-flight partition key {key!r}: {exc}"
+            ) from exc
+        if parsed.workload != workload:
+            continue
+        if parsed.attempt_round >= MAX_ROUNDS:
+            raise RuntimeError(
+                f"partition {key!r} is in flight at round {parsed.attempt_round} "
+                f">= MAX_ROUNDS={MAX_ROUNDS} — the retry budget is exhausted; "
+                "refusing to submit again"
             )
-        return {"submitted": 0}
+        pending.append(
+            PendingPartition(
+                key=key,
+                workload=parsed.workload,
+                round=parsed.attempt_round,
+                post_id=parsed.post_id,
+            )
+        )
+    return pending
 
-    set_gemini_batch_name(ops, job_id, "|".join(names))
-    logger.info(
-        "Batch %d: submitted %d request(s) in %d Gemini batch job(s)",
-        job_id, len(requests), len(names),
-    )
-    return {"submitted": len(names), "requests": len(requests)}
+
+# ── Item building ───────────────────────────────────────────────────────────
 
 
-def submit_pending_gemini_batches(
+def _resolve_media_paths(ops: SQLiteResource, media_files_json: str | None) -> tuple[str, ...]:
+    """Resolve a post's media URLs to CACHED local byte paths.
+
+    Cache-only by design: the scrape-time byte cache is the reliable copy
+    (CDN URLs die in ~4-5 days), and no provider transport is named here.
+    A cache miss raises — the caller turns it into a terminal failure for
+    that post alone; submitting partial media would silently change the
+    analysis input.
+    """
+    if not media_files_json:
+        return ()
+    urls = [u for u in json.loads(media_files_json) if u]
+    paths: list[str] = []
+    for url in urls:
+        path = cached_local_path(ops, url)
+        if not path:
+            raise FileNotFoundError(
+                f"media cache miss for {url[:120]} — not submitting partial media"
+            )
+        paths.append(path)
+    return tuple(paths)
+
+
+def build_items(
     ops: SQLiteResource,
     duckdb: DuckDBResource,
-    gemini: GeminiResource,
-    limit: int = DEFAULT_SUBMIT_LIMIT,
-) -> dict:
-    """One submit pass: media pre-warm, then submit up to ``limit`` batches.
+    pending: list[PendingPartition],
+) -> tuple[list[Item], list[TerminalFailure]]:
+    """Build seam Items for discovered work; failures stay terminal-loud.
 
-    Idempotent: unsubmitted-batch discovery + the per-batch name re-read make
-    re-runs no-ops. Raises ``RuntimeError`` on tiers without BATCH API —
-    before any queue mutation or API call.
+    Returns ``(items, failures)``. Every failure is reported by the caller
+    (``ok=False`` bronze row + harvested partition), so the in-flight set
+    always shrinks for every discovered partition — the drain's guard never
+    suppresses on stranded work.
     """
-    _ensure_schema(ops)
-    tier_cfg = GeminiTierConfig.detect()
-    if not tier_cfg.supports_batch:
-        raise RuntimeError(
-            f"Gemini batch API requires Tier 1+ (active tier: {tier_cfg.tier.value}). "
-            "Set GEMINI_TIER=tier1 with a paid key."
+    items: list[Item] = []
+    failures: list[TerminalFailure] = []
+    for entry in pending:
+        platform = _PLATFORM_BY_WORKLOAD.get(entry.workload)
+        table = _SILVER_TABLES.get(platform or "")
+        if not table:
+            failures.append(
+                TerminalFailure(
+                    key=entry.key,
+                    error=f"no silver table for platform {platform!r}",
+                    retryable=False,
+                )
+            )
+            continue
+        with duckdb.get_connection() as conn:
+            row = conn.execute(
+                f"SELECT caption, media_files FROM {table} WHERE post_id = ?",
+                [entry.post_id],
+            ).fetchone()
+        caption = (row[0] if row else "") or ""
+        if not caption.strip():
+            failures.append(
+                TerminalFailure(
+                    key=entry.key,
+                    error="empty caption — nothing to enrich",
+                    retryable=False,
+                )
+            )
+            continue
+        try:
+            images = _resolve_media_paths(ops, row[1] if row else None)
+        except Exception as exc:
+            failures.append(
+                TerminalFailure(key=entry.key, error=str(exc), retryable=True)
+            )
+            continue
+        items.append(
+            Item(
+                custom_key=entry.key,
+                prompt=f"{IG_GOLD_PROMPT}\n{caption}",
+                images=images,
+                post_id=entry.post_id,
+                platform=platform or "",
+            )
+        )
+    return items, failures
+
+
+# ── Core (mock-testable) ────────────────────────────────────────────────────
+
+
+def _fail_terminal(
+    instance: partitions.PartitionSnapshot,
+    ops: SQLiteResource,
+    failure: TerminalFailure,
+    *,
+    root: str | None = None,
+) -> None:
+    """Make a discovered partition terminal WITHOUT provider work.
+
+    Lands an ``ok=False`` bronze row (failure is a landed row, never a
+    dropped one), reports the harvested partition so the in-flight set
+    shrinks, and mints a retry round when the cause is retryable.
+    """
+    parsed = parse_partition_key(failure.key)
+    platform = _PLATFORM_BY_WORKLOAD[parsed.workload]
+    landing.land_response(
+        post_id=parsed.post_id,
+        platform=platform,
+        workload=parsed.workload,
+        provider="none",
+        model="",
+        prompt_hash="",
+        schema_version="",
+        run_id="submit-build-failure",
+        response_text="",
+        ok=False,
+        error_message=failure.error,
+        root=root,
+    )
+    harvest.report_harvested(instance, [failure.key])
+    if failure.retryable:
+        harvest.mint_retries(instance, {failure.key: failure.error})
+    else:
+        logger.error(
+            "Partition %s terminally unbuildable (no retry): %s — the "
+            "landed∖conformed anti-join check owns its visibility.",
+            failure.key, failure.error[:200],
         )
 
-    # Best-effort media pre-warm (cache-first, bounded): keeps build time low
-    # and makes the submit job self-sufficient when the media_upload op has
-    # not run. Per-post failures are tolerated — the builder re-resolves and
-    # routes failures per item.
-    upload_media_for_pending_batches(ops, duckdb, gemini, limit=DEFAULT_UPLOAD_LIMIT)
 
-    submitted = 0
-    batch_ids = unsubmitted_batch_ids(ops, limit)
-    for job_id in batch_ids:
-        result = submit_batch(ops, duckdb, gemini, job_id)
-        submitted += result["submitted"]
-    return {"submitted": submitted, "batches": batch_ids}
+def submit_pending(
+    instance: partitions.PartitionSnapshot,
+    ops: SQLiteResource,
+    duckdb: DuckDBResource,
+    adapter,  # seam.ProviderAdapter
+    *,
+    job_spec: JobSpec = DEFAULT_JOBSPEC,
+    limit: int = DEFAULT_SUBMIT_LIMIT,
+    root: str | None = None,
+) -> dict:
+    """One submit pass: discover → build → ONE seam submit → record handle.
+
+    Raises ``RuntimeError`` when the provider fails its readiness gate —
+    never a quiet "nothing to do" (US-EENG-2). Idempotent per partition: a
+    partition already submitted (handle recorded) but not yet harvested is
+    still in flight and is discovered again only to be re-submitted by THIS
+    stage's bounded run — discovery caps work at ``limit`` and the provider
+    job itself is the dedup boundary (the handle overwrites, one job per
+    run). The unbuildable-failure path keeps the accounting identity closed.
+    """
+    if not adapter.health():
+        raise RuntimeError(
+            f"enrichment provider '{adapter.name}' failed its readiness gate "
+            "— failing loudly, never a quiet 'nothing to do' (US-EENG-2)"
+        )
+
+    pending = discover_pending(instance)[:limit]
+    items, failures = build_items(ops, duckdb, pending)
+
+    for failure in failures:
+        _fail_terminal(instance, ops, failure, root=root)
+
+    handle: str | None = None
+    if items:
+        handle = adapter.submit(items, job_spec=job_spec)
+        # Record the handle Dagster-natively: metadata on the submitted
+        # partition materializations. No ledger table (ADR-0013).
+        instance.add_dynamic_partitions(
+            SUBMITTED_ASSET_NAME, [item.custom_key for item in items]
+        )
+        for item in items:
+            instance.report_runless_asset_event(
+                AssetMaterialization(
+                    asset_key=_SUBMITTED_KEY,
+                    partition=item.custom_key,
+                    metadata={"handle": handle, "provider": adapter.name},
+                )
+            )
+        logger.info(
+            "Submitted %d item(s) under provider handle %s", len(items), handle
+        )
+
+    return {
+        "submitted": len(items),
+        "failed": len(failures),
+        "discovered": len(pending),
+        "handle": handle,
+    }
 
 
-# ── Dagster op + job ─────────────────────────────────────────────────────────
+# ── Dagster op + job ────────────────────────────────────────────────────────
 
 
-@op(tags=SEAM_TAGS)
-def submit_gemini_batches_op(context, ops, duckdb, gemini) -> dict:
-    """Submit one pending unsubmitted gemini-batch batch (short, bounded)."""
-    result = submit_pending_gemini_batches(ops, duckdb, gemini)
+@op(tags={"adr": "0014", "seam": "enrichment-api"})
+def submit_enrichment_op(context, ops: SQLiteResource, duckdb: DuckDBResource) -> dict:
+    """One bounded submit pass over the drain's enqueued partitions."""
+    from datalake.defs.enrichment.adapters import detect_provider
+    from datalake.defs.enrichment.seam import build_adapter
+
+    adapter = build_adapter(detect_provider())
+    result = submit_pending(context.instance, ops, duckdb, adapter)
     context.log.info(
-        "Submit pass: %d chunk(s) submitted across %d batch(es)",
-        result["submitted"],
-        len(result["batches"]),
+        "Submit pass: %d submitted, %d terminal failures, %d discovered "
+        "(handle=%s)",
+        result["submitted"], result["failed"], result["discovered"],
+        result["handle"],
     )
     return result
 
 
-@job(name="submit_gemini_batches_job")
-def submit_gemini_batches_job():
-    """Submit pending unsubmitted gemini-batch batches to the Gemini BATCH API."""
-    submit_gemini_batches_op()
+@job(name="enrichment_submit")
+def enrichment_submit_job():
+    """Discover in-flight partitions → build → submit through the seam."""
+    submit_enrichment_op()

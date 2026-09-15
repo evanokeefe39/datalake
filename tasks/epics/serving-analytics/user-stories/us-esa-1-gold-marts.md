@@ -2,12 +2,12 @@
 id: US-ESA-1
 epic: E-SERVING-ANALYTICS
 persona: P7
-status: Open
+status: Done
 ---
 # US-ESA-1 — Four gold marts shaped to the owner's three questions
 
 - **Epic:** E-SERVING-ANALYTICS
-- **Status:** Open
+- **Status:** Done
 - **Relates to:** E-ENRICH-ENGINE (bronze landing + six silver channel tables),
   E-ENRICH-FACETS (facet facets), E-ENRICH-LABELS (standout labels),
   E-IDENTITY (creator linkage), E-DASHBOARD (consumer)
@@ -106,3 +106,9 @@ joins over six channel tables.
 - `gold_content_shape_performance` facet cells sum back to the slice's post
   count (no double-counting across facet values).
 - Q1/Q2/Q3 example queries return rows grounded in the fixture dataset.
+
+## Closure note
+
+Verified 2026-09-15: all four marts materialize (`gold_post_enrichment`, `gold_creator_performance`, `gold_content_shape_performance`, `gold_top_posts`) and all 27 serving assets materialize.
+
+Closed during the Enrichment v3 remediation close-out; see `docs/postmortem/enrichment-v3/plans/remediation-plan.md` for the unit that discharged it.

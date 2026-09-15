@@ -19,12 +19,12 @@ from .defs.common import (
 )
 from .defs.enrichment import (
     ENRICHMENT_CHECKS,
-    gemini_batch_harvest,
-    gemini_batch_harvest_sensor,
-    gold_analyses,
-    media_upload_pending_batches_job,
-    submit_gemini_batches_job,
+    ENRICHMENT_DQ_CHECKS,
+    enrichment_harvest_job,
+    enrichment_submit_job,
+    silver_enrichment_conform,
 )
+from .defs.enrichment.sensor import enrichment_harvest_sensor
 from .defs.instagram import (
     ig_checks,
     ig_comments_slv,
@@ -60,7 +60,7 @@ all_assets = [
     ig_profiles_slv,
     ig_comments_slv,
     ig_posts_gen_batches,
-    gold_analyses,
+    silver_enrichment_conform,
     *serving_assets,
 ]
 
@@ -68,9 +68,9 @@ all_assets = [
 
 defs = Definitions(
     assets=all_assets,
-    asset_checks=[*ig_checks, *ENRICHMENT_CHECKS, *serving_checks],
+    asset_checks=[*ig_checks, *ENRICHMENT_CHECKS, *ENRICHMENT_DQ_CHECKS, *serving_checks],
     resources=all_resources,
     schedules=[daily_medallion, core_refresh],
-    jobs=[gemini_batch_harvest, media_upload_pending_batches_job, submit_gemini_batches_job],
-    sensors=[gemini_batch_harvest_sensor],
+    jobs=[enrichment_harvest_job, enrichment_submit_job],
+    sensors=[enrichment_harvest_sensor],
 )

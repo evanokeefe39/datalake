@@ -1,0 +1,397 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DRIFTED STATE - green branch, the system does not run",
+    "output": "state2-current.html",
+    "quality_profile": "showcase"
+  },
+  "layout": {
+    "mode": "grid",
+    "origin": [
+      40,
+      40
+    ],
+    "gapX": 40,
+    "gapY": 50
+  },
+  "components": [
+    {
+      "id": "posts",
+      "type": "external",
+      "label": "posts arrive",
+      "sublabel": "Apify scrape",
+      "tag": "step 1",
+      "pos": [
+        40,
+        150
+      ],
+      "size": [
+        140,
+        72
+      ]
+    },
+    {
+      "id": "submitted",
+      "type": "messagebus",
+      "label": "enrichment_submitted",
+      "sublabel": "drain materializes",
+      "tag": "NOTHING consumes them",
+      "pos": [
+        450,
+        28
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "submit",
+      "type": "backend",
+      "label": "submit.py:77",
+      "sublabel": "reads batch_jobs",
+      "tag": "never reads partitions",
+      "pos": [
+        680,
+        28
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "harvested",
+      "type": "messagebus",
+      "label": "enrichment_harvested",
+      "sublabel": "NO production writer",
+      "tag": "in-flight only grows",
+      "pos": [
+        220,
+        280
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "bronze",
+      "type": "database",
+      "label": "bronze_enrichment_raw",
+      "sublabel": "declared, ZERO rows",
+      "tag": "return never arrives",
+      "pos": [
+        220,
+        150
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "silver",
+      "type": "database",
+      "label": "silver_ig_posts (legacy)",
+      "sublabel": "10,038 rows, live",
+      "tag": "conform: ZERO callers",
+      "pos": [
+        450,
+        150
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "gold",
+      "type": "database",
+      "label": "new-model gold marts",
+      "sublabel": "materialized NOWHERE",
+      "tag": "9,576 rows = legacy",
+      "pos": [
+        680,
+        150
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "serving",
+      "type": "frontend",
+      "label": "serving views",
+      "sublabel": "~22 views read gold",
+      "tag": "unreachable",
+      "pos": [
+        910,
+        150
+      ],
+      "size": [
+        160,
+        72
+      ]
+    },
+    {
+      "id": "batch_jobs",
+      "type": "database",
+      "label": "batch_jobs",
+      "sublabel": "6 stale, unwritten rows",
+      "tag": "DDL gone since 952386d",
+      "pos": [
+        560,
+        410
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "service",
+      "type": "external",
+      "label": "inference service",
+      "sublabel": "Gemini / qwen-batch",
+      "tag": "outside Dagster",
+      "pos": [
+        1110,
+        28
+      ],
+      "size": [
+        150,
+        90
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Dagster Definitions - data assets (green, idle)",
+      "wraps": [
+        "posts",
+        "submitted",
+        "submit",
+        "harvested",
+        "bronze",
+        "silver",
+        "gold",
+        "serving"
+      ],
+      "pad": 24
+    },
+    {
+      "kind": "region",
+      "label": "BRONZE",
+      "wraps": [
+        "bronze"
+      ],
+      "pad": 14
+    },
+    {
+      "kind": "region",
+      "label": "SILVER",
+      "wraps": [
+        "silver"
+      ],
+      "pad": 14
+    },
+    {
+      "kind": "region",
+      "label": "GOLD",
+      "wraps": [
+        "gold"
+      ],
+      "pad": 14
+    },
+    {
+      "kind": "region",
+      "label": "SERVING",
+      "wraps": [
+        "serving"
+      ],
+      "pad": 14
+    },
+    {
+      "kind": "region",
+      "label": "ops.sqlite - legacy queue, retired but still called",
+      "wraps": [
+        "batch_jobs"
+      ],
+      "pad": 12
+    },
+    {
+      "kind": "region",
+      "label": "external inference service",
+      "wraps": [
+        "service"
+      ],
+      "pad": 8
+    }
+  ],
+  "connections": [
+    {
+      "id": "e1",
+      "from": "posts",
+      "to": "bronze",
+      "label": "1. posts arrive",
+      "labelDy": -50,
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e2",
+      "from": "bronze",
+      "to": "silver",
+      "label": "2. bronze > silver - fine",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDy": 55
+    },
+    {
+      "id": "e3",
+      "from": "silver",
+      "to": "submitted",
+      "label": "3. drain writes partitions - NOTHING consumes",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "variant": "dashed",
+      "labelAt": [
+        605,
+        110
+      ]
+    },
+    {
+      "id": "e4",
+      "from": "submit",
+      "to": "batch_jobs",
+      "label": "4. reads batch_jobs - NOTHING writes it",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "variant": "dashed",
+      "via": [
+        [
+          775,
+          140
+        ],
+        [
+          890,
+          140
+        ],
+        [
+          890,
+          370
+        ],
+        [
+          650,
+          370
+        ]
+      ],
+      "labelDx": -200,
+      "labelDy": 20
+    },
+    {
+      "id": "e5",
+      "from": "submit",
+      "to": "service",
+      "fromSide": "right",
+      "toSide": "left",
+      "variant": "dashed",
+      "labelAt": [
+        990,
+        16
+      ]
+    },
+    {
+      "id": "e6",
+      "from": "service",
+      "to": "harvested",
+      "label": "6. poll broken - harvested has NO writer",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "variant": "dashed",
+      "via": [
+        [
+          1185,
+          130
+        ],
+        [
+          1290,
+          130
+        ],
+        [
+          1290,
+          500
+        ],
+        [
+          310,
+          500
+        ]
+      ],
+      "labelAt": [
+        747,
+        516
+      ]
+    },
+    {
+      "id": "e8",
+      "from": "harvested",
+      "to": "bronze",
+      "label": "7. return into bronze NEVER happens",
+      "fromSide": "left",
+      "toSide": "left",
+      "variant": "dashed",
+      "labelDx": -70,
+      "via": [
+        [
+          200,
+          312
+        ],
+        [
+          200,
+          186
+        ]
+      ]
+    },
+    {
+      "id": "e9",
+      "from": "silver",
+      "to": "gold",
+      "label": "8-9. gold + serving unreachable",
+      "fromSide": "right",
+      "toSide": "left",
+      "variant": "dashed",
+      "labelDy": 55
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "The loop does not close - break it at step 3",
+      "items": [
+        "Step 3: the drain materializes enrichment_submitted partitions that NOTHING consumes; submit.py:77 discovers work by reading batch_jobs, a table nothing writes",
+        "Step 6: enrichment_harvested has NO production writer, so in-flight (submitted minus harvested) only grows - after the first cycle the guard suppresses everything",
+        "Step 7: the return into bronze never happens - bronze_enrichment_raw has zero landed rows, so conform, gold and serving are unreachable from the new model"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Retired but still called - migration ordering, not preservation",
+      "items": [
+        "Commit 952386d rewrote batch.py to stop creating the queue DDL and to fail loudly - the code no longer preserves the thing it retires",
+        "The drop is blocked on five caller modules: submit, harvest, media_upload, analysis, registry - the legacy shims are retired but still called"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "The gate certifies the status quo",
+      "items": [
+        "test_state_compatibility.py passes 77 tests on the OLD schema catalog - the gate certifies the status quo, not the migration",
+        "The live database still holds the PRE-MIGRATION tables (gold_analyses 9,576 rows) while the new-model medallion objects are declared in code and materialized NOWHERE"
+      ]
+    }
+  ]
+}

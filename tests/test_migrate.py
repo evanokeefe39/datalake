@@ -74,7 +74,7 @@ def empty_data_dir(tmp_path) -> Path:
 
 def _run_phase1(data_dir: Path, lake_dir: Path):
     """Execute migration Phase 1, writing output to lake_dir."""
-    from scripts import migrate_from_ig_pipeline as migrate
+    from migrations import migrate_from_ig_pipeline as migrate
 
     with patch.object(migrate, "_OLD_DATA_DIR", data_dir):
         with patch.object(

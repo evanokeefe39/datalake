@@ -5,7 +5,7 @@ assets (``profile_dimension``, ``v_post_detail``). Uses shared DuckDB
 persistence and real asset execution.
 
 Per test-hardening plan Phase 2:
-- v_post_detail with NULL gold_analyses join (all columns NULL)
+- v_post_detail with NULL classification join (all gold columns NULL)
 - SCD2 effective_to precision: synchronous with next row's effective_from
 - Cross-domain channel attribute: instagram rows have channel='instagram'
 """
@@ -24,22 +24,16 @@ def _run_profile_dimension(duckdb, ops):
 
 def _run_v_post_detail(duckdb):
     with duckdb.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id TEXT NOT NULL,
-                domain TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash TEXT,
-                result_json TEXT,
-                analysed_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
+        from datalake.defs.common.schemas import duckdb_ddl
+
+        conn.execute(duckdb_ddl("silver_content_classification"))
     ctx = build_asset_context(resources={"duckdb": duckdb})
     dim_date(ctx)
     v_post_detail(ctx)
 
 
-# ── Test: NULL gold_analyses join ──────────────────────────────────────────
+
+# ── Test: NULL classification join ─────────────────────────────────────────
 
 
 def test_v_post_detail_null_join(tmp_path):
@@ -67,8 +61,8 @@ def test_v_post_detail_null_join(tmp_path):
 
     assert len(rows) == 1
     post_id, result_json, gold_analysed_at, profile_key, channel = rows[0]
-    assert post_id == "1"
-    # Gold columns are NULL since gold_analyses was never populated
+    # Gold columns are NULL since silver_content_classification was never
+    # populated
     assert result_json is None
     assert gold_analysed_at is None
     # Profile dimension should exist

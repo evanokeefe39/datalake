@@ -153,3 +153,8 @@ central decision — operational state in SQLite, analytical state in DuckDB, me
 cache and creators/profiles where they are — STANDS and is not in dispute.
 ADR-0004's Status records the partial supersession. Related: ADR-0007, ADR-0008,
 ADR-0011.
+- **Amended by [ADR-0014](0014-orchestration-dynamics.md)** (2026-09-14),
+  which completes this ADR's *dynamics*: it names the actors, triggers, and
+  state transitions for the harvested transition, the retry driver, and the
+  quarantine disposition, and fixes the partition-key shape so the round
+  survives derivation. All decisions above stand.

@@ -11,7 +11,6 @@ from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.enrichment.batch import claim_batch
 from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
 from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
@@ -24,7 +23,12 @@ def _run_silver(duckdb, ops, bronze_dir):
 
 
 def _run_enqueue(duckdb, ops):
-    return ig_posts_gen_batches(duckdb=duckdb, ops=ops)
+    from dagster import DagsterInstance, build_asset_context
+
+    instance = DagsterInstance.ephemeral()
+    return ig_posts_gen_batches(
+        build_asset_context(instance=instance), duckdb=duckdb, ops=ops,
+    )
 
 
 def _seed_labels(duckdb, post_ids):
@@ -73,15 +77,12 @@ def test_full_pipeline_happy_path(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
-    # Setup serving schema
+    # Setup serving schema — v_post_detail reads silver_content_classification
+    # (the gold_analyses retirement, W9)
+    from datalake.defs.common.schemas import duckdb_ddl
+
     with duckdb.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id TEXT NOT NULL, domain TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash TEXT, result_json TEXT, analysed_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
+        conn.execute(duckdb_ddl("silver_content_classification"))
 
     bronze_dir = tmp_path / "bronze"
     bronze_dir.mkdir()
@@ -106,13 +107,11 @@ def test_full_pipeline_happy_path(tmp_path):
     enqueue_result = _run_enqueue(duckdb, ops)
     assert enqueue_result["enqueued"][0] == 3
 
-    # Verify queue
-    # Verify batch was created
-    batch = claim_batch(ops)
-    assert batch is not None
-    assert len(batch["payloads"]) == 3
+    # Verify the Dagster-native enqueue: partitions on the instance
 
-    # Serving (should run even with empty gold_analyses)
+    assert len(enqueue_result["enqueued"]) == 1
+
+    # Serving (should run even with an empty classification table)
     _run_serving(duckdb, ops)
 
     with duckdb.get_connection() as conn:
@@ -128,15 +127,12 @@ def test_empty_gold_does_not_block_serving(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
-    # Setup serving schema
+    # Setup serving schema — silver_content_classification replaces the
+    # retired gold_analyses (W9); empty table → NULL gold columns.
+    from datalake.defs.common.schemas import duckdb_ddl
+
     with duckdb.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id TEXT NOT NULL, domain TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash TEXT, result_json TEXT, analysed_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
+        conn.execute(duckdb_ddl("silver_content_classification"))
         conn.execute("""
             CREATE TABLE IF NOT EXISTS silver_ig_posts (
                 post_id TEXT PRIMARY KEY, caption TEXT, processed_on TIMESTAMP,

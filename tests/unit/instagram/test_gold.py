@@ -1,28 +1,46 @@
-"""Tests for the batch-based enrichment architecture.
+"""Tests for the drain-based enrichment architecture.
 
 Verifies:
-- Batch operations (create_batch, claim_batch, complete_item, fail_item, reschedule)
-- ig_posts_gen_batches asset behaviour
+- Retired queue primitives refuse a queueless ops.sqlite — the retirement
+  stands (ADR-0012)
+- ig_posts_gen_batches asset behaviour — the enqueue is Dagster-native: one
+  ``enrichment_submitted`` partition per post on the INJECTED instance
 - SQLiteResource integration
 """
 
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+
+from dagster import AssetKey, AssetMaterialization, build_asset_context
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
-from datalake.defs.enrichment.batch import (
-    MAX_ATTEMPTS,
-    claim_batch,
-    claim_pending_items,
-    complete_item,
-    create_batch,
-    fail_item,
-    mark_complete,
+from datalake.defs.enrichment import classification as classification_mod
+from datalake.defs.enrichment.partitions import (
+    HARVESTED_ASSET_NAME,
+    SUBMITTED_ASSET_NAME,
+    partition_key,
 )
-from datalake.defs.instagram.assets import ig_posts_gen_batches
+from datalake.defs.instagram import assets as ig_assets_mod
+from datalake.defs.instagram.assets import (
+    DRAIN_WORKLOAD,
+    ig_posts_gen_batches,
+)
 
+
+def _run_drain(instance, *args, **kwargs):
+    """Run the drain asset with a fake PartitionSnapshot injected via the
+    module-level test-only override (the asset reads context.instance in
+    production; fakes cannot ride build_asset_context)."""
+    ig_assets_mod._drain_instance = instance
+    try:
+        return ig_posts_gen_batches(*args, **kwargs)
+    finally:
+        ig_assets_mod._drain_instance = None
+
+
+_ATTEMPT_ROUND = 0  # first attempts enqueue at round 0 (ADR-0014 D1 grammar)
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _pd(post_id: str, domain: str = "instagram") -> str:
@@ -54,13 +72,6 @@ def _seed_silver(db, rows):
             )
         """)
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id TEXT NOT NULL, domain TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash TEXT, result_json TEXT, analysed_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
-        conn.execute("""
             CREATE TABLE IF NOT EXISTS ig_post_labels (
                 post_id VARCHAR PRIMARY KEY,
                 label VARCHAR NOT NULL,
@@ -89,6 +100,99 @@ def _seed_silver(db, rows):
             )
 
 
+
+
+class FakeInstance:
+    """Minimal DagsterInstance stand-in.
+
+    Mirrors tests/unit/instagram/test_drain_inflight_guard.py::FakeInstance.
+    In-memory submitted/harvested partition sets; ``submit``/``harvest``
+    simulate the two enrichment stages materializing one per-post partition
+    (i.e. work that happened OUTSIDE the drain, before the test); the
+    ``add_dynamic_partitions``/``report_runless_asset_event`` surface is
+    what the drain's enqueue writes at run time.
+    """
+
+    def __init__(self, submitted=(), harvested=()):
+        self._submitted = set(submitted)
+        self._harvested = set(harvested)
+        self._dynamic_registered: set[str] = set()
+
+    def get_materialized_partitions(self, asset_key):
+        """STRICT: the real DagsterInstance takes an AssetKey on Dagster
+        1.13.x — reject anything else instead of silently returning empty."""
+        if asset_key == AssetKey(SUBMITTED_ASSET_NAME):
+            return set(self._submitted)
+        if asset_key == AssetKey(HARVESTED_ASSET_NAME):
+            return set(self._harvested)
+        raise TypeError(
+            f"get_materialized_partitions expects an AssetKey, "
+            f"got {type(asset_key).__name__}"
+        )
+
+    def add_dynamic_partitions(self, partitions_def_name, partition_keys):
+        """Runless partition registration. STRICT: the drain only ever
+        registers the ``enrichment_submitted`` dynamic space."""
+        if partitions_def_name != SUBMITTED_ASSET_NAME:
+            raise TypeError(
+                f"add_dynamic_partitions expects {SUBMITTED_ASSET_NAME!r}, "
+                f"got {partitions_def_name!r}"
+            )
+        self._dynamic_registered.update(partition_keys)
+
+    def report_runless_asset_event(self, event):
+        """Runless event-log write. STRICT: only a partition-scoped
+        AssetMaterialization for the two enrichment spaces lands here."""
+        if not isinstance(event, AssetMaterialization):
+            raise TypeError(
+                f"report_runless_asset_event expects an AssetMaterialization, "
+                f"got {type(event).__name__}"
+            )
+        if event.partition is None:
+            raise ValueError("runless enrichment events must carry a partition")
+        if event.asset_key == AssetKey(SUBMITTED_ASSET_NAME):
+            self._submitted.add(event.partition)
+        elif event.asset_key == AssetKey(HARVESTED_ASSET_NAME):
+            self._harvested.add(event.partition)
+        else:
+            raise TypeError(f"unexpected asset key {event.asset_key}")
+
+    def submitted_partitions(self):
+        return set(self._submitted)
+
+    def harvested_partitions(self):
+        return set(self._harvested)
+
+    def dynamic_partitions(self):
+        return set(self._dynamic_registered)
+
+    def submit(self, post_ids):
+        for pid in post_ids:
+            self._submitted.add(
+                partition_key(DRAIN_WORKLOAD, _ATTEMPT_ROUND, [pid])
+            )
+
+    def harvest(self, post_ids):
+        for pid in post_ids:
+            self._harvested.add(
+                partition_key(DRAIN_WORKLOAD, _ATTEMPT_ROUND, [pid])
+            )
+
+
+def _seed_classification(db, rows):
+    """Seed silver_content_classification (the new completion-guard source)
+    with (post_id, prompt_hash) tuples at platform='instagram', via the
+    canonical CLASSIFICATION_DDL — never a hand-rolled schema."""
+    with db.get_connection() as conn:
+        conn.execute(classification_mod.CLASSIFICATION_DDL)
+        for post_id, prompt_hash in rows:
+            conn.execute(
+                "INSERT OR REPLACE INTO silver_content_classification "
+                "(post_id, platform, prompt_hash) VALUES (?, 'instagram', ?)",
+                [post_id, prompt_hash],
+            )
+
+
 def _seed_labels(db, rows):
     """Seed ig_post_labels with (post_id, decision, method, version) tuples."""
     from datetime import timezone as _tz
@@ -111,341 +215,115 @@ def _seed_labels(db, rows):
             )
 
 
-# ── Batch operation tests ───────────────────────────────────────────────────
-
-
-def test_create_batch_and_claim(tmp_path):
-    """GIVEN an empty ops.sqlite
-    WHEN a batch is created and then claimed
-    THEN claim_batch returns the batch with all items.
-    """
-    ops = _make_ops_db(tmp_path)
-    create_batch(ops, [_pd("p1"), _pd("p2")])
-
-    batch = claim_batch(ops)
-    assert batch is not None
-    assert len(batch["payloads"]) == 2
-    post_ids = [json.loads(p)["post_id"] for p in batch["payloads"]]
-    assert "p1" in post_ids
-    assert "p2" in post_ids
-
-
-def test_create_batch_empty_raises(tmp_path):
-    """GIVEN an empty payloads list
-    WHEN create_batch is called
-    THEN ValueError is raised.
-    """
-    ops = _make_ops_db(tmp_path)
-    try:
-        create_batch(ops, [])
-        assert False, "Expected ValueError"
-    except ValueError:
-        pass
-
-
-def test_claim_batch_empty(tmp_path):
-    """GIVEN an empty ops.sqlite
-    WHEN claim_batch is called
-    THEN it returns None.
-    """
-    ops = _make_ops_db(tmp_path)
-    batch = claim_batch(ops)
-    assert batch is None
-
-
-def test_claim_pending_items(tmp_path):
-    """GIVEN a batch with items
-    WHEN claim_pending_items is called with a limit
-    THEN only that many items are claimed.
-    """
-    ops = _make_ops_db(tmp_path)
-    create_batch(ops, [_pd("p1"), _pd("p2"), _pd("p3")])
-    batch = claim_batch(ops)
-
-    items = claim_pending_items(ops, batch["id"], limit=2)
-    assert len(items) == 2
-
-    # Remaining item should still be claimable
-    items2 = claim_pending_items(ops, batch["id"], limit=5)
-    assert len(items2) == 1
-
-
-def test_complete_item_marks_done(tmp_path):
-    """GIVEN a claimed item
-    WHEN complete_item is called
-    THEN the item is no longer claimable.
-    """
-    ops = _make_ops_db(tmp_path)
-    create_batch(ops, [_pd("p1")])
-    batch = claim_batch(ops)
-    items = claim_pending_items(ops, batch["id"], limit=5)
-    assert len(items) == 1
-
-    complete_item(ops, items[0]["id"])
-
-    # No more pending items
-    items2 = claim_pending_items(ops, batch["id"], limit=5)
-    assert len(items2) == 0
-
-
-def test_fail_item_increments_attempts(tmp_path):
-    """GIVEN a claimed item
-    WHEN fail_item is called
-    THEN attempts is incremented and item is rescheduled as pending.
-    """
-    ops = _make_ops_db(tmp_path)
-    create_batch(ops, [_pd("p1")])
-    batch = claim_batch(ops)
-    items = claim_pending_items(ops, batch["id"], limit=5)
-    assert len(items) == 1
-
-    attempts = fail_item(ops, items[0]["id"], "test error", backoff=0)
-    assert attempts == 1
-
-    # Item should be claimable again (status reset to pending)
-    items2 = claim_pending_items(ops, batch["id"], limit=5)
-    assert len(items2) == 1
-
-
-def test_fail_item_max_attempts(tmp_path):
-    """GIVEN an item that fails repeatedly
-    WHEN attempts reaches MAX_ATTEMPTS
-    THEN the item stays failed and is counted in batch failed_items.
-    """
-    ops = _make_ops_db(tmp_path)
-    create_batch(ops, [_pd("p1")])
-    batch = claim_batch(ops)
-    items = claim_pending_items(ops, batch["id"], limit=5)
-    item_id = items[0]["id"]
-
-    for i in range(MAX_ATTEMPTS):
-        attempts = fail_item(ops, item_id, f"error {i}", backoff=0)
-
-    assert attempts == MAX_ATTEMPTS
-
-    # Item should not be claimable (status = 'failed')
-    items2 = claim_pending_items(ops, batch["id"], limit=5)
-    assert len(items2) == 0
-
-    # Verify failed_items count
-    conn = ops.get_connection()
-    row = conn.execute(
-        "SELECT failed_items FROM batch_jobs WHERE id = ?",
-        [batch["id"]],
-    ).fetchone()
-    conn.close()
-    assert row[0] == 1
-
-
-def test_mark_complete(tmp_path):
-    """GIVEN a processing batch with all items done
-    WHEN mark_complete is called
-    THEN the batch status is set to 'complete'.
-    """
-    ops = _make_ops_db(tmp_path)
-    create_batch(ops, [_pd("p1")])
-    batch = claim_batch(ops)
-
-    mark_complete(ops, batch["id"])
-
-    conn = ops.get_connection()
-    row = conn.execute(
-        "SELECT status FROM batch_jobs WHERE id = ?",
-        [batch["id"]],
-    ).fetchone()
-    conn.close()
-    assert row[0] == "complete"
-
-
-def test_fail_item_honors_backoff(tmp_path):
-    """GIVEN a claimed item
-    WHEN fail_item is called with a positive backoff
-    THEN the item is rescheduled with a future scheduled_for and is not
-    claimable until that time passes.
-    """
-    ops = _make_ops_db(tmp_path)
-    create_batch(ops, [_pd("p1")])
-    batch = claim_batch(ops)
-    items = claim_pending_items(ops, batch["id"], limit=5)
-    assert len(items) == 1
-
-    attempts = fail_item(ops, items[0]["id"], "rate limit", backoff=30)
-    assert attempts == 1
-
-    # scheduled_for is 30s in the future — not claimable yet
-    assert claim_pending_items(ops, batch["id"], limit=5) == []
-
-    # Back-date scheduled_for so it becomes due
-    past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
-    conn = ops.get_connection()
-    conn.execute(
-        "UPDATE batch_items SET scheduled_for = ? WHERE id = ?",
-        [past, items[0]["id"]],
-    )
-    conn.commit()
-    conn.close()
-
-    items2 = claim_pending_items(ops, batch["id"], limit=5)
-    assert len(items2) == 1
-
-
-def test_fail_item_preserve_attempts(tmp_path):
-    """GIVEN a claimed item
-    WHEN fail_item is called with preserve_attempts=True
-    THEN attempts is unchanged and the item is rescheduled (not failed).
-    """
-    ops = _make_ops_db(tmp_path)
-    create_batch(ops, [_pd("p1")])
-    batch = claim_batch(ops)
-    items = claim_pending_items(ops, batch["id"], limit=5)
-    item_id = items[0]["id"]
-
-    attempts = fail_item(
-        ops, item_id, "quota exhausted", backoff=3600, preserve_attempts=True
-    )
-    assert attempts == 0
-
-    conn = ops.get_connection()
-    row = conn.execute(
-        "SELECT attempts, status, scheduled_for FROM batch_items WHERE id = ?",
-        [item_id],
-    ).fetchone()
-    conn.close()
-    assert row[0] == 0
-    assert row[1] == "pending"
-    assert row[2] is not None
-
-
-def test_claim_batch_reclaims_processing_with_pending(tmp_path):
-    """GIVEN a 'processing' batch that still has pending items
-    WHEN claim_batch is called
-    THEN the batch is reclaimed so retries work across worker runs.
-    """
-    ops = _make_ops_db(tmp_path)
-    create_batch(ops, [_pd("p1"), _pd("p2")])
-    batch = claim_batch(ops)
-
-    # Complete p1, leaving p2 pending in a 'processing' batch.
-    items = claim_pending_items(ops, batch["id"], limit=1)
-    complete_item(ops, items[0]["id"])
-
-    batch2 = claim_batch(ops)
-    assert batch2 is not None
-    assert batch2["id"] == batch["id"]
-
-
 # ── Enqueue asset tests ─────────────────────────────────────────────────────
 
 
 def test_enqueue_asset_writes_batch(tmp_path):
     """GIVEN label-approved posts in silver
-    WHEN ig_posts_gen_batches runs
-    THEN a batch is created for the approved posts.
+    WHEN ig_posts_gen_batches runs with an INJECTED instance
+    THEN one enrichment_submitted partition per approved post is materialized
+    on that instance (the which-posts observable — the retired queue stored
+    the same intent as batch_items rows).
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
+    instance = FakeInstance()
 
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "Test caption", now), ("p2", "Another caption", now)])
     _seed_labels(db, [("p1", "standout", "day7_matched", None),
                       ("p2", "control", "day0_heuristic", None)])
 
-    result = ig_posts_gen_batches(duckdb=db, ops=ops)
+    result = _run_drain(instance, build_asset_context(), duckdb=db, ops=ops)
 
     assert result["enqueued"][0] == 2
     assert result["candidates_seen"][0] == 2
 
-    batch = claim_batch(ops)
-    assert batch is not None
-    assert len(batch["payloads"]) == 2
-    post_ids = {json.loads(p)["post_id"] for p in batch["payloads"]}
-    assert post_ids == {"p1", "p2"}
+    assert instance.submitted_partitions() == {
+        partition_key(DRAIN_WORKLOAD, _ATTEMPT_ROUND, [pid])
+        for pid in ("p1", "p2")
+    }
 
 
-class _FakeTier:
-    def __init__(self, supports_batch: bool):
-        self.supports_batch = supports_batch
-
-
-def _run_enqueue(tmp_path, tier, config=None):
-    """Seed one label-approved post and run ig_posts_gen_batches under a
-    faked GeminiTierConfig.detect(). Returns (result, ops, created_mode)."""
-    from unittest.mock import patch
-
+def _run_enqueue(tmp_path, config=None):
+    """Seed one label-approved post and run ig_posts_gen_batches with an
+    INJECTED FakeInstance. Returns (result, instance, surfaced_mode) — the
+    mode the drain SURFACES in the result frame. No tier faking: the drain
+    no longer consults GeminiTierConfig (ADR-0009/0012 retirement) — the
+    submit stage owns the execution mode and the provider readiness gate.
+    """
     from datalake.defs.instagram.config import GoldConfig
 
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
+    instance = FakeInstance()
 
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "Test caption", now)])
     _seed_labels(db, [("p1", "standout", "day7_matched", None)])
 
-    with patch(
-        "datalake.defs.instagram.assets.GeminiTierConfig.detect",
-        classmethod(lambda cls: _FakeTier(tier)),
-    ):
-        result = ig_posts_gen_batches(
-            duckdb=db, ops=ops, config=config or GoldConfig()
-        )
-
-    mode = (
-        "gemini-batch"
-        if claim_batch(ops, mode="gemini-batch") is not None
-        else "interactive" if claim_batch(ops, mode="interactive") else None
+    result = _run_drain(
+        instance,
+        build_asset_context(),
+        duckdb=db, ops=ops, config=config or GoldConfig()
     )
-    return result, ops, mode
+    return result, instance, result["mode"][0]
 
 
-def test_enqueue_defaults_to_gemini_batch_when_tier_supports(tmp_path):
-    """GIVEN the active tier supports batch and a curated (non-whole-corpus)
-    selection
+def test_enqueue_surfaces_seam_mode_for_curated_selection(tmp_path):
+    """GIVEN a curated (non-whole-corpus) label-approved selection
     WHEN ig_posts_gen_batches runs
-    THEN the batch is created in gemini-batch mode (batch is the default).
+    THEN the drain enqueues each approved post and surfaces ``seam`` mode
+    (the submit stage owns execution through the seam; ADR-0012).
     """
-    result, _ops, mode = _run_enqueue(tmp_path, tier=True)
+    result, _instance, mode = _run_enqueue(tmp_path)
     assert result["enqueued"][0] == 1
-    assert mode == "gemini-batch"
+    assert mode == "seam"
 
 
-def test_enqueue_defaults_to_gemini_batch_whole_corpus(tmp_path):
-    """GIVEN the active tier supports batch and whole_corpus admission
+def test_enqueue_surfaces_seam_mode_whole_corpus(tmp_path):
+    """GIVEN whole_corpus admission
     WHEN ig_posts_gen_batches runs
-    THEN the batch is created in gemini-batch mode.
+    THEN the drain still surfaces ``seam`` mode.
     """
     from datalake.defs.instagram.config import GoldConfig
 
-    _result, _ops, mode = _run_enqueue(
-        tmp_path, tier=True, config=GoldConfig(whole_corpus=True)
+    _result, _instance, mode = _run_enqueue(
+        tmp_path, config=GoldConfig(whole_corpus=True)
     )
-    assert mode == "gemini-batch"
+    assert mode == "seam"
 
 
-def test_enqueue_falls_back_to_interactive_on_free_tier(tmp_path):
-    """GIVEN the active tier does NOT support batch (free tier)
+def test_enqueue_mode_is_independent_of_retired_tier_selection(tmp_path):
+    """GIVEN the drain runs with default GoldConfig (no tier consulted)
     WHEN ig_posts_gen_batches runs
-    THEN the batch is created in interactive mode.
+    THEN the surfaced mode is ``seam`` — the retired gemini-batch/interactive
+    tier split no longer exists at the drain (ADR-0009/0012 retirement);
+    GeminiTierConfig.detect() is only consumed by the submit-stage adapters.
     """
-    _result, _ops, mode = _run_enqueue(tmp_path, tier=False)
-    assert mode == "interactive"
+    _result, _instance, mode = _run_enqueue(tmp_path)
+    assert mode == "seam"
 
 
-def test_enqueue_prefer_interactive_opt_out(tmp_path):
-    """GIVEN an operator sets GoldConfig(prefer_interactive=True) on a
-    batch-capable tier
+def test_enqueue_tolerates_prefer_interactive_opt_out(tmp_path):
+    """GIVEN an operator sets GoldConfig(prefer_interactive=True)
     WHEN ig_posts_gen_batches runs
-    THEN the batch is created in interactive mode (explicit opt-out wins).
+    THEN the drain still enqueues and surfaces ``seam`` mode — the retired
+    interactive opt-out is inert at the drain; execution mode is decided by
+    the submit stage through the seam.
     """
     from datalake.defs.instagram.config import GoldConfig
 
-    _result, _ops, mode = _run_enqueue(
-        tmp_path, tier=True, config=GoldConfig(prefer_interactive=True)
+    _result, _instance, mode = _run_enqueue(
+        tmp_path, config=GoldConfig(prefer_interactive=True)
     )
-    assert mode == "interactive"
+    assert mode == "seam"
 
 
 def test_enqueue_skips_current_prompt_enriched(tmp_path):
-    """GIVEN a label-approved post with a CURRENT-prompt gold analysis
+    """GIVEN a label-approved post with a CURRENT-prompt conformed
+    classification in silver_content_classification (the new completion-guard
+    source, post-ADR-0011)
     WHEN ig_posts_gen_batches runs
     THEN that post is not re-batched (only stale-prompt rows re-enqueue, US-L5).
     """
@@ -453,50 +331,43 @@ def test_enqueue_skips_current_prompt_enriched(tmp_path):
 
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
+    instance = FakeInstance()
 
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "Test caption", now), ("p2", "Already done", now)])
     _seed_labels(db, [("p1", "standout", "day7_matched", None),
                       ("p2", "standout", "day7_matched", None)])
+    _seed_classification(db, [("p2", CURRENT_PROMPT_HASH)])
 
-    with db.get_connection() as conn:
-        conn.execute(
-            "INSERT INTO gold_analyses (post_id, domain, prompt_hash, analysed_at) "
-            "VALUES (?, 'instagram', ?, ?)",
-            ["p2", CURRENT_PROMPT_HASH, now.isoformat()],
-        )
-
-    result = ig_posts_gen_batches(duckdb=db, ops=ops)
+    result = _run_drain(instance, build_asset_context(), duckdb=db, ops=ops)
 
     assert result["enqueued"][0] == 1
-    batch = claim_batch(ops)
-    assert batch is not None
-    post_ids = [json.loads(p)["post_id"] for p in batch["payloads"]]
-    assert post_ids == ["p1"]
+    # Exactly p1 was enqueued (was: the claimed batch's payload post_ids).
+    assert instance.submitted_partitions() == {
+        partition_key(DRAIN_WORKLOAD, _ATTEMPT_ROUND, ["p1"])
+    }
 
 
 def test_enqueue_reenqueues_stale_prompt_gold(tmp_path):
-    """GIVEN a label-approved post whose gold row was written pre-multimodal
-    (stale prompt_hash)
+    """GIVEN a label-approved post whose conformed classification was written
+    under a stale (pre-multimodal) prompt_hash in silver_content_classification
     WHEN ig_posts_gen_batches runs
     THEN the post IS re-enqueued — no permanent orphaning (US-L5).
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
+    instance = FakeInstance()
 
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "Test caption", now)])
     _seed_labels(db, [("p1", "standout", "day7_matched", None)])
+    _seed_classification(db, [("p1", "stale-pre-multimodal-hash")])
 
-    with db.get_connection() as conn:
-        conn.execute(
-            "INSERT INTO gold_analyses (post_id, domain, prompt_hash, analysed_at) "
-            "VALUES (?, 'instagram', ?, ?)",
-            ["p1", "stale-pre-multimodal-hash", now.isoformat()],
-        )
-
-    result = ig_posts_gen_batches(duckdb=db, ops=ops)
+    result = _run_drain(instance, build_asset_context(), duckdb=db, ops=ops)
     assert result["enqueued"][0] == 1
+    assert instance.submitted_partitions() == {
+        partition_key(DRAIN_WORKLOAD, _ATTEMPT_ROUND, ["p1"])
+    }
 
 
 def test_enqueue_skips_skip_decision(tmp_path):
@@ -507,33 +378,38 @@ def test_enqueue_skips_skip_decision(tmp_path):
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
+    instance = FakeInstance()
 
     now = datetime.now(timezone.utc)
     _seed_silver(db, [("p1", "   ", now)])
     _seed_labels(db, [("p1", "skip", "day0_heuristic", None)])
 
-    result = ig_posts_gen_batches(duckdb=db, ops=ops)
+    result = _run_drain(instance, build_asset_context(), duckdb=db, ops=ops)
     assert result["enqueued"][0] == 0
 
-    batch = claim_batch(ops)
-    assert batch is None
+    # Nothing was enqueued: no partition materialized (was: claim_batch is
+    # None — the queue observable).
+    assert instance.submitted_partitions() == set()
 
 
 def test_enqueue_skips_open_batch_items(tmp_path):
-    """GIVEN a label-approved post already queued (pending batch item)
+    """GIVEN a label-approved post whose partition is in flight on the Dagster
+    instance (submitted, not yet harvested)
     WHEN ig_posts_gen_batches runs
-    THEN the post is not re-enqueued while its item is open.
+    THEN the post is not re-enqueued while its work is in flight (US-EENG-4).
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
-
     now = datetime.now(timezone.utc)
+
     _seed_silver(db, [("p1", "Caption", now)])
     _seed_labels(db, [("p1", "standout", "day7_matched", None)])
-    create_batch(ops, [_pd("p1")])  # stays pending
+    instance = FakeInstance()
+    instance.submit(["p1"])  # partition materialized by the submit stage
 
-    result = ig_posts_gen_batches(duckdb=db, ops=ops)
+    result = _run_drain(instance, build_asset_context(), duckdb=db, ops=ops)
     assert result["enqueued"][0] == 0
+    assert result["in_flight_suppressed"][0] == 1
 
 
 def test_enqueue_no_pending_posts(tmp_path):
@@ -543,16 +419,19 @@ def test_enqueue_no_pending_posts(tmp_path):
     """
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
+    instance = FakeInstance()
 
     _seed_silver(db, [])
 
-    result = ig_posts_gen_batches(duckdb=db, ops=ops)
+    result = _run_drain(instance, build_asset_context(), duckdb=db, ops=ops)
     assert result["enqueued"][0] == 0
     assert result["candidates_seen"][0] == 0
+    assert instance.submitted_partitions() == set()
 
 
 def test_enqueue_post_ids_bypasses_guards(tmp_path):
-    """GIVEN posts with current-prompt gold analyses and no labels
+    """GIVEN posts with CURRENT-prompt conformed classifications in
+    silver_content_classification and no labels
     WHEN ig_posts_gen_batches runs with post_ids
     THEN the requested posts are batched regardless (explicit bypass).
     """
@@ -561,6 +440,7 @@ def test_enqueue_post_ids_bypasses_guards(tmp_path):
 
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
+    instance = FakeInstance()
 
     now = datetime.now(timezone.utc)
     _seed_silver(db, [
@@ -569,20 +449,19 @@ def test_enqueue_post_ids_bypasses_guards(tmp_path):
         ("p3", "Caption three", now),
     ])
 
-    with db.get_connection() as conn:
-        for pid in ("p2", "p3"):
-            conn.execute(
-                "INSERT INTO gold_analyses (post_id, domain, prompt_hash, analysed_at) "
-                "VALUES (?, 'instagram', ?, ?)",
-                [pid, CURRENT_PROMPT_HASH, now.isoformat()],
-            )
+    _seed_classification(
+        db, [(pid, CURRENT_PROMPT_HASH) for pid in ("p2", "p3")]
+    )
 
-    result = ig_posts_gen_batches(
-        config=GoldConfig(post_ids=["p2", "p3"]), duckdb=db, ops=ops
+    result = _run_drain(
+        instance,
+        build_asset_context(),
+        config=GoldConfig(post_ids=["p2", "p3"]), duckdb=db, ops=ops,
     )
 
     assert result["enqueued"][0] == 2
-    batch = claim_batch(ops)
-    assert batch is not None
-    post_ids = {json.loads(p)["post_id"] for p in batch["payloads"]}
-    assert post_ids == {"p2", "p3"}
+    # Exactly p2+p3 were enqueued (was: the claimed batch's payload post_ids).
+    assert instance.submitted_partitions() == {
+        partition_key(DRAIN_WORKLOAD, _ATTEMPT_ROUND, [pid])
+        for pid in ("p2", "p3")
+    }

@@ -1,4 +1,4 @@
-"""Tests for curated-creator consolidation (scripts/migrate_curated_creator_merge.py).
+"""Tests for curated-creator consolidation (migrations/migrate_curated_creator_merge.py).
 
 Contract: a curated creator (creators.id) owns the profile for its real
 in-lake handle; duplicate auto-creators keyed by owner_username are retired;
@@ -21,7 +21,7 @@ import pytest
 
 _SCRIPT = (
     Path(__file__).resolve().parents[3]
-    / "scripts"
+    / "migrations"
     / "migrate_curated_creator_merge.py"
 )
 _spec = importlib.util.spec_from_file_location("migrate_curated_creator_merge", _SCRIPT)

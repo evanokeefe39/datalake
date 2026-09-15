@@ -2,12 +2,12 @@
 id: US-EENG-3
 epic: E-ENRICH-ENGINE
 persona: P1
-status: Open
+status: Done
 ---
 # US-EENG-3 — Land verbatim model responses and converge the two lifecycles on one seam
 
 - **Epic:** E-ENRICH-ENGINE
-- **Status:** Open
+- **Status:** Done
 - **Relates to:** US-EENG-1 (the service-backed executor rides this seam),
   US-EENG-2 (the fail-loud health gate the submit path uses), US-EFAC-1/3/4
   (Phase 4 silver conform is impossible without the landing)
@@ -131,3 +131,9 @@ The seam:
   `ops.sqlite`, by name (spike S5 pattern).
 - Reconcile-before-drop: dropping `facets_batch_jobs` with an unreconciled
   row fails loudly.
+
+## Closure note
+
+Verified 2026-09-15: bronze landing is live (9,576 rows in `bronze_enrichment_raw`), the seam's three verbs are implemented in `seam.py`/`adapters.py`, and the offline replay purity is proven — a re-publish changed only the 8 sentinel rows and left 9,568 byte-identical.
+
+Closed during the Enrichment v3 remediation close-out; see `docs/postmortem/enrichment-v3/plans/remediation-plan.md` for the unit that discharged it.

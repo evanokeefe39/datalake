@@ -1,5 +1,6 @@
 """Canonical schema catalog — single source of truth for all DB tables.
 
+
 This module DEFINES what tables, columns, types, and constraints the pipeline
 expects across both DuckDB and SQLite. Every other reference — runtime DDL,
 migration scripts, asset column lists — derives from here.
@@ -21,9 +22,18 @@ derive:
   runtime assets execute, so the DDL can never drift from the catalog.
 """
 
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+MODEL_LEGACY_NULL = "unrecorded-legacy-null"
+"""Sentinel for silver enrichment rows whose producing model was never
+recorded (ADR-0014 D5): an honest "this result is verified, but the model
+name was never written" — NOT a NULL and NOT a fabricated model name.
+
+Single definition shared by both classification silver producers
+(`classification.py`, `conform.py`); never redefine it locally."""
 
 # ── Spec model ──────────────────────────────────────────────────────────────
 
@@ -35,8 +45,7 @@ class Column:
     ``sql_type`` is the type name reported by the target DB's introspection.
     ``default`` is a raw SQL literal (e.g. ``"'instagram'"``, ``"0"``,
     ``"FALSE"``, ``"CURRENT_TIMESTAMP"``). ``references`` is the full clause
-    after ``REFERENCES`` (e.g. ``"batch_jobs(id)"``,
-    ``"creators(id) ON DELETE CASCADE"``).
+    after ``REFERENCES`` (e.g. ``"creators(id) ON DELETE CASCADE"``).
     """
 
     sql_type: str
@@ -86,31 +95,6 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "source_dataset": Column("VARCHAR", not_null=True),
             "processed_on": Column("TIMESTAMP"),
         },
-    ),
-    "gold_analyses": Table(
-        columns={
-            "post_id": Column("VARCHAR", not_null=True),
-            "domain": Column("VARCHAR", not_null=True, default="'instagram'"),
-            "prompt_hash": Column("VARCHAR"),
-            "model": Column("VARCHAR"),
-            "result_json": Column("VARCHAR"),
-            "analysed_at": Column("VARCHAR", not_null=True),
-        },
-        primary_key=("post_id", "domain"),
-    ),
-    "gold_growth_facets": Table(
-        columns={
-            "post_id": Column("VARCHAR", not_null=True),
-            "domain": Column("VARCHAR", not_null=True, default="'instagram'"),
-            "prompt_hash": Column("VARCHAR", not_null=True),
-            "schema_version": Column("VARCHAR", not_null=True),
-            "growth_facets_json": Column("VARCHAR", not_null=True),
-            "content_summary": Column("VARCHAR"),
-            "image_summaries_json": Column("VARCHAR"),
-            "model": Column("VARCHAR"),
-            "analysed_at": Column("VARCHAR", not_null=True),
-        },
-        primary_key=("post_id", "domain"),
     ),
     "watermarks": Table(
         columns={
@@ -205,6 +189,148 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "baseline_n": Column("INTEGER"),
         },
     ),
+    # NOTE: ``bronze_enrichment_raw`` is deliberately NOT in this catalog.
+    # It is a bronze LAKE table (Parquet at data/lake/bronze/bronze_enrichment_raw.parquet,
+    # written/read via polars in defs/enrichment/landing.py — see DATASET_ID and
+    # read_responses), never a table registered in data/state.duckdb. The live
+    # database has never contained it (verified read-only 2026-09-15); landing and
+    # conform access it exclusively through Parquet, so it has no DuckDB DDL and
+    # no entry in DUCKDB_TABLES.
+    "silver_visual_annotations": Table(
+        columns={
+            "post_id": Column("VARCHAR", not_null=True),
+            "platform": Column("VARCHAR", not_null=True),
+            "provider": Column("VARCHAR"),
+            "model": Column("VARCHAR"),
+            "prompt_hash": Column("VARCHAR"),
+            "schema_version": Column("VARCHAR"),
+            "input_modality": Column("VARCHAR"),
+            "content_mime_type": Column("VARCHAR"),
+            "sampling_params_json": Column("VARCHAR"),
+            "run_id": Column("VARCHAR"),
+            "analysed_at": Column("TIMESTAMP WITH TIME ZONE"),
+            "face_present": Column("BOOLEAN"),
+            "value_medium": Column("VARCHAR"),
+            "brand_logos_json": Column("VARCHAR"),
+            "text_overlay_present": Column("BOOLEAN"),
+            "on_screen_claim": Column("BOOLEAN"),
+        },
+        primary_key=("post_id", "platform"),
+    ),
+    "silver_visual_summaries": Table(
+        columns={
+            "post_id": Column("VARCHAR", not_null=True),
+            "platform": Column("VARCHAR", not_null=True),
+            "provider": Column("VARCHAR"),
+            "model": Column("VARCHAR"),
+            "prompt_hash": Column("VARCHAR"),
+            "schema_version": Column("VARCHAR"),
+            "input_modality": Column("VARCHAR"),
+            "content_mime_type": Column("VARCHAR"),
+            "sampling_params_json": Column("VARCHAR"),
+            "run_id": Column("VARCHAR"),
+            "analysed_at": Column("TIMESTAMP WITH TIME ZONE"),
+            "content_summary": Column("VARCHAR"),
+            "image_summaries_json": Column("VARCHAR"),
+        },
+        primary_key=("post_id", "platform"),
+    ),
+    "silver_audio_transcripts": Table(
+        columns={
+            "post_id": Column("VARCHAR", not_null=True),
+            "platform": Column("VARCHAR", not_null=True),
+            "provider": Column("VARCHAR"),
+            "model": Column("VARCHAR"),
+            "prompt_hash": Column("VARCHAR"),
+            "schema_version": Column("VARCHAR"),
+            "input_modality": Column("VARCHAR"),
+            "content_mime_type": Column("VARCHAR"),
+            "sampling_params_json": Column("VARCHAR"),
+            "run_id": Column("VARCHAR"),
+            "analysed_at": Column("TIMESTAMP WITH TIME ZONE"),
+            "transcript": Column("VARCHAR"),
+            "transcript_status": Column("VARCHAR"),
+            "audio_present": Column("BOOLEAN"),
+            "asr_model": Column("VARCHAR"),
+            "language": Column("VARCHAR"),
+        },
+        primary_key=("post_id", "platform"),
+    ),
+    "silver_text_annotations": Table(
+        columns={
+            "post_id": Column("VARCHAR", not_null=True),
+            "platform": Column("VARCHAR", not_null=True),
+            "provider": Column("VARCHAR"),
+            "model": Column("VARCHAR"),
+            "prompt_hash": Column("VARCHAR"),
+            "schema_version": Column("VARCHAR"),
+            "input_modality": Column("VARCHAR"),
+            "content_mime_type": Column("VARCHAR"),
+            "sampling_params_json": Column("VARCHAR"),
+            "run_id": Column("VARCHAR"),
+            "analysed_at": Column("TIMESTAMP WITH TIME ZONE"),
+            "hook_content": Column("VARCHAR"),
+            "hook_type": Column("VARCHAR"),
+            "is_sponsored": Column("BOOLEAN"),
+            "sponsorship_signal": Column("VARCHAR"),
+            "claimed_results": Column("BOOLEAN"),
+            "cta_type": Column("VARCHAR"),
+            "audience_named": Column("BOOLEAN"),
+            "value_depth": Column("VARCHAR"),
+            "replicable_tactic": Column("VARCHAR"),
+            "hashtag_strategy": Column("VARCHAR"),
+            "evidence": Column("VARCHAR"),
+            "brand_safety_json": Column("VARCHAR"),
+        },
+        primary_key=("post_id", "platform"),
+    ),
+    "silver_text_summaries": Table(
+        columns={
+            "post_id": Column("VARCHAR", not_null=True),
+            "platform": Column("VARCHAR", not_null=True),
+            "provider": Column("VARCHAR"),
+            "model": Column("VARCHAR"),
+            "prompt_hash": Column("VARCHAR"),
+            "schema_version": Column("VARCHAR"),
+            "input_modality": Column("VARCHAR"),
+            "content_mime_type": Column("VARCHAR"),
+            "sampling_params_json": Column("VARCHAR"),
+            "run_id": Column("VARCHAR"),
+            "analysed_at": Column("TIMESTAMP WITH TIME ZONE"),
+            "transcript_summary": Column("VARCHAR"),
+        },
+        primary_key=("post_id", "platform"),
+    ),
+    "silver_content_classification": Table(
+        columns={
+            "post_id": Column("VARCHAR", not_null=True),
+            "platform": Column("VARCHAR", not_null=True),
+            "provider": Column("VARCHAR"),
+            "model": Column("VARCHAR"),
+            "prompt_hash": Column("VARCHAR"),
+            "schema_version": Column("VARCHAR"),
+            "input_modality": Column("VARCHAR"),
+            "content_mime_type": Column("VARCHAR"),
+            "sampling_params_json": Column("VARCHAR"),
+            "run_id": Column("VARCHAR"),
+            "analysed_at": Column("TIMESTAMP WITH TIME ZONE"),
+            "domain": Column("VARCHAR"),
+            "subdomain": Column("VARCHAR"),
+            "topic": Column("VARCHAR"),
+            "subtopic": Column("VARCHAR"),
+            "is_educational": Column("BOOLEAN"),
+            "is_actionable": Column("BOOLEAN"),
+            "admiralty": Column("VARCHAR"),
+            "content_type": Column("VARCHAR"),
+            "style": Column("VARCHAR"),
+            "format": Column("VARCHAR"),
+            # Verbatim bronze passthrough (US-ESA-2 AC6 byte parity):
+            # NULL for bronze-conformed rows, populated by the legacy
+            # gold_analyses backfill only.
+            "result_json": Column("VARCHAR"),
+        },
+        primary_key=("post_id", "platform"),
+    ),
 }
 
 DUCKDB_VIEWS: list[str] = [
@@ -229,66 +355,20 @@ DUCKDB_VIEWS: list[str] = [
     "v_standout_calendar",
     "v_recent_hot_posts",
     "v_post_follower_context",
+    "gold_post_enrichment",
+    "gold_creator_performance",
+    "gold_content_shape_performance",
+    "gold_top_posts",
 ]
 
 # ── SQLite (data/ops.sqlite) ────────────────────────────────────────────────
 
+# RETIRED 2026-09-15 (W9): "media_metadata" was removed here. It cached
+# Gemini File-API uploads for a permanently retired provider; the live path
+# resolves media to scrape-time cached local bytes instead. Archived at
+# data/lake/archive/media_metadata/. See ISSUES.md #32. Do NOT re-add: a spec
+# here is what let the table be recreated after the drop.
 _SQLITE_SPECS: dict[str, Table] = {
-    "batch_jobs": Table(
-        columns={
-            "id": Column("INTEGER", primary_key=True, autoincrement=True),
-            "consumer": Column("TEXT", not_null=True, default="'gemini'"),
-            "mode": Column("TEXT", not_null=True, default="'interactive'"),
-            "gemini_batch_name": Column("TEXT"),
-            "gemini_batch_status": Column("TEXT"),
-            "gemini_batch_error": Column("TEXT"),
-            "status": Column("TEXT", not_null=True, default="'pending'"),
-            "created_at": Column("TEXT", not_null=True),
-            "completed_at": Column("TEXT"),
-            "total_items": Column("INTEGER", not_null=True, default="0"),
-            "processed_items": Column("INTEGER", not_null=True, default="0"),
-            "failed_items": Column("INTEGER", not_null=True, default="0"),
-        },
-    ),
-    "batch_items": Table(
-        columns={
-            "id": Column("INTEGER", primary_key=True, autoincrement=True),
-            "job_id": Column("INTEGER", not_null=True, references="batch_jobs(id)"),
-            "payload": Column("TEXT", not_null=True),
-            "status": Column("TEXT", not_null=True, default="'pending'"),
-            "attempts": Column("INTEGER", not_null=True, default="0"),
-            "error": Column("TEXT"),
-            "scheduled_for": Column("TEXT"),
-            "created_at": Column("TEXT", not_null=True),
-            "updated_at": Column("TEXT", not_null=True),
-        },
-        unique=(("job_id", "payload"),),
-        indexes=(("idx_batch_items_job_status", "job_id, status"),),
-    ),
-    "media_metadata": Table(
-        columns={
-            "media_url_hash": Column("TEXT", primary_key=True),
-            "media_url": Column("TEXT", not_null=True),
-            "file_api_uri": Column("TEXT"),
-            "mime_type": Column("TEXT"),
-            "file_size": Column("INTEGER"),
-            "video_duration_seconds": Column("REAL"),
-            "upload_state": Column("TEXT", default="'pending'"),
-            "expires_at": Column("TEXT"),
-            "created_at": Column("TEXT", not_null=True),
-            "uploaded_at": Column("TEXT"),
-        },
-    ),
-    "dead_letter": Table(
-        columns={
-            "post_id": Column("TEXT", not_null=True),
-            "domain": Column("TEXT", not_null=True, default="'instagram'"),
-            "error": Column("TEXT"),
-            "attempts": Column("INTEGER", not_null=True, default="0"),
-            "failed_at": Column("TEXT", not_null=True),
-        },
-        primary_key=("post_id", "domain"),
-    ),
     "media_cache": Table(
         columns={
             "cache_key": Column("TEXT", primary_key=True),
