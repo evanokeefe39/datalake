@@ -942,7 +942,129 @@ owner) and `analysis/output/rescrape_owners_2026-09-08.csv` (owner rollup).
 3. **Re-run the census + pick the Apify rescrape set** — posts whose missing
    bytes aren't recoverable from surviving bronze local files genuinely need a
    rescrape (Apify, by profile); recoverable ones just need a re-seed (no Apify).
-   Whole-profile wipeouts + 45d+ are the safest first rescrape targets.
+### 26. Sentinel literal diverged across sibling silver producers — 8 live rows carry the REJECTED value
+
+**Found 2026-09-15** by the W10 conformance panel (DataArchitect lens), then
+verified against the live store — this is a published-data defect, not a style nit.
+
+Two modules define `MODEL_LEGACY_NULL` with different values:
+
+| File | Value |
+|---|---|
+| `src/datalake/defs/enrichment/classification.py:181` | `unrecorded-legacy-null` |
+| `src/datalake/defs/enrichment/conform.py:654` | `legacy-unknown` |
+
+ADR-0014:214 records the owner **selecting `unrecorded-legacy-null` over the
+original `legacy-unknown`**, and names `classification.MODEL_LEGACY_NULL` as "the
+single definition". So `conform.py`'s copy is the stale superseded value — and
+`conform.py` is the live silver publisher that actually wrote the rows.
+
+Live state confirms the divergence reached the warehouse:
+
+```
+silver_content_classification: gemini-3.5-flash-lite × 9568, legacy-unknown × 8
+```
+
+All 8 rows carry `run_id='legacy-gold-classification-backfill'`,
+`provider='gemini'`, `prompt_hash='24c8e291fdfc28ed'`. ADR-0014:322 already flags
+that the sentinel "leaks into serving".
+
+**Fix — three parts, in order:**
+1. Define the constant ONCE in the shared schema module
+   (`src/datalake/defs/common/schemas.py`) and have BOTH producers import it. Do
+   NOT have one producer import from the other: they are sibling producers on the
+   same target table, and coupling them recreates the silent-divergence trap this
+   bug came from.
+2. Correct `conform.py`'s literal (the cause — it makes the next replay right).
+3. **Re-publish silver via `scripts/conform_silver.py`** (deterministic replay from
+   bronze). NEVER a hand `UPDATE`: bronze holds all 9,576 classification rows
+   including the 8 NULL-model ones, so the sentinel is a pure function of bronze,
+   and an UPDATE would leave bronze and silver disagreeing on a table whose entire
+   contract is "silver is a pure function of bronze".
+
+Verify the other 9,568 rows are byte-identical after the replay — a replay that
+silently changed anything else would be a worse defect than the one being fixed.
+Update the two tests asserting mutually exclusive sentinels
+(`test_classification.py:307`, `test_conform_classification.py:145`).
+
+**Blast radius**: contained. The sentinel appears in no serving view
+(`v_post_detail`/`v_post_metrics` carry no model column), so there is no consumer
+to migrate. The 8 rows are silent, mislabelled provenance.
+
+### 27. `conform_silver.py` defaults `--silver-root` to the LIVE silver lake
+
+**Found 2026-09-15** (panel, PlatformEngineer lens; surfaced while planning the
+sentinel republish in #26).
+
+`resolve_roots` defaults `silver_root` to `lake.SILVER_LAKE`, and the plan
+documented `--state-db` as the writable-copy lever without naming `--silver-root`.
+So a plain `--apply` run writes **new Parquet snapshots into the live silver lake**
+— the artifact serving and the gold marts read — while registering them into
+whatever copy `--state-db` points at. The copy's registration and the live parquet
+then disagree.
+
+**Fix**: make the pairing explicit. Either (a) require both roots to be passed
+together and refuse a mixed live/scratch pair, or (b) refuse `--apply` when
+`--silver-root` is left at its default while `--state-db` is overridden. Also
+document the rule: plan-first (default mode writes nothing) at the exact live roots
+to capture the "before" tuple, then apply deliberately in one shot.
+
+**Related hazard (same class)**: `state.duckdb` is single-writer. Run this when no
+Dagster daemon/dashboard holds the file, or the write fails or interleaves
+(ADR-0012 decision 8 records the observed `Cannot open file … being used by
+another process`).
+
+### 28. Retired Gemini modules are inert but LIVE-imported — removal has 4 blockers
+
+**Found 2026-09-15** (panel, DataArchitect lens). My initial triage called
+`classification.py` dead. It is not — and the same audit found the Gemini set is
+safe-with-changes, not free.
+
+**`classification.py` is LIVE**: `defs/instagram/assets.py:1174-1176` imports it and
+executes `_cls.CLASSIFICATION_DDL` on **every** `ig_posts_gen_batches` drain. It is
+also NOT superseded by `conform.py` — `conform.SUPPORTED_CONFORM_WORKLOADS`
+explicitly skips the classification workload. They are sibling producers. Deleting
+it raises `ImportError` at runtime *inside the function body*, so `dg dev` stays
+green and the drain crashes only when it runs.
+
+**Removing `gemini_batch.py`/`submit.py`/`harvest.py`/`media_upload.py`/`batch.py`/
+`registry.py` requires 4 rewires first:**
+1. `definitions.py:17-22` imports + `:69-74` (`jobs=[...]`, `sensors=[...]`,
+   `*ENRICHMENT_CHECKS`).
+2. `defs/enrichment/__init__.py:16-32` re-export hub.
+3. `defs/enrichment/assets.py:174` (registry), `:201` (media_upload), and the
+   `check_enrichment_health` body at `:80-146`.
+4. `defs/enrichment/analysis.py:23` and `registry.py:12` both import `_now_iso` from
+   `batch.py` — a pair that must be severed together.
+
+**Contradiction to resolve**: `check_enrichment_health` (`assets.py:90-99`) reads
+`batch_items` and `dead_letter` at runtime, while `__init__.py:5-7` claims the
+retired queue "has no read or write on any live path". The code says the docstring
+is wrong. Resolve as part of W8/W9.
+
+**Ordering**: promoting facets to Dagster (W11) is a PRECONDITION of removing
+submit/harvest — `sensor.py:27-30` drives `harvest_enrichment_job`, so deleting them
+without a replacement loses all orchestration.
+
+### 29. `--plan` (offline cost projection) has no Dagster equivalent
+
+**Found 2026-09-15** (panel, DagsterExpert lens). Dagster has no dry-run primitive,
+so the pre-spend cost gate does not come for free when the CLI is retired.
+
+`scripts/enrich_facets_batch.py --plan` → `facets_batch.estimate_facets_cost` is the
+ONLY pre-spend gate in the facets path. It is also a real dependency:
+`scripts/make_smoke_slice.py:448-478` shells out to it and asserts visual submittable
+> 0 — deleting the CLI breaks the smoke slice's usability check.
+
+**Fix**: re-express as an explicit dry-run job (`facets_plan_job`) whose op runs
+enumerate + build + estimate and emits `AssetObservation`/`AssetCheckResult` metadata
+`{targets, submittable, est_input_tokens, cost_usd}` while submitting nothing. Do not
+retire the `--plan` arm until that exists.
+
+**Related (same lens)**: `DRAIN_WORKLOAD` is a hardcoded module constant
+(`instagram/assets.py:1024`), so facets posts can never enter the existing
+single-workload drain. Generalizing it is small — every helper it calls already
+derives workload from the partition key — but it is a prerequisite for W11.
 
 ## Resolved
 
