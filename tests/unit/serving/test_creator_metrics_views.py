@@ -113,33 +113,6 @@ def _seed(con, posts: list[tuple], labels: list[tuple]) -> None:
     for row in posts:
         con.execute(insert_post, row)
 
-    # gold_post_enrichment is a real gold mart (ADR-0011) and v_creator_topics
-    # reads it directly. Mirror the mart's grain here so a seeded post reaches
-    # the topic rollup: post_id + creator_id + gold_topic, with
-    # engagement_score taken from the post's likes z-score.
-    #
-    # v_post_detail does NOT carry engagement_score, so mirror the formula
-    # v_post_metrics uses: 0.5·likes_z + 0.3·comments_z + 0.2·views_z, NULL when
-    # every component is NULL. These fixtures seed a likes baseline only, so the
-    # comments/views terms are NULL and the score is 0.5·likes_z.
-    #
-    # The mart's enriched-only semantics are what the topic tests assert: a post
-    # with a NULL topic is unenriched and must not appear in a rollup, so it is
-    # not inserted here.
-    z_by_post = {row[0]: row[4] for row in labels}
-    for row in posts:
-        post_id, _owner, creator_id = row[0], row[1], row[2]
-        topic = row[10]
-        if topic is None:
-            continue  # unenriched — the mart would not carry a topic
-        likes_z = z_by_post.get(post_id)
-        score = None if likes_z is None else round(0.5 * likes_z, 2)
-        con.execute(
-            "INSERT INTO gold_post_enrichment "
-            "(post_id, creator_id, gold_topic, engagement_score) "
-            "VALUES (?, ?, ?, ?)",
-            (post_id, creator_id, topic, score),
-        )
     insert_label = (
         f"INSERT INTO ig_post_labels ({LABEL_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
@@ -198,10 +171,27 @@ def db(tmp_path) -> DuckDBResource:
 
 
 def _run_metrics_chain(db: DuckDBResource) -> None:
-    """Materialize the five views under test in dependency order."""
+    """Materialize the five views under test in dependency order.
+
+    gold_post_enrichment (a real gold mart, ADR-0011) is populated between
+    v_post_metrics and v_creator_topics: the mart carries engagement_score, and
+    the honest source for it is the producer's own column — duplicating the
+    blend here would silently diverge from v_post_metrics the moment a fixture
+    seeds comments/views priors. Enriched-only semantics come from the
+    gold_topic IS NOT NULL filter, matching the mart.
+    """
     ctx = build_asset_context(resources={"duckdb": db})
     _v_post_baselines(ctx)
     _v_post_metrics(ctx)
+    with db.get_connection() as con:
+        con.execute("""
+            INSERT INTO gold_post_enrichment
+                (post_id, creator_id, gold_topic, engagement_score)
+            SELECT d.post_id, d.creator_id, d.gold_topic, m.engagement_score
+            FROM v_post_detail d
+            LEFT JOIN v_post_metrics m ON d.post_id = m.post_id
+            WHERE d.gold_topic IS NOT NULL
+        """)
     _v_creator_profile(ctx)
     _v_creator_topics(ctx)
     _v_rising_creators(ctx)
