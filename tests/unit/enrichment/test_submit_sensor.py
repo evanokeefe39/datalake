@@ -15,7 +15,6 @@ import json
 
 import pytest
 from dagster import DagsterInstance, build_sensor_context
-from orchestration.defs.engine.partitions import partition_key
 from orchestration.defs.engine.sensor import enrichment_submit_sensor
 from orchestration.defs.platform.resources import DuckDBResource
 
@@ -67,40 +66,59 @@ def test_run_key_is_stable_for_the_same_pending_set():
     assert first[0].run_key == second[0].run_key
 
 
-def test_run_key_is_keyed_on_identity_not_size():
+def test_run_key_is_keyed_on_identity_not_size(monkeypatch):
     """REGRESSION: a count-keyed run_key silently stalls paid work.
 
     ``run_key = f"submit-{len(keys)}"`` collapses two DIFFERENT backlogs of
-    equal size into one key. Dagster treats the second as the
-    already-requested run and requests nothing, so a genuinely-new set of
-    posts is never submitted — the stall is invisible, because the sensor
-    looks like it behaved correctly.
+    equal size into one key. Dagster treats the second as the already-requested
+    run and requests nothing, so a genuinely-new set of posts is never
+    submitted — invisible, because the sensor looks like it behaved correctly.
 
-    GIVEN two disjoint pending sets of equal size
-    WHEN each is digested into a run_key
-    THEN the keys differ.
+    Drives the REAL sensor over two different pending sets of equal size by
+    swapping the workload's ``candidates``. Asserting on a locally
+    re-implemented hash would prove nothing: such a test passes unchanged
+    against the count-keyed defect.
     """
-    import hashlib
+    from orchestration.defs.ig_enriched.slv import workloads as wl_mod
 
-    def ident_key(keys: list[str]) -> str:
-        return "submit-" + hashlib.sha256(
-            "\x00".join(sorted(keys)).encode()
-        ).hexdigest()[:16]
+    def sensor_key_for(post_ids: list[str]):
+        """The run_key the real sensor yields for exactly these candidates."""
+        wl = wl_mod.WORKLOADS[0]
+        fake = wl_mod.Workload(
+            name=wl.name,
+            silver_table=wl.silver_table,
+            candidates=lambda conn, cfg: [
+                {"post_id": pid, "caption": "cap", "media_files": None}
+                for pid in post_ids
+            ],
+            build_item=wl.build_item,
+            estimate=wl.estimate,
+            media_bearing=wl.media_bearing,
+            job_spec=wl.job_spec,
+            prompt_hash=wl.prompt_hash,
+            schema_version=wl.schema_version,
+            parse=wl.parse,
+        )
+        monkeypatch.setattr(wl_mod, "WORKLOADS", (fake,))
+        monkeypatch.setattr(wl_mod, "WORKLOAD_BY_NAME", {fake.name: fake})
+        reqs = _requests(_slice_ctx())
+        assert len(reqs) == 1, reqs
+        return reqs[0].run_key
 
-    a = [
-        partition_key(WORKLOAD, 0, ["P1"]),
-        partition_key(WORKLOAD, 0, ["P2"]),
-    ]
-    b = [
-        partition_key(WORKLOAD, 0, ["P3"]),
-        partition_key(WORKLOAD, 0, ["P9"]),
-    ]
-    assert len(a) == len(b)
-    assert ident_key(a) != ident_key(b), (
-        "identity-keyed run_keys must distinguish equal-size sets"
+    set_a = ["P1", "P2"]
+    set_b = ["P3", "P9"]
+    assert len(set_a) == len(set_b)
+
+    key_a = sensor_key_for(set_a)
+    key_b = sensor_key_for(set_b)
+    assert key_a != key_b, (
+        "two different pending sets of equal size produced the SAME run_key "
+        f"({key_a!r}) — Dagster would treat the second as already requested "
+        "and never submit it"
     )
-    # And the same set must still dedupe.
-    assert ident_key(a) == ident_key(list(reversed(a)))
+
+    # And the same set observed twice still dedupes.
+    assert sensor_key_for(set_a) == key_a
 
 
 def test_the_tag_carries_every_pending_key():
