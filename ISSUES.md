@@ -228,6 +228,106 @@ and the schema drift detector catches table mismatches.
 
 ## Active
 
+### 35. Enrichment harvest could not land anything (`KNOWN_PROVIDERS` drift)
+
+**Status:** RESOLVED — found by the first real paid run through the seam.
+
+**Symptom.** `enrichment_harvest` failed at the landing step:
+
+```
+ValueError: refusing to land provider 'service_backed' into the LIVE default lake
+root: not in KNOWN_PROVIDERS ['gemini', 'none', 'qwen'] — pass an explicit tmp/test root
+```
+
+Submit and poll both succeeded and the provider call returned 200; only landing failed.
+No row could reach bronze from any live adapter.
+
+**Root cause.** `landing.py`'s `KNOWN_PROVIDERS` allowlist was written when providers were
+named after the model vendor (`gemini`, `qwen`). The Gemini retirement left
+`ServiceBackedAdapter` as the only registered adapter, and it names the **seam**
+(`service_backed`, `service_backed.py:46`). The allowlist was never updated — the
+docstring already said "a new real provider is ADDED here explicitly, alongside its
+producer", and that step was simply missed when the vendor was retired.
+
+**Why every gate missed it.** `dagster definitions validate` checks graph structure only.
+The suite never lands with `root=None` (the production path), so no test could observe it.
+243 green tests and a valid graph, and the paid path was still terminal. This is the
+repo's verification-plane lesson in its purest form: it took one real run to see it.
+
+**Fix.** `service_backed` added to `KNOWN_PROVIDERS` (`qwen` kept for rows already landed
+under that name); the docstring now states the value is the adapter's registered name,
+not the vendor. New test `test_every_registered_adapter_may_land_in_the_live_root` pins
+the allowlist to `provider.ADAPTER_REGISTRY`, so the next rename fails in CI instead of
+in production. Commit `e1c38b0`.
+
+**Not changed, deliberately:** the `root=None` guard itself is correct — it is what stops
+`provider='fake'` fixtures reaching the live lake.
+
+---
+
+### 36. Smoke E2E wrote to the live lake and the live Dagster instance
+
+**Status:** RESOLVED (state restored) — recorded because a future session will see
+cleared instance history and a backup trail, and would otherwise assume corruption.
+
+**Symptom.** `enrichment_submit` / `enrichment_harvest` run against the smoke slice wrote
+2 rows into the LIVE `data/lake/bronze/bronze_enrichment_raw.parquet` and materialized
+runs and partitions into the LIVE Dagster instance. Nothing errored; the runs reported
+success.
+
+**Root cause — three independent mechanisms, all of which must be overridden.** This is
+the part worth reading twice:
+
+1. **Lake roots are import-time module constants** in `platform/paths.py`
+   (`IG_DATA_DIR` / `IG_BRONZE_DIR` / `IG_SILVER_DIR`). Setting them **does** work — but
+   the smoke config JSON overrode only the two DB resources, so bronze landed live.
+2. **`PolarsIOManager(lake_root="data/lake")` is a hardcoded literal** at
+   `definitions.py:42` that **survives every environment variable**. Asset outputs routed
+   through the io manager ignore the `IG_*` exports entirely.
+3. **`DAGSTER_HOME` does not work as a shell export for the `dagster` CLI.** The CLI reads
+   `.env` and ignores the export — verified directly: `dagster instance info` reports the
+   `.env` home while `DagsterInstance.get()` in a Python process honours the export. So
+   every `dagster job execute` wrote its run records and partition materializations to the
+   **live** instance while the lake stayed correctly on smoke.
+
+**Sequence.** The first E2E contaminated live bronze and the live instance; that was
+remediated. Awaiting a second E2E that was *believed* isolated, mechanism 3 was still
+unknown — so it repeated the instance contamination. The lake isolation did hold on the
+second attempt (proven by live bronze's size+mtime being byte-identical across the run,
+while smoke bronze went 228 → 230).
+
+**Consequence.** `data/smoke/dagster_home` is **empty (0 runs / 0 partitions)** — the
+smoke instance was never actually used. Do not read that as evidence of successful
+isolation; it is the opposite.
+
+**Fix / remediation.** (a) The 2 contaminated rows were excised from live bronze by
+`run_id`, restoring it to exactly **9,576 rows, provider `gemini` only**. (b) The live
+instance history was cleared twice, restoring **0 runs / 0 partitions**. (c) The gap
+plan's smoke recipe now carries a pre-run anchor assertion (assert every resolved root is
+under `data/smoke`) and a post-run size+mtime check on the live bronze parquet — a row
+count can match while bytes change.
+
+**Backups** (all verified present before each wipe):
+- `data/backups/contaminated-by-smoke-e2e-20260915T205450Z/` — 12 files (bronze parquet + history)
+- `data/backups/smoke-instance-partitions-20260915T211054Z/` — 6 files (history)
+- `data/backups/dagster-history.pre-legacy-key-wipe-20260915T164612Z/` — 25 files (the earlier legacy-key wipe)
+
+**Which data is irreplaceable — the distinction that made this remediation safe.**
+`bronze_enrichment_raw` is model output: reproducible from media + prompt, so excising
+rows costs money, not information. `data/media/posts/` and the Apify bronze are **not**
+reproducible (scraped bytes behind ~4–5 day CDN URLs; as-observed history). The same
+excision applied to those would have been permanent data loss.
+
+**STILL LIVE — not fixed, and this is the landmine for the next E2E.** The state is
+remediated; the **trap is not**. Mechanism 3 above still holds: exporting `DAGSTER_HOME`
+does nothing for the `dagster` CLI, so anyone who runs the smoke recipe as originally
+written will contaminate the live instance again. The plan's recipe now says so and adds
+assertions, but the underlying `.env`-beats-the-export behaviour is unfixed and needs
+either a `--env-file`-style override or a documented "edit `.env`, run, restore"
+procedure. Treat any future smoke run's instance state as UNVERIFIED until measured.
+
+---
+
 ### Dagster event log reset — repo-reorganization branches 1-3 (2026-09-15)
 
 **Status:** RESOLVED (instance state) — recorded because it is destructive and
