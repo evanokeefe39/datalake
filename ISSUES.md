@@ -228,6 +228,65 @@ and the schema drift detector catches table mismatches.
 
 ## Active
 
+### Dagster event log reset — repo-reorganization branches 1-3 (2026-09-15)
+
+**Status:** RESOLVED (instance state) — recorded because it is destructive and
+a future session will see an empty run history.
+
+**Symptom.** The plan's gate 8 (the facet dry run) failed on the live instance:
+
+```
+RuntimeError: unparseable in-flight partition key '0e0bfcb3009b42c3':
+  partition key must be '<workload>\x00r<N>\x00<post_id>'
+```
+
+**Root cause.** The pre-refactor layout wrote sha256-digest partition keys into
+`data/dagster_home`. Eight such keys remained in the event log, and
+`in_flight_partitions` derives from `get_materialized_partitions` — the EVENT
+log, not the partition definitions — so `_in_flight_by_post` raised on every
+submit run. `SqliteEventLogStorage` supports neither partition-scoped wipe
+(`wipe_asset_partitions` → `NotImplementedError`) nor asset-wide
+(`wipe_assets` → `False`), so the events could not be purged selectively;
+deleting the 8 partition *definitions* alone would have left the events behind
+and the guard still raising.
+
+**Fix.** Cleared `data/dagster_home/history/` entirely. All 8 keys were verified
+to name no workload, have zero harvested counterparts, and be unharvestable —
+no real completed work was affected. Backup (verified 25 files / 9.42 MB) at
+`data/backups/dagster-history.pre-legacy-key-wipe-20260915T164612Z/`.
+
+**Consequence:** the live instance has NO run history before 2026-09-15. Prior
+run records exist only in that backup.
+
+**Not fixed (deliberate):** `_in_flight_by_post` still RAISES on an unparseable
+key. That is the strict grammar guard ADR-0014 D1 specifies, and it is correct
+once the instance matches the grammar. A future migration introducing a third
+key grammar should reconcile via `migrations/` rather than loosening it.
+
+### Enrichment ops reported through the I/O manager (found by gate 8)
+
+**Status:** RESOLVED (2026-09-15).
+
+`submit_enrichment_op` and `harvest_enrichment_op` returned a report dict.
+Neither job declares an asset, so Dagster routed the value through the
+job-level `PolarsIOManager`, which resolved an asset key for an op that has none
+and failed the run at execution time. `definitions validate` passed on this and
+always would — the graph is structurally sound. Both now declare
+`out=Out(Nothing)`.
+
+### The test suite does not finish clean
+
+**Status:** OPEN — deferred by the owner 2026-09-15 ("focus on finishing the
+scaffold first").
+
+`uv run pytest tests/` is not a gate for the reorganization. State at the end of
+branch 3: 235 enrichment tests pass, and the wider tree collects without errors
+but has not been fully re-executed since the module split (instagram / serving /
+operational were relinted, not rerun). The enrichment directory is the replanned
+one and is green.
+
+---
+
 ### Retired tables kept coming back (retirement was not durable)
 
 **Status:** RESOLVED (2026-09-15) — W9 follow-up.
