@@ -17,8 +17,8 @@ import polars as pl
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.common.schemas import duckdb_ddl
-from datalake.defs.instagram.assets import _profile_observations, ig_profiles_slv
+from orchestration.defs.platform.schemas import duckdb_ddl
+from orchestration.defs.ig_core.slv.profiles import _profile_observations, ig_profiles_slv
 from migrations.migrate_backfill_profile_observations import (
     apply_backfill,
     collect_observations,
@@ -28,7 +28,7 @@ from migrations.migrate_backfill_profile_observations import (
 
 
 def _run_profiles(tmp_path, ops, duckdb):
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         return ig_profiles_slv(context)
 
@@ -73,7 +73,7 @@ def test_ddl_creates_table_with_pk(tmp_path):
     """``duckdb_ddl`` emits CREATE TABLE IF NOT EXISTS with the full PK."""
     import duckdb as duckdb_mod
 
-    from datalake.defs.common.schemas import DUCKDB_TABLES
+    from orchestration.defs.platform.schemas import DUCKDB_TABLES
 
     ddl = duckdb_ddl("silver_ig_profile_observations")
     assert ddl.startswith("CREATE TABLE IF NOT EXISTS silver_ig_profile_observations")

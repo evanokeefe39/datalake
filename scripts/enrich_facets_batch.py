@@ -44,16 +44,16 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT))
 
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
 
-from datalake.defs.common.resources import SQLiteResource  # noqa: E402
-from datalake.defs.enrichment import facets_batch, qwen_client  # noqa: E402
-from datalake.defs.enrichment.prompts import _DEFAULT_QWEN_MODEL  # noqa: E402
+from orchestration.defs.engine import facets_batch  # noqa: E402
+from orchestration.defs.ig_enriched.slv.prompts import _DEFAULT_QWEN_MODEL  # noqa: E402
+from orchestration.defs.integration import batch_client  # noqa: E402
+from orchestration.defs.platform.resources import SQLiteResource  # noqa: E402
 
 logger = logging.getLogger("enrich_facets_batch")
 
@@ -111,7 +111,7 @@ def run_harvest(args: argparse.Namespace) -> int:
     args.model = args.model or _DEFAULT_QWEN_MODEL
     base_url = _service_url(args)
     # US-EENG-2: loud health check — never a quiet 'nothing to do'.
-    qwen_client.check_health(base_url)
+    batch_client.check_health(base_url)
     if not args.job_ids:
         print(
             "No job ids to harvest — pass --job-ids (there is no ledger; "
@@ -147,7 +147,7 @@ def run_batch(args: argparse.Namespace) -> int:
     args.model = args.model or _DEFAULT_QWEN_MODEL
     base_url = _service_url(args)
     # US-EENG-2: loud health check before ANY submit.
-    qwen_client.check_health(base_url)
+    batch_client.check_health(base_url)
     ops = SQLiteResource(database=args.ops_db)
     conn = _open_state(args.state_db)
     try:
@@ -218,7 +218,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--service-url",
         default=os.environ.get("QWEN_SERVICE_URL")
-        or qwen_client.DEFAULT_QWEN_SERVICE_URL,
+        or batch_client.DEFAULT_JOBS_SERVICE_URL,
         help="qwen-batch service base URL",
     )
     p.add_argument("--poll-seconds", type=int, default=60)

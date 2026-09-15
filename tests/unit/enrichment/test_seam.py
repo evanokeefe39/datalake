@@ -2,7 +2,7 @@
 
 import pytest
 
-from datalake.defs.enrichment.seam import (
+from orchestration.defs.engine.provider import (
     CANONICAL_STATES,
     COMPLETED,
     DEFAULT_JOBSPEC,
@@ -16,11 +16,9 @@ from datalake.defs.enrichment.seam import (
     ProviderError,
     Result,
     build_adapter,
-    prompt_identity,
-    prompt_identity_v1,
     register_adapter,
-    run_lifecycle,
 )
+from orchestration.defs.ig_enriched.slv.prompts import prompt_identity, prompt_identity_v1
 
 
 class _FakeAdapter:
@@ -148,7 +146,7 @@ def test_register_adapter_and_build() -> None:
         assert isinstance(adapter, _FakeAdapter)
         assert isinstance(adapter, ProviderAdapter)
     finally:
-        del __import__("datalake.defs.enrichment.seam", fromlist=["x"]).ADAPTER_REGISTRY[
+        del __import__("orchestration.defs.engine.provider", fromlist=["x"]).ADAPTER_REGISTRY[
             "_test_fake"
         ]
 

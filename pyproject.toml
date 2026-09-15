@@ -1,7 +1,3 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [project]
 name = "datalake"
 version = "0.1.0"
@@ -9,29 +5,34 @@ description = "Dagster + Parquet + DuckDB medallion lakehouse platform"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
-dependencies = [
-    "dagster>=1.9",
-    "dagster-duckdb>=0.29",
-    "dagster-webserver>=1.9",
-    "duckdb>=1.0",
-    "fastapi",
-    "httpx",
-    "google-genai",
-    "polars>=1.0",
-    "pydantic>=2.0",
-    "python-dotenv",
-    "tenacity",
-    "pyarrow>=24.0.0",
-    "typer>=0.26.8",
-    "uvicorn",
-    "boto3>=1.43.89",
-]
+# Interim: deps of the not-yet-extracted root consumers — the dashboard
+# (`dashboard/server.py`, still at the repo root) and `scripts/*.py`.
+dependencies = ["fastapi", "uvicorn", "boto3>=1.43.89"]
 
 [dependency-groups]
-dev = ["pytest", "pytest-asyncio", "ruff"]
+# Dev deps of the repo root, which stays the command home for `dg`/`dagster`,
+# `pytest` and `ruff`. The workspace members are normal dependencies because
+# every one of them is imported from here — `orchestration` provides the code
+# location `[tool.dagster]` names, and the dashboard and `scripts/` import
+# `opsdb`.
+dev = ["pytest", "pytest-asyncio", "ruff", "orchestration", "opsdb", "storage"]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/datalake"]
+# Virtual project: the root holds no importable package of its own until
+# `services-extraction` moves the dashboard out. Its members are the real
+# distributions.
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["services/*", "packages/*"]
+
+# Every member is also a dependency of the root (which stays the command home),
+# so each needs a workspace source declaration — uv requires this for any
+# member referenced by name.
+[tool.uv.sources]
+orchestration = { workspace = true }
+opsdb = { workspace = true }
+storage = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -44,8 +45,13 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+# The archive is a provenance record, not code: those scripts were executed once
+# against a schema that no longer exists and are deliberately not maintained.
+"scripts/archive/**" = ["E501", "E702", "F401", "F841", "I001", "N806"]
+
 [tool.ruff.format]
 quote-style = "double"
 
 [tool.dagster]
-module_name = "datalake.definitions"
+module_name = "orchestration.definitions"

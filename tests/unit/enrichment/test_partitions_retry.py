@@ -8,7 +8,7 @@ retired queue's ``MAX_ATTEMPTS``.
 
 import pytest
 
-from datalake.defs.enrichment.partitions import (
+from orchestration.defs.engine.partitions import (
     HARVESTED_ASSET_NAME,
     MAX_ROUNDS,
     SUBMITTED_ASSET_NAME,
@@ -41,20 +41,20 @@ class FakeInstance:
 
 def test_partition_key_is_the_read_composite():
     key = f"{WORKLOAD}\x00r0\x00Cabc123"
-    from datalake.defs.enrichment.partitions import partition_key
+    from orchestration.defs.engine.partitions import partition_key
 
     assert partition_key(WORKLOAD, 0, ["Cabc123"]) == key
 
 
 def test_round_zero_uses_the_same_grammar():
-    from datalake.defs.enrichment.partitions import partition_key
+    from orchestration.defs.engine.partitions import partition_key
 
     assert "\x00r0\x00" in partition_key(WORKLOAD, 0, ["P1"])
     assert "\x00r3\x00" in partition_key(WORKLOAD, 3, ["P1"])
 
 
 def test_parse_roundtrips_the_round():
-    from datalake.defs.enrichment.partitions import partition_key
+    from orchestration.defs.engine.partitions import partition_key
 
     for round_n in (0, 1, 4):
         key = partition_key(WORKLOAD, round_n, ["P1"])
@@ -74,7 +74,7 @@ def test_parse_rejects_malformed_keys(bad):
 
 
 def test_partition_key_requires_exactly_one_post_id():
-    from datalake.defs.enrichment.partitions import partition_key
+    from orchestration.defs.engine.partitions import partition_key
 
     with pytest.raises(ValueError):
         partition_key(WORKLOAD, 0, [])
@@ -87,7 +87,7 @@ def test_max_rounds_replaces_max_attempts():
     # is this constant, read from the key itself.
     assert MAX_ROUNDS >= 1
     with pytest.raises(ImportError):
-        from datalake.defs.enrichment.batch import MAX_ATTEMPTS  # noqa: F401
+        from orchestration.defs.engine.batch import MAX_ATTEMPTS  # noqa: F401
 
 
 # ── D3: the state math the drain guard and retry driver share ───────────────

@@ -24,26 +24,26 @@ import duckdb
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO_ROOT / "src"))
+sys.path.insert(0, str(REPO_ROOT / "services" / "orchestration" / "src"))
 
-from datalake.defs.common.schemas import duckdb_ddl  # noqa: E402
-from datalake.defs.enrichment import facets_batch  # noqa: E402
-from datalake.defs.enrichment.growth_facets_schema import (  # noqa: E402
+from orchestration.defs.platform.schemas import duckdb_ddl  # noqa: E402
+import orchestration.defs.engine.facets_batch as facets_batch  # noqa: E402
+from orchestration.defs.ig_enriched.slv.schemas import (  # noqa: E402
     GROWTH_FACETS_SCHEMA_VERSION,
 )
-from datalake.defs.enrichment.landing import (  # noqa: E402
+from orchestration.defs.engine.landing import (  # noqa: E402
     KEY_COLUMNS,
     WORKLOAD_GROWTH_FACETS_TEXT,
     WORKLOAD_GROWTH_FACETS_VISUAL,
     read_responses,
 )
-from datalake.defs.enrichment.prompts import (  # noqa: E402
+from orchestration.defs.ig_enriched.slv.prompts import (  # noqa: E402
     _DEFAULT_QWEN_MODEL,
     CURRENT_FACETS_PROMPT_HASH,
     CURRENT_TEXT_FACETS_PROMPT_HASH,
 )
-from datalake.defs.enrichment.qwen_client import QwenServiceError  # noqa: E402
-from datalake.defs.enrichment.seam import Result  # noqa: E402
+from orchestration.defs.integration.batch_client import BatchServiceError  # noqa: E402
+from orchestration.defs.engine.provider import Result  # noqa: E402
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -61,7 +61,7 @@ class _FakeAdapter:
     def poll(self, handle):
         doc = self.docs.get(handle)
         if doc is None:
-            raise QwenServiceError(
+            raise BatchServiceError(
                 f"unknown job {handle!r}", base_url="fake://service"
             )
         return doc

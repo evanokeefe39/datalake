@@ -7,18 +7,18 @@ from unittest.mock import patch
 import pytest
 from dagster import DefaultScheduleStatus, build_asset_context
 
-from datalake.defs.common.apify import trigger_run
-from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.common.schedules import (
+from orchestration.defs.integration.apify_client import trigger_run
+from orchestration.defs.platform.resources import SQLiteResource
+from orchestration.defs.platform.schedules import (
     CORE_REFRESH_CHARGE_CAP_USD,
     core_refresh,
 )
-from datalake.defs.common.schedules import (
+from orchestration.defs.platform.schedules import (
     core_refresh_run_requests as run_requests,
 )
-from datalake.defs.instagram.assets import ig_posts_raw
-from datalake.defs.instagram.config import ScrapeConfig
-from datalake.defs.instagram.creators import ensure_schema
+from orchestration.defs.ig_core.bnz.scrape import ig_posts_raw
+from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig
+from opsdb.roster import ensure_schema
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ class _FakeApifyResource:
 def fake_post():
     """Patch apify._post; yields the call recorder."""
     with patch(
-        "datalake.defs.common.apify._post",
+        "orchestration.defs.integration.apify_client._post",
         return_value={"id": "run_1", "defaultDatasetId": "ds_1", "stats": {}},
     ) as post:
         yield post
@@ -77,11 +77,11 @@ def _add_profile(ops: SQLiteResource, handle: str, *, enabled: int = 1, tier: st
 
 def _invoke_bronze(tmp_path, config) -> None:
     with (
-        patch("datalake.defs.instagram.assets.trigger_run",
+        patch("orchestration.defs.ig_core.bnz.scrape.trigger_run",
               return_value=_FakeRunInfo()) as trigger,
-        patch("datalake.defs.instagram.assets.poll_run", return_value="ds_fwd"),
-        patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path),
-        patch("datalake.defs.instagram.assets.stream_dataset", return_value=0),
+        patch("orchestration.defs.ig_core.bnz.scrape.poll_run", return_value="ds_fwd"),
+        patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path),
+        patch("orchestration.defs.ig_core.bnz.scrape.stream_dataset", return_value=0),
     ):
         ig_posts_raw(
             build_asset_context(),

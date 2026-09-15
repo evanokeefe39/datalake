@@ -17,7 +17,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(REPO_ROOT / "src"))
+sys.path.insert(0, str(REPO_ROOT / "services" / "orchestration" / "src"))
 
 from scripts.make_smoke_slice import (  # noqa: E402
     LIVE_BRONZE,

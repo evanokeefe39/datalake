@@ -10,7 +10,7 @@ import json
 
 import polars as pl
 
-from datalake.defs.instagram.assets import _derive_media
+from orchestration.defs.ig_core.slv.posts import _derive_media
 
 
 def _derive(df: pl.DataFrame) -> tuple[str, int]:

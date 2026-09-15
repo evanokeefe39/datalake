@@ -15,13 +15,8 @@ import sqlite3
 import duckdb
 import pytest
 
-from datalake.defs.common.schemas import (
-    DUCKDB_TABLES,
-    SQLITE_TABLES,
-    duckdb_all_ddl,
-    duckdb_ddl,
-    sqlite_all_ddl,
-)
+from opsdb.schema import SQLITE_TABLES, sqlite_all_ddl
+from orchestration.defs.platform.schemas import DUCKDB_TABLES, duckdb_all_ddl, duckdb_ddl
 
 
 @pytest.mark.parametrize("table", sorted(DUCKDB_TABLES))
@@ -130,5 +125,4 @@ def test_sqlite_all_ddl_creates_no_retired_queue_index():
         "creators",
         "profiles",
         "creator_merges",
-        "prompt_registry",
     }, f"unexpected retained table set: {sorted(tables)}"

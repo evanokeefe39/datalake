@@ -21,8 +21,8 @@ import polars as pl
 import pytest
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.enrichment import conform as conform_mod
-from datalake.defs.enrichment.conform import (
+import orchestration.defs.engine.silver_rt as conform
+from orchestration.defs.engine.silver_rt import (
     SILVER_AUDIO_TRANSCRIPTS,
     SILVER_CONTENT_CLASSIFICATION,
     SILVER_TABLES,
@@ -30,14 +30,14 @@ from datalake.defs.enrichment.conform import (
     SILVER_VISUAL_ANNOTATIONS,
     SILVER_VISUAL_SUMMARIES,
 )
-from datalake.defs.enrichment.landing import (
+from orchestration.defs.engine.landing import (
     WORKLOAD_CONTENT_CLASSIFICATION,
     WORKLOAD_GROWTH_FACETS_TEXT,
     WORKLOAD_GROWTH_FACETS_VISUAL,
     land_response,
 )
-from datalake.defs.serving.assets import gold_content_shape_performance
-from scripts.conform_silver import run_conform
+from orchestration.defs.serving.marts import gold_content_shape_performance
+from orchestration.defs.engine.silver_rt import conform as run_conform
 
 NOW = datetime(2026, 9, 14, 12, 0, 0, tzinfo=UTC)
 
@@ -152,7 +152,7 @@ def _land_classification(bronze_root: Path, post_id: str = "p3") -> None:
 def test_conform_has_production_caller():
     """The audit finding, pinned at import level: both the CLI script and
     the Dagster asset actually invoke conform.conform()."""
-    from datalake.defs.enrichment import assets as enrichment_assets
+    import orchestration.defs.engine.silver_rt as enrichment_assets
     from scripts import conform_silver
 
     script_src = inspect.getsource(conform_silver)
@@ -166,7 +166,7 @@ def test_conform_has_production_caller():
         getattr(a, "name", getattr(getattr(a, "key", None), "to_user_string", lambda: str(a))())
         for a in definitions.all_assets
     }
-    assert "silver_enrichment_conform" in names
+    assert "silver_enrichment" in names
 
 
 # ── Plan mode writes nothing ───────────────────────────────────────────────

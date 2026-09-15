@@ -10,10 +10,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from datalake.defs.enrichment import qwen_client
+import orchestration.defs.integration.batch_client as qwen_client
 
-DEFAULT_QWEN_SERVICE_URL = qwen_client.DEFAULT_QWEN_SERVICE_URL
-QwenServiceError = qwen_client.QwenServiceError  # re-exported for test ergonomics
+DEFAULT_JOBS_SERVICE_URL = qwen_client.DEFAULT_JOBS_SERVICE_URL
+BatchServiceError = qwen_client.BatchServiceError  # re-exported for test ergonomics
 check_health = qwen_client.check_health
 get_job = qwen_client.get_job
 get_results = qwen_client.get_results
@@ -37,7 +37,7 @@ def test_module_import_does_not_import_httpx():
     importlib.reload(qwen_client)
 
     assert "httpx" not in sys.modules
-    assert qwen_client.DEFAULT_QWEN_SERVICE_URL == "http://127.0.0.1:8462"
+    assert qwen_client.DEFAULT_JOBS_SERVICE_URL == "http://127.0.0.1:8462"
 
 
 def test_check_health_ok():
@@ -45,7 +45,7 @@ def test_check_health_ok():
         get.return_value = _resp(200, {"status": "ok", "model": "qwen-vl", "version": "1"})
         out = check_health()
     get.assert_called_once_with(
-        f"{DEFAULT_QWEN_SERVICE_URL}/health", timeout=5
+        f"{DEFAULT_JOBS_SERVICE_URL}/health", timeout=5
     )
     assert out == {"status": "ok", "model": "qwen-vl", "version": "1"}
 
@@ -54,21 +54,21 @@ def test_check_health_connection_error_raises_loudly():
     import httpx
 
     with patch("httpx.get", side_effect=httpx.ConnectError("refused")):
-        with pytest.raises(qwen_client.QwenServiceError) as exc:
+        with pytest.raises(qwen_client.BatchServiceError) as exc:
             check_health()
     msg = str(exc.value)
     assert "qwen-batch service" in msg
     assert "uv run qwen-batch" in msg
     assert "docker compose up" in msg
-    assert exc.value.base_url == DEFAULT_QWEN_SERVICE_URL
+    assert exc.value.base_url == DEFAULT_JOBS_SERVICE_URL
 
 
 def test_check_health_non_200_raises():
     with patch("httpx.get", return_value=_resp(502, text="bad gateway")):
-        with pytest.raises(qwen_client.QwenServiceError) as exc:
+        with pytest.raises(qwen_client.BatchServiceError) as exc:
             check_health()
     assert "HTTP 502" in str(exc.value)
-    assert exc.value.base_url == DEFAULT_QWEN_SERVICE_URL
+    assert exc.value.base_url == DEFAULT_JOBS_SERVICE_URL
 
 
 def test_submit_job_exact_url_and_body():
@@ -84,7 +84,7 @@ def test_submit_job_exact_url_and_body():
         job_id = submit_job(items=items, model="qwen2.5-vl", max_tokens=512)
 
     post.assert_called_once_with(
-        f"{DEFAULT_QWEN_SERVICE_URL}/jobs",
+        f"{DEFAULT_JOBS_SERVICE_URL}/jobs",
         json={"items": items, "model": "qwen2.5-vl", "max_tokens": 512},
         timeout=60,
     )
@@ -100,10 +100,10 @@ def test_submit_job_omits_max_tokens_when_none():
 
 def test_submit_job_non_2xx_raises():
     with patch("httpx.post", return_value=_resp(422, text="bad item")):
-        with pytest.raises(qwen_client.QwenServiceError) as exc:
+        with pytest.raises(qwen_client.BatchServiceError) as exc:
             submit_job([], model="m")
     assert "HTTP 422" in str(exc.value)
-    assert exc.value.base_url == DEFAULT_QWEN_SERVICE_URL
+    assert exc.value.base_url == DEFAULT_JOBS_SERVICE_URL
 
 
 def test_get_job_exact_url():
@@ -115,14 +115,14 @@ def test_get_job_exact_url():
         )
         out = get_job(job_id="j1")
     get.assert_called_once_with(
-        f"{DEFAULT_QWEN_SERVICE_URL}/jobs/j1", timeout=60
+        f"{DEFAULT_JOBS_SERVICE_URL}/jobs/j1", timeout=60
     )
     assert out["state"] == "processing"
 
 
 def test_get_job_non_2xx_raises():
     with patch("httpx.get", return_value=_resp(404, text="no job")):
-        with pytest.raises(qwen_client.QwenServiceError):
+        with pytest.raises(qwen_client.BatchServiceError):
             get_job(job_id="missing")
 
 
@@ -132,13 +132,13 @@ def test_get_results_returns_items_list():
         get.return_value = _resp(200, {"items": items})
         out = get_results(job_id="j2")
     get.assert_called_once_with(
-        f"{DEFAULT_QWEN_SERVICE_URL}/jobs/j2/results", timeout=60
+        f"{DEFAULT_JOBS_SERVICE_URL}/jobs/j2/results", timeout=60
     )
     assert out == items
 
 
 def test_base_url_env_override(monkeypatch):
-    monkeypatch.setenv("QWEN_SERVICE_URL", "http://127.0.0.1:9999")
+    monkeypatch.setenv("JOBS_SERVICE_URL", "http://127.0.0.1:9999")
     with patch("httpx.get") as get:
         get.return_value = _resp(200, {"status": "ok", "model": "m", "version": "1"})
         check_health()
@@ -146,7 +146,7 @@ def test_base_url_env_override(monkeypatch):
 
 
 def test_base_url_arg_beats_env(monkeypatch):
-    monkeypatch.setenv("QWEN_SERVICE_URL", "http://127.0.0.1:9999")
+    monkeypatch.setenv("JOBS_SERVICE_URL", "http://127.0.0.1:9999")
     with patch("httpx.get") as get:
         get.return_value = _resp(200, {"status": "ok", "model": "m", "version": "1"})
         check_health("http://127.0.0.1:7000")

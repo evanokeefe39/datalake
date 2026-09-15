@@ -26,8 +26,7 @@ from pathlib import Path
 
 import duckdb
 import polars as pl
-
-from datalake.defs.common.schemas import duckdb_ddl
+from orchestration.defs.platform.schemas import duckdb_ddl
 
 BRONZE_DIR = Path("data/lake/bronze")
 DB_PATH = "data/state.duckdb"

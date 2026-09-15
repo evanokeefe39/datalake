@@ -24,9 +24,8 @@ import logging
 from datetime import datetime, timezone
 
 import duckdb
-
-from datalake.defs.common.schemas import duckdb_ddl
-from datalake.defs.instagram.labels import LABEL_VERSION, run_label_pass
+from orchestration.defs.ig_core.slv.labels import LABEL_VERSION, run_label_pass
+from orchestration.defs.platform.schemas import duckdb_ddl
 
 DB_PATH = "data/state.duckdb"
 OPS_PATH = "data/ops.sqlite"

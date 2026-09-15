@@ -16,9 +16,9 @@
 This is the core (non-enrichment) Instagram posts pipeline: how a post travels
 from an Apify scrape to a queryable serving view. It is a Dagster asset graph in
 four stages — **ingest → bronze → silver → labels**, with a **serving** layer
-built on top — implemented in `src/datalake/defs/instagram/assets.py`,
-`src/datalake/defs/serving/assets.py`, and the shared resources in
-`src/datalake/defs/common/`.
+built on top — implemented in ``orchestration.defs.ig_core/{bnz/scrape,slv/*}.py``,
+``orchestration.defs.serving/{dims,metrics,marts,views}.py``, and the shared resources in
+``orchestration.defs.platform/``.
 
 What it is **not**: this pipeline does no model work. The enrichment path that
 consumes the labels (Gemini analysis of `enrich_decision`-approved posts) is a
@@ -90,7 +90,7 @@ not restate it.
   return value uses the `IG_SILVER_DIR` convention via
   `defs/common/lake.py`.
 - **State:** DuckDB tables `silver_ig_posts`, `silver_ig_post_observations`,
-  and the `silver_ig` watermark row (DDL from `defs/common/schemas.py`).
+  and the `silver_ig` watermark row (DDL from ``orchestration.defs.platform.schemas``).
 - **Verified row counts (read-only query against `data/state.duckdb`,
   2026-09-10):** `silver_ig_posts` = 10,038 rows;
   `silver_ig_post_observations` = 12,701 rows. (A figure of ~2,200 posts floats

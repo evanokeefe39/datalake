@@ -1,4 +1,4 @@
-"""Test that ``_ensure_state_tables`` never recreates the retired gold tables.
+"""Test that ``ensure_state_tables`` never recreates the retired gold tables.
 
 ADR-0011 replaces ``gold_analyses`` with ``silver_content_classification``;
 W9 (2026-09-15) retired ``gold_analyses`` and ``gold_growth_facets`` — both
@@ -10,16 +10,16 @@ from __future__ import annotations
 
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.instagram.assets import _ensure_state_tables
+from orchestration.defs.ig_core.slv.posts import ensure_state_tables
 
 
-def test_ensure_state_tables_does_not_create_retired_gold_tables(tmp_path) -> None:
+def testensure_state_tables_does_not_create_retired_gold_tables(tmp_path) -> None:
     """GIVEN an empty DuckDB database
-    WHEN _ensure_state_tables runs
+    WHEN ensure_state_tables runs
     THEN the retired gold tables are NOT created, while siblings are.
     """
     db = DuckDBResource(database=str(tmp_path / "state.duckdb"))
-    _ensure_state_tables(db)
+    ensure_state_tables(db)
 
     with db.get_connection() as conn:
         tables = {

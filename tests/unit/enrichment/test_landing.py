@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from datalake.defs.enrichment.landing import (
+from orchestration.defs.engine.landing import (
     DATASET_ID,
     KEY_COLUMNS,
     SCHEMA,
@@ -225,6 +225,6 @@ def test_response_path_follows_lake_convention(root):
 def test_default_root_is_bronze_lake():
     # Import-level default routes to the bronze lake root (env-overridable
     # by lake.py) — exercised here only for the convention, not the write.
-    from datalake.defs.common import lake
+    from orchestration.defs.platform import paths as lake
 
     assert response_path(None) == lake.BRONZE_LAKE / f"{DATASET_ID}.parquet"

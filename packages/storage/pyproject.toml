@@ -1,0 +1,13 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "storage"
+version = "0.1.0"
+description = "Byte-storage client: content-addressed keys over a configurable fsspec filesystem"
+requires-python = ">=3.10"
+dependencies = ["fsspec"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/storage"]

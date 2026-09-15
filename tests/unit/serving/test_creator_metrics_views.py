@@ -26,22 +26,11 @@ import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.serving.assets import (
-    v_creator_profile as _v_creator_profile,
-)
-from datalake.defs.serving.assets import (
-    v_creator_topics as _v_creator_topics,
-)
-from datalake.defs.serving.assets import (
-    v_post_baselines as _v_post_baselines,
-)
-from datalake.defs.serving.assets import (
-    v_post_metrics as _v_post_metrics,
-)
-from datalake.defs.serving.assets import (
-    v_rising_creators as _v_rising_creators,
-)
-
+from orchestration.defs.serving.metrics import v_creator_profile as _v_creator_profile
+from orchestration.defs.serving.metrics import v_creator_topics as _v_creator_topics
+from orchestration.defs.serving.metrics import v_post_baselines as _v_post_baselines
+from orchestration.defs.serving.metrics import v_post_metrics as _v_post_metrics
+from orchestration.defs.serving.views import v_rising_creators as _v_rising_creators
 # ── Fixture plumbing ─────────────────────────────────────────────────────────
 
 POST_COLUMNS = (

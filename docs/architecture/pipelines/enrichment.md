@@ -451,7 +451,7 @@ re-pointed at them. A projection built on a mart is a NEW, additive surface,
 not a redefinition of any view above.
 
 **Authoritative list + enforcement.** The canonical list is `DUCKDB_VIEWS`
-(`src/datalake/defs/common/schemas.py`). It is not a prose promise:
+(``orchestration.defs.platform.schemas` (DuckDB) + `opsdb.schema` (SQLite)`). It is not a prose promise:
 `tests/operational/test_state_compatibility.py` already parametrizes over
 `EXPECTED_DUCKDB_VIEWS` and asserts every view against the live DB — so if the
 migration drops or renames any view, that test fails. The no-regression

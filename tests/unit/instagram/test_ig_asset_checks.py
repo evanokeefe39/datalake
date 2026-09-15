@@ -14,7 +14,7 @@ import pytest
 from dagster import build_asset_check_context
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.instagram.asset_checks import (
+from orchestration.defs.ig_core.slv.checks import (
     ig_checks,
 )
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
@@ -43,7 +43,7 @@ class TestBronzeChecks:
             make_ig_bronze_row("p1", "abc", "Post 1", "u1"),
             make_ig_bronze_row("p2", "def", "Post 2", "u2"),
         ])
-        with patch("datalake.defs.instagram.asset_checks.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.ig_core.slv.checks.BRONZE_LAKE", tmp_path):
             check = _CHECKS_BY_NAME["ig_posts_raw_has_rows"]
             result = check()
         assert result.passed is True
@@ -54,7 +54,7 @@ class TestBronzeChecks:
         WHEN the check runs
         THEN it fails.
         """
-        with patch("datalake.defs.instagram.asset_checks.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.ig_core.slv.checks.BRONZE_LAKE", tmp_path):
             check = _CHECKS_BY_NAME["ig_posts_raw_has_rows"]
             result = check()
         assert result.passed is False
@@ -77,7 +77,7 @@ class TestBronzeChecks:
             },
             "downloaded_at": "2024-01-01T00:00:00Z",
         }))
-        with patch("datalake.defs.instagram.asset_checks.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.ig_core.slv.checks.BRONZE_LAKE", tmp_path):
             check = _CHECKS_BY_NAME["ig_posts_raw_has_meta"]
             result = check()
         assert result.passed is True
@@ -90,7 +90,7 @@ class TestBronzeChecks:
         write_ig_bronze(tmp_path / "ds_001.parquet", [
             make_ig_bronze_row("p1", "abc", "Post", "u1"),
         ])
-        with patch("datalake.defs.instagram.asset_checks.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.ig_core.slv.checks.BRONZE_LAKE", tmp_path):
             check = _CHECKS_BY_NAME["ig_posts_raw_has_meta"]
             result = check()
         assert result.passed is False
@@ -103,7 +103,7 @@ class TestBronzeChecks:
         write_ig_bronze(tmp_path / "ds_001.parquet", [
             make_ig_bronze_row("p1", "abc", "Post", "u1"),
         ])
-        with patch("datalake.defs.instagram.asset_checks.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.ig_core.slv.checks.BRONZE_LAKE", tmp_path):
             check = _CHECKS_BY_NAME["ig_posts_raw_run_id_not_null"]
             result = check()
         assert result.passed is True
@@ -118,7 +118,7 @@ class TestBronzeChecks:
             "shortCode": ["abc"],
         })
         df.write_parquet(tmp_path / "ds_bad.parquet")
-        with patch("datalake.defs.instagram.asset_checks.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.ig_core.slv.checks.BRONZE_LAKE", tmp_path):
             check = _CHECKS_BY_NAME["ig_posts_raw_run_id_not_null"]
             result = check()
         assert result.passed is False
@@ -185,7 +185,7 @@ class TestSilverChecks:
             """)
             conn.execute("INSERT INTO silver_ig_posts VALUES ('p1', 'Post 1')")
 
-        with patch("datalake.defs.instagram.asset_checks.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.ig_core.slv.checks.BRONZE_LAKE", tmp_path):
             ctx = build_asset_check_context(resources={"duckdb": duckdb})
             check = _CHECKS_BY_NAME["ig_posts_slv_row_count_bounded"]
             result = check(ctx)
@@ -205,7 +205,7 @@ class TestClassificationChecks:
 
     @pytest.fixture(autouse=True)
     def _setup_classification_table(self, duckdb):
-        from datalake.defs.common.schemas import duckdb_ddl
+        from orchestration.defs.platform.schemas import duckdb_ddl
 
         with duckdb.get_connection() as conn:
             conn.execute(duckdb_ddl("silver_content_classification"))

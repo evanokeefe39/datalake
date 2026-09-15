@@ -10,7 +10,7 @@ import pytest
 from dagster import build_asset_check_context
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.serving.asset_checks import serving_checks
+from orchestration.defs.serving.checks import serving_checks
 
 _CHECKS_BY_NAME = {list(c.check_keys)[0].name: c for c in serving_checks}
 

@@ -1,16 +1,17 @@
-"""Schema catalog — re-exports from the canonical ``datalake.defs.common.schemas``.
+"""Schema catalog — re-exports from the canonical catalog modules.
 
 This file exists for backward compatibility and test imports. The single
-source of truth is ``src/datalake/defs/common/schemas.py``.
+sources of truth are ``orchestration.defs.platform.schemas`` (DuckDB half)
+and ``opsdb.schema`` (SQLite half).
 """
 
 from __future__ import annotations
 
-from datalake.defs.common.schemas import (  # noqa: F401
+from opsdb.schema import SQLITE_TABLES  # noqa: F401
+from orchestration.defs.platform.schemas import (  # noqa: F401
     DUCKDB_TABLES,
     DUCKDB_VIEWS,
     SILVER_COLUMNS,
-    SQLITE_TABLES,
 )
 
 # ── Backward-compat aliases ───────────────────────────────────────────────

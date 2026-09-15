@@ -22,9 +22,9 @@ import importlib
 import duckdb
 import pytest
 
-from datalake.defs.enrichment.classification import CLASSIFICATION_DDL
+from orchestration.defs.ig_enriched.slv.classification import CLASSIFICATION_DDL
 
-serving_assets = importlib.import_module("datalake.defs.serving.assets")
+serving_assets = importlib.import_module("orchestration.defs.serving.views")
 
 # ── The pre-rebind column set of v_post_detail (verbatim, frozen) ──────────
 # Copied from the gold_analyses-era SELECT list before the rebind. If a

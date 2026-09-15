@@ -22,7 +22,7 @@ import textwrap
 import uuid
 from pathlib import Path
 
-from datalake.defs.enrichment.media_upload import seam_violations
+from orchestration.defs.ig_enriched.slv.checks import seam_violations
 
 
 def _load_module(source: str, name: str):
@@ -112,7 +112,7 @@ class TestSeamGuard:
         passes on the current package state."""
         from dagster import AssetCheckResult
 
-        from datalake.defs.enrichment.assets import (
+        from orchestration.defs.ig_enriched.slv.assets import (
             ENRICHMENT_CHECKS,
             check_enrichment_seam_purity,
         )

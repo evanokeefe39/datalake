@@ -9,16 +9,10 @@ from __future__ import annotations
 import pytest
 from dagster import build_asset_context
 
-from datalake.defs.enrichment.classification import CLASSIFICATION_DDL
-from datalake.defs.serving.assets import (
-    dim_date as _dim_date_asset,
-)
-from datalake.defs.serving.assets import (
-    profile_dimension as _profile_dimension_asset,
-)
-from datalake.defs.serving.assets import (
-    v_post_detail as _v_post_detail_asset,
-)
+from orchestration.defs.ig_enriched.slv.classification import CLASSIFICATION_DDL
+from orchestration.defs.serving.dims import dim_date as _dim_date_asset
+from orchestration.defs.serving.dims import profile_dimension as _profile_dimension_asset
+from orchestration.defs.serving.views import v_post_detail as _v_post_detail_asset
 from tests.fixtures.silver_factories import seed_silver_posts
 
 
@@ -200,7 +194,7 @@ def test_v_post_detail_empty_data(db, ops):
 
 def test_profile_dimension_links_creator(db, ops):
     """dim_profile gains creator_id/creator_name from ops profiles/creators."""
-    from datalake.defs.instagram.creators import add_profile, create_creator
+    from opsdb.roster import add_profile, create_creator
 
     creator = create_creator(ops, "Jane Doe")
     add_profile(ops, creator_id=creator["id"], platform="instagram", handle="user_a")

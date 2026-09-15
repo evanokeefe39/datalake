@@ -11,9 +11,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from datalake.defs.common.resources import DuckDBResource, SQLiteResource
-from datalake.defs.common.schemas import duckdb_ddl
-from datalake.defs.instagram.labels import LABEL_VERSION, run_label_pass
+from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
+from orchestration.defs.platform.schemas import duckdb_ddl
+from orchestration.defs.ig_core.slv.labels import LABEL_VERSION, run_label_pass
 
 NOW = datetime(2026, 8, 31, tzinfo=timezone.utc)
 
@@ -35,7 +35,7 @@ def ops(tmp_path):
 
 def _core_ops(ops, handle="alice"):
     """Register a tier1 enabled profile so the handle counts as core."""
-    from datalake.defs.instagram.creators import add_profile, create_creator
+    from opsdb.roster import add_profile, create_creator
 
     creator = create_creator(ops, "Alice")
     add_profile(ops, creator_id=creator["id"], platform="instagram", handle=handle)
@@ -230,8 +230,8 @@ def test_floor_filler_requires_standout(conn):
 
 
 def test_label_pass_asset_and_schedule(tmp_path, ops):
-    from datalake.defs.common.schedules import daily_medallion
-    from datalake.defs.instagram.assets import ig_post_labels
+    from orchestration.defs.platform.schedules import daily_medallion
+    from orchestration.defs.ig_core.slv.posts import ig_post_labels
 
     _core_ops(ops, "alice")
     db = DuckDBResource(database=str(tmp_path / "state.duckdb"))

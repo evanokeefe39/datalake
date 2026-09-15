@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import pytest
 
-from datalake.defs.enrichment.prompts import (
+from orchestration.defs.ig_enriched.slv.prompts import (
     IG_GOLD_PROMPT,
     IG_GOLD_SCHEMA_VERSION,
     compute_prompt_hash,
     legacy_prompt_hash,
 )
-from datalake.defs.enrichment.seam import prompt_identity, prompt_identity_v1
+from orchestration.defs.ig_enriched.slv.prompts import prompt_identity, prompt_identity_v1
 
 _MODELS = ("gemini-3.5-flash-lite", "qwen/qwen3.7-flash")
 _PROVIDERS = ("gemini", "qwen-batch")
@@ -132,7 +132,7 @@ def test_new_hash_differs_from_legacy_for_same_prompt() -> None:
 
 def test_current_prompt_hash_uses_new_scheme() -> None:
     """The module-level constant is computed under the new (model-free) scheme."""
-    from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
+    from orchestration.defs.ig_enriched.slv.prompts import CURRENT_PROMPT_HASH
 
     assert CURRENT_PROMPT_HASH == compute_prompt_hash(
         _PROMPT, IG_GOLD_SCHEMA_VERSION

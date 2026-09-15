@@ -16,14 +16,11 @@ from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 from pydantic import ValidationError
 
-from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.instagram.assets import (
-    _classify_bronze,
-    ig_comments_slv,
-    ig_posts_slv,
-    ig_profiles_slv,
-)
-from datalake.defs.instagram.config import ResultsType, ScrapeConfig
+from orchestration.defs.platform.resources import SQLiteResource
+from orchestration.defs.ig_core.slv.comments import ig_comments_slv
+from orchestration.defs.ig_core.slv.posts import _classify_bronze, ig_posts_slv
+from orchestration.defs.ig_core.slv.profiles import ig_profiles_slv
+from orchestration.defs.ig_core.bnz.scrape import ResultsType, ScrapeConfig
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Classifier (US-01) ───────────────────────────────────────────────────
@@ -119,7 +116,7 @@ def test_slv_skips_profile_bronze(tmp_path, ops):
     _details_df(rows=3).write_parquet(tmp_path / "ds_profile.parquet")
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
@@ -133,7 +130,7 @@ def test_slv_skips_comment_bronze(tmp_path, ops):
     )
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
@@ -149,7 +146,7 @@ def test_profiles_slv_upsert(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_profiles_slv(context)
 
@@ -166,7 +163,7 @@ def test_profiles_slv_no_bronze(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_profiles_slv(context)
 
@@ -184,7 +181,7 @@ def test_profiles_slv_extracts_from_post_bronze(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_profiles_slv(context)
 

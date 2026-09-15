@@ -16,14 +16,10 @@ from dagster import (
 )
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.enrichment.classification import CLASSIFICATION_DDL
-from datalake.defs.serving.asset_checks import _v_post_detail_gold_attribute_coverage
-from datalake.defs.serving.assets import (
-    dim_date as _dim_date_asset,
-)
-from datalake.defs.serving.assets import (
-    v_post_detail as _v_post_detail_asset,
-)
+from orchestration.defs.ig_enriched.slv.classification import CLASSIFICATION_DDL
+from orchestration.defs.serving.checks import _v_post_detail_gold_attribute_coverage
+from orchestration.defs.serving.dims import dim_date as _dim_date_asset
+from orchestration.defs.serving.views import v_post_detail as _v_post_detail_asset
 from tests.fixtures.silver_factories import seed_silver_posts
 
 # ── Fixture helpers ─────────────────────────────────────────────────────────

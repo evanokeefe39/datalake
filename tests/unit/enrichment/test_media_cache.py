@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.enrichment.media_cache import (
+from orchestration.defs.platform.resources import SQLiteResource
+from orchestration.defs.engine.media import (
     cache_media_bytes,
     cached_local_path,
     url_hash,
@@ -25,7 +25,7 @@ def test_cache_media_bytes_downloads_and_records(tmp_path):
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
     with patch(
-        "datalake.defs.enrichment.media_cache._download_bytes",
+        "orchestration.defs.engine.media._download_bytes",
         return_value=(b"fake-image-bytes", "image/jpeg"),
     ):
         path = cache_media_bytes(ops, "https://cdn.example.com/a.jpg", media_dir=tmp_path)
@@ -51,7 +51,7 @@ def test_cache_media_bytes_skips_already_cached(tmp_path):
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
     with patch(
-        "datalake.defs.enrichment.media_cache._download_bytes",
+        "orchestration.defs.engine.media._download_bytes",
         return_value=(b"once", "image/jpeg"),
     ) as dl:
         cache_media_bytes(ops, "https://cdn.example.com/a.jpg", media_dir=tmp_path)

@@ -1,7 +1,6 @@
 """Shared fixtures for the test suite.
 
 * ``db`` — in-memory ``DuckDBResource`` backed by ``tmp_path``.
-* ``gemini_mock`` — ``GeminiResource`` with a dummy API key.
 * ``apify_mock`` — ``ApifyResource`` with a dummy token.
 """
 
@@ -12,7 +11,7 @@ from pathlib import Path
 import pytest
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.common.resources import ApifyResource, GeminiResource, SQLiteResource
+from orchestration.defs.platform.resources import ApifyResource, SQLiteResource
 
 
 @pytest.fixture
@@ -27,15 +26,6 @@ def ops(tmp_path) -> SQLiteResource:
     return SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
 
-@pytest.fixture
-def gemini_mock() -> GeminiResource:
-    """GeminiResource pre-configured for testing.
-
-    Returns a bare resource with a dummy API key. Tests apply behavior
-    by patching ``GeminiResource.analyze`` at the class level via
-    ``patch.object(GeminiResource, "analyze", ...)``.
-    """
-    return GeminiResource(api_key="test-key")
 
 
 @pytest.fixture

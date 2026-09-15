@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.common.schemas import SQLITE_TABLES
-from datalake.defs.instagram.creators import (
+from orchestration.defs.platform.resources import SQLiteResource
+from opsdb.schema import SQLITE_TABLES
+from opsdb.roster import (
     add_profile,
     batch_add_profiles,
     create_creator,

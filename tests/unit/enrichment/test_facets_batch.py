@@ -25,25 +25,23 @@ import duckdb
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO_ROOT / "src"))
+sys.path.insert(0, str(REPO_ROOT / "services" / "orchestration" / "src"))
 
-from datalake.defs.common.resources import SQLiteResource  # noqa: E402
-from datalake.defs.common.schemas import duckdb_ddl  # noqa: E402
-from datalake.defs.enrichment import facets_batch  # noqa: E402
-from datalake.defs.enrichment.facets import (  # noqa: E402
-    parse_text_response,
-    parse_universal_response,
-)
-from datalake.defs.enrichment.growth_facets_schema import (  # noqa: E402
+from orchestration.defs.platform.resources import SQLiteResource  # noqa: E402
+from orchestration.defs.platform.schemas import duckdb_ddl  # noqa: E402
+import orchestration.defs.engine.facets_batch as facets_batch  # noqa: E402
+from orchestration.defs.ig_enriched.slv.text import parse_text_response  # noqa: E402
+from orchestration.defs.ig_enriched.slv.visual import parse_universal_response  # noqa: E402
+from orchestration.defs.ig_enriched.slv.schemas import (  # noqa: E402
     GROWTH_FACETS_SCHEMA_VERSION,
 )
-from datalake.defs.enrichment.prompts import (  # noqa: E402
+from orchestration.defs.ig_enriched.slv.prompts import (  # noqa: E402
     _DEFAULT_QWEN_MODEL,
     CURRENT_TEXT_FACETS_PROMPT_HASH,
     build_text_facets_prompt,
 )
-from datalake.defs.enrichment.qwen_client import QwenServiceError  # noqa: E402
-from datalake.defs.enrichment.seam import Result  # noqa: E402
+from orchestration.defs.integration.batch_client import BatchServiceError  # noqa: E402
+from orchestration.defs.engine.provider import Result  # noqa: E402
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -82,7 +80,7 @@ def cached_media(tmp_path):
         return files.get(url)
 
     with patch(
-        "datalake.defs.enrichment.media_paths.cached_local_path",
+        "orchestration.defs.engine.media.cached_local_path",
         side_effect=_fake,
     ):
         yield files
@@ -109,7 +107,7 @@ class _FakeAdapter:
     def poll(self, handle):
         doc = self.docs.get(handle)
         if doc is None:
-            raise QwenServiceError(
+            raise BatchServiceError(
                 f"unknown job {handle!r}", base_url="fake://service"
             )
         return doc
@@ -353,7 +351,7 @@ class TestHarvestAndLand:
             state_conn, ["job1"], "visual", root=root
         )
         assert out["written"] == 1 and out["landed"] == 1 and out["invalid"] == 0
-        from datalake.defs.enrichment.landing import (
+        from orchestration.defs.engine.landing import (
             WORKLOAD_GROWTH_FACETS_VISUAL,
             read_responses,
         )
@@ -378,7 +376,7 @@ class TestHarvestAndLand:
         )
         assert out["written"] == 0 and out["invalid"] == 1
         # the verbatim body is IN bronze — parsing never gates landing
-        from datalake.defs.enrichment.landing import read_responses
+        from orchestration.defs.engine.landing import read_responses
 
         assert read_responses(root)["response_text"].to_list() == ["not json"]
 
@@ -395,7 +393,7 @@ class TestHarvestAndLand:
             state_conn, ["job2"], "text", root=root
         )
         assert out["written"] == 1 and out["invalid"] == 0
-        from datalake.defs.enrichment.landing import (
+        from orchestration.defs.engine.landing import (
             WORKLOAD_GROWTH_FACETS_TEXT,
             read_responses,
         )
@@ -413,7 +411,7 @@ class TestHarvestAndLand:
             state_conn, ["job3"], "visual", root=root
         )
         assert out["written"] == 0 and out["failed_jobs"] == 1
-        from datalake.defs.enrichment.landing import read_responses
+        from orchestration.defs.engine.landing import read_responses
 
         assert read_responses(root).height == 0
 
@@ -432,7 +430,7 @@ class TestHarvestAndLand:
         assert out["written"] == 0 and out["failed_items"] == 1
         # failure is READ from a bronze column, never inferred from a
         # missing conformed row (ADR-0013)
-        from datalake.defs.enrichment.landing import read_responses
+        from orchestration.defs.engine.landing import read_responses
 
         df = read_responses(root)
         assert df["ok"].to_list() == [False]
@@ -509,7 +507,7 @@ class TestHarvestGuards:
         skip, never a ledger lookup."""
         adapter = _FakeAdapter()  # no docs at all
         _fake_service(monkeypatch, adapter)
-        with pytest.raises(QwenServiceError):
+        with pytest.raises(BatchServiceError):
             facets_batch.harvest_facets_batches(
                 state_conn, ["never-submitted"], "visual",
                 root=str(tmp_path / "bronze"),
@@ -530,7 +528,7 @@ class TestHarvestGuards:
             state_conn, ["jobM"], "text", root=root
         )
         assert out["written"] == 1
-        from datalake.defs.enrichment.landing import read_responses
+        from orchestration.defs.engine.landing import read_responses
 
         assert read_responses(root)["model"][0] == "m-submit-time"
 
@@ -610,7 +608,7 @@ class TestResumeAfterMidRunFailure:
             "p_img", "p_video"
         ]
         # nothing was written to DuckDB — bronze holds both responses verbatim
-        from datalake.defs.enrichment.landing import read_responses
+        from orchestration.defs.engine.landing import read_responses
 
         df1 = read_responses(root)
         assert sorted(df1["post_id"].to_list()) == ["p_img", "p_video"]
