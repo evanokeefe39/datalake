@@ -165,9 +165,12 @@ def build_growth_facets_prompt(caption: str, n_media: int) -> str:
     visual_keys = "face_present, value_medium, brand_logos, text_overlay_present, on_screen_claim"
     if n_media > 1:
         summary_task = (
-            f"image_summaries: an array with EXACTLY {n_media} entries, one "
-            "per image in display order; each entry {\"index\": int, "
-            "\"summary\": string} — one short sentence per image."
+            "content_summary: string (2-3 short sentences covering the whole "
+            f"post); PLUS image_summaries: an array with EXACTLY {n_media} "
+            "entries, one per image in display order; each entry {\"index\": "
+            "int, \"summary\": string} — one short sentence per image. "
+            f"\"index\" is ZERO-BASED: the first image is 0 and the last is "
+            f"{n_media - 1} — never 1-based."
         )
     else:
         summary_task = "content_summary: string (2-3 short sentences)."

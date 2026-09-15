@@ -138,53 +138,46 @@ def enumerate_targets(
 
 
 def _done_post_ids(conn, mode: str) -> set[str]:
-    """Post_ids already fully enriched for ``mode`` under the current engine
-    (model) + schema — content-based, so a pass-owned prompt_hash overwrite
-    cannot double-spend, while rows from a superseded engine (e.g. gemini-era)
-    are re-enqueued for the current (qwen) engine."""
-    if mode == "visual":
-        # Done iff schema_version is current, the stored facet JSON carries
-        # every required visual field, AND the row was produced by the current
-        # engine (model). Must NOT gate on prompt_hash: the text pass overwrites
-        # prompt_hash on the same row, so a hash-only check would re-enqueue
-        # (and re-pay for) text-done posts every run. model is stable across
-        # both passes (each stamps the current qwen model), so it stays a valid
-        # discriminator that also re-enqueues gemini-era rows under qwen.
-        rows = conn.execute(
-            "SELECT post_id, growth_facets_json, schema_version, model "
-            "FROM gold_growth_facets"
+    """Post_ids already CONFORMED into silver for ``mode``.
+
+    ADR-0012 D4: completion is a CONFORMED ROW, not a legacy gold write.
+    Done iff the pass's typed silver table carries a row for the post that
+    was produced by the current engine (model) and, for visual, the current
+    facet schema version. Validation lives in silver (ADR-0011): a conformed
+    row implies every required field passed, so no JSON sniffing is needed.
+
+    Regression: this guard previously read the retired ``gold_growth_facets``
+    table, which marked conform-QUARANTINED posts as done (their gold row was
+    written before conform rejected the payload) — 21 posts were silently
+    skipped, caught 2026-09-15 when the quarantine anti-join was computed.
+    """
+    table = (
+        "silver_visual_annotations" if mode == "visual"
+        else "silver_text_annotations"
+    )
+    where = (
+        "model = ? AND schema_version = ?" if mode == "visual"
+        else "model = ?"
+    )
+    params: list = (
+        [_DEFAULT_QWEN_MODEL, GROWTH_FACETS_SCHEMA_VERSION] if mode == "visual"
+        else [_DEFAULT_QWEN_MODEL]
+    )
+    # A state DB that has never run conform has no silver tables yet — that
+    # means NOTHING is done, not an error. Guard on THIS mode's table: a
+    # text-only state DB has no silver_visual_annotations, and vice versa —
+    # checking the wrong table re-bills the other pass on every --run.
+    names = {
+        r[0]
+        for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main'"
         ).fetchall()
-        done = set()
-        for post_id, blob, schema_version, model in rows:
-            if model != _DEFAULT_QWEN_MODEL:
-                continue
-            if schema_version != GROWTH_FACETS_SCHEMA_VERSION:
-                continue
-            try:
-                payload = json.loads(blob) if blob else None
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict) and all(
-                f in payload for f in VISUAL_FACET_FIELDS
-            ):
-                done.add(post_id)
-        return done
-    # text: done iff the stored JSON carries every required text field AND the
-    # row was produced by the current engine (model) — mirroring visual.
-    rows = conn.execute(
-        "SELECT post_id, growth_facets_json, model FROM gold_growth_facets "
-        "WHERE model = ?",
-        [_DEFAULT_QWEN_MODEL],
-    ).fetchall()
-    done = set()
-    for post_id, blob, model in rows:
-        try:
-            payload = json.loads(blob) if blob else None
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and all(f in payload for f in _TEXT_REQUIRED):
-            done.add(post_id)
-    return done
+    }
+    if table not in names:
+        return set()
+    sql = f"SELECT post_id FROM {table} WHERE {where}"
+    return {r[0] for r in conn.execute(sql, params).fetchall()}
 
 # ── Request building ─────────────────────────────────────────────────────────
 
