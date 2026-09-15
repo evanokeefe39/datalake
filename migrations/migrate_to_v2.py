@@ -1,12 +1,16 @@
-"""Standalone migration: domain-scoped tables, watermarks, dead_letter.
+"""Standalone migration: domain-scoped tables, watermarks (LARGELY RETIRED).
 
-Run once to migrate from the Phase 1-4 schema to the v2 architecture:
+Historical role (Phase 1-4 → v2) with the retired steps marked:
 - silver_posts → silver_ig_posts (column silvered_at → processed_on)
-- gold_analyses → gold_ig_analyses (drop status/error/attempts)
+- gold_analyses → gold_ig_analyses                    [RETIRED, W9]
 - silver_progress → silver_ig_progress
-- silver_watermark → dropped
-- New: watermarks, dead_letter tables
-- Existing data is preserved; idempotent (safe to re-run).
+- silver_watermark → dropped                          [RETIRED, vestigial]
+- New: watermarks; dead_letter                        [dead_letter RETIRED, ADR-0012]
+
+The gold_analyses / gold_ig_analyses / dead_letter steps were DELETED
+2026-09-15 (W9): those tables are dropped and archived. This script is
+historical — it has already run — and must not be used to recreate them.
+See ISSUES.md #34.
 
 Usage:
     uv run python scripts/migrate_to_v2.py [--db-path data/state.duckdb]
@@ -110,6 +114,9 @@ def migrate(db_path: Path) -> None:
         logger.info("Created silver_ig_progress")
 
     # ── 6. Drop old tables (dependency order: gold → silver → progress) ───
+    # `gold_analyses` was dropped by the W9 retirement, so its entry here is
+    # inert (guarded by _table_exists) and only kept so the historical drop
+    # order stays documented. Do NOT read it as a live target.
     for old_tbl in ("gold_analyses", "silver_posts", "silver_progress"):
         if _table_exists(conn, old_tbl):
             conn.execute(f"DROP TABLE IF EXISTS \"{old_tbl}\"")
@@ -144,9 +151,10 @@ def migrate(db_path: Path) -> None:
     # See ISSUES.md #34.
 
     # ── 8. Verify ─────────────────────────────────────────────────────────
-    # Note: FK gold_ig_analyses → silver_ig_posts is not restored here
-    # because DuckDB's ALTER TABLE ADD FOREIGN KEY is not yet implemented.
-    # The gold asset CREATE TABLE statement recreates it at runtime.
+    # Note: the FK gold_ig_analyses → silver_ig_posts is not restored here
+    # (DuckDB's ALTER TABLE ADD FOREIGN KEY is not implemented). This used to
+    # say "the gold asset CREATE TABLE recreates it at runtime" — that producer
+    # was RETIRED by W9, so no such recreation happens any more.
 
     # ── 9. Tables and watermarks verification ──────────────────────────────
     tables = conn.execute(
