@@ -32,21 +32,21 @@ from tests.operational.expected_schema import (
 # with a migration hint.
 
 _STALE_DUCKDB_TABLES: dict[str, str] = {
-    "gold_ig_analyses": "Rename to 'gold_analyses' — run scripts/migrate_schema_drift.py",
+    "gold_ig_analyses": "Rename to 'gold_analyses' — run migrations/migrate_schema_drift.py",
     "silver_ig_progress": (
         "Drop — vestigial table replaced by watermarks. "
-        "Run scripts/migrate_schema_drift.py"
+        "Run migrations/migrate_schema_drift.py"
     ),
 }
 
 _STALE_SQLITE_TABLES: dict[str, str] = {
     "instagram_media_cache": (
         "Drop — replaced by 'media_cache' (byte cache). "
-        "Run scripts/migrate_schema_drift.py"
+        "Run migrations/migrate_schema_drift.py"
     ),
     "scrape_targets": (
         "Replace with 'creators' + 'profiles'. "
-        "Run scripts/migrate_creators_profiles.py"
+        "Run migrations/migrate_creators_profiles.py"
     ),
 }
 

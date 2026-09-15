@@ -199,19 +199,19 @@ or column exists in the catalog but not in the running database. Run the pipelin
 or apply the relevant migration.
 
 If it fails with a "stale table" message, a table in the database was renamed or
-dropped in the catalog. Apply ``scripts/migrate_schema_drift.py``:
+dropped in the catalog. Apply ``migrations/migrate_schema_drift.py``:
 
 ```bash
-uv run python scripts/migrate_schema_drift.py
+uv run python migrations/migrate_schema_drift.py
 ```
 
 ## Data migrations
 
 | Script | Purpose |
 |---|---|
-| ``scripts/migrate_owner_username.py`` | Backfill null ``owner_username`` from bronze ``username`` fallback. Idempotent, ``--dry-run`` supported. |
-| ``scripts/migrate_schema_drift.py`` | Apply schema migrations: rename tables, move data between DBs, drop vestigial tables. |
-| ``scripts/migrate_to_v2.py`` | One-shot migration from Phase 1-4 schema to v2 domain-scoped tables. |
+| ``migrations/migrate_owner_username.py`` | Backfill null ``owner_username`` from bronze ``username`` fallback. Idempotent, ``--dry-run`` supported. |
+| ``migrations/migrate_schema_drift.py`` | Apply schema migrations: rename tables, move data between DBs, drop vestigial tables. |
+| ``migrations/migrate_to_v2.py`` | One-shot migration from Phase 1-4 schema to v2 domain-scoped tables. |
 ## Backups
 
 ``ops.sqlite`` (creator/roster + queue + media cache) and ``state.duckdb`` are

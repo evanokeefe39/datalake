@@ -1,4 +1,4 @@
-"""Tests for curated-creator consolidation (scripts/migrate_curated_creator_merge.py).
+"""Tests for curated-creator consolidation (migrations/migrate_curated_creator_merge.py).
 
 Contract: a curated creator (creators.id) owns the profile for its real
 in-lake handle; duplicate auto-creators keyed by owner_username are retired;

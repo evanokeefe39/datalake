@@ -54,7 +54,7 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
 ## Operational state
 
 - Never commit `data/ops.sqlite` / `data/state.duckdb`.
-- `scripts/migrate_creators_profiles.py` mutates live ops state (drops
+- `migrations/migrate_creators_profiles.py` mutates live ops state (drops
   `scrape_targets`). Do **not** run it against live `data/ops.sqlite` without
   explicit approval. **Corrected 2026-09-14:** it no longer recreates batch
   tables. It used to call `sqlite_ddl_for("batch_jobs", "batch_items",
@@ -69,11 +69,13 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
   longer applies under ADR-0012: the queue is retired, so it will never
   self-heal. Do not wait for it.)
 - **Retirement leaves holes in scripts, and raw DDL hides them.** Four scripts
-  once owned the retired queue. `migrate_enrichment_queue.py:31,41` uses RAW
+  once owned the retired queue. `migrate_enrichment_queue.py:31,41` used RAW
   `CREATE TABLE IF NOT EXISTS batch_jobs` / `batch_items` — raw DDL cannot fail
-  loudly on a retired name, it just recreates the tables. That is the one to
-  delete at W9 rather than "update". A red test is visible; a migration script
-  that silently resurrects retired tables is not.
+  loudly on a retired name, it just recreates the tables. That script was
+  **DELETED 2026-09-15** (not "to delete at W9"): a migration script that
+  silently resurrects retired tables is not fixable by editing it. A red test
+  is visible; silent resurrection is not. `scripts/conform_silver.py`
+  references remain valid.
 
 ## Test boundaries
 
@@ -141,7 +143,7 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
   creator-avg: `tests/unit/dashboard/test_hot_posts_semantics.py`.
 - **Creator identity is a human decision.** Auto-creating creators from
   silver owners (owner_username keying) duplicates curated `creators` rows.
-  Any merge must go through `scripts/migrate_curated_creator_merge.py`
+  Any merge must go through `migrations/migrate_curated_creator_merge.py`
   (ledgered in `creator_merges`, reversible with `--undo`, idempotent) and the
   handle attribution surfaced for sign-off — the profile handle drives future
   scrapes. Guard: `tests/unit/instagram/test_curated_creator_merge.py`.

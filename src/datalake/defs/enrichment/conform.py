@@ -22,7 +22,7 @@ is detectable — self-versioning):
   deliberately empty, so correct emptiness is explicit, never fabricated)
 - ``silver_content_classification`` — taxonomy + educational/actionable +
   admiralty (content-classification; also the target of the legacy
-  ``gold_analyses`` backfill, ``scripts/migrate_classification_to_silver.py``)
+  ``gold_analyses`` backfill, ``migrations/migrate_classification_to_silver.py``)
 - ``silver_text_annotations``     — text-layer facets    (growth-facets-text)
 - ``silver_text_summaries``       — transcript summary   (the text pass does
   not emit a summary yet; same explicit-emptiness rule as transcripts)

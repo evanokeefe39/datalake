@@ -144,7 +144,7 @@ owner_username = COALESCE("ownerUsername", "username")
 ```
 
 The ``ig_posts_slv_owner_not_null`` DQ check (0% tolerance) monitors for nulls.
-Historical nulls are fixed by the idempotent migration ``scripts/migrate_owner_username.py``.
+Historical nulls are fixed by the idempotent migration ``migrations/migrate_owner_username.py``.
 
 ### File layout
 

@@ -250,7 +250,7 @@ def _run_migration(
     return subprocess.run(
         [
             sys.executable,
-            str(Path(__file__).parents[3] / "scripts" / "migrate_classification_to_silver.py"),
+            str(Path(__file__).parents[3] / "migrations" / "migrate_classification_to_silver.py"),
             "--state-db",
             str(state_db),
             "--bronze-root",

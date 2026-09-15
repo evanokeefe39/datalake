@@ -1,5 +1,34 @@
 # Roadmap — new-feature implementation & deferred governance
 
+> Strategic context (from the original root `ROADMAP.md`, 2026-06-30, still
+> valid): **Stay Duck Pond.** Adopt DuckLake later when ACID/time
+> travel/concurrency matter. The Dagster + Parquet + DuckDB medallion pattern is
+> the right architecture for this scale; DuckLake migrates cleanly from it
+> because both store Parquet files — the upgrade is a metadata migration, not a
+> rewrite.
+
+## Current position (2026-09-15)
+
+Verified state:
+- v3 layered model is materially live — `bronze_enrichment_raw` has 9,576 rows;
+  all six silver tables are registered, only classification populated; four
+  gold marts materialized over classification — 10,038 / 661 / 31,811 / 8,262
+  rows; 27 serving assets materialize; US-ESA-2 AC4 parity verified with
+  0 mismatches on 10,038 rows.
+- Interval sensor wired (ADR-0012 D2); deterministic smoke slice exists
+  (`scripts/make_smoke_slice.py`).
+
+Remaining:
+- First real text+visual passes through the slice.
+- Settled-tree full suite.
+- W8 (quarantine consumer + blocking anti-join check).
+- W9 (archive `gold_analyses`, reconcile `facets_batch_jobs`' 4 rows, then the
+  approved per-table drops).
+- Story statuses in `tasks/epics/` still read Open and need updating.
+
+This document (2026-09-10) is the canonical roadmap for the repo. The former
+root `ROADMAP.md` is now a pointer stub here.
+
 This is the coordination layer for the store (parallels how
 `tasks/plans/post-performance-observations-workstreams.md` coordinates its
 epics). Two parts:
@@ -108,7 +137,7 @@ Epic/User Story; store tabular state (categories, IDs, PR relations) in SQLite.
    committed record.
 
 ### Status
-Deferred. Do not build until this roadmap item is explicitly started.
+Still deferred (re-confirmed 2026-09-15). Do not build until this roadmap item is explicitly started.
 
 ### Triggers to start it
 - PRs start landing that cite no Epic/US (enforcement need is real), or

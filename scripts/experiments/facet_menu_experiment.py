@@ -30,7 +30,7 @@ load_dotenv()
 from datalake.defs.common.resources import GeminiResource, SQLiteResource  # noqa: E402
 from datalake.defs.enrichment import gemini_batch  # noqa: E402
 from datalake.defs.enrichment.prompts import _DEFAULT_GEMINI_MODEL  # noqa: E402
-from scripts.facet_experiment import sample_posts, resolve_post_media  # noqa: E402
+from scripts.experiments.facet_experiment import sample_posts, resolve_post_media  # noqa: E402
 
 logger = logging.getLogger("facet_menu")
 

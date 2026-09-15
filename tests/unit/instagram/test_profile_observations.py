@@ -19,7 +19,7 @@ from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.schemas import duckdb_ddl
 from datalake.defs.instagram.assets import _profile_observations, ig_profiles_slv
-from scripts.migrate_backfill_profile_observations import (
+from migrations.migrate_backfill_profile_observations import (
     apply_backfill,
     collect_observations,
 )

@@ -25,7 +25,7 @@ import pytest
 
 from datalake.defs.common import lake
 from datalake.defs.enrichment import classification, landing
-from scripts.migrate_classification_to_silver import (
+from migrations.migrate_classification_to_silver import (
     MIGRATION_RUN_ID,
     backfill_bronze,
     run_migration,

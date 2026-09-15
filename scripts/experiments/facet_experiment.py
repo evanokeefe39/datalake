@@ -13,10 +13,10 @@ Two commands:
   analyze load <out>.duckdb, print per-field inter-run agreement + NA/null rates.
 
 Usage (tier1 env in .env; low-res media; ~$0.002 per media call):
-  uv run python scripts/facet_experiment.py run   --sample 3  --runs 1
-  uv run python scripts/facet_experiment.py run   --sample 150 --runs 3   # D1 agreement
-  uv run python scripts/facet_experiment.py run   --sample 150 --runs 1 --no-media  # caption control
-  uv run python scripts/facet_experiment.py analyze
+  uv run python scripts/experiments/facet_experiment.py run   --sample 3  --runs 1
+  uv run python scripts/experiments/facet_experiment.py run   --sample 150 --runs 3   # D1 agreement
+  uv run python scripts/experiments/facet_experiment.py run   --sample 150 --runs 1 --no-media  # caption control
+  uv run python scripts/experiments/facet_experiment.py analyze
 """
 
 from __future__ import annotations

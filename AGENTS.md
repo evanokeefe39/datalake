@@ -385,13 +385,16 @@ tables, `bronze_enrichment_raw`, four gold marts appear, and `batch_jobs`/
 | Script | Purpose |
 |---|---|
 | `scripts/run_pipeline.py` | Thin entry point → delegates to ``python -m datalake.cli``. Subcommands: ``run`` (pipeline), ``batches`` (inspect/reset), ``watermarks`` (inspect/reset). |
-| `scripts/migrate_schema_drift.py` | Apply schema migrations: rename tables, move data between DBs, drop vestigial tables. Idempotent. |
-| `scripts/migrate_to_v2.py` | One-shot migration from Phase 1-4 schema to v2 domain-scoped tables. |
-| `scripts/migrate_from_ig_pipeline.py` | Import bronze Parquet from legacy ig-pipeline repo. |
-| `scripts/migrate_owner_username.py` | Backfill null ``owner_username`` in silver from bronze ``username`` fallback. Idempotent. |
-| `scripts/migrate_creators_profiles.py` | Split `scrape_targets` → `creators` + `profiles` (1:1 backfill), recreate lost batch tables, drop `scrape_targets`. Idempotent. |
+| `migrations/migrate_schema_drift.py` | Apply schema migrations: rename tables, move data between DBs, drop vestigial tables. Idempotent. |
+| `migrations/migrate_to_v2.py` | One-shot migration from Phase 1-4 schema to v2 domain-scoped tables. |
+| `migrations/migrate_from_ig_pipeline.py` | Import bronze Parquet from legacy ig-pipeline repo. |
+| `migrations/migrate_owner_username.py` | Backfill null ``owner_username`` in silver from bronze ``username`` fallback. Idempotent. |
+| `migrations/migrate_creators_profiles.py` | Split `scrape_targets` → `creators` + `profiles` (1:1 backfill), create `media_metadata`, drop `scrape_targets`. Idempotent. |
 | `scripts/enrich_facets_batch.py` | The growth-facets enrichment driver (qwen-batch service): `--plan` (offline cost projection) / `--run` (discover→submit→poll→harvest) / `--harvest`; `--mode visual\|text`, `--limit`/`--posts`, scratch DBs via `--state-db`/`--ops-db`. Resume-safe — re-running polls+harvests any still-submitted ledger job. |
 | `scripts/poll_qwen_run.py` | Read-only progress poller for a live qwen-batch job. Reads the service job store (QWEN_BATCH_DB or `~/.qwen-batch/state.sqlite`), prints state / done / failed / rate / ETA, and shows the harvest+continue command once the newest job is terminal. |
+| `scripts/conform_silver.py` | Publish + register the six v3 silver tables from `bronze_enrichment_raw` — the live silver publisher (zero API calls; deterministic replay). |
+| `scripts/make_smoke_slice.py` | Deterministic dev/smoke slice builder for the verification plane. |
+| `scripts/reconcile_facets_jobs.py` | Reconcile `facets_batch_jobs` against the qwen service job store — W9 prerequisite. |
 ## Stale analysis update
 
 When the enrichment prompt or model changes, existing `gold_analyses` rows have stale `prompt_hash`.
