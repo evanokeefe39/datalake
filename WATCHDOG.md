@@ -289,3 +289,28 @@ real defect during the v3 materialization.
   `gold_top_posts` 8,262 — over the classification backfill alone. Their
   `silver_visual_*`/`silver_text_*` inputs are typed-empty until the visual/text
   passes run, so shape-analytics rows are classification-only today.
+
+### Failure taxonomy for review (2026-09-15) — what the advisor looks FOR
+
+The binding controls live in AGENTS.md "Verification plane — defense in depth". The advisor's
+job is to hunt the one failure class that survives every layer: **a contract carried to the
+wrong side of a boundary**. Concretely, check:
+
+- **Dispatch hand-off**: does the worker's brief include the story's binary ACs, and did the
+  orchestrator grep for pre-existing tests/specs on every subsystem it touches? (The
+  classification conform shipped gold->silver because `test_classification.py` — the real
+  spec, encoding gold->bronze->silver — was never read.)
+- **Delegated-to-nobody**: every "sibling will handle it" in an assumption log is an unowned
+  contract. The `result_json` passthrough was logged, delegated, and dropped — it took the
+  entire serving surface down.
+- **Protocol/impl drift**: for every `Protocol` with a runtime check, assert conformance at
+  build time. `is_terminal` was declared, unimplemented, and found at poll time — after billing.
+- **Fake drift**: when a signature changes, enumerate the fakes implementing it. Three drifted
+  this cycle; a fake accepting the full signature is the cheap guard.
+- **The done bar**: green suite + materialized destination + one observed run through
+  `data/smoke`. A worker claiming done on "tests pass" is the failure mode; the slice exists so
+  that objection is cheap to make and cheap to satisfy.
+- **Open data-quality decision (owner)**: 21/86 visual responses quarantined for 1-based
+  `image_summaries` indices ([1..8] vs the schema's [0..7]). Relax the validator, fix the
+  prompt, or leave for ADR-0014 D4 triage — do NOT silently relax the validator; this is
+  adjacent to §9's "parser all-or-nothing" open decision.

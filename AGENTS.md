@@ -700,3 +700,46 @@ Set in `.env`:
 | 2026-09-10 | Dagster-native orchestration (ADR-0012) | Retires the `ops.sqlite` queue (`batch_jobs`/`batch_items`/`dead_letter`/`facets_batch_jobs`); retains media/identity/prompt tables. ACCEPTED, NOT IMPLEMENTED |
 | 2026-09-10 | Inference seam (ADR-0008/0009): three verbs + `submit`/`poll-to-terminal`/`retrieve`, `ProviderAdapter` swap | One seam serves both the qwen-batch-service (async wrapper over a synchronous provider) and Gemini's native batch. Proven in the enrichment spike; not yet wired in |
 | 2026-09-10 | The seam keeps **no ledger** (ADR-0013) — the service owns its job store, Dagster polls it; Dagster state is instance-native | ADR-0007 Amd 1 / ADR-0010 dec 5 specified a shared `external_jobs` table; the spike's S5 negative assertion tested for it by name and found it unnecessary. Reconciles ADR-0012 with the seam. ACCEPTED, NOT IMPLEMENTED |
+
+## Verification plane — defense in depth (2026-09-15, BINDING)
+
+**The principle:** "unit tests green" is evidence that a process ran, not that the system
+works. Unit tests raise the PROBABILITY that something works; they are not confirmation.
+Confirmation is a tracer shot: one real run of the changed path, end-to-end, through a slice,
+with the destination verified. Every agent and subagent in this repo is bound by this —
+"tests pass" is never an acceptable completion claim on its own.
+
+This is not theoretical. The Enrichment v3 migration shipped with ~700 green tests and a
+pipeline that could not run one cycle. The remediation session's FIRST real enrichment run
+surfaced three defects in minutes (empty adapter registry, a Protocol method neither adapter
+implemented, a CLI argument iterated character-by-character) — every one invisible to a green
+suite. Full ledger: `tasks/lessons.md` 2026-09-15.
+
+### The four controls (binding on orchestrator and subagents alike)
+
+1. **Read before dispatch.** Before any unit that touches an existing subsystem, the
+   orchestrator greps the test tree and docs for that subsystem and attaches what it finds to
+   the brief. An existing test that imports a symbol encoding a design IS a specification.
+2. **Story ACs in every brief.** A worker's acceptance includes the user story's binary AC
+   list, not just the unit's own criteria. "The unit is green" says nothing about the
+   consumer the story names.
+3. **Conformance over existence.** For any Protocol, schema catalog, or prompt schema: a
+   runtime check (`isinstance` against a `runtime_checkable` Protocol, catalog-vs-producer
+   column diff, fake-accepts-full-signature) runs in CI. "X exists" is not "X conforms".
+4. **One real run as the acceptance gate.** The deterministic smoke slice
+   (`scripts/make_smoke_slice.py`, ~100 posts with media bytes, own roots) makes a real
+   end-to-end run cheap (~$0.03). "Done" = the changed path executed against it and the
+   destination was verified — never the log line.
+
+### The enforcement plane (layered so one miss does not sink the migration)
+
+| Layer | Gate | Catches |
+|---|---|---|
+| 0 — author | runtime Protocol conformance; catalog-vs-producer column diff; fakes accept the FULL current signature | missing methods, schema drift, fake drift |
+| 1 — unit | scoped pytest on the changed files | slice-local logic |
+| 2 — load | `uv run dagster definitions validate -m datalake.definitions`; full suite on a SETTLED tree only | unloadable graphs, cross-module breakage |
+| 3 — integration | smoke-slice e2e: real provider call -> verbatim bronze -> conform -> silver -> mart query returns rows | everything the unit layer structurally cannot see |
+| 4 — retirement | archive count == live count in the SAME run; blocking anti-join check; per-table drops with the KEEP-set assertion | silent loss, destructive-DDL drift |
+
+**The done bar, in one line:** green suite AND materialized destination AND one observed run
+through the slice. Any one alone is not done.
