@@ -215,24 +215,13 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "baseline_n": Column("INTEGER"),
         },
     ),
-    "bronze_enrichment_raw": Table(
-        columns={
-            "post_id": Column("VARCHAR", not_null=True),
-            "platform": Column("VARCHAR", not_null=True),
-            "workload": Column("VARCHAR", not_null=True),
-            "provider": Column("VARCHAR"),
-            "model": Column("VARCHAR"),
-            "prompt_hash": Column("VARCHAR", not_null=True),
-            "schema_version": Column("VARCHAR"),
-            "run_id": Column("VARCHAR", not_null=True),
-            "analysed_at": Column("VARCHAR"),
-            "input_modality": Column("VARCHAR"),
-            "sampling_params_json": Column("VARCHAR"),
-            "response_text": Column("VARCHAR", not_null=True),
-            "request_echo_json": Column("VARCHAR"),
-        },
-        primary_key=("post_id", "platform", "workload", "prompt_hash", "run_id"),
-    ),
+    # NOTE: ``bronze_enrichment_raw`` is deliberately NOT in this catalog.
+    # It is a bronze LAKE table (Parquet at data/lake/bronze/bronze_enrichment_raw.parquet,
+    # written/read via polars in defs/enrichment/landing.py — see DATASET_ID and
+    # read_responses), never a table registered in data/state.duckdb. The live
+    # database has never contained it (verified read-only 2026-09-15); landing and
+    # conform access it exclusively through Parquet, so it has no DuckDB DDL and
+    # no entry in DUCKDB_TABLES.
     "silver_visual_annotations": Table(
         columns={
             "post_id": Column("VARCHAR", not_null=True),
@@ -245,7 +234,7 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "content_mime_type": Column("VARCHAR"),
             "sampling_params_json": Column("VARCHAR"),
             "run_id": Column("VARCHAR"),
-            "analysed_at": Column("VARCHAR"),
+            "analysed_at": Column("TIMESTAMP WITH TIME ZONE"),
             "face_present": Column("BOOLEAN"),
             "value_medium": Column("VARCHAR"),
             "brand_logos_json": Column("VARCHAR"),
@@ -266,7 +255,7 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "content_mime_type": Column("VARCHAR"),
             "sampling_params_json": Column("VARCHAR"),
             "run_id": Column("VARCHAR"),
-            "analysed_at": Column("VARCHAR"),
+            "analysed_at": Column("TIMESTAMP WITH TIME ZONE"),
             "content_summary": Column("VARCHAR"),
             "image_summaries_json": Column("VARCHAR"),
         },
@@ -284,7 +273,7 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "content_mime_type": Column("VARCHAR"),
             "sampling_params_json": Column("VARCHAR"),
             "run_id": Column("VARCHAR"),
-            "analysed_at": Column("VARCHAR"),
+            "analysed_at": Column("TIMESTAMP WITH TIME ZONE"),
             "transcript": Column("VARCHAR"),
             "transcript_status": Column("VARCHAR"),
             "audio_present": Column("BOOLEAN"),
@@ -305,7 +294,7 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "content_mime_type": Column("VARCHAR"),
             "sampling_params_json": Column("VARCHAR"),
             "run_id": Column("VARCHAR"),
-            "analysed_at": Column("VARCHAR"),
+            "analysed_at": Column("TIMESTAMP WITH TIME ZONE"),
             "hook_content": Column("VARCHAR"),
             "hook_type": Column("VARCHAR"),
             "is_sponsored": Column("BOOLEAN"),
@@ -333,7 +322,7 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "content_mime_type": Column("VARCHAR"),
             "sampling_params_json": Column("VARCHAR"),
             "run_id": Column("VARCHAR"),
-            "analysed_at": Column("VARCHAR"),
+            "analysed_at": Column("TIMESTAMP WITH TIME ZONE"),
             "transcript_summary": Column("VARCHAR"),
         },
         primary_key=("post_id", "platform"),
@@ -350,7 +339,7 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "content_mime_type": Column("VARCHAR"),
             "sampling_params_json": Column("VARCHAR"),
             "run_id": Column("VARCHAR"),
-            "analysed_at": Column("VARCHAR"),
+            "analysed_at": Column("TIMESTAMP WITH TIME ZONE"),
             "domain": Column("VARCHAR"),
             "subdomain": Column("VARCHAR"),
             "topic": Column("VARCHAR"),

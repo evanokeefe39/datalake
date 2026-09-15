@@ -586,7 +586,7 @@ def main() -> None:
         "--accept-open-handles", action="store_true", default=False,
         help="override the reconciliation gate: proceed even though a "
              "service job has no terminal state. Records that dropping "
-             "the handle index is deliberate (W9 issue #33).",
+             "the handle index is deliberate (W9 issue #34).",
     )
     p.add_argument(
         "--i-have-approval", action="store_true", default=False,

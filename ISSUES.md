@@ -1146,7 +1146,44 @@ UNVERIFIED items as carried-forward. See
 `data/logs/w9-retirement-20260915T110342Z.json` for the drop that ran before this
 recording was added, and subsequent runs for the full record.
 
-### 32. Full `pytest tests/` run does not finish clean — cause UNVERIFIED
+### 32. `media_metadata` is dropped but still recreates itself — retirement not durable
+
+**Found 2026-09-15** by the catalog-reconciliation worker, which correctly STOPPED
+rather than deleting the spec.
+
+W9 dropped `media_metadata` from live `ops.sqlite`, but the drop is not durable:
+
+- `defs/enrichment/media_cache.py:63` `_ensure_schema()` still executes
+  `sqlite_ddl("media_metadata")` — plus two `ALTER TABLE` migrations (`:68`, `:70`)
+  — on the live path, so the next call recreates it.
+- `tests/unit/instagram/test_migrate_creators_profiles.py:111-113` asserts it
+  survives retirement, contradicting the drop.
+
+**Evidence it is dead weight (checked, not assumed):**
+- It only ever cached **Gemini File-API uploads** — `file_api_uri`,
+  `upload_state = 'uploaded'` (`media_cache.py:583-593`). Gemini batch is
+  permanently retired (ADR-0009).
+- Its **only** producer is `lookup_or_upload_all` (`media_cache.py:626`), and the
+  sole caller is `scripts/experiments/facet_experiment.py:211` — a scratch
+  experiment, not a pipeline path.
+- It has **no reader** anywhere: the live path now resolves media to scrape-time
+  cached local paths (`media_paths.media_urls_to_local_paths`).
+
+**Decision (owner principle: "stalled jobs from the queue we are retiring don't
+matter, can delete safely" — applied by analogy):** retire it fully. Remove the
+`_ensure_schema` creation and the surviving-table assertion, drop the spec from
+`schemas.py`, and add it to `_STALE_SQLITE_TABLES` with a DROPPED hint pointing at
+`data/lake/archive/media_metadata/`.
+
+**Acceptance falsifier:** after the change, nothing in `src/` executes DDL or
+DML for `media_metadata`, and a fresh ops.sqlite never grows the table.
+
+**Same defect class as #33** (`gold_analyses`/`gold_growth_facets` recreated by
+`ensure_gold_analyses` and `_GOLD_FACETS_DDL`): W9 dropped tables whose producers
+survived. See #34 — the "starve, don't drop" control (C4) was not satisfied
+before the drop.
+
+### 33. Full `pytest tests/` run does not finish clean — cause UNVERIFIED
 
 **Observed, 2026-09-15. Cause is NOT established — nothing below is a diagnosis.**
 
@@ -1187,7 +1224,7 @@ of the observation.
 verified destination state, not this suite. Recorded so a failing suite is never
 mistaken for a green gate.
 
-### 33. W9 must reconcile the 4 `facets_batch_jobs` rows BEFORE the drop
+### 34. W9 must reconcile the 4 `facets_batch_jobs` rows BEFORE the drop
 
 **Found 2026-09-15** reviewing `scripts/retire_queue_tables.py` against the plan
 (`remediation-plan.md:473-478`).
