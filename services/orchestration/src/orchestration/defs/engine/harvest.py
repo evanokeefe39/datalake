@@ -40,6 +40,8 @@ from dagster import (
     AssetKey,
     AssetMaterialization,
     DynamicPartitionsDefinition,
+    Nothing,
+    Out,
     job,
     op,
 )
@@ -317,9 +319,15 @@ def harvest_pending(
 # ── Dagster op + job ────────────────────────────────────────────────────────
 
 
-@op(tags={"adr": "0014", "seam": "enrichment-api"})
-def harvest_enrichment_op(context) -> dict:
-    """One bounded harvest pass over the seam (short, bounded)."""
+@op(tags={"adr": "0014", "seam": "enrichment-api"}, out=Out(Nothing))
+def harvest_enrichment_op(context) -> None:
+    """One bounded harvest pass over the seam (short, bounded).
+
+    ``out=Nothing`` for the same reason as the submit op: this op reports, and
+    its orchestration effects are instance state plus bronze landings. Returning
+    a dict would route it through ``PolarsIOManager``, which cannot resolve an
+    asset key for a bare op and fails the run at execution time.
+    """
     from orchestration.defs.engine import service_backed
     from orchestration.defs.engine.provider import build_adapter
 
@@ -337,7 +345,6 @@ def harvest_enrichment_op(context) -> dict:
         result["handles_polled"],
         result["handles_polled"] + result["handles_pending"],
     )
-    return result
 
 
 @job(name="enrichment_harvest")
