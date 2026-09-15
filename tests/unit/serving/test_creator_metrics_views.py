@@ -112,6 +112,34 @@ def _seed(con, posts: list[tuple], labels: list[tuple]) -> None:
     )
     for row in posts:
         con.execute(insert_post, row)
+
+    # gold_post_enrichment is a real gold mart (ADR-0011) and v_creator_topics
+    # reads it directly. Mirror the mart's grain here so a seeded post reaches
+    # the topic rollup: post_id + creator_id + gold_topic, with
+    # engagement_score taken from the post's likes z-score.
+    #
+    # v_post_detail does NOT carry engagement_score, so mirror the formula
+    # v_post_metrics uses: 0.5·likes_z + 0.3·comments_z + 0.2·views_z, NULL when
+    # every component is NULL. These fixtures seed a likes baseline only, so the
+    # comments/views terms are NULL and the score is 0.5·likes_z.
+    #
+    # The mart's enriched-only semantics are what the topic tests assert: a post
+    # with a NULL topic is unenriched and must not appear in a rollup, so it is
+    # not inserted here.
+    z_by_post = {row[0]: row[4] for row in labels}
+    for row in posts:
+        post_id, _owner, creator_id = row[0], row[1], row[2]
+        topic = row[10]
+        if topic is None:
+            continue  # unenriched — the mart would not carry a topic
+        likes_z = z_by_post.get(post_id)
+        score = None if likes_z is None else round(0.5 * likes_z, 2)
+        con.execute(
+            "INSERT INTO gold_post_enrichment "
+            "(post_id, creator_id, gold_topic, engagement_score) "
+            "VALUES (?, ?, ?, ?)",
+            (post_id, creator_id, topic, score),
+        )
     insert_label = (
         f"INSERT INTO ig_post_labels ({LABEL_COLUMNS})"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
@@ -145,6 +173,18 @@ def db(tmp_path) -> DuckDBResource:
                 post_id TEXT PRIMARY KEY, label TEXT, method TEXT,
                 is_provisional BOOLEAN, likes_zscore DOUBLE, sigma_tier TEXT,
                 baseline_center DOUBLE, baseline_spread DOUBLE
+            )
+        """)
+        # gold_post_enrichment is a real gold mart (ADR-0011) and
+        # v_creator_topics reads it directly. Without this stub DuckDB's
+        # replacement scan resolves the bare table name to the AssetsDefinition
+        # imported into this module's namespace and raises
+        # InvalidInputException — a confusing failure that names the asset,
+        # not the missing table.
+        con.execute("""
+            CREATE TABLE gold_post_enrichment (
+                post_id TEXT, creator_id INTEGER, gold_topic TEXT,
+                engagement_score DOUBLE
             )
         """)
         con.execute("""

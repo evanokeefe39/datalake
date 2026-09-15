@@ -598,8 +598,12 @@ class TestSchemaCatalog:
         assert row == ("p1", "instagram", "dev", "cli", True, '{"topic":"cli"}')
 
     def test_target_objects_in_catalog_maps(self):
+        # bronze_enrichment_raw is deliberately NOT asserted here: it is a
+        # bronze LAKE table (Parquet at data/lake/bronze/), never a registered
+        # DuckDB table. schemas.py documents that exclusion explicitly, and the
+        # live DB confirms its absence — asserting it belongs to DUCKDB_TABLES
+        # encoded the opposite of the design.
         for name in (
-            "bronze_enrichment_raw",
             "silver_visual_annotations",
             "silver_visual_summaries",
             "silver_audio_transcripts",
