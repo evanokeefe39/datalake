@@ -38,7 +38,7 @@ provider.
 
 import logging
 
-from dagster import AssetKey, AssetMaterialization, job, op
+from dagster import AssetKey, AssetMaterialization, Nothing, Out, job, op
 
 from orchestration.defs.engine import harvest, landing
 from orchestration.defs.engine.partitions import (
@@ -417,11 +417,19 @@ def _ensure_classification_table(conn) -> None:
 # ── Dagster op + job + asset ────────────────────────────────────────────────
 
 
-@op(tags={"adr": "0016", "seam": "enrichment-api"})
+@op(tags={"adr": "0016", "seam": "enrichment-api"}, out=Out(Nothing))
 def submit_enrichment_op(
     context, config: SubmitConfig, ops: SQLiteResource, duckdb: DuckDBResource
-) -> dict:
-    """One bounded submit pass: discovery, guard, placeholder, submit."""
+) -> None:
+    """One bounded submit pass: discovery, guard, placeholder, submit.
+
+    ``out=Nothing`` because this op reports, it does not produce: orchestration
+    state lives on the Dagster instance (materialized partitions) and payloads
+    live in the lake, so there is nothing for an I/O manager to persist. Without
+    it Dagster routes the returned report dict through ``PolarsIOManager``,
+    which tries to resolve an asset key for an op that has none and fails the
+    run at execution time — invisible to ``definitions validate``.
+    """
     from orchestration.defs.engine import service_backed
     from orchestration.defs.engine.provider import build_adapter
 
@@ -442,7 +450,6 @@ def submit_enrichment_op(
         if result["dry_run"]
         else f" — handles {result.get('handles', {}) or 'none'}",
     )
-    return result
 
 
 @job(name="enrichment_submit")
