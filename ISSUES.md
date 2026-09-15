@@ -2,16 +2,15 @@
 
 Issue tracking is local — this file, not GitHub Issues.
 
-> **Before reading the entries below: the enrichment architecture they describe is
-> scheduled for retirement.** ADR-0011 (layered enrichment: `bronze_enrichment_raw`
-> → six `silver_*` tables → four gold marts) and ADR-0012 (Dagster-native
-> orchestration, retiring the `ops.sqlite` queue) are **accepted but not yet
-> implemented**. The entries in this file accurately describe the CURRENT world —
-> `gold_analyses`, `gold_growth_facets`, `batch_jobs`/`batch_items`, `dead_letter` —
-> so read them as current-state, not target-state. The target design and the traps
-> to watch for are in `WATCHDOG.md` (section "v3 enrichment / orchestration / seam
-> — accepted, NOT yet live") and `docs/architecture/pipelines/enrichment.md`. Work items for the
-> migration live in `tasks/epics/` and `tasks/plans/`, not in this backlog.
+> **Currency note, 2026-09-15.** ADR-0011 is now **LIVE**: `bronze_enrichment_raw`
+> → six `silver_*` tables → four gold marts all materialize, and `gold_analyses`
+> parity is verified (9,576 rows, 0 both-non-null conflicts). ADR-0012's
+> Dagster-native state is live for the classification workload; what remains is the
+> queue-table DROP (staged in `scripts/retire_queue_tables.py`, awaiting human
+> approval) and promoting the qwen facets path off the hand-rolled CLI.
+> **Older entries below still describe the pre-migration world** — read them as
+> history unless the entry says otherwise. Current state: `AGENTS.md`
+> ("Enrichment v3 — verified state, 2026-09-15") and `WATCHDOG.md`.
 
 ## Complete — `feat/media-and-entity-routing` (2026-08-12)
 
@@ -1065,6 +1064,53 @@ retire the `--plan` arm until that exists.
 (`instagram/assets.py:1024`), so facets posts can never enter the existing
 single-workload drain. Generalizing it is small — every helper it calls already
 derives workload from the partition key — but it is a prerequisite for W11.
+### 30. No test constructs the asset graph — `materialize` / `execute_in_process` are absent
+
+**Found 2026-09-15** while auditing test coverage against Dagster's own testing
+model. Logged for after the migration; do not chase it mid-close-out.
+
+**The gap.** `grep -rn "materialize(\|execute_in_process" tests/` returns
+**nothing**. No test anywhere constructs the asset graph. Every layer below that
+exists and works — the unit tests are real, and the e2e files genuinely exercise
+live v3 assets (`ig_posts_gen_batches`, `ig_posts_slv`, `v_post_detail`,
+`daily_medallion`, `dim_profile`) with `DagsterInstance.ephemeral()` +
+`build_asset_context(instance=...)`. What no test does is ask Dagster to *assemble
+and run the graph*.
+
+**Why that matters — the falsifier.** An `instance: "PartitionSnapshot | None"`
+signature shipped an unloadable graph past a fully green suite. Unit tests call
+functions directly; nothing ever asked Dagster to resolve the graph's
+dependencies, so a signature Dagster cannot load went unnoticed. `dg dev` and
+`dagster definitions validate` catch load-time breakage, but neither is run by
+`pytest`, so a green suite is not evidence the graph loads.
+
+**The four layers Dagster prescribes** (docs.dagster.io/guides/test):
+
+| Layer | Mechanism | Status here |
+|---|---|---|
+| Unit | call the asset fn directly | present, extensive |
+| Integration | `dg.materialize(assets=[...], resources={...})` | **ABSENT** |
+| Job | `job.execute_in_process(instance=DagsterInstance.ephemeral())` | **ABSENT** |
+| Runtime DQ | `@asset_check` | present (W8) |
+
+**Fix — two tests, not a suite.** Both are small and high-value:
+1. One `dg.materialize(...)` over the **enrichment cycle** (bronze landing →
+   conform → silver) against tmp roots, asserting `result.success` and reading a
+   real conformed row back. This is the integration layer the manual smoke-slice
+   runs have been standing in for.
+2. One `execute_in_process(...)` over the **enqueue → submit → harvest** graph on
+   an ephemeral instance, so the graph is actually constructed.
+
+**Also add pytest markers.** None are configured (`pyproject.toml`
+`[tool.pytest.ini_options]` has only `asyncio_mode` and `testpaths`), so
+`pytest tests/` is an undifferentiated ~15-minute monolith with no way to scope
+unit vs integration vs e2e. Add `integration`/`e2e`/`slow` markers and default
+`addopts = "-m 'not slow'"`.
+
+**Framing note.** This is NOT "add instance testing" — instance-based testing is
+already present. The missing layer is specifically **graph assembly**: proving
+Dagster can construct and run the graph, which is the only thing that would have
+caught the unloadable signature.
 
 ## Resolved
 
