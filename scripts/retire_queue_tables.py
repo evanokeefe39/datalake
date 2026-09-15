@@ -349,7 +349,8 @@ def _open_rehearsal() -> tuple[sqlite3.Connection, duckdb.DuckDBPyConnection,
     )
 
 
-def run(apply_: bool, rehearse: bool) -> dict:
+def run(apply_: bool, rehearse: bool,
+        accept_open_handles: bool = False) -> dict:
     now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     if not apply_ and not rehearse:
@@ -421,13 +422,25 @@ def run(apply_: bool, rehearse: bool) -> dict:
             r for r in recon
             if r["service_state"] not in ("completed", "failed", "ABSENT")
         ]
-        if open_handles:
+        if open_handles and not accept_open_handles:
             _log(
                 f"\n  !! {len(open_handles)} job(s) have NO terminal state in the "
                 "service store. After this drop nothing on this host names them."
             )
             for r in open_handles:
                 _log(f"     {r['job_id']}  -> {r['disposition']}")
+            raise RetirementError(
+                f"RECONCILIATION GATE: {len(open_handles)} service job(s) are not "
+                "terminal. Job ids are minted service-side, so dropping "
+                "facets_batch_jobs erases the only LOCAL index naming them. "
+                "Disposition each job (harvest / abandon / declare-dead) and pass "
+                "--accept-open-handles to record that decision as deliberate."
+            )
+        if open_handles:
+            _log(
+                f"\n  !! PROCEEDING with {len(open_handles)} open handle(s) — "
+                "--accept-open-handles was passed; this is a recorded decision."
+            )
 
         _log("\n2. archive + verify (export count == live count, same run)")
         manifest = archive_and_verify(ops, state, archive_root, now)
@@ -473,6 +486,12 @@ def main() -> None:
     g.add_argument("--rehearse", action="store_true", default=False)
     g.add_argument("--apply", action="store_true", default=False)
     p.add_argument(
+        "--accept-open-handles", action="store_true", default=False,
+        help="override the reconciliation gate: proceed even though a "
+             "service job has no terminal state. Records that dropping "
+             "the handle index is deliberate (W9 issue #32).",
+    )
+    p.add_argument(
         "--i-have-approval", action="store_true", default=False,
         help="required with --apply: records that human approval was given "
              "(the plan gates every DROP against live data on it)",
@@ -486,7 +505,8 @@ def main() -> None:
             "only after the §3.0 backup gate has passed and the owner has "
             "approved the drop list."
         )
-    run(apply_=a.apply, rehearse=a.rehearse)
+    run(apply_=a.apply, rehearse=a.rehearse,
+        accept_open_handles=a.accept_open_handles)
 
 
 if __name__ == "__main__":
