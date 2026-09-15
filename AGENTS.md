@@ -442,9 +442,10 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
   enrichment logic lives in `defs/enrichment/analysis.py`.
 - **Retry:** exponential backoff with jitter, `MAX_ATTEMPTS=5`, terminal failures → `dead_letter`
 
-> **Driver sensor ships STOPPED.** The `gemini_batch_harvest_sensor` (and any
-> schedules) are defined but not enabled — the user turns them on deliberately.
-> A green Dagster UI with no activity is the expected state, not a failure.
+> **Driver sensor (2026-09-15):** `enrichment_harvest_sensor` (interval, ADR-0012 D2) is
+> wired and ENABLED — it re-derives the full in-flight set each tick and requests harvest
+> runs for terminal partitions only. The retired `gemini_batch_harvest_sensor` is deleted.
+> Any schedule still ships stopped; the user enables those deliberately.
 
 > **Target (ADR-0012, NOT IMPLEMENTED):** this section describes the current
 > batch queue model. In the target state the lifecycle becomes
