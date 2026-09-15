@@ -1,42 +1,44 @@
-"""IG enrichment payload seam — who is eligible, and what each item looks like.
+"""The enrichment workload registry — who is eligible, and what one item is.
 
-This module is the one place a per-domain payload enters the engine: the
-eligibility query (which posts should be enriched) and the item builder (what
-the provider is asked to do with one post) live together, keyed by workload.
+This module is where a per-domain payload enters the engine. A ``Workload``
+binds three things that must agree:
 
-Branch `refactor/submit-discovery` rewrites this file into the `Workload`
-registry that `engine/submit.py` iterates; here it holds the drain verbatim so
-the move is behaviour-preserving.
+* ``candidates(conn, cfg)`` — the eligibility query: which posts should be
+  enriched, in post_id order.
+* ``build_item(ops, conn, post_id)`` — the item builder: what the provider is
+  asked to do with one of those posts, or a reason it cannot be built.
+* ``estimate(items)`` — the cost projection, so a dry run and a real run use
+  the same arithmetic.
+
+``engine/submit.py`` iterates this registry and knows nothing domain-specific;
+adding a workload is adding a ``Workload`` here, never editing the engine.
+
+ADR-0016: discovery and the in-flight guard are one derivation, and it runs in
+the submit stage. The registry supplies candidates; submit reads the in-flight
+set once, applies the ``MAX_ROUNDS`` guard, materializes the placeholder, and
+submits. No asset writes partitions for another asset to read back.
 """
 
 import json
 import logging
 import os
+from collections.abc import Callable
+from dataclasses import dataclass
 
-import polars as pl
-from dagster import AssetExecutionContext, AssetKey, AssetMaterialization, Config, asset
+from dagster import Config
 
-from orchestration.defs.engine import landing
-from orchestration.defs.engine.media import is_video_path, media_urls_to_local_paths
-from orchestration.defs.engine.partitions import (
-    SUBMITTED_ASSET_NAME,
-    PartitionSnapshot,
-    in_flight_partitions,
-    partition_key,
-    post_partition_state,
-)
+from orchestration.defs.engine.landing import WORKLOAD_CONTENT_CLASSIFICATION
+from orchestration.defs.engine.media import is_video_path
+from orchestration.defs.engine.provider import Item
 from orchestration.defs.ig_core.slv.labels import LABEL_VERSION
-from orchestration.defs.ig_core.slv.posts import ensure_state_tables as _ensure_state_tables
 from orchestration.defs.ig_enriched.slv.prompts import (
-    _DEFAULT_QWEN_MODEL,
     CURRENT_PROMPT_HASH,
-    build_growth_facets_prompt,
-    build_text_facets_prompt,
+    IG_GOLD_PROMPT,
 )
 from orchestration.defs.ig_enriched.slv.visual import UNIVERSAL_MAX_OUTPUT_TOKENS
-from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
+from orchestration.defs.platform.resources import SQLiteResource
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("enrichment.workloads")
 
 
 QWEN_INPUT_PRICE_PER_M = float(os.environ.get("QWEN_INPUT_PRICE_PER_M", "0.03"))
@@ -46,449 +48,206 @@ QWEN_OUTPUT_PRICE_PER_M = float(os.environ.get("QWEN_OUTPUT_PRICE_PER_M", "0.13"
 _EST_OUTPUT_TOKENS_VISUAL = UNIVERSAL_MAX_OUTPUT_TOKENS
 _EST_OUTPUT_TOKENS_TEXT = 1024
 
-# Advisory per-media input-token estimates for the qwen service: images are
-# vision tokens; videos are frame-sampled server-side into 8 frames.
+# Advisory per-media input-token estimates: images are vision tokens; videos
+# are frame-sampled server-side into 8 frames.
 _TOKENS_PER_IMAGE = 258
 _VIDEO_FRAMES = 8
 
 
-class GoldConfig(Config):
-    """Configuration for ``ig_posts_gen_batches`` (gold batch creation).
+# ── Config ──────────────────────────────────────────────────────────────────
 
-    ``post_ids`` (optional) restricts enrichment to specific posts.
-    Default (empty) = all pending posts.
-    ``whole_corpus`` opts into corpus-wide admission: ALL silver posts with
-    non-empty captions (including label-pass ``skip`` posts) are enqueued for
-    a text-only enrichment pass (ADR-0001). Default OFF — the standard path
-    Batches are created in ``gemini-batch`` mode by default (regardless of
-    ``whole_corpus``) whenever the active Gemini tier supports the BATCH API;
-    they fall back to ``interactive`` on the free tier.
-    ``prefer_interactive`` explicitly opts out of the batch API so jobs are
-    created in ``interactive`` mode even on a batch-capable tier.
+
+class SubmitConfig(Config):
+    """Enrichment admission — configured here because submit decides it.
+
+    Replaces ``GoldConfig``, which was named for the retired ``gold_analyses``
+    table and documented a batch drain that no longer exists (ADR-0016).
     """
 
+    #: Target specific posts, bypassing every eligibility guard (re-enrich at
+    #: will). Empty = the standard eligibility path.
     post_ids: list[str] = []
+
+    #: Corpus-wide admission: every silver post with a non-empty caption,
+    #: including the label pass's ``skip`` posts (ADR-0001).
     whole_corpus: bool = False
-    prefer_interactive: bool = False
+
+    #: Restrict this run to one workload name. Empty = every registered
+    #: workload, in registry order.
+    workload: str = ""
+
+    #: Cap the number of posts submitted this run.
+    limit: int = 250
+
+    #: Project cost and tokens without submitting. Nothing is written to the
+    #: instance, so a dry run never makes a post eligible-or-not.
+    dry_run: bool = False
 
 
-# ── Growth-facets payloads (moved from the retired facets_batch) ────────────
-#
-# The eligibility query, the per-post item builder and the cost estimator are
-# payload concerns, so they live with the other workload payloads rather than
-# with the code that drives the seam. `refactor/facets-native` registers them
-# as workloads; until then they are imported by the transient engine driver.
+# ── Candidate queries ───────────────────────────────────────────────────────
 
 
-from orchestration.defs.ig_enriched.slv.schemas import (  # noqa: E402
-    GROWTH_FACETS_SCHEMA_VERSION,
-)
+def _classified_source(conn) -> str:
+    """The eligible-post SELECT for the classification workload.
 
-DRAIN_WORKLOAD: str = landing.WORKLOAD_CONTENT_CLASSIFICATION
-"""The discovery drain's partition workload — classification enrichment."""
-
-_drain_instance: "PartitionSnapshot | None" = None
-
-
-def drain_in_flight_keys(instance: "PartitionSnapshot") -> frozenset[str]:
-    """THE drain's definition of "in flight" (US-EENG-4 AC2/AC5).
-
-    ``partitions.in_flight_partitions(instance)`` — the Dagster instance's
-    ``materialized(enrichment_submitted) − materialized(enrichment_harvested)``
-    — verbatim. The drain MUST NOT derive in-flight state any other way: the
-    accounting identity and the guard below share this one function, so they
-    cannot disagree. A divergence here is a silent double-submit.
+    Label-driven by default; ``whole_corpus`` (handled by the caller) widens
+    it to every non-empty caption. Explicit ``post_ids`` bypass it entirely.
     """
-    return frozenset(in_flight_partitions(instance))
-
-
-def drain_suppressed_post_ids(
-    candidates: list[str], instance: "PartitionSnapshot"
-) -> list[str]:
-    """Posts whose in-flight partition suppresses them from the candidate set.
-
-    Partition contract (ADR-0014 D1): the partition covering post ``p`` is a
-    readable per-post composite whose round derives from the materialized
-    keys themselves — ``partitions.post_partition_state`` tests EVERY
-    materialized round for the post, so a retry round in flight suppresses
-    exactly as a first attempt does, and a harvested round never suppresses
-    (completion genuinely releases work). Per-post granularity keeps
-    suppression order-independent and stable when other posts complete
-    between runs.
+    return """
+        SELECT l.post_id, sp.caption, sp.media_files
+        FROM ig_post_labels l
+        JOIN silver_ig_posts sp ON sp.post_id = l.post_id
+        WHERE l.enrich_decision IN ('standout', 'control', 'floor_filler')
+          AND l.label_version = ?
+          AND sp.caption IS NOT NULL AND trim(sp.caption) <> ''
+          AND NOT EXISTS (
+              SELECT 1 FROM silver_content_classification c
+              WHERE c.post_id = l.post_id
+                AND c.platform = 'instagram'
+                AND c.prompt_hash = ?
+          )
+        ORDER BY l.post_id
     """
-    return [
-        pid
-        for pid in candidates
-        if post_partition_state(instance, DRAIN_WORKLOAD, pid).suppressed
-    ]
 
 
-def _materialize_submitted_partitions(
-    instance: PartitionSnapshot,
-    rounds_by_post: dict[str, int],
-) -> None:
-    """THE drain enqueue (ADR-0012/0013/0014): one ``enrichment_submitted``
-    partition PER POST at that post's CURRENT round, materialized runlessly
-    on the SAME instance the in-flight guard reads — never an instance this
-    function opens itself.
-
-    The key grammar is the ADR-0014 D1 composite
-    (``<workload>\\x00r<N>\\x00<post_id>``), identical to what the guard and
-    the retry driver parse back out. A first attempt enqueues at round 0; a
-    post whose previous round harvested with a failure re-enqueues at
-    round N+1 (the round comes from ``post_partition_state`` — derived from
-    the materialized keys, no ledger).
-
-    Sequence mirrors the real-instance roundtrip pinned in
-    ``tests/unit/enrichment/test_partitions.py``: register the dynamic
-    partition, then report the runless materialization.
+def _whole_corpus_source(conn) -> str:
+    """Every silver post with a non-empty caption, not yet classified."""
+    return """
+        SELECT sp.post_id, sp.caption, sp.media_files
+        FROM silver_ig_posts sp
+        WHERE sp.caption IS NOT NULL AND trim(sp.caption) <> ''
+          AND NOT EXISTS (
+              SELECT 1 FROM silver_content_classification c
+              WHERE c.post_id = sp.post_id
+                AND c.platform = 'instagram'
+                AND c.prompt_hash = ?
+          )
+        ORDER BY sp.post_id
     """
-    keys = [
-        partition_key(DRAIN_WORKLOAD, rounds_by_post[pid], [pid])
-        for pid in sorted(rounds_by_post)
-    ]
-    instance.add_dynamic_partitions(SUBMITTED_ASSET_NAME, keys)
-    submitted_key = AssetKey(SUBMITTED_ASSET_NAME)
-    for key in keys:
-        instance.report_runless_asset_event(
-            AssetMaterialization(asset_key=submitted_key, partition=key)
-        )
 
 
-@asset(
-    name="ig_posts_gen_batches",
-    group_name="instagram",
-    description="Drain triage-approved labels into Gemini enrichment batches.",
-    deps=["ig_post_labels"],
-)
-def ig_posts_gen_batches(
-    context: AssetExecutionContext,
-    config: GoldConfig,
-    duckdb: DuckDBResource,
-    ops: SQLiteResource,
-) -> pl.DataFrame:
-    """Dumb drain over ``ig_post_labels`` (US-L4): any post whose label pass
-    approved it for enrichment that has no current-prompt conformed
-    classification and nothing in flight on the Dagster instance is enqueued.
-    The ``gold_ig`` watermark is retired — the labels table is the discovery
-    source. Explicit ``post_ids`` re-enrichment bypasses all guards.
-
-    Stale rows (prompt_hash != CURRENT_PROMPT_HASH, e.g. pre-multimodal
-    text-only analyses) are re-enqueue-eligible (US-L5) — only a current
-    prompt_hash blocks. Empty-caption posts never reach this asset: the
-    label pass sets enrich_decision='skip' for them (US-L6).
-
-    ``whole_corpus`` (GoldConfig) opts into corpus-wide admission: ALL silver
-    posts with non-empty captions (including the label pass's ``skip``
-    posts) are enqueued for a text-only pass (ADR-0001). Still excludes
-    current-prompt conformed rows + in-flight work so a re-run never re-pays.
-
-    Execution mode stays tier-driven — batches default to ``gemini-batch``
-    (BATCH API, ~50% cheaper) whenever the active Gemini tier supports it
-    (``GeminiTierConfig.detect().supports_batch``, i.e. Tier 1+), falling
-    back to ``interactive`` on the free tier or by explicit
-    ``GoldConfig.prefer_interactive`` opt-out. The retired queue stored the
-    mode on ``batch_jobs`` for worker claim routing (ADR-0012); the submit
-    stage now owns execution, so the drain only SURFACES the mode in the
-    result frame and the free-tier gate stays loud at the submit call
-    (RuntimeError in ``gemini_batch.submit_gemini_batch``).
-
-    The enqueue itself is Dagster-native (ADR-0012/0013): one
-    ``enrichment_submitted`` partition PER POST on the injected instance,
-    under the same per-post key contract the in-flight guard derives.
+def _by_post_ids_source(conn) -> str:
+    """Explicit re-enrichment: these posts, guards bypassed."""
+    return """
+        SELECT sp.post_id, sp.caption, sp.media_files
+        FROM silver_ig_posts sp
+        WHERE list_contains(?, sp.post_id)
+        ORDER BY sp.post_id
     """
-    db = duckdb
-    _ensure_state_tables(db)
-
-    post_ids = list(config.post_ids or [])
-
-    with db.get_connection() as conn:
-        # The completed-work record is silver post-ADR-0011: guard against
-        # silver_content_classification (which exists and is populated), not
-        # gold_analyses (whose domain='instagram' overload is the known bug).
-        from orchestration.defs.ig_enriched.slv import classification as _cls
-
-        conn.execute(_cls.CLASSIFICATION_DDL)  # additive, idempotent
-        if post_ids:
-            # Targeted re-enrichment: ad-hoc post_ids bypass labels, the
-            # completion guard, and the in-flight guard (re-process at will).
-            pending = conn.execute(
-                """SELECT sp.post_id
-                   FROM silver_ig_posts sp
-                   WHERE list_contains(?, sp.post_id)""",
-                [post_ids],
-            ).fetchall()
-            candidates = [r[0] for r in pending]
-            candidates_seen = len(candidates)
-        elif config.whole_corpus:
-            # Corpus-wide admission (opt-in): bypass the label gate entirely.
-            candidates = [
-                r[0]
-                for r in conn.execute(
-                    """
-                    SELECT sp.post_id
-                    FROM silver_ig_posts sp
-                    WHERE sp.caption IS NOT NULL AND trim(sp.caption) <> ''
-                      AND NOT EXISTS (
-                          SELECT 1 FROM silver_content_classification c
-                          WHERE c.post_id = sp.post_id
-                            AND c.platform = 'instagram'
-                            AND c.prompt_hash = ?
-                      )
-                    """,
-                    [CURRENT_PROMPT_HASH],
-                ).fetchall()
-            ]
-            candidates_seen = len(candidates)
-        else:
-            candidates = [
-                r[0]
-                for r in conn.execute(
-                    """
-                    SELECT l.post_id
-                    FROM ig_post_labels l
-                    WHERE l.enrich_decision IN ('standout', 'control', 'floor_filler')
-                      AND l.label_version = ?
-                      AND NOT EXISTS (
-                          SELECT 1 FROM silver_content_classification c
-                          WHERE c.post_id = l.post_id
-                            AND c.platform = 'instagram'
-                            AND c.prompt_hash = ?
-                      )
-                    """,
-                    [LABEL_VERSION, CURRENT_PROMPT_HASH],
-                ).fetchall()
-            ]
-            candidates_seen = len(candidates)
-
-    # ── In-flight guard (US-EENG-4): instance-derived, never the queue. ──
-    # The in-flight set comes from the Dagster instance via
-    # partitions.in_flight_partitions — the SAME function the accounting
-    # identity uses, so guard and identity cannot disagree. The instance
-    # ALWAYS comes from the asset context (context.instance): ONE instance
-    # serves both the in-flight guard here and the enqueue materialization
-    # in _materialize_submitted_partitions below. A non-resource, non-config
-    # `instance` function parameter would be misread by Dagster as an asset
-    # INPUT named "instance" (DagsterInvalidDefinitionError) — which is why
-    # the parameter is banned. The module-level _drain_instance is a
-    # TEST-ONLY override; production never sets it. There is NO
-    # DagsterInstance.get() fallback: an instance the drain cannot obtain
-    # from the context fails loudly rather than silently reading a foreign
-    # one.
-    instance = _drain_instance if _drain_instance is not None else context.instance
-    suppressed: list[str] = []
-    rounds_by_post: dict[str, int] = {}
-    if candidates:
-        for pid in candidates:
-            state = post_partition_state(instance, DRAIN_WORKLOAD, pid)
-            if state.suppressed and not post_ids:
-                # The in-flight guard: suppressed ONLY on the discovery
-                # path. Explicit post_ids re-enrichment bypasses all guards.
-                suppressed.append(pid)
-            else:
-                # next_round is one past the highest MATERIALIZED harvested
-                # round — a first attempt enqueues at 0; a failed post
-                # re-enqueues at the retry round its harvested keys imply.
-                rounds_by_post[pid] = state.next_round
-        if suppressed:
-            in_flight_keys = sorted(drain_in_flight_keys(instance))
-            logger.warning(
-                "ig_posts_gen_batches: %d post(s) IN FLIGHT — not re-enqueued "
-                "(post_ids=%s; in-flight partition keys=%s)",
-                len(suppressed),
-                suppressed,
-                in_flight_keys,
-            )
-            candidates = [pid for pid in candidates if pid not in set(suppressed)]
 
 
-    n_suppressed = len(suppressed)
-    enqueued_ids = sorted(rounds_by_post)
+def classification_candidates(conn, cfg: SubmitConfig) -> list[dict]:
+    """Posts eligible for content classification, in post_id order.
 
-    if not enqueued_ids and not post_ids and candidates_seen == 0:
-        # Distinguish "nothing to do" from the in-flight skip above (AC4):
-        # a bare "no run" for both cases is an operator-facing ambiguity.
-        logger.info("ig_posts_gen_batches: nothing to do (0 candidates)")
-    elif not enqueued_ids and n_suppressed:
-        logger.warning(
-            "ig_posts_gen_batches: enqueueing nothing — ALL %d candidate(s) "
-            "in flight (US-EENG-4 AC4 skip)",
-            n_suppressed,
-        )
-
-    # Execution mode is surfaced in the result frame only — the submit stage
-    # owns execution through the seam and enforces the provider readiness
-    # gate loudly there. ``consumer="gemini"`` was queue claim routing,
-    # replaced by the workload identity carried inside the partition key
-    # (DRAIN_WORKLOAD).
-    mode: str | None = "seam" if rounds_by_post else None
-    if rounds_by_post:
-        # ── The enqueue (ADR-0012/0013/0014): Dagster-native, no queue. ──
-        # One enrichment_submitted partition per post at its CURRENT round,
-        # on the SAME instance the in-flight guard reads. Materializing
-        # here is what makes the NEXT run's guard suppress these posts.
-        _materialize_submitted_partitions(instance, rounds_by_post)
-
-    return pl.DataFrame(
-        {
-            "enqueued": pl.Series([len(enqueued_ids)], dtype=pl.Int32),
-            "candidates_seen": pl.Series([candidates_seen], dtype=pl.Int32),
-            "in_flight_suppressed": pl.Series([n_suppressed], dtype=pl.Int32),
-            "mode": pl.Series([mode], dtype=pl.Utf8),
-        }
-    )
-
-
-def enumerate_targets(
-    conn,
-    mode: str,
-    limit: int | None = None,
-    post_ids: list[str] | None = None,
-) -> list[dict]:
-    """Posts eligible for the given pass, not yet conformed into silver.
-
-    visual: media-bearing, non-empty caption, no conformed
-    ``silver_visual_annotations`` row for the current engine. text:
-    non-empty caption, no conformed ``silver_text_annotations`` row.
+    Three admission arms, in precedence order: explicit ``post_ids`` (bypasses
+    everything), ``whole_corpus`` (bypasses the label gate), and the standard
+    label-driven path. A completed pass is a CONFORMED row for the current
+    prompt hash — never a legacy gold write (ADR-0012 D4).
     """
-    if mode not in ("visual", "text"):
-        raise ValueError(f"unknown mode: {mode}")
-    where = "TRIM(caption) <> ''"
-    params: list = []
-    if mode == "visual":
-        where += " AND media_files IS NOT NULL AND media_files <> '[]'"
-    if post_ids:
-        where += " AND post_id IN (" + ",".join("?" * len(post_ids)) + ")"
-        params.extend(post_ids)
-    rows = conn.execute(
-        f"SELECT post_id, caption, media_files FROM silver_ig_posts "
-        f"WHERE {where} ORDER BY post_id",
-        params,
-    ).fetchall()
-    done = _done_post_ids(conn, mode)
-    targets = [
-        {"post_id": r[0], "caption": r[1] or "", "media_files": r[2]}
-        for r in rows
-        if r[0] not in done
-    ]
-    return targets[:limit] if limit else targets
-
-
-def _done_post_ids(conn, mode: str) -> set[str]:
-    """Post_ids already CONFORMED into silver for ``mode``.
-
-    ADR-0012 D4: completion is a CONFORMED ROW, not a legacy gold write.
-    Done iff the pass's typed silver table carries a row for the post that
-    was produced by the current engine (model) and, for visual, the current
-    facet schema version. Validation lives in silver (ADR-0011): a conformed
-    row implies every required field passed, so no JSON sniffing is needed.
-    This guard previously read the retired ``gold_growth_facets`` table,
-    which marked conform-QUARANTINED posts as done (their gold row was
-    written before conform rejected the payload) — 21 posts were silently
-    skipped, caught 2026-09-15 when the quarantine anti-join was computed.
-    """
-    table = (
-        "silver_visual_annotations" if mode == "visual"
-        else "silver_text_annotations"
-    )
-    where = (
-        "model = ? AND schema_version = ?" if mode == "visual"
-        else "model = ?"
-    )
-    params: list = (
-        [_DEFAULT_QWEN_MODEL, GROWTH_FACETS_SCHEMA_VERSION] if mode == "visual"
-        else [_DEFAULT_QWEN_MODEL]
-    )
-    # A state DB that has never run conform has no silver tables yet — that
-    # means NOTHING is done, not an error. Guard on THIS mode's table: a
-    # text-only state DB has no silver_visual_annotations, and vice versa —
-    # checking the wrong table re-bills the other pass on every --run.
-    names = {
-        r[0]
-        for r in conn.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'main'"
+    if cfg.post_ids:
+        rows = conn.execute(
+            _by_post_ids_source(conn), [list(cfg.post_ids)]
         ).fetchall()
-    }
-    if table not in names:
-        return set()
-    sql = f"SELECT post_id FROM {table} WHERE {where}"
-    return {r[0] for r in conn.execute(sql, params).fetchall()}
+    elif cfg.whole_corpus:
+        rows = conn.execute(
+            _whole_corpus_source(conn), [CURRENT_PROMPT_HASH]
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            _classified_source(conn), [LABEL_VERSION, CURRENT_PROMPT_HASH]
+        ).fetchall()
+    return [
+        {"post_id": r[0], "caption": r[1] or "", "media_files": r[2]} for r in rows
+    ]
 
-# ── Request building ─────────────────────────────────────────────────────────
+
+# ── Item building ───────────────────────────────────────────────────────────
 
 
-def build_facets_batch_requests(
-    ops: SQLiteResource,
-    conn,
-    targets: list[dict],
-    mode: str,
-) -> list[dict]:
-    """Build qwen service job items for facet targets.
+class UnbuildablePostError(Exception):
+    """A candidate cannot become a provider item.
 
-    Visual targets resolve media URLs to scrape-time cached LOCAL file paths
-    (``media_urls_to_local_paths``) at submit time — the service reads files
-    from its own host disk and frame-samples videos with ffmpeg. Text targets
-    send ``images=[]`` (caption only). ``custom_key`` is the post_id so
-    harvest maps responses directly.
-
-    A visual target whose media resolves to NO cached path is skipped with a
-    logged reason (deterministic, re-discovered on the next run) — see the
-    module docstring.
+    ``retryable`` distinguishes a cause that may clear (a media cache miss)
+    from a deterministic one (empty caption), because only the former mints a
+    retry round. The caller turns this into a terminal failure for that post
+    alone — never a silent skip that strands its partition in flight.
     """
-    items: list[dict] = []
-    for t in targets:
-        post_id = t["post_id"]
-        caption = t["caption"]
-        if mode == "visual":
-            images = media_urls_to_local_paths(
-                ops, t["media_files"], include_video=True
+
+    def __init__(self, reason: str, *, retryable: bool) -> None:
+        super().__init__(reason)
+        self.retryable = retryable
+
+
+def _resolve_media_paths(
+    ops: SQLiteResource, media_files_json: str | None
+) -> tuple[str, ...]:
+    """Resolve a post's media URLs to CACHED local byte paths.
+
+    Cache-only by design: the scrape-time byte cache is the reliable copy
+    (CDN URLs die in ~4-5 days), and no provider transport is named here.
+    A cache miss raises — the caller makes it a terminal failure for that post
+    alone; submitting partial media would silently change the analysis input.
+    """
+    from orchestration.defs.engine.media import cached_local_path
+
+    if not media_files_json:
+        return ()
+    try:
+        urls = [u for u in json.loads(media_files_json) if u]
+    except json.JSONDecodeError as exc:
+        raise UnbuildablePostError(
+            f"unparseable media_files: {exc}", retryable=False
+        ) from exc
+    paths: list[str] = []
+    for url in urls:
+        path = cached_local_path(ops, url)
+        if not path:
+            raise UnbuildablePostError(
+                f"media cache miss for {url[:120]} — not submitting partial media",
+                retryable=True,
             )
-            if not images:
-                logger.warning(
-                    "Post %s: no cached media paths resolvable — skipped "
-                    "(re-discovered on the next run after media cache fill)",
-                    post_id,
-                )
-                continue
-            req = {
-                "custom_key": post_id,
-                "prompt": build_growth_facets_prompt(caption, len(images)),
-                "images": images,
-            }
-        else:
-            req = {
-                "custom_key": post_id,
-                "prompt": build_text_facets_prompt(caption),
-                "images": [],
-            }
-        items.append(req)
-    return items
+        paths.append(path)
+    return tuple(paths)
 
 
-# ── Cost projection ──────────────────────────────────────────────────────────
+def _classification_item(
+    ops: SQLiteResource, conn, candidate: dict
+) -> Item:
+    """The classification item: the gold prompt plus the caption.
 
-
-def estimate_facets_cost(items: list[dict]) -> tuple[int, float]:
-    """(estimated input tokens, projected USD) for a qwen item list.
-
-    Advisory only (not billing): prompt chars/4 + vision tokens per image
-    (videos counted as their server-side frame sample), priced at the qwen
-    list rates.
+    The caption is appended verbatim. This literal was previously duplicated
+    across two modules; it lives here now, once.
     """
+    post_id = candidate["post_id"]
+    caption = (candidate.get("caption") or "").strip()
+    if not caption:
+        raise UnbuildablePostError("empty caption — nothing to enrich", retryable=False)
+    images = _resolve_media_paths(ops, candidate.get("media_files"))
+    return Item(
+        custom_key="",  # the submit stage owns the key (it owns the partition)
+        prompt=f"{IG_GOLD_PROMPT}\n{caption}",
+        images=images,
+        post_id=post_id,
+        platform="instagram",
+    )
+
+
+# ── Cost projection ─────────────────────────────────────────────────────────
+
+
+def estimate_classification_cost(items: list[Item]) -> tuple[int, float]:
+    """(estimated input tokens, projected USD) for classification items."""
     input_tokens = 0
     out_tokens = 0
-    for r in items:
-        n_video = sum(1 for p in r.get("images") or [] if is_video_path(p))
-        n_img = len(r.get("images") or []) - n_video
+    for it in items:
+        n_video = sum(1 for p in it.images if is_video_path(p))
+        n_img = len(it.images) - n_video
         input_tokens += (
-            len(r.get("prompt") or "") // 4
+            len(it.prompt) // 4
             + n_img * _TOKENS_PER_IMAGE
             + n_video * _VIDEO_FRAMES * _TOKENS_PER_IMAGE
         )
-        out_tokens += (
-            _EST_OUTPUT_TOKENS_VISUAL if r.get("images") else _EST_OUTPUT_TOKENS_TEXT
-        )
+        out_tokens += _EST_OUTPUT_TOKENS_VISUAL if it.images else _EST_OUTPUT_TOKENS_TEXT
     cost = (
         input_tokens / 1_000_000 * QWEN_INPUT_PRICE_PER_M
         + out_tokens / 1_000_000 * QWEN_OUTPUT_PRICE_PER_M
@@ -496,17 +255,53 @@ def estimate_facets_cost(items: list[dict]) -> tuple[int, float]:
     return input_tokens, cost
 
 
-# ── Submit / wait / harvest ──────────────────────────────────────────────────
+# ── The registry ────────────────────────────────────────────────────────────
 
 
-def _n_media_for(conn, post_id: str) -> int:
-    row = conn.execute(
-        "SELECT media_files FROM silver_ig_posts WHERE post_id = ?", [post_id]
-    ).fetchone()
-    if not row or not row[0]:
-        return 0
-    try:
-        urls = json.loads(row[0])
-    except json.JSONDecodeError:
-        return 0
-    return len(urls) if isinstance(urls, list) else 0
+@dataclass(frozen=True)
+class Workload:
+    """One enrichment pass: eligibility, item construction, cost projection."""
+
+    name: str
+    #: The silver table a completed pass lands in — the anti-join check's
+    #: left-hand side. A workload with no entry here is invisible to
+    #: ``check_no_silent_loss``, which is how the facet passes went unchecked.
+    silver_table: str
+    candidates: Callable[..., list[dict]]
+    build_item: Callable[..., Item]
+    estimate: Callable[[list[Item]], tuple[int, float]]
+    #: Media-bearing passes submit only posts with cached media; a caption-only
+    #: pass submits everything eligible.
+    media_bearing: bool = False
+
+
+WORKLOADS: tuple[Workload, ...] = (
+    Workload(
+        name=WORKLOAD_CONTENT_CLASSIFICATION,
+        silver_table="silver_content_classification",
+        candidates=classification_candidates,
+        build_item=_classification_item,
+        estimate=estimate_classification_cost,
+        media_bearing=True,
+    ),
+)
+
+#: Workload name → declaration, for dispatch and for the anti-join check.
+WORKLOAD_BY_NAME: dict[str, Workload] = {w.name: w for w in WORKLOADS}
+
+
+def workloads_for(cfg: SubmitConfig) -> tuple[Workload, ...]:
+    """The workloads this run covers, in registry order.
+
+    ``cfg.workload`` that names nothing registered is an ERROR: a typo would
+    otherwise submit nothing and look like a successful empty run.
+    """
+    if not cfg.workload:
+        return WORKLOADS
+    match = WORKLOAD_BY_NAME.get(cfg.workload)
+    if match is None:
+        raise ValueError(
+            f"unknown workload {cfg.workload!r}; registered: "
+            f"{sorted(WORKLOAD_BY_NAME)}"
+        )
+    return (match,)

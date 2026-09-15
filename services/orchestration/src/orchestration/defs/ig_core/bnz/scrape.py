@@ -307,9 +307,6 @@ def scrape_details_to_bronze(
 
     import polars as pl
 
-    from ..common.apify import poll_run, stream_dataset, trigger_run
-    from ..common.lake import BRONZE_LAKE, bronze_path
-
     run = trigger_run(
         "apify~instagram-scraper",
         [profile_url],
