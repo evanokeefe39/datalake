@@ -154,3 +154,33 @@ def test_missing_slice_raises_rather_than_reporting_nothing(tmp_path):
     ctx = _slice_ctx(database=str(tmp_path / "does-not-exist.duckdb"))
     with pytest.raises(Exception):
         _requests(ctx)
+
+
+# ── Registry ↔ anti-join consistency ────────────────────────────────────────
+
+
+def test_every_workload_is_visible_to_the_anti_join_check():
+    """A workload whose silver tables are absent from WORKLOAD_SILVER_TABLES is
+    invisible to check_no_silent_loss — which is exactly how the facet passes
+    went unchecked while their silver tables sat empty.
+
+    This pins the two definitions together: the registry's ``silver_table``
+    must be the FIRST entry of the check's tuple for that workload, so a human
+    reading the registry and the check agree about where responses land.
+    """
+    from orchestration.defs.ig_enriched.slv.checks import WORKLOAD_SILVER_TABLES
+    from orchestration.defs.ig_enriched.slv.workloads import WORKLOADS
+
+    assert WORKLOADS, "the registry must not be empty"
+    for workload in WORKLOADS:
+        assert workload.name in WORKLOAD_SILVER_TABLES, (
+            f"{workload.name} has no WORKLOAD_SILVER_TABLES entry — it would "
+            "be invisible to check_no_silent_loss"
+        )
+        tables = WORKLOAD_SILVER_TABLES[workload.name]
+        assert tables, f"{workload.name} maps to an empty table tuple"
+        assert workload.silver_table == tables[0], (
+            f"{workload.name}: registry says silver_table="
+            f"{workload.silver_table!r} but the anti-join maps it to "
+            f"{tables[0]!r} — the two definitions have drifted"
+        )
