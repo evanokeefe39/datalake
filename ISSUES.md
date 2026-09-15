@@ -1112,6 +1112,95 @@ already present. The missing layer is specifically **graph assembly**: proving
 Dagster can construct and run the graph, which is the only thing that would have
 caught the unloadable signature.
 
+### 31. Full `pytest tests/` run does not finish clean — cause UNVERIFIED
+
+**Observed, 2026-09-15. Cause is NOT established — nothing below is a diagnosis.**
+
+Three full-suite runs on essentially the same tree produced three different shapes:
+
+| Run | Result | Duration |
+|---|---|---|
+| 1st | collection error — 2 errors, no tests ran (stale `scripts/` paths; since fixed) | 3.85s |
+| 2nd | **34 failed, 746 passed, 4 skipped, 4 errors** | 323.72s |
+| 3rd | ended in `sqlite3.ProgrammingError: Cannot operate on a closed database` during teardown; **no clean summary line produced** | 996.74s |
+
+The 3rd run's traceback pointed at SQLAlchemy pool teardown
+(`pool._dialect.do_rollback` → `dbapi_connection.rollback()`). **That is where the
+traceback surfaced, not a verified cause.** No test in `tests/` calls `dispose(`,
+configures pool settings, or constructs an engine — `grep` for all three returns
+nothing — so the owning connection is unattributed. A plausible-sounding root
+cause was deliberately NOT recorded.
+
+**Why its own entry rather than absorption into #30.** `Cannot operate on a closed
+database` under parallel/teardown execution is the *shared-connection* failure
+shape this branch has already been burned by — the DuckDB single-writer
+constraint (ADR-0012 decision 8: "Cannot open file … being used by another
+process, observed") and the concurrent-agents-on-one-checkout incident are in that
+family. Whether this is the same family is unknown.
+
+**Needed before closing:**
+1. Identify the 34 failures and 4 errors **by name** — scoped per-directory runs,
+   not another full run (which is what #30's markers exist to make cheap).
+2. Test for order dependence (same tests, fixed order vs single-file) — order
+   dependence is what would connect it to the shared-connection family.
+3. Only then attribute a cause.
+
+**Note on run-to-run variance:** 323.72s vs 996.74s for the same suite is itself a
+signal and is unexplained. Both figures are recorded because the variance is part
+of the observation.
+
+**Not blocking the migration close-out.** The branch's acceptance evidence is the
+verified destination state, not this suite. Recorded so a failing suite is never
+mistaken for a green gate.
+
+### 32. W9 must reconcile the 4 `facets_batch_jobs` rows BEFORE the drop
+
+**Found 2026-09-15** reviewing `scripts/retire_queue_tables.py` against the plan
+(`remediation-plan.md:473-478`).
+
+**The gap.** The plan requires the 4 `facets_batch_jobs` rows be reconciled into
+the service's job store *before* the drop. The script archives the table to Parquet
+then drops it — which preserves the handles in an archive file, but leaves the live
+service holding job `2214532df4d3` (1,339 completed / 5 failed / 6,830 pending,
+still `processing`) with **no local record pointing at it**.
+
+Job ids are minted service-side, so this ledger is the only local index of which
+service jobs matter. After the drop, nothing on this host says which ids are live.
+That is the loss of a pointer, not merely of history.
+
+**Fix.** Make reconciliation a *durable output of `--apply`*, never a manual step
+that can be skipped. On `--apply`: resolve each of the 4 job ids against the service
+store (`~/.qwen-batch/state.sqlite`, table `jobs`, column **`id`** — not `job_id`),
+write the mapping `ledger_id → service_state → n_completed/n_failed/n_pending →
+disposition` into the W9 log, AND record open-handle ids in ISSUES.md before the
+drop proceeds. A Parquet file nobody reads is not a pointer.
+
+**Reconciliation as observed 2026-09-15** (the service store is authoritative and
+mutable — re-read at apply time):
+
+| ledger job_id | ledger status | n_req | service state | completed | failed |
+|---|---|---|---|---|---|
+| `4de3befc10e7…` | JOB_FAILED | 5 | failed | 0 | 5 |
+| `58dbe69c5828…` | RETRIEVED | 5 | completed | 5 | 0 |
+| `c28c34d0c387…` | RETRIEVED | 98 | completed | 98 | 0 |
+| `2214532df4d3…` | SUBMITTED | 8178 | **processing** | 1339 | 5 |
+
+The first three are terminal and need no action. **The fourth is open.**
+
+**Stalled job `2214532df4d34f828adfb90fbf87f253` — OPEN DECISION.** 1,339 completed
+/ 5 failed / 6,830 pending / 4 processing; `updated` is ~5.9 days after `created`,
+so it is not progressing at the expected rate. **Re-read 2026-09-15 at rehearsal
+time: 6,693 pending** — the count moved from 6,830, so the worker is crawling
+rather than frozen. That makes "harvest-and-continue" more viable than a stalled
+job would; re-check the count immediately before deciding. It landed **zero** bronze rows (live bronze
+carries only the 9,576 legacy classification rows). Disposition is one of:
+harvest-and-continue (~$2-3 for the remaining ~83%), harvest-and-abandon (keeps the
+already-paid 1,339 for free), or declare it a dead pilot explicitly. **Must be
+decided before W9 drops the table.**
+
+The script's archive-verify gate and KEEP-set assertion are correct as written —
+only the reconciliation output is missing.
+
 ## Resolved
 
 ### 1. Comprehensive medallion testing strategy ✅ (2026-07-01)

@@ -224,6 +224,82 @@ def drop_doomed(ops: sqlite3.Connection,
     return dropped
 
 
+def reconcile_facets_jobs(before_drop: Path | None) -> list[dict]:
+    """Resolve every ledger job id against the SERVICE's own job store.
+
+    W9's plan precondition (remediation-plan.md:473-478): the 4
+    `facets_batch_jobs` rows must be reconciled into the service's job store
+    BEFORE the drop. Job ids are minted service-side, so this ledger is the
+    only LOCAL index of which service jobs matter -- after the drop nothing
+    on this host names them. A Parquet archive nobody reads is not a pointer,
+    so the mapping is written durably (W9 log) as part of --apply.
+
+    Reads the service store read-only; never writes it.
+    """
+    if before_drop is None or not before_drop.exists():
+        return []
+    import sqlite3 as _sq
+
+    ledger = _sq.connect(f"file:{before_drop}?mode=ro", uri=True)
+    try:
+        rows = ledger.execute(
+            "SELECT job_id, mode, status, n_requests FROM facets_batch_jobs"
+        ).fetchall()
+    except _sq.OperationalError:
+        # Table already gone (re-run after a successful retirement).
+        return []
+    finally:
+        pass
+
+    store_path = Path.home() / ".qwen-batch" / "state.sqlite"
+    out: list[dict] = []
+    if not store_path.exists():
+        for job_id, mode, status, n in rows:
+            out.append({
+                "job_id": job_id, "mode": mode, "ledger_status": status,
+                "n_requests": n, "service_state": "STORE-UNAVAILABLE",
+                "completed": None, "failed": None, "pending": None,
+                "disposition": "UNRECONCILED -- service store not found; "
+                               "resolve manually before relying on this id",
+            })
+        ledger.close()
+        return out
+
+    store = _sq.connect(f"file:{store_path}?mode=ro", uri=True)
+    for job_id, mode, status, n in rows:
+        rec = store.execute(
+            "SELECT state, completed, failed, total FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        if rec is None:
+            out.append({
+                "job_id": job_id, "mode": mode, "ledger_status": status,
+                "n_requests": n, "service_state": "ABSENT",
+                "completed": None, "failed": None, "pending": None,
+                "disposition": "not in the service store -- expired or pruned; "
+                               "no action possible",
+            })
+            continue
+        state, completed, failed, total = rec
+        pending = (total or 0) - (completed or 0) - (failed or 0)
+        if state in ("completed", "failed"):
+            disposition = "terminal -- no action"
+        else:
+            disposition = (
+                f"OPEN: {pending} item(s) outstanding. Decide harvest-continue "
+                "/ harvest-abandon / declare-dead BEFORE dropping this table"
+            )
+        out.append({
+            "job_id": job_id, "mode": mode, "ledger_status": status,
+            "n_requests": n, "service_state": state,
+            "completed": completed, "failed": failed, "pending": pending,
+            "disposition": disposition,
+        })
+    store.close()
+    ledger.close()
+    return out
+
+
 def assert_keep_set(ops: sqlite3.Connection,
                     state: duckdb.DuckDBPyConnection) -> dict[str, int]:
     """The KEEP set must be present AND non-empty after the drops."""
@@ -331,17 +407,39 @@ def run(apply_: bool, rehearse: bool) -> dict:
         _log("APPLY against LIVE databases")
 
     try:
-        _log("\n1. archive + verify (export count == live count, same run)")
+        _log("\n1. reconcile the facets_batch_jobs handle index BEFORE any drop")
+        recon = reconcile_facets_jobs(OPS_DB)
+        if not recon:
+            _log("  (no facets_batch_jobs rows to reconcile)")
+        for r in recon:
+            _log(
+                f"  {r['job_id'][:12]}…  ledger={r['ledger_status']:10} "
+                f"service={r['service_state']:18} pending={r['pending']}  "
+                f"{r['disposition']}"
+            )
+        open_handles = [
+            r for r in recon
+            if r["service_state"] not in ("completed", "failed", "ABSENT")
+        ]
+        if open_handles:
+            _log(
+                f"\n  !! {len(open_handles)} job(s) have NO terminal state in the "
+                "service store. After this drop nothing on this host names them."
+            )
+            for r in open_handles:
+                _log(f"     {r['job_id']}  -> {r['disposition']}")
+
+        _log("\n2. archive + verify (export count == live count, same run)")
         manifest = archive_and_verify(ops, state, archive_root, now)
 
-        _log("\n2. drop (per-table only -- never the database file)")
+        _log("\n3. drop (per-table only -- never the database file)")
         dropped = drop_doomed(ops, state)
         for d in dropped:
             _log(f"  dropped {d}")
         if not dropped:
             _log("  (nothing to drop)")
 
-        _log("\n3. KEEP-set assertion (must survive, non-empty)")
+        _log("\n4. KEEP-set assertion (must survive, non-empty)")
         keep = assert_keep_set(ops, state)
         for k, v in keep.items():
             _log(f"  {k:22} {v}")
@@ -349,6 +447,8 @@ def run(apply_: bool, rehearse: bool) -> dict:
         out = {
             "mode": "rehearse" if rehearse else "apply",
             "at": now,
+            "reconciliation": recon,
+            "open_handles": open_handles,
             "manifest": manifest,
             "dropped": dropped,
             "keep_set": keep,
