@@ -22,11 +22,11 @@ import sys
 from pathlib import Path
 
 import duckdb
-import polars as pl
 import pytest
 
 from datalake.defs.common.schemas import MODEL_LEGACY_NULL
-from datalake.defs.enrichment import classification, conform as conform_mod
+from datalake.defs.enrichment import classification
+from datalake.defs.enrichment import conform as conform_mod
 from datalake.defs.enrichment.conform import (
     SILVER_CONTENT_CLASSIFICATION,
     TABLE_SCHEMAS,
@@ -226,10 +226,19 @@ def _make_gold_fixture(db_path: Path, *, model_null_rows: int = 8) -> None:
         conn.execute(_GOLD_DDL)
         rows = []
         for i in range(model_null_rows):
-            rows.append((f"null-{i}", "instagram", "24c8e291", json.dumps(_GOOD_PAYLOAD), "2026-09-05T08:27:12.730183+00:00", None))
+            rows.append(
+                (f"null-{i}", "instagram", "24c8e291", json.dumps(_GOOD_PAYLOAD),
+                 "2026-09-05T08:27:12.730183+00:00", None)
+            )
         for i in range(3):
-            rows.append((f"ok-{i}", "instagram", "abc123", json.dumps(_GOOD_PAYLOAD), "2026-09-06T10:00:00+00:00", "gemini-3.5-flash-lite"))
-        rows.append(("bad-0", "instagram", "abc123", _MALFORMED, "2026-09-06T10:00:00+00:00", "gemini-3.5-flash-lite"))
+            rows.append(
+                (f"ok-{i}", "instagram", "abc123", json.dumps(_GOOD_PAYLOAD),
+                 "2026-09-06T10:00:00+00:00", "gemini-3.5-flash-lite")
+            )
+        rows.append(
+            ("bad-0", "instagram", "abc123", _MALFORMED,
+             "2026-09-06T10:00:00+00:00", "gemini-3.5-flash-lite")
+        )
         conn.executemany(
             "INSERT INTO gold_analyses VALUES (?, ?, ?, ?, ?, ?)", rows
         )

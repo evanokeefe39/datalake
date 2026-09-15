@@ -37,7 +37,6 @@ from datalake.defs.enrichment.partitions import (
 from datalake.defs.instagram import assets as ig_assets
 from datalake.defs.instagram.assets import (
     DRAIN_WORKLOAD,
-    DRAIN_WORKLOAD,
     drain_in_flight_keys,
     drain_suppressed_post_ids,
     ig_posts_gen_batches,

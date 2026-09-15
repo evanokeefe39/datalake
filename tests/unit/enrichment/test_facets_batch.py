@@ -30,12 +30,12 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from datalake.defs.common.resources import SQLiteResource  # noqa: E402
 from datalake.defs.common.schemas import duckdb_ddl  # noqa: E402
 from datalake.defs.enrichment import facets_batch  # noqa: E402
-from datalake.defs.enrichment.growth_facets_schema import (  # noqa: E402
-    GROWTH_FACETS_SCHEMA_VERSION,
-)
 from datalake.defs.enrichment.facets import (  # noqa: E402
     parse_text_response,
     parse_universal_response,
+)
+from datalake.defs.enrichment.growth_facets_schema import (  # noqa: E402
+    GROWTH_FACETS_SCHEMA_VERSION,
 )
 from datalake.defs.enrichment.prompts import (  # noqa: E402
     _DEFAULT_QWEN_MODEL,

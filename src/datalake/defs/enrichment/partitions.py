@@ -102,6 +102,7 @@ from dagster import (
     AssetKey,
     DynamicPartitionsDefinition,
 )
+
 SUBMITTED_ASSET_NAME = "enrichment_submitted"
 HARVESTED_ASSET_NAME = "enrichment_harvested"
 

@@ -33,7 +33,8 @@ TERMINAL_STATES = frozenset({COMPLETED, FAILED})
 
 RETRYABLE = "retryable"
 TERMINAL = "terminal"
-UNKNOWN = "unknown"  # unclassifiable error — consumers must FAIL LOUDLY, never silently treat as terminal
+# Unclassifiable error — consumers must FAIL LOUDLY, never treat as terminal.
+UNKNOWN = "unknown"
 
 # HTTP statuses that make a retry pointless — a terminal error class.
 _TERMINAL_STATUS = frozenset({400, 401, 403, 404, 422})
@@ -158,7 +159,7 @@ def build_adapter(name: str, **kwargs: Any) -> ProviderAdapter:
         # through to the KeyError below — the failure mode stays "loud KeyError
         # naming the empty registry", never an ImportError that masks it.
         try:
-            from datalake.defs.enrichment import adapters  # noqa: PLC0415
+            from datalake.defs.enrichment import adapters  # noqa: F401, PLC0415
         except ImportError:  # pragma: no cover — only mid-package-init
             pass
     if name not in ADAPTER_REGISTRY:

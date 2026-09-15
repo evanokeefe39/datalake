@@ -20,7 +20,6 @@ from dagster import (
 
 from datalake.defs.enrichment.partitions import (
     HARVESTED_ASSET_NAME,
-    parse_partition_key,
     HARVESTED_PARTITIONS,
     SUBMITTED_ASSET_NAME,
     SUBMITTED_PARTITIONS,
@@ -28,6 +27,7 @@ from datalake.defs.enrichment.partitions import (
     account,
     failure_set,
     in_flight_partitions,
+    parse_partition_key,
     partition_key,
 )
 

@@ -8,15 +8,15 @@ value were re-pointed at ``silver_content_classification``.
 """
 from __future__ import annotations
 
-
 from dagster import (
     AssetCheckResult,
     AssetKey,
     asset,
     asset_check,
 )
-from datalake.defs.common.resources import DuckDBResource, SQLiteResource
+
 from datalake.defs.common import lake
+from datalake.defs.common.resources import DuckDBResource, SQLiteResource
 from datalake.defs.enrichment import conform
 from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
 from datalake.defs.instagram.labels import LABEL_VERSION

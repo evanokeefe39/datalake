@@ -37,6 +37,7 @@ adapter. The retired ``gemini_batch_harvest`` job and its sensor are gone —
 from __future__ import annotations
 
 import logging
+
 from dagster import (
     AssetKey,
     AssetMaterialization,

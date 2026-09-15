@@ -55,8 +55,8 @@ to FIRE on the malformed condition and PASS on the clean one.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 from dagster import AssetCheckResult, asset_check
 

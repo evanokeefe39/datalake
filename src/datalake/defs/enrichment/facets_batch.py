@@ -51,7 +51,6 @@ from datalake.defs.common.resources import SQLiteResource
 from datalake.defs.enrichment import facets, seam
 from datalake.defs.enrichment.growth_facets_schema import (
     GROWTH_FACETS_SCHEMA_VERSION,
-    VISUAL_FACET_FIELDS,
 )
 from datalake.defs.enrichment.landing import (
     WORKLOAD_GROWTH_FACETS_TEXT,

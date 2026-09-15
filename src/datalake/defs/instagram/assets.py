@@ -27,8 +27,8 @@ from ..common.schemas import SILVER_COLUMNS, duckdb_ddl
 from ..enrichment import landing
 from ..enrichment.media_cache import cache_media_bytes, seed_media_from_file
 from ..enrichment.partitions import (
-    PartitionSnapshot,
     SUBMITTED_ASSET_NAME,
+    PartitionSnapshot,
     in_flight_partitions,
     partition_key,
     post_partition_state,
@@ -36,7 +36,6 @@ from ..enrichment.partitions import (
 from ..enrichment.prompts import CURRENT_PROMPT_HASH
 from .config import (
     LOCAL_INGEST_DIR,
-    GeminiTierConfig,
     GoldConfig,
     ScrapeConfig,
 )
@@ -1061,7 +1060,6 @@ def drain_suppressed_post_ids(
     suppression order-independent and stable when other posts complete
     between runs.
     """
-    keys = drain_in_flight_keys(instance)
     return [
         pid
         for pid in candidates

@@ -9,8 +9,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource

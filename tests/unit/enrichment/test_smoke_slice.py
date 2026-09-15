@@ -141,7 +141,9 @@ def test_stratification(slice_a):
 
 def test_enrichment_plan_submittable(slice_a):
     sub = enrichment_plan_check(slice_a, ["visual", "text"])
-    assert sub["visual"] > 0, "visual pass must have submittable items — that is the slice's purpose"
+    assert sub["visual"] > 0, (
+        "visual pass must have submittable items — that is the slice's purpose"
+    )
     assert sub["text"] > 0
 
 

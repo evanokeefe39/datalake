@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-import pytest
 from dagster import AssetKey, AssetMaterialization, build_asset_context
 
 from datalake.defs.common.resources import DuckDBResource, SQLiteResource
@@ -28,6 +27,7 @@ from datalake.defs.instagram.assets import (
     DRAIN_WORKLOAD,
     ig_posts_gen_batches,
 )
+
 
 def _run_drain(instance, *args, **kwargs):
     """Run the drain asset with a fake PartitionSnapshot injected via the

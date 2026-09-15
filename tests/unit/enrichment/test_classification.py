@@ -305,7 +305,11 @@ def test_named_deviant_rows_conform_with_recorded_reasons(roots):
     assert nd["admiralty"] == "C2"
 
     # Provenance gap is explicit, never silent (AC5): exactly 1 NULL model.
-    assert silver_by_id[NO_SUBDOMAIN_ID]["model"] == classification.MODEL_LEGACY_NULL == SHARED_MODEL_LEGACY_NULL
+    assert (
+        silver_by_id[NO_SUBDOMAIN_ID]["model"]
+        == classification.MODEL_LEGACY_NULL
+        == SHARED_MODEL_LEGACY_NULL
+    )
     assert result.counts["model_gap"] == 1
 
     # A body carrying NONE of the 10 keys is quarantined loudly with a reason.

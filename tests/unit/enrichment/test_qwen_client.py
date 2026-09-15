@@ -13,7 +13,7 @@ import pytest
 from datalake.defs.enrichment import qwen_client
 
 DEFAULT_QWEN_SERVICE_URL = qwen_client.DEFAULT_QWEN_SERVICE_URL
-QwenServiceError = qwen_client.QwenServiceError  # noqa: kept for doc clarity
+QwenServiceError = qwen_client.QwenServiceError  # re-exported for test ergonomics
 check_health = qwen_client.check_health
 get_job = qwen_client.get_job
 get_results = qwen_client.get_results

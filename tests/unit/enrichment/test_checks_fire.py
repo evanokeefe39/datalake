@@ -24,23 +24,18 @@ from datalake.defs.enrichment import checks as checks_mod
 from datalake.defs.enrichment import conform as conform_mod
 from datalake.defs.enrichment import landing as landing_mod
 from datalake.defs.enrichment.checks import (
-    QUARANTINE_BASELINE_TABLE,
     anti_join_losses,
     quarantine_growth,
     stale_snapshot_files,
 )
 from datalake.defs.enrichment.conform import SILVER_QUARANTINE
-from datalake.defs.enrichment.growth_facets_schema import (
-    GROWTH_FACETS_SCHEMA_VERSION,
-)
-from datalake.defs.enrichment.landing import WORKLOAD_GROWTH_FACETS_VISUAL
 
 # Import the module under test for the payload builders (mirror the
 # validated shapes; keeps this file free of duplicated fixtures).
 from tests.unit.enrichment.test_conform import (
+    _land_visual,
     text_payload,  # noqa: F401  (payload builders)
     visual_payload,  # noqa: F401
-    _land_visual,
 )
 
 NOW = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)

@@ -28,7 +28,6 @@ from datalake.defs.enrichment.partitions import (
 from datalake.defs.enrichment.seam import DEFAULT_JOBSPEC, Result
 from datalake.defs.instagram import assets as ig_assets
 
-
 WORKLOAD = WORKLOAD_CONTENT_CLASSIFICATION
 SUBMITTED = AssetKey("enrichment_submitted")
 HARVESTED = AssetKey("enrichment_harvested")

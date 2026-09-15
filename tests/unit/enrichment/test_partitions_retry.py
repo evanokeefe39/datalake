@@ -17,7 +17,6 @@ from datalake.defs.enrichment.partitions import (
     post_partition_state,
 )
 
-
 WORKLOAD = "content-classification"
 
 

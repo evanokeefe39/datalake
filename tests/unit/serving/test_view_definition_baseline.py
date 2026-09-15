@@ -31,19 +31,20 @@ import json
 import os
 import re
 from pathlib import Path
-from dagster import build_asset_context
-from dagster_duckdb import DuckDBResource
+
 import duckdb
 import pytest
 from dagster import build_asset_context
+from dagster_duckdb import DuckDBResource
 
 from datalake.defs.common.schemas import duckdb_ddl
-serving = importlib.import_module("datalake.defs.serving.assets")
 from tests.operational.expected_schema import EXPECTED_DUCKDB_VIEWS
 from tests.operational.test_state_compatibility import (
     _BANNED_VIEW_SOURCES_RE,
     _REQUIRED_VIEW_SOURCES,
 )
+
+serving = importlib.import_module("datalake.defs.serving.assets")
 
 SNAPSHOT_PATH = Path(__file__).parent / "view_definition_baseline.json"
 

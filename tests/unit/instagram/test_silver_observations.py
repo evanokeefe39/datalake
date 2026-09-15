@@ -24,7 +24,6 @@ from unittest.mock import patch
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.common.schemas import sqlite_ddl
 from datalake.defs.instagram.assets import ig_posts_slv
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 

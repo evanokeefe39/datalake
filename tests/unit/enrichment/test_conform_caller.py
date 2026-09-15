@@ -152,8 +152,8 @@ def _land_classification(bronze_root: Path, post_id: str = "p3") -> None:
 def test_conform_has_production_caller():
     """The audit finding, pinned at import level: both the CLI script and
     the Dagster asset actually invoke conform.conform()."""
-    from scripts import conform_silver
     from datalake.defs.enrichment import assets as enrichment_assets
+    from scripts import conform_silver
 
     script_src = inspect.getsource(conform_silver)
     asset_src = inspect.getsource(enrichment_assets)

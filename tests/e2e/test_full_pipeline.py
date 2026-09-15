@@ -108,7 +108,6 @@ def test_full_pipeline_happy_path(tmp_path):
     assert enqueue_result["enqueued"][0] == 3
 
     # Verify the Dagster-native enqueue: partitions on the instance
-    from dagster import AssetKey
 
     assert len(enqueue_result["enqueued"]) == 1
 

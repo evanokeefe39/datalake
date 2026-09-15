@@ -38,7 +38,6 @@ from datalake.defs.enrichment.seam import (
     COMPLETED,
     DEFAULT_JOBSPEC,
     FAILED,
-    JobSpec,
     PENDING,
     PROCESSING,
     RETRYABLE,
@@ -47,6 +46,7 @@ from datalake.defs.enrichment.seam import (
     UNKNOWN,
     Capabilities,
     Item,
+    JobSpec,
     ProviderError,
     Result,
 )

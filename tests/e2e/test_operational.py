@@ -8,7 +8,6 @@ Per test-hardening plan Phase 3:
 
 from __future__ import annotations
 
-import json
 from unittest.mock import patch
 
 from dagster import build_asset_context, build_schedule_context
