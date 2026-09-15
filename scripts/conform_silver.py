@@ -143,11 +143,15 @@ def run_conform(
         "silver_table_rows": table_rows,
         "quarantined_rows": result.quarantine.to_dicts(),
     }
-    if counts["conformed"] + counts["quarantined"] != bronze.height:
+    # Reconcile against UNIQUE natural keys, not raw rows: bronze is
+    # append-only and _latest_per_key legitimately supersedes re-run rows.
+    picked = bronze.unique(subset=["post_id", "platform", "workload"]).height
+    if counts["conformed"] + counts["quarantined"] != picked:
         raise SystemExit(
             "FAIL: reconciliation broke — conformed + quarantined "
-            f"({counts['conformed']} + {counts['quarantined']}) != bronze rows "
-            f"({bronze.height}). A row was lost; refusing to report success."
+            f"({counts['conformed']} + {counts['quarantined']}) != unique "
+            f"bronze keys ({picked}). A row was lost; refusing to report "
+            "success."
         )
     if result.quarantine.height:
         print(

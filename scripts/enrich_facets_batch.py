@@ -183,7 +183,7 @@ def run_batch(args: argparse.Namespace) -> int:
                 f"[{mode}] harvest:",
                 facets_batch.harvest_facets_batches(
                     conn, [job_id], mode, model=args.model,
-                    base_url=base_url,
+                    base_url=base_url, root=args.bronze_root,
                 ),
             )
     finally:

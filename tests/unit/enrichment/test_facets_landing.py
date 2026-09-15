@@ -252,16 +252,21 @@ def test_no_facets_batch_jobs_anywhere(tmp_path, state_conn, bronze_root,
     con.execute("CREATE TABLE other_table (id INTEGER PRIMARY KEY)")
     con.commit()
     con.close()
-    from unittest.mock import patch
+    # submit goes through the seam adapter (patched to a stub returning svc-1)
+    submitted: list = []
 
-    with patch.object(
-        facets_batch.qwen_client, "check_health", return_value={}
-    ), patch.object(
-        facets_batch.qwen_client, "submit_job", return_value="svc-1"
-    ):
-        facets_batch.submit_facets_batch(
-            [{"custom_key": "p1", "prompt": "p", "images": []}], "text"
-        )
+    class _StubAdapter:
+        def submit(self, items, *, job_spec=None):
+            submitted.append(list(items))
+            return "svc-1"
+
+    monkeypatch.setattr(
+        facets_batch, "_service_adapter", lambda base_url, model: _StubAdapter()
+    )
+    facets_batch.submit_facets_batch(
+        [{"custom_key": "p1", "prompt": "p", "images": []}], "text"
+    )
+    assert submitted, "submit must reach the service adapter"
     _harvest(monkeypatch, state_conn, bronze_root, "svc-1", "text",
              [_result("p_caption", output=json.dumps({"hook_type": "x"}))])
     con = sqlite3.connect(str(ops_db))

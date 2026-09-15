@@ -14,6 +14,7 @@ from datalake.defs.enrichment.seam import (
     PROCESSING,
     RETRYABLE,
     TERMINAL,
+    UNKNOWN,
     Capabilities,
     Item,
     ProviderError,
@@ -123,7 +124,10 @@ def test_service_submit_body_shape(service_routes):
     a = service_routes()
     a.submit(ITEMS)
     # body shape confirmed against app.py JobIn: items[{custom_key,prompt,images}], model
-    assert a._client.calls == [("POST", "/jobs")]
+    # the LOUD /health gate (US-EENG-2) runs first — a down service must
+    # raise, never quietly submit into the void.
+    assert a._client.calls[0] == ("GET", "/health")
+    assert a._client.calls[-1] == ("POST", "/jobs")
 
 
 def test_service_normalize_maps_every_native_state(service_routes):
@@ -194,7 +198,8 @@ def gemini_jobs(monkeypatch):
 def test_direct_batch_roundtrip_composite_handle(gemini_jobs):
     a = adapters.DirectBatchAdapter()
     handle = a.submit(ITEMS)
-    assert handle == "jobs/aaa,jobs/bbb"
+    assert handle == '["jobs/aaa", "jobs/bbb"]'
+    assert adapters.handle_codec(handle) == ["jobs/aaa", "jobs/bbb"]
     raw = a.poll(handle)
     # one RUNNING + one SUCCEEDED → the aggregate is PROCESSING, never terminal
     assert a.normalize_state(raw) == PROCESSING
@@ -275,9 +280,11 @@ def test_classify_transport_errors_retryable(service_routes, exc):
     assert a.classify_error(exc) == RETRYABLE
 
 
-def test_classify_other_exceptions_terminal(service_routes):
+def test_classify_other_exceptions_unknown(service_routes):
+    """UNKNOWN is a distinct outcome: the caller must FAIL LOUDLY, never
+    treat an unclassifiable error as terminal (adapters.py:98-110)."""
     a = service_routes()
-    assert a.classify_error(ValueError("nope")) == TERMINAL
+    assert a.classify_error(ValueError("nope")) == UNKNOWN
 
 
 # ─────────────────────────────────────────────── registry

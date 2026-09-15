@@ -30,6 +30,9 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from datalake.defs.common.resources import SQLiteResource  # noqa: E402
 from datalake.defs.common.schemas import duckdb_ddl  # noqa: E402
 from datalake.defs.enrichment import facets_batch  # noqa: E402
+from datalake.defs.enrichment.growth_facets_schema import (  # noqa: E402
+    GROWTH_FACETS_SCHEMA_VERSION,
+)
 from datalake.defs.enrichment.facets import (  # noqa: E402
     parse_text_response,
     parse_universal_response,
@@ -99,6 +102,11 @@ class _FakeAdapter:
     def __init__(self):
         self.docs: dict[str, dict] = {}
         self.results: dict[str, list[Result]] = {}
+        self.submitted: list = []
+
+    def submit(self, items, *, job_spec=None):
+        self.submitted.append(list(items))
+        return f"svc-{len(self.submitted)}"
 
     def poll(self, handle):
         doc = self.docs.get(handle)
@@ -121,6 +129,34 @@ class _FakeAdapter:
 def _fake_service(monkeypatch, adapter) -> None:
     monkeypatch.setattr(
         facets_batch, "_service_adapter", lambda base_url, model: adapter
+    )
+
+
+def _seed_silver_visual(con, post_id, model=_DEFAULT_QWEN_MODEL,
+                        schema_version=GROWTH_FACETS_SCHEMA_VERSION):
+    """Minimal silver_visual_annotations row — exactly the columns
+    _done_post_ids reads. Simulates the conform step out of band."""
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS silver_visual_annotations "
+        "(post_id VARCHAR, platform VARCHAR, model VARCHAR, "
+        "schema_version VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO silver_visual_annotations VALUES (?, 'instagram', ?, ?)",
+        [post_id, model, schema_version],
+    )
+
+
+def _seed_silver_text(con, post_id, model=_DEFAULT_QWEN_MODEL):
+    """Minimal silver_text_annotations row (same contract as visual)."""
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS silver_text_annotations "
+        "(post_id VARCHAR, platform VARCHAR, model VARCHAR, "
+        "schema_version VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO silver_text_annotations VALUES (?, 'instagram', ?, ?)",
+        [post_id, model, GROWTH_FACETS_SCHEMA_VERSION],
     )
 
 
@@ -262,24 +298,14 @@ class TestParseValidate:
         assert "face_present" in prompt  # forbids visual fields explicitly
         assert CURRENT_TEXT_FACETS_PROMPT_HASH
 
-
-# ── Submit / wait / harvest on the qwen service ─────────────────────────────
-
-
-class TestSubmitWait:
-    def test_submit_health_checks_then_posts_one_job(self):
+    def test_submit_posts_one_job_via_seam(self, monkeypatch):
+        adapter = _FakeAdapter()
+        _fake_service(monkeypatch, adapter)
         items = [{"custom_key": "p1", "prompt": "p", "images": []}]
-        with patch.object(
-            facets_batch.qwen_client, "check_health", return_value={}
-        ) as health, patch.object(
-            facets_batch.qwen_client, "submit_job", return_value="svc-1"
-        ) as sub:
-            job_id = facets_batch.submit_facets_batch(items, "text")
+        job_id = facets_batch.submit_facets_batch(items, "text")
         assert job_id == "svc-1"
-        health.assert_called_once()
-        sub.assert_called_once()
-        assert sub.call_args.kwargs["model"] == _DEFAULT_QWEN_MODEL
-        assert sub.call_args.args[1] == items
+        assert len(adapter.submitted) == 1
+        assert [it.custom_key for it in adapter.submitted[0]] == ["p1"]
         # ADR-0013: NO ledger row — the returned job id IS the in-flight
         # record; the service owns the job store.
 
@@ -438,47 +464,49 @@ class TestHarvestAndMerge:
 
 
 class TestVisualDoneDetection:
-    """Visual mode must key done-ness on facet JSON content, not prompt_hash
-    (the text pass overwrites prompt_hash on the same row)."""
+    """Done-ness = a CONFORMED silver row under the current engine + schema
+    (ADR-0012 D4). Each pass owns its own typed table, so the old
+    prompt_hash-overwrite hazard is structurally dissolved."""
 
-    def test_visual_done_row_with_text_hash_not_reenqueued(
-        self, state_conn
-    ):
-        # Both passes landed; the text pass ran LAST so prompt_hash is the
-        # TEXT hash even though all visual fields are present.
-        write_gold_facets_pass_conn(
-            state_conn, "p_img", "instagram",
-            _visual_payload()["visual_facets"],
-        )
-        write_gold_facets_pass_conn(
-            state_conn, "p_img", "instagram",
-            {"hook_type": "question", "is_sponsored": False},
-            prompt_hash=CURRENT_TEXT_FACETS_PROMPT_HASH,
-        )
+    def test_conformed_visual_row_not_reenqueued(self, state_conn):
+        # Both passes conformed: each pass sees its own table.
+        _seed_silver_visual(state_conn, "p_img")
+        _seed_silver_text(state_conn, "p_img")
         targets = facets_batch.enumerate_targets(state_conn, "visual")
         assert "p_img" not in {t["post_id"] for t in targets}
 
     def test_text_only_row_still_targeted_by_visual(self, state_conn):
-        write_gold_facets_pass_conn(
-            state_conn, "p_img", "instagram",
-            {"hook_type": "question", "is_sponsored": False},
-            prompt_hash=CURRENT_TEXT_FACETS_PROMPT_HASH,
-        )
+        _seed_silver_text(state_conn, "p_img")
         targets = facets_batch.enumerate_targets(state_conn, "visual")
         assert "p_img" in {t["post_id"] for t in targets}
 
     def test_superseded_engine_row_is_reenqueued(self, state_conn):
-        # A gemini-era row (all visual fields under schema v3, but model =
-        # gemini) must NOT count as done under qwen — it is re-enqueued so the
-        # qwen corpus run re-enriches it (backend migration). p_video is a
-        # silver visual candidate; a gemini gold row on it must still target it.
-        write_gold_facets_pass_conn(
-            state_conn, "p_video", "instagram",
-            _visual_payload()["visual_facets"],
-            model="gemini-3.5-flash-lite",
-        )
+        # gemini-era silver row must NOT count as done under qwen — it is
+        # re-enqueued so the corpus re-enriches under the current engine.
+        _seed_silver_visual(state_conn, "p_video",
+                            model="gemini-3.5-flash-lite")
         targets = facets_batch.enumerate_targets(state_conn, "visual")
         assert "p_video" in {t["post_id"] for t in targets}
+
+    def test_visual_table_absent_does_not_block_text(self, state_conn):
+        # Regression (2026-09-15): the table-existence guard was hardcoded to
+        # silver_visual_annotations for BOTH modes, so a text-only state DB
+        # re-billed every text post on each run. Each mode guards its own table.
+        _seed_silver_text(state_conn, "p_caption")
+        assert "p_caption" not in {
+            t["post_id"]
+            for t in facets_batch.enumerate_targets(state_conn, "text")
+        }
+        # ...and the missing visual table never masks visual work
+        assert "p_img" in {
+            t["post_id"]
+            for t in facets_batch.enumerate_targets(state_conn, "visual")
+        }
+
+    def test_superseded_schema_version_reenqueued(self, state_conn):
+        _seed_silver_visual(state_conn, "p_img", schema_version="2")
+        targets = facets_batch.enumerate_targets(state_conn, "visual")
+        assert "p_img" in {t["post_id"] for t in targets}
 
 
 class TestHarvestGuards:
@@ -562,18 +590,6 @@ class TestResumeAfterMidRunFailure:
         ops = _sqlite(tmp_path)
         adapter = _FakeAdapter()
         _fake_service(monkeypatch, adapter)
-        submitted: list[list[str]] = []
-
-        def fake_submit(*args, **kwargs):
-            submitted.append(
-                [it["custom_key"] for it in args[1] if "custom_key" in it]
-            )
-            return f"svc-{len(submitted)}"
-
-        monkeypatch.setattr(facets_batch.qwen_client, "check_health",
-                            lambda *_: {})
-        monkeypatch.setattr(facets_batch.qwen_client, "submit_job",
-                            fake_submit)
         root = str(tmp_path / "bronze")
 
         def run_cycle(results_payload):
@@ -603,7 +619,9 @@ class TestResumeAfterMidRunFailure:
         ]
         out1 = run_cycle(cycle1_results)
         assert out1["written"] == 1 and out1["failed_items"] == 1
-        assert submitted[-1] == ["p_img", "p_video"]
+        assert [it.custom_key for it in adapter.submitted[-1]] == [
+            "p_img", "p_video"
+        ]
         assert state_conn.execute(
             "SELECT count(*) FROM gold_growth_facets "
             "WHERE post_id = 'p_img'"
@@ -613,7 +631,10 @@ class TestResumeAfterMidRunFailure:
             "WHERE post_id = 'p_video'"
         ).fetchone()[0] == 0
 
-        # (a) cycle-2 discovery excludes the gold post, includes the failed one
+        # Conform ran out of band: p_img's payload is CONFORMED into silver —
+        # ADR-0012 D4 makes that the completion signal the guard reads.
+        _seed_silver_visual(state_conn, "p_img")
+        # (a) cycle-2 discovery excludes the conformed post, includes the failed one
         targets2 = facets_batch.enumerate_targets(state_conn, "visual")
         assert "p_img" not in {t["post_id"] for t in targets2}
         assert "p_video" in {t["post_id"] for t in targets2}
@@ -626,9 +647,11 @@ class TestResumeAfterMidRunFailure:
             for r in cycle1_results
         ]
         out2 = run_cycle(cycle2_results)
-        assert submitted[-1] == ["p_video"]  # ONLY the failed post retried
-        assert "p_img" not in submitted[-1]
-        assert out2["written"] == 2  # both cycle-2 items land (UPSERT)
+        # ONLY the failed post retried — p_img is done (conformed)
+        assert [it.custom_key for it in adapter.submitted[-1]] == ["p_video"]
+        # the double replays BOTH results for the single re-submitted job, so
+        # both land — the load-bearing claim is the submit list above
+        assert out2["written"] == 2
 
         # (b) idempotency: gold row for p_img still exactly one row
         assert state_conn.execute(
