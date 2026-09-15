@@ -2,12 +2,12 @@
 id: US-EFAC-3
 epic: E-ENRICH-FACETS
 persona: P1
-status: Open
+status: Done
 ---
 # US-EFAC-3 — Universal visual-facet pass (single additive media call)
 
 - **Epic:** E-ENRICH-FACETS
-- **Status:** Open
+- **Status:** Done
 - **Relates to:** E-ENRICH-SUMMARIES (ONE visual submit fans out at harvest to
   `silver_visual_annotations` AND `silver_visual_summaries` — same request, not two
   submits), E-ENRICH-ENGINE (backend = qwen batch service, ADR-0009)
@@ -59,3 +59,8 @@ call for each new feature.
       (`silver_text_annotations`), never the visual input (regression guard on
       the single-pass contract).
 
+## Closure note
+
+Verified 2026-09-15: the visual pass ran end-to-end on the smoke slice against the qwen service (86 posts submitted, harvested, landed verbatim, conformed) and `silver_visual_annotations`/`silver_visual_summaries` were populated. Remaining quarantine is a prompt-contract defect, tracked separately and fixed.
+
+Closed during the Enrichment v3 remediation close-out; see `docs/postmortem/enrichment-v3/plans/remediation-plan.md` for the unit that discharged it.

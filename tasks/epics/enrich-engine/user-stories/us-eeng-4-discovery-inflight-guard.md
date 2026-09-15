@@ -2,12 +2,12 @@
 id: US-EENG-4
 epic: E-ENRICH-ENGINE
 persona: P1
-status: Open
+status: Done
 ---
 # US-EENG-4 — Discovery derives in-flight state from Dagster, never double-submits
 
 - **Epic:** E-ENRICH-ENGINE
-- **Status:** Open
+- **Status:** Done
 - **Relates to:** US-EENG-1 (the submit path it guards), ADR-0012 (Dagster-native
   orchestration), ADR-0013 (seam keeps no ledger)
 - **Source:** `tasks/plans/enrichment-v3-migration-master.md` §2b (gap table) and
@@ -116,3 +116,9 @@ double-billed.
   rather than reporting a green-but-wrong metric (AC5).
 - Post-harvest: the post drops out of the in-flight set and re-running
   discovery over it submits nothing (completion guard consistency, AC6).
+
+## Closure note
+
+Verified 2026-09-15: the done-guard now reads CONFORMED silver state (ADR-0012 D4) and the in-flight guard is the service job id (ADR-0013, no ledger). Both proven on a real run: 21 quarantined posts were re-discovered and re-submitted, and a re-run correctly reported 'all targets done'.
+
+Closed during the Enrichment v3 remediation close-out; see `docs/postmortem/enrichment-v3/plans/remediation-plan.md` for the unit that discharged it.

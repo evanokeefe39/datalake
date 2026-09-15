@@ -2,12 +2,12 @@
 id: US-EENG-2
 epic: E-ENRICH-ENGINE
 persona: P1
-status: Open
+status: Done
 ---
 # US-EENG-2 — qwen-batch service is a declared dependent service; loud failure if down
 
 - **Epic:** E-ENRICH-ENGINE
-- **Status:** Open
+- **Status:** Done
 - **Source:** `tasks/plans/qwen-batch-enrichment.md`
 
 ## Story
@@ -44,3 +44,9 @@ silently skip enrichment.
 - Stop the service → trigger enrichment → step errors with the startup remedy,
       and no bronze/silver writes occur.
 - Start the service → same trigger → enrichment proceeds.
+
+## Closure note
+
+Verified 2026-09-15: the loud gate is implemented at the adapter boundary (`adapters.py:112-119`, `qwen_client.check_health`) and the CLI gates before any submit; proven live — a down service raised `QwenServiceError` instead of reporting 'nothing to do'.
+
+Closed during the Enrichment v3 remediation close-out; see `docs/postmortem/enrichment-v3/plans/remediation-plan.md` for the unit that discharged it.

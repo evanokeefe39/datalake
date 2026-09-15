@@ -2,12 +2,12 @@
 id: US-ESA-2
 epic: E-SERVING-ANALYTICS
 persona: P1
-status: Open
+status: Done
 ---
 # US-ESA-2 — Migrate live classification to silver with no serving regression
 
 - **Epic:** E-SERVING-ANALYTICS
-- **Status:** Open
+- **Status:** Done
 - **Relates to:** E-ENRICH-ENGINE (bronze landing `bronze_enrichment_raw` + the
   classification pass that will write `silver_content_classification`),
   US-ESA-1 (`silver_content_classification` is the gold marts' upstream
@@ -198,3 +198,9 @@ keep working with zero serving regression and zero re-billing.
   identical rows, including the `result_json` passthrough column;
   `test_state_compatibility.py` parametrized view assertions green.
 - Dashboard endpoints return the same response shapes pre/post rebind.
+
+## Closure note
+
+Verified 2026-09-15: parity against the pre-migration backup is PASS — 9,576 rows both sides, 0 both-non-null conflicts. The sentinel defect found during W10 is corrected and verified (8 rows now `unrecorded-legacy-null`; 9,568 non-sentinel rows byte-identical).
+
+Closed during the Enrichment v3 remediation close-out; see `docs/postmortem/enrichment-v3/plans/remediation-plan.md` for the unit that discharged it.

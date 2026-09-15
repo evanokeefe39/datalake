@@ -21,7 +21,7 @@ import pytest
 
 _SCRIPT = (
     Path(__file__).resolve().parents[3]
-    / "scripts"
+    / "migrations"
     / "migrate_curated_creator_merge.py"
 )
 _spec = importlib.util.spec_from_file_location("migrate_curated_creator_merge", _SCRIPT)

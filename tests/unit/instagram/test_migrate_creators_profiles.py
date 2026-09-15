@@ -9,7 +9,7 @@ from pathlib import Path
 import duckdb
 
 _SCRIPT = (
-    Path(__file__).resolve().parents[3] / "scripts" / "migrate_creators_profiles.py"
+    Path(__file__).resolve().parents[3] / "migrations" / "migrate_creators_profiles.py"
 )
 _spec = importlib.util.spec_from_file_location("migrate_creators_profiles", _SCRIPT)
 assert _spec and _spec.loader, "migration script not found"

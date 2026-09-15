@@ -172,10 +172,10 @@ interactive worker hard-crash on very long runs is moot with interactive gone.
 | Gold | DuckDB table | Dagster enrichment jobs (submit → harvest) | `gold_analyses` (AssetSpec, externally materialized) — CURRENT; target is four ADR-0011 marts |
 | Serving | DuckDB views + tables | DuckDB | `dim_profile` (SCD2), `dim_date`, 14 analytics views (incl. 5 canonical metric views) |
 
-**Enrichment layered model (ADR-0011) — ACCEPTED 2026-09-10, NOT YET IMPLEMENTED.**
+**Enrichment layered model (ADR-0011) — LIVE since 2026-09-15.**
 Canonical spec: `docs/architecture/pipelines/enrichment.md` (v3; supersedes
-`docs/architecture/enrichment-design-v1-superseded.md` v1, retained as rationale only). The
-table above describes what runs today; this is the target:
+`docs/architecture/enrichment-design-v1-superseded.md` v1, retained as rationale only). The table above described the pre-migration world; this is what RUNS
+TODAY (verified 2026-09-15 against `data/state.duckdb`):
 
 | Layer | Job | Contract |
 |---|---|---|
@@ -217,7 +217,9 @@ the service is what makes the synchronous OpenRouter/qwen provider async) and
 `facets_batch_jobs`) is retired; `ops.sqlite` retains `media_cache`,
 `media_metadata`, `creators`, `profiles`, `creator_merges`, `prompt_registry`.
 Retry becomes a new partition key; failures surface via the anti-join
-`landed(bronze) ∖ conformed(silver)` plus a BLOCKING asset check. NOT IMPLEMENTED.
+`landed(bronze) ∖ conformed(silver)` plus a BLOCKING asset check — the blocking
+check is IMPLEMENTED (`defs/enrichment/checks.py::check_no_silent_loss`). The
+queue-table DROP itself is still pending human approval (see `scripts/retire_queue_tables.py`).
 
 **Current vs target, in one line:** today `gold_analyses` + `gold_growth_facets`
 + the `batch_*`/`dead_letter` queue in `ops.sqlite`; target the six silver
@@ -239,7 +241,7 @@ src/datalake/defs/
 **Storage split:**
 - **Parquet lake** — bulk data, lock-free parallel writes
 - **DuckDB** (`data/state.duckdb`) — authoritative current state, watermarks, SCD2 dims, views
-- **Lake layers (target, ADR-0011)** — `bronze_enrichment_raw` + six `silver_*` tables + four gold marts as Parquet/DuckDB per the layered model above (not yet built)
+- **Lake layers (ADR-0011, LIVE)** — `bronze_enrichment_raw` (9,576 rows) + six `silver_*` tables + four gold marts, per the layered model above
 
 **Engine boundary:**
 - Polars handles all Parquet I/O (read/write NDJSON and Parquet)
@@ -289,7 +291,7 @@ CREATE TABLE watermarks (name TEXT PRIMARY KEY, timestamp TIMESTAMP NOT NULL);
 - Silver reads/writes `watermarks WHERE name = 'silver_ig'`
 ## Dead letter pattern
 
-> **ADR-0012 (accepted 2026-09-10, NOT IMPLEMENTED):** the `dead_letter` table
+> **ADR-0012 (accepted 2026-09-10; DROP PENDING APPROVAL):** the `dead_letter` table
 > is scheduled for retirement alongside the `ops.sqlite` queue — failures will
 > surface via the anti-join `landed(bronze) ∖ conformed(silver)` plus a BLOCKING
 > asset check. Everything below describes the CURRENT (pre-ADR-0012) behavior
@@ -450,7 +452,7 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
 > runs for terminal partitions only. The retired `gemini_batch_harvest_sensor` is deleted.
 > Any schedule still ships stopped; the user enables those deliberately.
 
-> **Target (ADR-0012, NOT IMPLEMENTED):** this section describes the current
+> **Target (ADR-0012; queue DROP pending human approval):** this section describes the current
 > batch queue model. In the target state the lifecycle becomes
 > submit → harvest-as-partition-landing into `bronze_enrichment_raw`, with
 > orchestration state in the Dagster instance instead of `batch_jobs`/`batch_items`.
@@ -700,10 +702,10 @@ Set in `.env`:
 | 2026-07-01 | Panel of experts for architecture review | Data Architect + ML Engineer + Dagster Expert review non-trivial design decisions |
 | 2026-07-01 | Smoke tests between phases | Temp DB with subset of data, wiped after verification. Self-steering during implementation |
 | 2026-08-14 | `creators` + `profiles` split (replaces `scrape_targets`) | Multi-platform enabler: creator (person/brand) owns 1..N profiles (account per platform). `dim_profile` carries `creator_id`/`creator_name` for click-through without cross-DB joins. Depth is per-profile. Backfill is 1:1 (IG-only today). |
-| 2026-09-10 | Enrichment layered model (ADR-0011) — bronze verbatim → six `silver_*` → four gold marts, keyed `(post_id, platform)` | Deterministic remap from `bronze_enrichment_raw` means schema/mapping changes are replays, not re-bills. ACCEPTED, NOT IMPLEMENTED. Spec: `docs/architecture/pipelines/enrichment.md` (v3) |
-| 2026-09-10 | Dagster-native orchestration (ADR-0012) | Retires the `ops.sqlite` queue (`batch_jobs`/`batch_items`/`dead_letter`/`facets_batch_jobs`); retains media/identity/prompt tables. ACCEPTED, NOT IMPLEMENTED |
+| 2026-09-10 | Enrichment layered model (ADR-0011) — bronze verbatim → six `silver_*` → four gold marts, keyed `(post_id, platform)` | Deterministic remap from `bronze_enrichment_raw` means schema/mapping changes are replays, not re-bills. LIVE 2026-09-15. Spec: `docs/architecture/pipelines/enrichment.md` (v3) |
+| 2026-09-10 | Dagster-native orchestration (ADR-0012) | Retires the `ops.sqlite` queue (`batch_jobs`/`batch_items`/`dead_letter`/`facets_batch_jobs`); retains media/identity/prompt tables. Queue DROP pending approval; staging verified 2026-09-15 |
 | 2026-09-10 | Inference seam (ADR-0008/0009): three verbs + `submit`/`poll-to-terminal`/`retrieve`, `ProviderAdapter` swap | One seam serves both the qwen-batch-service (async wrapper over a synchronous provider) and Gemini's native batch. Proven in the enrichment spike; not yet wired in |
-| 2026-09-10 | The seam keeps **no ledger** (ADR-0013) — the service owns its job store, Dagster polls it; Dagster state is instance-native | ADR-0007 Amd 1 / ADR-0010 dec 5 specified a shared `external_jobs` table; the spike's S5 negative assertion tested for it by name and found it unnecessary. Reconciles ADR-0012 with the seam. ACCEPTED, NOT IMPLEMENTED |
+| 2026-09-10 | The seam keeps **no ledger** (ADR-0013) — the service owns its job store, Dagster polls it; Dagster state is instance-native | ADR-0007 Amd 1 / ADR-0010 dec 5 specified a shared `external_jobs` table; the spike's S5 negative assertion tested for it by name and found it unnecessary. Reconciles ADR-0012 with the seam. LIVE 2026-09-15 (no ledger exists; the service owns its job store) |
 
 ## Verification plane — defense in depth (2026-09-15, BINDING)
 
