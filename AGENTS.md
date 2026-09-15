@@ -129,8 +129,10 @@ code still runs the model described in the sections below.
 - **Orchestration (ADR-0012).** Orchestration state moves into the Dagster
   instance + the lake; the `ops.sqlite` queue (`batch_jobs`, `batch_items`,
   `dead_letter`, `facets_batch_jobs`) is retired. `ops.sqlite` retains
-  `media_cache`, `media_metadata`, `creators`, `profiles`, `creator_merges`,
-  `prompt_registry`. Not implemented — the queue tables are live today.
+  `media_cache`, `creators`, `profiles`, `creator_merges`, `prompt_registry`
+  (`media_metadata` was dropped with the queue — it was a Gemini File-API
+  cache for a retired provider). **EXECUTED 2026-09-15**: all seven tables
+  archived then dropped; see `scripts/retire_queue_tables.py`.
 
 ### Multimodal status (2026-09-08) — BATCH-NATIVE ONLY; interactive removed (PRE-PIVOT)
 
@@ -274,8 +276,10 @@ Under the accepted v3 model, `gold_analyses` is replaced by
 `silver_visual_annotations` + `silver_visual_summaries` +
 `silver_text_annotations` + `silver_text_summaries`, and `batch_jobs`/
 `batch_items`/`dead_letter` are retired in favor of Dagster-native
-orchestration state (`media_metadata`, `media_cache`, `creators`, `profiles`,
-`creator_merges`, `prompt_registry` retained). None of this is implemented yet.
+orchestration state (`media_cache`, `creators`, `profiles`, `creator_merges`,
+`prompt_registry` retained). **EXECUTED 2026-09-15** — the queue tables are
+gone from the live DBs; Dagster-native state has been live since the W3/W4
+units landed.
 
 **DuckDB views:** `v_post_detail` (foundational), `v_signal`, `v_quality_trend`, `v_creator_quality`, `v_rising_creators`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`, `v_post_baselines` (serving-layer comments/views point-in-time baselines), `v_post_metrics` (canonical per-post metrics), `v_creator_metrics` (gate-free per-creator activity), `v_creator_profile` (per-creator canonical rollup: momentum + dominant domain), `v_creator_topics` (per-creator top-5 topics by count and performance), `v_recent_hot_posts` (recent 28-day hot feed), `v_profile_metrics` (per-profile counts), `v_overview` (single-row), `v_standout_calendar` (standouts per day-of-month)
 
@@ -367,8 +371,21 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 `tests/operational/expected_schema.py` re-exports it for backward compatibility.
 Any table the pipeline reads or writes must be listed here. The readiness test
 (`test_state_compatibility.py`) asserts the catalog matches the running databases.
-**DuckDB tables:** `silver_ig_posts`, `gold_analyses`, `watermarks`, `dim_profile`, `dim_date`
-**SQLite tables:** `batch_jobs`, `batch_items`, `media_metadata`, `media_cache`, `dead_letter`, `creators`, `profiles`, `creator_merges`
+**DuckDB tables:** `silver_ig_posts`, `watermarks`, `dim_profile`, `dim_date`,
+plus the v3 layer: the six `silver_*` enrichment tables
+(`silver_content_classification`, `silver_visual_annotations`,
+`silver_visual_summaries`, `silver_text_annotations`, `silver_text_summaries`,
+`silver_audio_transcripts`) and the four gold marts (`gold_post_enrichment`,
+`gold_creator_performance`, `gold_content_shape_performance`, `gold_top_posts`).
+**SQLite tables:** `media_cache`, `creators`, `profiles`, `creator_merges`,
+`prompt_registry`
+
+**Dropped by the W9 retirement (2026-09-15)** — these are NOT expected and their
+absence is correct: `gold_analyses`, `gold_growth_facets` (DuckDB);
+`batch_jobs`, `batch_items`, `dead_letter`, `facets_batch_jobs`,
+`media_metadata` (SQLite). All archived to `data/lake/archive/<table>/<utc>/`
+with export count == live count verified in the same run. `bronze_enrichment_raw`
+is Parquet-backed and is never a registered DuckDB table.
 **Views:** `v_post_detail`, `v_signal`, `v_quality_trend`, `v_creator_quality`, `v_rising_creators`, `v_domain_coverage`, `v_engagement_outliers`, `v_outlier_posts`, `v_creator_outlier_rate`, `v_post_metrics`, `v_creator_metrics`, `v_profile_metrics`, `v_overview`, `v_standout_calendar`
 
 - **Missing tables/columns** — fails with "run the pipeline or migration"
