@@ -291,7 +291,7 @@ CREATE TABLE watermarks (name TEXT PRIMARY KEY, timestamp TIMESTAMP NOT NULL);
 - Silver reads/writes `watermarks WHERE name = 'silver_ig'`
 ## Dead letter pattern
 
-> **ADR-0012 (accepted 2026-09-10; DROP PENDING APPROVAL):** the `dead_letter` table
+> **ADR-0012 (accepted 2026-09-10; DROPPED 2026-09-15):** the `dead_letter` table
 > is scheduled for retirement alongside the `ops.sqlite` queue — failures will
 > surface via the anti-join `landed(bronze) ∖ conformed(silver)` plus a BLOCKING
 > asset check. Everything below describes the CURRENT (pre-ADR-0012) behavior
@@ -396,7 +396,8 @@ tables, `bronze_enrichment_raw`, four gold marts appear, and `batch_jobs`/
 | `scripts/poll_qwen_run.py` | Read-only progress poller for a live qwen-batch job. Reads the service job store (QWEN_BATCH_DB or `~/.qwen-batch/state.sqlite`), prints state / done / failed / rate / ETA, and shows the harvest+continue command once the newest job is terminal. |
 | `scripts/conform_silver.py` | Publish + register the six v3 silver tables from `bronze_enrichment_raw` — the live silver publisher (zero API calls; deterministic replay). |
 | `scripts/make_smoke_slice.py` | Deterministic dev/smoke slice builder for the verification plane. |
-| `scripts/reconcile_facets_jobs.py` | Reconcile `facets_batch_jobs` against the qwen service job store — W9 prerequisite. |
+| `scripts/reconcile_facets_jobs.py` | Reconcile `facets_batch_jobs` against the qwen service job store. Superseded by the reconciliation step built into `retire_queue_tables.py --apply`. |
+| `scripts/retire_queue_tables.py` | W9 retirement: reconcile handles → archive+verify (export count == live count, same run) → per-table drop → KEEP-set assertion. Modes: `--plan` / `--rehearse` / `--apply --i-have-approval [--accept-open-handles]`. |
 ## Stale analysis update
 
 When the enrichment prompt or model changes, existing `gold_analyses` rows have stale `prompt_hash`.
@@ -452,7 +453,7 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
 > runs for terminal partitions only. The retired `gemini_batch_harvest_sensor` is deleted.
 > Any schedule still ships stopped; the user enables those deliberately.
 
-> **Target (ADR-0012; queue DROP pending human approval):** this section describes the current
+> **Target (ADR-0012; queue DROPPED 2026-09-15):** this section describes the pre-drop
 > batch queue model. In the target state the lifecycle becomes
 > submit → harvest-as-partition-landing into `bronze_enrichment_raw`, with
 > orchestration state in the Dagster instance instead of `batch_jobs`/`batch_items`.
@@ -703,7 +704,7 @@ Set in `.env`:
 | 2026-07-01 | Smoke tests between phases | Temp DB with subset of data, wiped after verification. Self-steering during implementation |
 | 2026-08-14 | `creators` + `profiles` split (replaces `scrape_targets`) | Multi-platform enabler: creator (person/brand) owns 1..N profiles (account per platform). `dim_profile` carries `creator_id`/`creator_name` for click-through without cross-DB joins. Depth is per-profile. Backfill is 1:1 (IG-only today). |
 | 2026-09-10 | Enrichment layered model (ADR-0011) — bronze verbatim → six `silver_*` → four gold marts, keyed `(post_id, platform)` | Deterministic remap from `bronze_enrichment_raw` means schema/mapping changes are replays, not re-bills. LIVE 2026-09-15. Spec: `docs/architecture/pipelines/enrichment.md` (v3) |
-| 2026-09-10 | Dagster-native orchestration (ADR-0012) | Retires the `ops.sqlite` queue (`batch_jobs`/`batch_items`/`dead_letter`/`facets_batch_jobs`); retains media/identity/prompt tables. Queue DROP pending approval; staging verified 2026-09-15 |
+| 2026-09-10 | Dagster-native orchestration (ADR-0012) | Retires the `ops.sqlite` queue (`batch_jobs`/`batch_items`/`dead_letter`/`facets_batch_jobs`); retains media/identity/prompt tables. Queue DROP EXECUTED 2026-09-15 (archived first) |
 | 2026-09-10 | Inference seam (ADR-0008/0009): three verbs + `submit`/`poll-to-terminal`/`retrieve`, `ProviderAdapter` swap | One seam serves both the qwen-batch-service (async wrapper over a synchronous provider) and Gemini's native batch. Proven in the enrichment spike; not yet wired in |
 | 2026-09-10 | The seam keeps **no ledger** (ADR-0013) — the service owns its job store, Dagster polls it; Dagster state is instance-native | ADR-0007 Amd 1 / ADR-0010 dec 5 specified a shared `external_jobs` table; the spike's S5 negative assertion tested for it by name and found it unnecessary. Reconciles ADR-0012 with the seam. LIVE 2026-09-15 (no ledger exists; the service owns its job store) |
 
