@@ -22,7 +22,6 @@ from .defs.enrichment import (
     ENRICHMENT_DQ_CHECKS,
     enrichment_harvest_job,
     enrichment_submit_job,
-    gold_analyses,
     silver_enrichment_conform,
 )
 from .defs.enrichment.sensor import enrichment_harvest_sensor
@@ -62,7 +61,6 @@ all_assets = [
     ig_comments_slv,
     ig_posts_gen_batches,
     silver_enrichment_conform,
-    gold_analyses,
     *serving_assets,
 ]
 

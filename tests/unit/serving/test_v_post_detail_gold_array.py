@@ -194,7 +194,7 @@ def test_coverage_check_does_not_fail_on_never_enriched_posts(db):
     result = _v_post_detail_gold_attribute_coverage(ctx)
 
     assert result.passed is True
-    assert result.metadata["no_gold_analyses_row"].value == 1
+    assert result.metadata["no_classification_row"].value == 1
     assert result.metadata["stored_but_unsurfaced_rows"].value == 0
 
 

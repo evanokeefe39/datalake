@@ -78,9 +78,10 @@ _ASSET_ORDER = [
 ]
 # Base tables the views bind against but that no serving asset creates here
 # (they belong to silver/label assets). Created straight from the catalog.
-# ``gold_analyses`` / ``gold_growth_facets`` are deliberately INCLUDED: the
-# scratch DB carries BOTH worlds, and the retired-source assertion proves
-# the rebind held even though the old tables are present to bind against.
+# The two RETIRED tables (``gold_analyses`` / ``gold_growth_facets``) are
+# deliberately INCLUDED — with minimal hand-written DDL, since W9 removed
+# them from the catalog — so the no-banned-reference assertion is proven
+# against a world where they exist to be bound against.
 _BASE_TABLES = [
     "silver_ig_posts",
     "silver_content_classification",
@@ -92,10 +93,18 @@ _BASE_TABLES = [
     "silver_ig_profile_observations",
     "ig_post_labels",
     "dim_profile",
-    # The RETIRED tables — present so the no-banned-reference assertion is
-    # proven against a world where they exist to be bound against.
-    "gold_analyses",
-    "gold_growth_facets",
+]
+_RETIRED_TABLE_DDL = [
+    """CREATE TABLE gold_analyses (
+           post_id VARCHAR NOT NULL, domain VARCHAR NOT NULL,
+           prompt_hash VARCHAR, result_json VARCHAR,
+           analysed_at VARCHAR, PRIMARY KEY (post_id, domain))""",
+    """CREATE TABLE gold_growth_facets (
+           post_id VARCHAR NOT NULL, domain VARCHAR NOT NULL,
+           prompt_hash VARCHAR NOT NULL, schema_version VARCHAR NOT NULL,
+           growth_facets_json VARCHAR NOT NULL, content_summary VARCHAR,
+           image_summaries_json VARCHAR, model VARCHAR,
+           analysed_at VARCHAR, PRIMARY KEY (post_id, domain))""",
 ]
 
 
@@ -105,6 +114,8 @@ def _build_view_world(tmp_path: Path) -> str:
     con = duckdb.connect(str(db_path))
     for table in _BASE_TABLES:
         con.execute(duckdb_ddl(table))
+    for ddl in _RETIRED_TABLE_DDL:
+        con.execute(ddl)
     con.close()
 
     resource = DuckDBResource(database=str(db_path))

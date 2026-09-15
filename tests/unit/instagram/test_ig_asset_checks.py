@@ -5,7 +5,6 @@ pass and fail (where applicable) paths.
 """
 
 from __future__ import annotations
-
 import json
 from unittest.mock import patch
 
@@ -17,7 +16,6 @@ from dagster_duckdb import DuckDBResource
 from datalake.defs.instagram.asset_checks import (
     ig_checks,
 )
-from tests.fixtures.gold_factories import FAKE_ANALYSIS
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Resolve individual check functions by name ─────────────────────────────
@@ -195,95 +193,70 @@ class TestSilverChecks:
         assert result.metadata["bronze_rows"].value == 2
 
 
-# ===== Gold checks =========================================================
+# ===== Classification checks ===============================================
 
 
-class TestGoldChecks:
-    """Tests for gold data quality checks targeting ``gold_analyses``."""
+class TestClassificationChecks:
+    """Tests for the silver-backed admiralty check (W9: the retired
+    ``gold_analyses`` checks — ``ig_posts_gld_valid_admiralty`` /
+    ``ig_posts_gld_valid_json`` — were replaced / retired respectively;
+    the JSON-shape guard is enforced by conform's typed columns)."""
 
     @pytest.fixture(autouse=True)
-    def _setup_gold_table(self, duckdb):
+    def _setup_classification_table(self, duckdb):
+        from datalake.defs.common.schemas import duckdb_ddl
+
         with duckdb.get_connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS gold_analyses (
-                    post_id TEXT NOT NULL,
-                    domain TEXT NOT NULL DEFAULT 'instagram',
-                    prompt_hash TEXT,
-                    result_json TEXT,
-                    analysed_at TEXT NOT NULL,
-                    PRIMARY KEY (post_id, domain)
-                )
-            """)
+            conn.execute(duckdb_ddl("silver_content_classification"))
         yield
 
     def test_valid_admiralty_passes(self, duckdb):
-        """GIVEN all gold rows have valid admiralty codes
+        """GIVEN a classification row with a valid admiralty code
         WHEN the check runs
         THEN it passes.
         """
         with duckdb.get_connection() as conn:
             conn.execute(
-                "INSERT INTO gold_analyses (post_id, domain, result_json, analysed_at) "
-                "VALUES (?, 'instagram', ?, '2024-01-01T00:00:00')",
-                ["p1", json.dumps(FAKE_ANALYSIS)],
+                "INSERT INTO silver_content_classification "
+                "(post_id, platform, admiralty) VALUES (?, 'instagram', ?)",
+                ["p1", "A1"],
             )
 
         ctx = build_asset_check_context(resources={"duckdb": duckdb})
-        check = _CHECKS_BY_NAME["ig_posts_gld_valid_admiralty"]
+        check = _CHECKS_BY_NAME["ig_classification_valid_admiralty"]
         result = check(ctx)
         assert result.passed is True
 
-    def test_valid_admiralty_fails(self, duckdb):
-        """GIVEN a gold row with invalid admiralty code
+    def test_invalid_admiralty_fails(self, duckdb):
+        """GIVEN a classification row with an invalid admiralty code
         WHEN the check runs
         THEN it fails.
         """
-        bad = dict(FAKE_ANALYSIS)
-        bad["admiralty"] = "Z9"
         with duckdb.get_connection() as conn:
             conn.execute(
-                "INSERT INTO gold_analyses (post_id, domain, result_json, analysed_at) "
-                "VALUES (?, 'instagram', ?, '2024-01-01T00:00:00')",
-                ["p1", json.dumps(bad)],
+                "INSERT INTO silver_content_classification "
+                "(post_id, platform, admiralty) VALUES (?, 'instagram', ?)",
+                ["p1", "Z9"],
             )
 
         ctx = build_asset_check_context(resources={"duckdb": duckdb})
-        check = _CHECKS_BY_NAME["ig_posts_gld_valid_admiralty"]
+        check = _CHECKS_BY_NAME["ig_classification_valid_admiralty"]
         result = check(ctx)
         assert result.passed is False
 
-    def test_valid_json_passes(self, duckdb):
-        """GIVEN gold rows with valid educational_json and actionable_json
+    def test_null_admiralty_reported_not_failed(self, duckdb):
+        """GIVEN a row with NULL admiralty (not yet classified)
         WHEN the check runs
-        THEN it passes.
+        THEN it passes but reports the null count.
         """
         with duckdb.get_connection() as conn:
             conn.execute(
-                "INSERT INTO gold_analyses (post_id, domain, result_json, analysed_at) "
-                "VALUES (?, 'instagram', ?, '2024-01-01T00:00:00')",
-                ["p1", json.dumps(FAKE_ANALYSIS)],
+                "INSERT INTO silver_content_classification "
+                "(post_id, platform) VALUES (?, 'instagram')", ["p1"],
             )
 
         ctx = build_asset_check_context(resources={"duckdb": duckdb})
-        check = _CHECKS_BY_NAME["ig_posts_gld_valid_json"]
+        check = _CHECKS_BY_NAME["ig_classification_valid_admiralty"]
         result = check(ctx)
         assert result.passed is True
-
-    def test_valid_json_fails_missing_educational(self, duckdb):
-        """GIVEN a gold row without educational_json
-        WHEN the check runs
-        THEN it fails.
-        """
-        bad = dict(FAKE_ANALYSIS)
-        del bad["educational_json"]
-        with duckdb.get_connection() as conn:
-            conn.execute(
-                "INSERT INTO gold_analyses (post_id, domain, result_json, analysed_at) "
-                "VALUES (?, 'instagram', ?, '2024-01-01T00:00:00')",
-                ["p1", json.dumps(bad)],
-            )
-
-        ctx = build_asset_check_context(resources={"duckdb": duckdb})
-        check = _CHECKS_BY_NAME["ig_posts_gld_valid_json"]
-        result = check(ctx)
-        assert result.passed is False
+        assert result.metadata["null_admiralty"].value == 1

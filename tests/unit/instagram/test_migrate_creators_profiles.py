@@ -107,11 +107,16 @@ def test_migration_backfills_and_drops(tmp_path):
 
     tables = _tables(ops_path)
     assert "scrape_targets" not in tables
-    # Retirement (ADR-0012): the queue tables are gone from _SQLITE_SPECS, so the
-    # migration must NOT recreate them. media_metadata survived retirement and is
-    # the only operational table this script still owns.
-    assert "media_metadata" in tables
-    assert not {"batch_jobs", "batch_items", "dead_letter"} & tables
+    # Retirement (ADR-0012 + W9 2026-09-15): all four retired tables are gone
+    # from _SQLITE_SPECS, and the migration must NOT recreate ANY of them.
+    # media_metadata cached Gemini File-API uploads for a permanently retired
+    # provider (ISSUES.md #32) — recreating it is what made the W9 drop
+    # non-durable, so this assertion is the regression guard for that defect.
+    retired = {"batch_jobs", "batch_items", "dead_letter", "media_metadata"}
+    assert not (retired & tables), (
+        f"the migration recreated retired table(s): {sorted(retired & tables)} "
+        "— see ISSUES.md #32 (media_metadata) and ADR-0012 (the queue)"
+    )
 
 
 def test_migration_idempotent(tmp_path):
@@ -140,7 +145,10 @@ def test_migration_without_scrape_targets_is_noop(tmp_path):
     migrate_mod.migrate(ops_path, duckdb_path)
 
     tables = _tables(ops_path)
-    assert {"creators", "profiles", "media_metadata"} <= tables
+    # media_metadata is retired (ISSUES.md #32) — the migration creates only
+    # creators + profiles now.
+    assert {"creators", "profiles"} <= tables
+    assert "media_metadata" not in tables
     assert not {"batch_jobs", "batch_items", "dead_letter"} & tables
     con = sqlite3.connect(str(ops_path))
     try:

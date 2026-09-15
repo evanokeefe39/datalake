@@ -25,6 +25,8 @@ derive:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 MODEL_LEGACY_NULL = "unrecorded-legacy-null"
 """Sentinel for silver enrichment rows whose producing model was never
 recorded (ADR-0014 D5): an honest "this result is verified, but the model
@@ -32,9 +34,6 @@ name was never written" — NOT a NULL and NOT a fabricated model name.
 
 Single definition shared by both classification silver producers
 (`classification.py`, `conform.py`); never redefine it locally."""
-
-
-from dataclasses import dataclass
 
 # ── Spec model ──────────────────────────────────────────────────────────────
 
@@ -96,31 +95,6 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "source_dataset": Column("VARCHAR", not_null=True),
             "processed_on": Column("TIMESTAMP"),
         },
-    ),
-    "gold_analyses": Table(
-        columns={
-            "post_id": Column("VARCHAR", not_null=True),
-            "domain": Column("VARCHAR", not_null=True, default="'instagram'"),
-            "prompt_hash": Column("VARCHAR"),
-            "model": Column("VARCHAR"),
-            "result_json": Column("VARCHAR"),
-            "analysed_at": Column("VARCHAR", not_null=True),
-        },
-        primary_key=("post_id", "domain"),
-    ),
-    "gold_growth_facets": Table(
-        columns={
-            "post_id": Column("VARCHAR", not_null=True),
-            "domain": Column("VARCHAR", not_null=True, default="'instagram'"),
-            "prompt_hash": Column("VARCHAR", not_null=True),
-            "schema_version": Column("VARCHAR", not_null=True),
-            "growth_facets_json": Column("VARCHAR", not_null=True),
-            "content_summary": Column("VARCHAR"),
-            "image_summaries_json": Column("VARCHAR"),
-            "model": Column("VARCHAR"),
-            "analysed_at": Column("VARCHAR", not_null=True),
-        },
-        primary_key=("post_id", "domain"),
     ),
     "watermarks": Table(
         columns={
@@ -389,21 +363,12 @@ DUCKDB_VIEWS: list[str] = [
 
 # ── SQLite (data/ops.sqlite) ────────────────────────────────────────────────
 
+# RETIRED 2026-09-15 (W9): "media_metadata" was removed here. It cached
+# Gemini File-API uploads for a permanently retired provider; the live path
+# resolves media to scrape-time cached local bytes instead. Archived at
+# data/lake/archive/media_metadata/. See ISSUES.md #32. Do NOT re-add: a spec
+# here is what let the table be recreated after the drop.
 _SQLITE_SPECS: dict[str, Table] = {
-    "media_metadata": Table(
-        columns={
-            "media_url_hash": Column("TEXT", primary_key=True),
-            "media_url": Column("TEXT", not_null=True),
-            "file_api_uri": Column("TEXT"),
-            "mime_type": Column("TEXT"),
-            "file_size": Column("INTEGER"),
-            "video_duration_seconds": Column("REAL"),
-            "upload_state": Column("TEXT", default="'pending'"),
-            "expires_at": Column("TEXT"),
-            "created_at": Column("TEXT", not_null=True),
-            "uploaded_at": Column("TEXT"),
-        },
-    ),
     "media_cache": Table(
         columns={
             "cache_key": Column("TEXT", primary_key=True),

@@ -178,7 +178,7 @@ def _v_post_detail_gold_attribute_coverage(context) -> AssetCheckResult:
     metadata = {
         "row_count": total,
         "missing_gold_topic": missing,
-        "no_gold_analyses_row": no_gold,
+        "no_classification_row": no_gold,
         "coverage_ratio_topic": round(1 - missing / total, 4) if total else 1.0,
         "stored_but_unsurfaced_rows": unsurfaced,
     }

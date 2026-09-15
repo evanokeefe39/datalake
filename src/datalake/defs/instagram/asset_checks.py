@@ -242,98 +242,57 @@ def _ig_posts_slv_owner_not_null(context) -> AssetCheckResult:
     )
 
 
-# ── Gold checks ────────────────────────────────────────────────────────────
+# ── Classification checks (the gold_analyses retirement, W9) ───────────────
 #
-# These checks target ``gold_analyses`` (the enrichment worker's output),
-# not the old ``gold_ig_analyses`` table. The schema_version check is removed
-# since prompt_hash replaces it for staleness detection.
+# ``gold_analyses`` was retired (ADR-0011): the classification surface is now
+# ``silver_content_classification``, published by the enrichment conform.
+# The JSON-shape check (``ig_posts_gld_valid_json``) was retired rather than
+# replaced: its purpose (result_json parseable; educational/actionable
+# objects carry a summary) is enforced deterministically by conform's typed
+# columns — a conformed row implies the payload parsed.
 
 
 @asset_check(
-    asset="gold_analyses",
-    name="ig_posts_gld_valid_admiralty",
+    asset="silver_enrichment_conform",
+    name="ig_classification_valid_admiralty",
     required_resource_keys={"duckdb"},
-    description="Admiralty codes in known set (instagram domain only).",
+    description="Admiralty codes in known set (instagram platform rows).",
 )
-def _ig_posts_gld_valid_admiralty(context) -> AssetCheckResult:
+def _ig_classification_valid_admiralty(context) -> AssetCheckResult:
     duckdb = context.resources.duckdb
     with duckdb.get_connection() as conn:
         rows = conn.execute(
-            "SELECT post_id, result_json FROM gold_analyses WHERE domain = 'instagram'"
+            "SELECT post_id, admiralty FROM silver_content_classification "
+            "WHERE platform = 'instagram'"
         ).fetchall()
     invalid: list[str] = []
-    for post_id, result_json in rows:
-        if result_json is None:
-            invalid.append(post_id)
-            continue
-        try:
-            parsed = json.loads(result_json)
-            code = parsed.get("admiralty", "")
-            if code not in _VALID_ADMIRALTY:
-                invalid.append(f"{post_id}: {code!r}")
-        except json.JSONDecodeError:
-            invalid.append(f"{post_id}: unparseable JSON")
+    null_codes = 0
+    for post_id, admiralty in rows:
+        if admiralty is None:
+            null_codes += 1
+        elif admiralty not in _VALID_ADMIRALTY:
+            invalid.append(f"{post_id}: {admiralty!r}")
     if invalid:
         return AssetCheckResult(
             passed=False,
             severity=AssetCheckSeverity.WARN,
             description=f"Invalid admiralty codes: {', '.join(invalid[:5])}",
-            metadata={"total_checked": len(rows), "invalid_count": len(invalid)},
+            metadata={
+                "total_checked": len(rows),
+                "invalid_count": len(invalid),
+                "null_admiralty": null_codes,
+            },
         )
     return AssetCheckResult(
         passed=True,
-        metadata={"total_checked": len(rows)},
-    )
-
-
-@asset_check(
-    asset="gold_analyses",
-    name="ig_posts_gld_valid_json",
-    required_resource_keys={"duckdb"},
-    description="educational_json and actionable_json parseable from result_json.",
-)
-def _ig_posts_gld_valid_json(context) -> AssetCheckResult:
-    duckdb = context.resources.duckdb
-    with duckdb.get_connection() as conn:
-        rows = conn.execute(
-            "SELECT post_id, result_json FROM gold_analyses WHERE domain = 'instagram'"
-        ).fetchall()
-    failed: list[str] = []
-    for post_id, result_json in rows:
-        if result_json is None:
-            failed.append(f"{post_id}: null result_json")
-            continue
-        try:
-            parsed = json.loads(result_json)
-        except json.JSONDecodeError:
-            failed.append(f"{post_id}: unparseable JSON")
-            continue
-        for field in ("educational_json", "actionable_json"):
-            val = parsed.get(field)
-            if val is None:
-                failed.append(f"{post_id}: missing {field}")
-                continue
-            if not isinstance(val, dict):
-                failed.append(f"{post_id}: {field} is not an object")
-                continue
-            if not val.get("summary"):
-                failed.append(f"{post_id}: {field}.summary missing or empty")
-    if failed:
-        return AssetCheckResult(
-            passed=False,
-            severity=AssetCheckSeverity.WARN,
-            description=f"JSON validation failures: {', '.join(failed[:5])}",
-            metadata={"total_checked": len(rows), "failed_count": len(failed)},
-        )
-    return AssetCheckResult(
-        passed=True,
-        metadata={"total_checked": len(rows)},
+        metadata={
+            "total_checked": len(rows),
+            "null_admiralty": null_codes,
+        },
     )
 
 
 # ── Label checks (Epic 3, US-L7) ──────────────────────────────────────────
-
-
 @asset_check(
     asset="ig_post_labels",
     name="ig_labels_current_version",
@@ -431,10 +390,8 @@ ig_checks = [
     _ig_posts_slv_no_duplicates,
     _ig_posts_slv_row_count_bounded,
     _ig_posts_slv_owner_not_null,
-    _ig_posts_gld_valid_admiralty,
-    _ig_posts_gld_valid_json,
+    _ig_classification_valid_admiralty,
     _ig_labels_current_version,
     _ig_labels_coverage,
     _ig_observations_parity,
 ]
-

@@ -1,4 +1,4 @@
-"""Batch-native growth-facets enrichment — facets → ``gold_growth_facets``.
+"""Batch-native growth-facets enrichment — harvest into bronze, conform to silver.
 
 Runs on the standalone **qwen-batch service** (reached ONLY through the
 seam's ``service_backed`` adapter — see ``adapters.py``), NOT the
@@ -7,8 +7,8 @@ direct-batch module) is a separate target and still uses Gemini.
 
 Flow (one-shot CLI driver, ``scripts/enrich_facets_batch.py``):
 
-    enumerate_targets        (posts lacking a current gold row under the
-                              qwen-scoped CURRENT_*_PROMPT_HASH)
+    enumerate_targets        (posts lacking a current conformed silver row
+                              under the qwen-scoped engine model)
     → build_facets_batch_requests
         visual: media URLs resolved to scrape-time cached local paths
           (media_paths.media_urls_to_local_paths — the SERVICE frame-samples
@@ -23,22 +23,21 @@ Flow (one-shot CLI driver, ``scripts/enrich_facets_batch.py``):
           to terminal, bounded)
     → harvest_facets_batches (retrieve via the seam → land VERBATIM into
           ``bronze_enrichment_raw`` (landing.py) BEFORE any parsing → parse
-          → validate → facets.write_gold_facets_pass_conn MERGE upsert)
+          → validate + count loudly. The typed silver tables are published
+          by conform from bronze — the retired ``gold_growth_facets``
+          write path was removed 2026-09-15 (W9).)
 
 Job state lives in the qwen-batch-service's own store (``GET /jobs/{id}``,
 read through the seam's service-backed adapter). This module neither creates
 nor consults any ``ops.sqlite`` ledger (ADR-0013); re-harvesting a job is
 idempotent because the bronze landing keys on the service job id.
 
-Two passes, partial-storage contract (US-EFAC-3/4):
+Two passes (US-EFAC-3/4):
 
 - **visual** — ``build_growth_facets_prompt(caption, n_media)`` + image
-  paths; parse with ``parse_universal_response``; writes visual sub-fields +
-  content_summary / image_summaries.
+  paths; parse with ``parse_universal_response``.
 - **text** — ``build_text_facets_prompt`` + NO media; parse with
-  ``parse_text_response``; merges text sub-fields.
-
-Each write merges into the row's existing ``growth_facets_json`` so the
+  ``parse_text_response``.
 """
 
 from __future__ import annotations
@@ -103,13 +102,11 @@ def enumerate_targets(
     limit: int | None = None,
     post_ids: list[str] | None = None,
 ) -> list[dict]:
-    """Posts eligible for the given pass, not yet done under its prompt hash.
+    """Posts eligible for the given pass, not yet conformed into silver.
 
-    visual: media-bearing, non-empty caption, no gold row under
-    ``CURRENT_FACETS_PROMPT_HASH``.
-    text: non-empty caption, no stored row carrying the full text-layer
-    sub-schema (row-union detection — robust across the visual pass's
-    prompt_hash column ownership).
+    visual: media-bearing, non-empty caption, no conformed
+    ``silver_visual_annotations`` row for the current engine. text:
+    non-empty caption, no conformed ``silver_text_annotations`` row.
     """
     if mode not in ("visual", "text"):
         raise ValueError(f"unknown mode: {mode}")
@@ -120,9 +117,6 @@ def enumerate_targets(
     if post_ids:
         where += " AND post_id IN (" + ",".join("?" * len(post_ids)) + ")"
         params.extend(post_ids)
-    # Idempotent ensure: plan mode may run against a state db that has never
-    # materialized gold_growth_facets.
-    conn.execute(facets._GOLD_FACETS_DDL)
     rows = conn.execute(
         f"SELECT post_id, caption, media_files FROM silver_ig_posts "
         f"WHERE {where} ORDER BY post_id",
@@ -145,9 +139,8 @@ def _done_post_ids(conn, mode: str) -> set[str]:
     was produced by the current engine (model) and, for visual, the current
     facet schema version. Validation lives in silver (ADR-0011): a conformed
     row implies every required field passed, so no JSON sniffing is needed.
-
-    Regression: this guard previously read the retired ``gold_growth_facets``
-    table, which marked conform-QUARANTINED posts as done (their gold row was
+    This guard previously read the retired ``gold_growth_facets`` table,
+    which marked conform-QUARANTINED posts as done (their gold row was
     written before conform rejected the payload) — 21 posts were silently
     skipped, caught 2026-09-15 when the quarantine anti-join was computed.
     """
@@ -374,16 +367,17 @@ def harvest_facets_batches(
     base_url: str | None = None,
     root: str | os.PathLike[str] | None = None,
 ) -> dict:
-    """Retrieve terminal facet jobs; land VERBATIM, then parse and write gold.
+    """Retrieve terminal facet jobs; land VERBATIM, then parse and count.
 
     ADR-0011/0013 sequencing per retrieved item: the provider response is
     landed VERBATIM into ``bronze_enrichment_raw`` — under this pass's
     workload (visual ≠ text), with ``run_id`` = the service job id, which
     makes re-harvesting the same job idempotent on the natural key — BEFORE
-    any parsing. Only then is the response parsed, validated and merged into
-    ``gold_growth_facets``. Failures land with ``ok=False`` and a populated
-    ``error_message``; failure is READ from bronze, never inferred from a
-    missing conformed row.
+    any parsing. The response is then parsed + validated so invalid payloads
+    are counted loudly (``invalid``); nothing is written to DuckDB here —
+    conform publishes the typed silver tables from bronze. Failures land
+    with ``ok=False`` and a populated ``error_message``; failure is READ
+    from bronze, never inferred from a missing conformed row.
 
     Job state is read from the service via the seam adapter (ADR-0013 — no
     ledger); the caller supplies the in-flight job ids. Non-terminal jobs are
@@ -450,34 +444,19 @@ def harvest_facets_batches(
                 continue
             if mode == "text":
                 parsed = facets.parse_text_response(text)
-                if parsed["errors"] or parsed["text_facets"] is None:
-                    logger.warning(
-                        "Post %s text facets invalid: %s",
-                        post_id, parsed["errors"],
-                    )
-                    invalid += 1
-                    continue
-                facets.write_gold_facets_pass_conn(
-                    conn, post_id, "instagram", parsed["text_facets"],
-                    model=res_model,
-                    prompt_hash=CURRENT_TEXT_FACETS_PROMPT_HASH,
-                )
             else:
                 n_media = _n_media_for(conn, post_id)
                 parsed = facets.parse_universal_response(text, n_media)
-                if parsed["errors"] or parsed["visual_facets"] is None:
-                    logger.warning(
-                        "Post %s visual facets invalid: %s",
-                        post_id, parsed["errors"],
-                    )
-                    invalid += 1
-                    continue
-                facets.write_gold_facets_pass_conn(
-                    conn, post_id, "instagram", parsed["visual_facets"],
-                    model=res_model,
-                    content_summary=parsed["content_summary"],
-                    image_summaries=parsed["image_summaries"],
+            if parsed["errors"] or (
+                parsed["text_facets"] is None if mode == "text"
+                else parsed["visual_facets"] is None
+            ):
+                logger.warning(
+                    "Post %s %s facets invalid: %s",
+                    post_id, mode, parsed["errors"],
                 )
+                invalid += 1
+                continue
             written += 1
     return {
         "written": written,

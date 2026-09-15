@@ -9,8 +9,6 @@ write on any live path. The loop: drain → submit → harvest (ADR-0014).
 
 from .assets import (
     ENRICHMENT_CHECKS,
-    ensure_gold_analyses,
-    gold_analyses,
     silver_enrichment_conform,
 )
 from .checks import ENRICHMENT_DQ_CHECKS
@@ -31,8 +29,6 @@ from .submit import (
 
 __all__ = [
     # Assets
-    "ensure_gold_analyses",
-    "gold_analyses",
     "silver_enrichment_conform",
     "ENRICHMENT_CHECKS",
     "ENRICHMENT_DQ_CHECKS",

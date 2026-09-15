@@ -1,13 +1,13 @@
 """Unit tests for the qwen-batch growth-facets path (facets_batch).
 
-Covers:
 - request builder: cached local image paths for visual, images=[] for text,
   deterministic skip of visual targets with no resolvable media
 - media-aware token/cost estimation at qwen list prices
 - custom_key (post_id) → response harvest mapping
 - parse + validate (visual + text) incl. rejection cases
-- write/merge semantics into gold_growth_facets on a TEMP duckdb
-  (never data/state.duckdb)
+- harvest lands responses VERBATIM in bronze and counts invalid ones
+  loudly — nothing is written to DuckDB (the ``gold_growth_facets`` write
+  path was retired W9; conform publishes the typed silver tables)
 - driver --plan offline mode (no spend, no prod writes)
 
 Job state comes from a seam-shaped fake adapter (ADR-0013: NO ledger — the
@@ -36,7 +36,6 @@ from datalake.defs.enrichment.growth_facets_schema import (  # noqa: E402
 from datalake.defs.enrichment.facets import (  # noqa: E402
     parse_text_response,
     parse_universal_response,
-    write_gold_facets_pass_conn,
 )
 from datalake.defs.enrichment.prompts import (  # noqa: E402
     _DEFAULT_QWEN_MODEL,
@@ -51,10 +50,9 @@ from datalake.defs.enrichment.seam import Result  # noqa: E402
 
 @pytest.fixture()
 def state_conn(tmp_path):
-    """Temp duckdb with silver_ig_posts + gold_growth_facets (NEVER prod)."""
+    """Temp duckdb with silver_ig_posts (NEVER prod; no gold table)."""
     con = duckdb.connect(str(tmp_path / "test_state.duckdb"))
     con.execute(duckdb_ddl("silver_ig_posts"))
-    con.execute(duckdb_ddl("gold_growth_facets"))
     con.execute(
         "INSERT INTO silver_ig_posts (post_id, caption, media_files, "
         "source_dataset, hashtags) VALUES "
@@ -337,38 +335,24 @@ class TestParseValidate:
                 ["job1"], poll_seconds=0, timeout_seconds=0
             )
 
+class TestHarvestAndLand:
+    """Harvest lands VERBATIM in bronze and counts validation outcomes;
+    nothing is written to DuckDB (W9: the gold write path is retired and
+    conform publishes the typed silver tables from bronze)."""
 
-class TestHarvestAndMerge:
-    def test_harvest_maps_custom_key_and_merges(self, state_conn, tmp_path,
-                                                monkeypatch):
+    def test_harvest_maps_custom_key_and_lands(self, state_conn, tmp_path,
+                                               monkeypatch):
         adapter = _FakeAdapter()
         adapter.docs["job1"] = {"state": "completed"}
         adapter.results["job1"] = [
             _result("p_img", output=json.dumps(_visual_payload())),
         ]
         _fake_service(monkeypatch, adapter)
-        # pre-seed a text-only row (text pass ran first)
-        write_gold_facets_pass_conn(
-            state_conn, "p_img", "instagram",
-            {"hook_type": "question", "is_sponsored": False},
-            prompt_hash=CURRENT_TEXT_FACETS_PROMPT_HASH,
-        )
         root = str(tmp_path / "bronze")
         out = facets_batch.harvest_facets_batches(
             state_conn, ["job1"], "visual", root=root
         )
-        assert out["written"] == 1 and out["landed"] == 1
-        row = state_conn.execute(
-            "SELECT growth_facets_json, content_summary, model "
-            "FROM gold_growth_facets WHERE post_id = 'p_img'"
-        ).fetchone()
-        stored = json.loads(row[0])
-        # UNION: the earlier text pass's sub-fields survive the visual merge
-        assert stored["hook_type"] == "question"
-        assert stored["face_present"] is False
-        assert row[1] == "a demo"
-        assert row[2] == _DEFAULT_QWEN_MODEL
-        # the response was LANDED verbatim (workload = this pass's workload)
+        assert out["written"] == 1 and out["landed"] == 1 and out["invalid"] == 0
         from datalake.defs.enrichment.landing import (
             WORKLOAD_GROWTH_FACETS_VISUAL,
             read_responses,
@@ -379,9 +363,11 @@ class TestHarvestAndMerge:
         assert df["workload"][0] == WORKLOAD_GROWTH_FACETS_VISUAL
         assert df["run_id"][0] == "job1"
         assert df["response_text"][0] == json.dumps(_visual_payload())
+        assert df["model"][0] == _DEFAULT_QWEN_MODEL
 
-    def test_harvest_invalid_response_not_written(self, state_conn, tmp_path,
-                                                  monkeypatch):
+    def test_harvest_invalid_response_counted_not_gated(self, state_conn,
+                                                        tmp_path,
+                                                        monkeypatch):
         adapter = _FakeAdapter()
         adapter.docs["job1"] = {"state": "completed"}
         adapter.results["job1"] = [_result("p_img", output="not json")]
@@ -391,43 +377,45 @@ class TestHarvestAndMerge:
             state_conn, ["job1"], "visual", root=root
         )
         assert out["written"] == 0 and out["invalid"] == 1
-        assert state_conn.execute(
-            "SELECT count(*) FROM gold_growth_facets"
-        ).fetchone()[0] == 0
-        # ...but the verbatim body is IN bronze — parsing never gates landing
+        # the verbatim body is IN bronze — parsing never gates landing
         from datalake.defs.enrichment.landing import read_responses
 
         assert read_responses(root)["response_text"].to_list() == ["not json"]
 
-    def test_text_harvest_writes_text_pass(self, state_conn, tmp_path,
-                                           monkeypatch):
+    def test_text_harvest_lands_text_pass(self, state_conn, tmp_path,
+                                          monkeypatch):
         adapter = _FakeAdapter()
         adapter.docs["job2"] = {"state": "completed"}
         adapter.results["job2"] = [
             _result("p_caption", output=json.dumps(_text_payload())),
         ]
         _fake_service(monkeypatch, adapter)
+        root = str(tmp_path / "bronze")
         out = facets_batch.harvest_facets_batches(
-            state_conn, ["job2"], "text", root=str(tmp_path / "bronze")
+            state_conn, ["job2"], "text", root=root
         )
-        assert out["written"] == 1
-        stored = json.loads(state_conn.execute(
-            "SELECT growth_facets_json FROM gold_growth_facets "
-            "WHERE post_id = 'p_caption'"
-        ).fetchone()[0])
-        assert stored["cta_type"] == "comment"
+        assert out["written"] == 1 and out["invalid"] == 0
+        from datalake.defs.enrichment.landing import (
+            WORKLOAD_GROWTH_FACETS_TEXT,
+            read_responses,
+        )
+
+        df = read_responses(root)
+        assert df["workload"][0] == WORKLOAD_GROWTH_FACETS_TEXT
+        assert df["response_text"][0] == json.dumps(_text_payload())
 
     def test_failed_job_lands_nothing(self, state_conn, tmp_path, monkeypatch):
         adapter = _FakeAdapter()
         adapter.docs["job3"] = {"state": "failed"}
         _fake_service(monkeypatch, adapter)
+        root = str(tmp_path / "bronze")
         out = facets_batch.harvest_facets_batches(
-            state_conn, ["job3"], "visual", root=str(tmp_path / "bronze")
+            state_conn, ["job3"], "visual", root=root
         )
         assert out["written"] == 0 and out["failed_jobs"] == 1
-        assert state_conn.execute(
-            "SELECT count(*) FROM gold_growth_facets"
-        ).fetchone()[0] == 0
+        from datalake.defs.enrichment.landing import read_responses
+
+        assert read_responses(root).height == 0
 
     def test_failed_item_surfaced_not_written(self, state_conn, tmp_path,
                                               monkeypatch):
@@ -442,9 +430,6 @@ class TestHarvestAndMerge:
             state_conn, ["job1"], "visual", root=root
         )
         assert out["written"] == 0 and out["failed_items"] == 1
-        assert state_conn.execute(
-            "SELECT count(*) FROM gold_growth_facets"
-        ).fetchone()[0] == 0
         # failure is READ from a bronze column, never inferred from a
         # missing conformed row (ADR-0013)
         from datalake.defs.enrichment.landing import read_responses
@@ -461,6 +446,7 @@ class TestHarvestAndMerge:
             state_conn, ["job4"], "visual", root=str(tmp_path / "bronze")
         )
         assert out["written"] == 0 and out["skipped"] == 1
+
 
 
 class TestVisualDoneDetection:
@@ -529,8 +515,9 @@ class TestHarvestGuards:
                 root=str(tmp_path / "bronze"),
             )
 
-    def test_model_param_stamps_gold_rows(self, state_conn, tmp_path,
-                                          monkeypatch):
+    def test_model_param_lands_in_bronze(self, state_conn, tmp_path,
+                                         monkeypatch):
+        """Model provenance is stored on the VERBATIM bronze row."""
         adapter = _FakeAdapter()
         adapter.docs["jobM"] = {"state": "completed"}
         adapter.results["jobM"] = [
@@ -538,13 +525,14 @@ class TestHarvestGuards:
                     model="m-submit-time"),
         ]
         _fake_service(monkeypatch, adapter)
+        root = str(tmp_path / "bronze")
         out = facets_batch.harvest_facets_batches(
-            state_conn, ["jobM"], "text", root=str(tmp_path / "bronze")
+            state_conn, ["jobM"], "text", root=root
         )
         assert out["written"] == 1
-        assert state_conn.execute(
-            "SELECT model FROM gold_growth_facets WHERE post_id = 'p_caption'"
-        ).fetchone()[0] == "m-submit-time"
+        from datalake.defs.enrichment.landing import read_responses
+
+        assert read_responses(root)["model"][0] == "m-submit-time"
 
 
 # ── Driver plan mode (offline) ──────────────────────────────────────────────
@@ -576,13 +564,12 @@ class TestDriverPlan:
 
 class TestResumeAfterMidRunFailure:
     """US-EENG-1 AC7: a second discovery→submit→harvest cycle resubmits
-    ONLY posts lacking a current gold row. Gold posts are neither
-    resubmitted nor double-written (UPSERT idempotent); failed posts are
-    retried — the credits-outage resume guarantee.
+    ONLY posts lacking a current CONFORMED silver row (ADR-0012 D4);
+    failed posts are retried — the credits-outage resume guarantee.
 
-    Scenario: p_img succeeds in cycle 1 (gets gold); p_video's item fails
-    server-side in cycle 1 (ok=False → no gold row). Cycle 2 must skip
-    p_img entirely and retry p_video.
+    Scenario: p_img succeeds in cycle 1; p_video's item fails server-side
+    in cycle 1 (ok=False). Cycle 2 must skip p_img once it is conformed
+    and retry p_video.
     """
 
     def test_rerun_skips_gold_and_retries_failed(self, state_conn, tmp_path,
@@ -622,14 +609,12 @@ class TestResumeAfterMidRunFailure:
         assert [it.custom_key for it in adapter.submitted[-1]] == [
             "p_img", "p_video"
         ]
-        assert state_conn.execute(
-            "SELECT count(*) FROM gold_growth_facets "
-            "WHERE post_id = 'p_img'"
-        ).fetchone()[0] == 1
-        assert state_conn.execute(
-            "SELECT count(*) FROM gold_growth_facets "
-            "WHERE post_id = 'p_video'"
-        ).fetchone()[0] == 0
+        # nothing was written to DuckDB — bronze holds both responses verbatim
+        from datalake.defs.enrichment.landing import read_responses
+
+        df1 = read_responses(root)
+        assert sorted(df1["post_id"].to_list()) == ["p_img", "p_video"]
+        assert df1["ok"].to_list() == [True, False]
 
         # Conform ran out of band: p_img's payload is CONFORMED into silver —
         # ADR-0012 D4 makes that the completion signal the guard reads.
@@ -653,23 +638,10 @@ class TestResumeAfterMidRunFailure:
         # both land — the load-bearing claim is the submit list above
         assert out2["written"] == 2
 
-        # (b) idempotency: gold row for p_img still exactly one row
-        assert state_conn.execute(
-            "SELECT count(*) FROM gold_growth_facets "
-            "WHERE post_id = 'p_img'"
-        ).fetchone()[0] == 1
-        assert state_conn.execute(
-            "SELECT count(*) FROM gold_growth_facets "
-            "WHERE post_id = 'p_video'"
-        ).fetchone()[0] == 1
-
-        # (b) UPSERT: re-presenting p_img to the gold write never duplicates
-        write_gold_facets_pass_conn(
-            state_conn, "p_img", "instagram",
-            _visual_payload()["visual_facets"],
-            model=_DEFAULT_QWEN_MODEL,
-        )
-        assert state_conn.execute(
-            "SELECT count(*) FROM gold_growth_facets "
-            "WHERE post_id = 'p_img'"
-        ).fetchone()[0] == 1
+        # (b) bronze is append-only: p_img's cycle-2 response landed again
+        # under the NEW job id (different run_id — no silent dedup), while
+        # discovery/submit-level idempotency (the load-bearing claim above)
+        df2 = read_responses(root)
+        p_video_rows = [r for r in df2["post_id"].to_list() if r == "p_video"]
+        assert p_video_rows == ["p_video", "p_video"]
+        assert df2["post_id"].to_list().count("p_img") == 2
