@@ -352,7 +352,7 @@ def check_approved_classification_coverage(
             metadata=metadata,
             description=(
                 f"{approved_unenriched} triage-approved posts are unenriched — "
-                "run ig_posts_gen_batches to drain the admission gate."
+                "the submit stage will pick them up when the sensor ticks."
             ),
         )
 

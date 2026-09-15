@@ -160,7 +160,7 @@ def test_conform_has_production_caller():
     assert "conform.conform(" in script_src
     assert "conform.conform(" in asset_src
     # And the asset is exported for orchestration.
-    from datalake import definitions
+    from orchestration import definitions
 
     names = {
         getattr(a, "name", getattr(getattr(a, "key", None), "to_user_string", lambda: str(a))())

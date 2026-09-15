@@ -19,7 +19,6 @@ daily_medallion = ScheduleDefinition(
     target=[
         "ig_posts_slv",
         "ig_post_labels",
-        "ig_posts_gen_batches",
         "dim_profile",
         "dim_date",
         "v_post_detail",
@@ -41,9 +40,7 @@ def core_refresh_run_requests(ops: SQLiteResource) -> list[RunRequest] | SkipRea
     changes take effect without a code deploy. Returns a SkipReason when the
     roster is empty.
     """
-    from ..instagram.creators import (
-        enabled_profiles,  # deferred: avoids common↔instagram import cycle
-    )
+    from opsdb.roster import enabled_profiles  # deferred: platform→opsdb cycle
 
     tier1 = [
         p

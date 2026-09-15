@@ -27,6 +27,7 @@ from orchestration.defs.engine.harvest import (
     enrichment_harvest_job,
 )
 from orchestration.defs.engine.partitions import in_flight_partitions
+from orchestration.defs.engine.submit import enrichment_submit_job
 
 logger = logging.getLogger("enrichment.sensor")
 
@@ -126,3 +127,82 @@ def enrichment_harvest_sensor(context: SensorEvaluationContext):
             "enrichment/harvest_partitions": json.dumps(sorted(terminal_keys)),
         },
     )
+
+
+# ── The submit driver (ADR-0016) ────────────────────────────────────────────
+
+#: Submit gates PAID work, so it ticks slower than harvest: the harvest leg is
+#: what must be prompt, the submit leg is what must not be wasteful.
+DEFAULT_SUBMIT_INTERVAL_SECONDS = 300
+
+_submit_tags = {"adr": "0016", "driver": "submit"}
+
+
+@sensor(
+    job=enrichment_submit_job,
+    minimum_interval_seconds=int(
+        os.environ.get(
+            "ENRICHMENT_SUBMIT_INTERVAL_SECONDS",
+            str(DEFAULT_SUBMIT_INTERVAL_SECONDS),
+        )
+    ),
+    tags=_submit_tags,
+    description="Discovers eligible posts; requests a submit run only when the "
+    "pending set is non-empty (ADR-0016).",
+)
+def enrichment_submit_sensor(context: SensorEvaluationContext):
+    """Request a submit run when discovery finds work — and only then.
+
+    The check is deliberately a cheap approximation of what submit will find:
+    an exact answer would require running discovery (which needs the DuckDB
+    connection) inside the sensor. So the sensor counts the labels-side
+    backlog and lets the run itself decide. A run that finds nothing is a
+    no-op; a sensor that fired on every tick would spawn an empty run every
+    300 s forever, which is the waste this gate exists to avoid.
+
+    This sensor never writes: it does not materialize partitions, does not
+    submit, and does not touch the lake. Discovering, guarding and
+    materializing all happen inside the run, where they share one snapshot
+    (ADR-0016).
+    """
+    instance = context.instance
+
+    # In-flight work is the submit stage's own backlog; if anything is in
+    # flight, a submit run may have more to do (more candidates, or a retry
+    # round). A non-terminal in-flight set does NOT block new submissions —
+    # submit caps itself at ``limit`` per run.
+    in_flight = len(in_flight_partitions(instance))
+
+    from orchestration.defs.ig_enriched.slv.workloads import SubmitConfig
+
+    with context.resources.duckdb.get_connection() as conn:
+        pending = _count_pending(conn, SubmitConfig())
+
+    if pending == 0:
+        logger.info(
+            "enrichment submit: nothing pending (%d in flight) — no run requested",
+            in_flight,
+        )
+        return
+
+    # run_key deduplicates consecutive ticks that observe the same backlog
+    # magnitude before the previous run lands.
+    run_key = f"submit-{pending}-{in_flight}"
+    context.log.info(
+        "enrichment submit: %d candidate(s) pending, %d in flight — "
+        "requesting submit run (run_key=%s)",
+        pending,
+        in_flight,
+        run_key,
+    )
+    yield RunRequest(run_key=run_key, tags=_submit_tags)
+
+
+def _count_pending(conn, cfg) -> int:
+    """How many posts discovery would find, without building any item."""
+    from orchestration.defs.ig_enriched.slv.workloads import workloads_for
+
+    total = 0
+    for workload in workloads_for(cfg):
+        total += len(workload.candidates(conn, cfg))
+    return total

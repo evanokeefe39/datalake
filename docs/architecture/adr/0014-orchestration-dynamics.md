@@ -49,6 +49,12 @@ cannot be recovered from a materialized key. A retry driver that must answer
 driver (D2) for round N. **ACTOR (reader):** the drain guard
 (`drain_suppressed_post_ids`) and the retry driver.
 
+> **Amended by [ADR-0016](0016-discovery-and-guard-share-one-derivation.md).**
+> The key grammar above is unchanged. The WRITER is not: the drain is deleted and
+> `engine/submit.py` is the sole discovery actor, so the submit stage writes its
+> own round-0 placeholder and reads the in-flight set in the same run. The guard
+> is no longer a second derivation — see ADR-0016.
+
 Today's key hides every dimension behind a sha256 slice. Replace it with a
 **readable, delimiter-disambiguated composite**:
 

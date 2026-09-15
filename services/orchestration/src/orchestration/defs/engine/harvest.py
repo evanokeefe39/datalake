@@ -3,7 +3,7 @@ report the harvested partition, mint retries (ADR-0011/0012/0013/0014).
 
 This module is the TARGET harvest stage of the Dagster-native loop::
 
-    drain (ig_posts_gen_batches) → submit → harvest
+    submit (discovers + materializes its own placeholder) → harvest
 
 Harvest owns two ADR-0014 dynamics:
 
