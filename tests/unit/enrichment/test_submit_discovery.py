@@ -32,6 +32,7 @@ from orchestration.defs.engine.partitions import (
     account,
     failure_set,
     in_flight_partitions,
+    parse_partition_key,
     partition_key,
     post_partition_state,
 )
@@ -63,12 +64,17 @@ class FakeAdapter:
         self.terminal = terminal
         self.fail_poll = fail_poll
         self.submitted: list[list] = []
+        self.calls: list[tuple] = []
 
     def health(self) -> bool:
         return True
 
     def submit(self, items, *, job_spec=DEFAULT_JOBSPEC) -> str:
         self.submitted.append(list(items))
+        # Record the job-level options alongside the batch: the spec is what
+        # a misattributed batch would be submitted UNDER, so a test that pins
+        # workload correctness needs to see both.
+        self.calls.append((job_spec, list(items)))
         return f"job{len(self.submitted)}"
 
     def poll(self, handle: str) -> dict:
@@ -250,6 +256,16 @@ def dbs(tmp_path):
             "INSERT INTO silver_ig_posts (post_id, caption, source_dataset) VALUES"
             " ('P1', 'caption one', 'test'), ('P2', 'caption two', 'test')"
         )
+        # The classification workload reads labels and guards on the conformed
+        # table; create both so a whole-registry submit is runnable in tests.
+        conn.execute(
+            "CREATE TABLE ig_post_labels ("
+            "post_id VARCHAR, enrich_decision VARCHAR, label_version INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE silver_content_classification ("
+            "post_id VARCHAR, platform VARCHAR, prompt_hash VARCHAR)"
+        )
     return ops, duckdb
 
 
@@ -337,7 +353,99 @@ def test_empty_caption_is_terminal_without_retry(instance, dbs, tmp_path):
     )
 
 
+def test_a_build_failure_does_not_misattribute_another_workloads_batch(
+    instance, dbs, tmp_path
+):
+    """A failing candidate must not hand its workload to another workload's item.
+
+    Regression: ``build_items`` routed unbuildable candidates into its failure
+    list while the caller zipped the surviving items against the CANDIDATE
+    list positionally. One failure shifts every later item by one, so a
+    caption-only workload's item gets dispatched as media-bearing — under the
+    wrong job spec, parsed by the wrong parser, landed with the wrong prompt
+    hash (which is what would break the bronze→silver replay).
+
+    Two workloads in one run are REQUIRED to observe this: with a single
+    workload both assignments coincide, which is why a single-workload test
+    (and the smoke slice, where every candidate builds) does not catch it.
+    """
+    ops, duckdb = dbs
+    with duckdb.get_connection() as conn:
+        # P1 is a candidate for BOTH passes: a caption (text) and a media URL
+        # (visual). P2 is caption-only, so the text pass alone covers it. The
+        # two facet workloads are the case that exposes it — the classification
+        # pass is a single workload and cannot misattribute.
+        # P1: caption + an UNCACHED media URL, so it is a candidate for both
+        # facet passes and builds for text only.
+        conn.execute(
+            "UPDATE silver_ig_posts SET caption = 'caption one', media_files ="
+            " '[\"https://cdn.example/never-cached.jpg\"]' WHERE post_id = 'P1'"
+        )
+        # P2, P3: caption-only, so the text pass alone covers them.
+        conn.execute(
+            "UPDATE silver_ig_posts SET media_files = '[]' WHERE post_id = 'P2'"
+        )
+        conn.execute(
+            "INSERT INTO silver_ig_posts (post_id, caption, media_files, source_dataset)"
+            " VALUES ('P3', 'caption three', '[]', 'test')"
+        )
+
+    # No media is cached, so the VISUAL pass fails on P1 while the TEXT pass
+    # builds everything. The registry lists visual before text, so the failure
+    # precedes the text items in discovery order — the shift this pins.
+    adapter = FakeAdapter()
+    result = submit.submit_pending(
+        instance,
+        ops,
+        duckdb,
+        adapter,
+        config=SubmitConfig(),
+        root=str(tmp_path / "lake"),
+    )
+
+    assert result["failed"] >= 1, "the visual pass must fail on uncached media"
+
+    # Each provider call's items must declare the workload it was made for:
+    # a partition key names its own workload, so the two must agree.
+    for spec, batch in adapter.calls:
+        declared = {parse_partition_key(i.custom_key).workload for i in batch}
+        assert len(declared) == 1, (
+            f"one provider call carried partitions from {sorted(declared)} — "
+            "a build failure shifted the workload assignment"
+        )
+        if spec is not None and spec.mode is not None:
+            # A media-bearing call submits under mode='visual'; a caption-only
+            # call under mode='text'. They must not be swapped.
+            (workload_name,) = declared
+            expected = "growth-facets-visual" if spec.mode == "visual" else "growth-facets-text"
+            assert workload_name == expected, (
+                f"call made with mode={spec.mode!r} carried "
+                f"{workload_name!r} partitions"
+            )
+
+    # Nothing is in flight without a handle to resolve it.
+    assert set(harvest.discover_handles(instance)) == set(in_flight_partitions(instance))
+
+
 def test_explicit_post_ids_bypass_the_in_flight_guard(instance, dbs, tmp_path):
+    """Re-enrichment at will: an explicit post_id is submitted even though
+    the same post is already in flight."""
+    ops, duckdb = dbs
+    adapter = FakeAdapter()
+    submit.submit_pending(
+        instance, ops, duckdb, adapter,
+        config=SubmitConfig(post_ids=["P1"], workload=WORKLOAD),
+        root=str(tmp_path / "lake"),
+    )
+    again = submit.submit_pending(
+        instance, ops, duckdb, adapter,
+        config=SubmitConfig(post_ids=["P1"], workload=WORKLOAD),
+        root=str(tmp_path / "lake"),
+    )
+    assert again["submitted"] == 1
+    assert len(adapter.submitted) == 2
+
+
     """Re-enrichment at will: an explicit post_id is submitted even though
     the same post is already in flight."""
     ops, duckdb = dbs
@@ -352,6 +460,7 @@ def test_explicit_post_ids_bypass_the_in_flight_guard(instance, dbs, tmp_path):
     )
     assert again["submitted"] == 1
     assert len(adapter.submitted) == 2
+
 
 
 def test_dry_run_writes_nothing_to_the_instance(instance, dbs, tmp_path):

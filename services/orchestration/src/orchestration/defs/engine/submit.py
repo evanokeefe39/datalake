@@ -20,7 +20,9 @@ submit run:
    returned handle as metadata on each covered partition — Dagster-native
    state, no ledger (ADR-0013).
 
-Steps 2-4 ordering is load-bearing: the placeholder is materialized BEFORE the
+Ordering is load-bearing in two directions: the placeholder is materialized
+AFTER building — a candidate that cannot be built must never get a partition,
+or harvest waits forever on a handle that never covers it — and BEFORE the
 POST, so a crash between them leaves a post visibly in flight (recoverable)
 rather than invisible (lost).
 
@@ -122,14 +124,22 @@ def build_items(
     ops: SQLiteResource,
     duckdb: DuckDBResource,
     work: list[tuple[Workload, dict, str]],
-) -> tuple[list[Item], list[_TerminalFailure]]:
-    """Build seam Items for discovered work; failures stay terminal-loud.
+) -> tuple[list[tuple[Workload, Item]], list[_TerminalFailure]]:
+    """Build a seam Item for each buildable candidate; failures stay loud.
 
-    ``work`` is ``(workload, candidate, partition_key)``. A candidate that
-    cannot be built yields a failure the caller accounts for, so the in-flight
-    set always shrinks for every discovered post.
+    ``work`` is ``(workload, candidate, partition_key)``. Returns
+    ``(built, failures)`` where each built entry CARRIES the workload that
+    produced it.
+
+    The workload travels WITH its item deliberately. An earlier version
+    returned a bare item list and the caller zipped it against the candidate
+    list positionally — which misaligns the moment any candidate fails to
+    build (failures are filtered out of the item list but remain in the
+    candidate list), handing a later item the wrong workload AND leaving a
+    never-built partition materialized as submitted, so it looked in flight
+    forever while harvest waited on a handle that never covered it.
     """
-    items: list[Item] = []
+    built: list[tuple[Workload, Item]] = []
     failures: list[_TerminalFailure] = []
     with duckdb.get_connection() as conn:
         for workload, candidate, key in work:
@@ -160,16 +170,19 @@ def build_items(
                 continue
             # The submit stage owns the key (it owns the partition): the
             # builder declares the payload, not the addressing.
-            items.append(
-                Item(
-                    custom_key=key,
-                    prompt=item.prompt,
-                    images=item.images,
-                    post_id=item.post_id,
-                    platform=item.platform,
+            built.append(
+                (
+                    workload,
+                    Item(
+                        custom_key=key,
+                        prompt=item.prompt,
+                        images=item.images,
+                        post_id=item.post_id,
+                        platform=item.platform,
+                    ),
                 )
             )
-    return items, failures
+    return built, failures
 
 
 def _fail_terminal(
@@ -288,8 +301,10 @@ def submit_pending(
     if cfg.dry_run:
         # Project cost with the SAME arithmetic a real run uses, and touch
         # nothing. Nothing is materialized, so nothing becomes "in flight".
-        items, failures = build_items(ops, duckdb, [(w, c, "") for w, c, _, _ in accepted])
-        tokens, cost = _project(accepted, items)
+        built, failures = build_items(
+            ops, duckdb, [(w, c, "") for w, c, _, _ in accepted]
+        )
+        tokens, cost = _project(built)
         return {
             "submitted": 0,
             "failed": len(failures),
@@ -302,8 +317,17 @@ def submit_pending(
             "dry_run": True,
         }
 
-    # ── Placeholder BEFORE the POST (crash-safe ordering, ADR-0016) ─────
-    keys = [key for _, _, key, _ in accepted]
+    # ── Build FIRST, so the placeholder covers only real work ───────────
+    # Ordering note: the placeholder must exist BEFORE the POST (a crash
+    # between them leaves the post visibly in flight rather than invisibly
+    # lost), but it must be written AFTER building — a candidate that cannot
+    # be built never reaches the provider, so materializing its key would
+    # strand a partition that harvest waits on forever.
+    built, failures = build_items(
+        ops, duckdb, [(w, c, k) for w, c, k, _ in accepted]
+    )
+
+    keys = [item.custom_key for _, item in built]
     if keys:
         instance.add_dynamic_partitions(SUBMITTED_ASSET_NAME, keys)
         for key in keys:
@@ -311,9 +335,8 @@ def submit_pending(
                 AssetMaterialization(asset_key=_SUBMITTED_KEY, partition=key)
             )
 
-    items, failures = build_items(
-        ops, duckdb, [(w, c, k) for w, c, k, _ in accepted]
-    )
+    # Unbuildable candidates are terminal-loud: an ok=False bronze landing, a
+    # harvested partition, and a retry round when the cause may clear.
     for failure in failures:
         _fail_terminal(instance, ops, failure, root=root)
 
@@ -324,7 +347,7 @@ def submit_pending(
     # in one run is still exactly-once per partition.
     items_by_workload: dict[str, list[Item]] = {}
     spec_by_workload: dict[str, JobSpec] = {}
-    for (workload, _, _, _), item in zip(accepted, items):
+    for workload, item in built:
         items_by_workload.setdefault(workload.name, []).append(item)
         spec_by_workload[workload.name] = workload.job_spec
 
@@ -351,7 +374,7 @@ def submit_pending(
         )
 
     return {
-        "submitted": len(items),
+        "submitted": len(built),
         "failed": len(failures),
         "discovered": candidates_seen,
         "candidates": len(accepted),
@@ -362,12 +385,15 @@ def submit_pending(
     }
 
 
-def _project(
-    accepted: list[tuple[Workload, dict, str, int]], items: list[Item]
-) -> tuple[int, float]:
-    """Cost projection, grouped by the workload that produced each item."""
+def _project(built: list[tuple[Workload, Item]]) -> tuple[int, float]:
+    """Cost projection, grouped by the workload that produced each item.
+
+    Takes the built pairs directly: the workload travels with its item, so
+    this cannot misattribute a batch the way a positional zip against the
+    candidate list could.
+    """
     by_name: dict[str, list[Item]] = {}
-    for (workload, _, _, _), item in zip(accepted, items):
+    for workload, item in built:
         by_name.setdefault(workload.name, []).append(item)
     tokens = 0
     cost = 0.0
