@@ -15,9 +15,10 @@ submit run:
    so the NEXT run's guard suppresses them — and builds one seam ``Item`` per
    post, whose ``custom_key`` IS the partition key so harvest maps results
    back with no stored mapping;
-5. makes ONE ``adapter.submit(items, job_spec=...)`` call per run (bounded) and
-   records the returned handle as metadata on each covered partition —
-   Dagster-native state, no ledger (ADR-0013).
+5. makes ONE ``adapter.submit(items, job_spec=...)`` call PER WORKLOAD (bounded)
+   — each workload carries its own job-level options — and records the
+   returned handle as metadata on each covered partition — Dagster-native
+   state, no ledger (ADR-0013).
 
 Steps 2-4 ordering is load-bearing: the placeholder is materialized BEFORE the
 POST, so a crash between them leaves a post visibly in flight (recoverable)
@@ -101,14 +102,17 @@ def _guard_round(instance, workload: str, post_id: str, key: str) -> None:
     """Refuse to submit a post whose retry budget is exhausted.
 
     ``post_partition_state`` derives the next round from the materialized
-    keys, so this is the same derivation the retry driver mints from — a key
-    at the ceiling is a stuck partition, and a stuck partition must fail
-    loudly rather than be re-submitted forever.
+    keys, so this is the same derivation the retry driver mints from. The
+    test keys on ``next_round`` alone: a post whose next round has reached
+    the ceiling has spent its budget, whether or not anything is currently
+    in flight for it. Gating this on ``suppressed`` as well would make the
+    raise unreachable — the caller skips in-flight posts before calling here
+    — so a partition stuck at the ceiling would be re-submitted forever.
     """
     state = post_partition_state(instance, workload, post_id)
-    if state.next_round >= MAX_ROUNDS and state.suppressed:
+    if state.next_round >= MAX_ROUNDS:
         raise RuntimeError(
-            f"partition {key!r} is in flight at round >={MAX_ROUNDS} "
+            f"partition {key!r} is at round >={MAX_ROUNDS} "
             f"(MAX_ROUNDS={MAX_ROUNDS}) — the retry budget is exhausted; "
             "refusing to submit again"
         )
@@ -217,8 +221,9 @@ def submit_pending(
     job_spec: JobSpec = DEFAULT_JOBSPEC,
     root: str | None = None,
 ) -> dict:
-    """One submit pass: discover → guard → placeholder → build → ONE submit.
+    """One submit pass: discover → guard → placeholder → build → submit.
 
+    One provider job per workload (a workload owns its job-level options).
     Raises ``RuntimeError`` when the provider fails its readiness gate — never
     a quiet "nothing to do" (US-EENG-2). Nothing is written to the instance on
     a dry run, so a dry run does not change what the next real run sees.
@@ -312,18 +317,38 @@ def submit_pending(
     for failure in failures:
         _fail_terminal(instance, ops, failure, root=root)
 
-    handle: str | None = None
-    if items:
-        handle = adapter.submit(items, job_spec=job_spec)
-        for item in items:
+    # ONE submit per WORKLOAD, not per run: a workload carries its own
+    # job-level options (the facet passes need max_tokens/mode; the
+    # classification pass needs neither), and job options belong to the whole
+    # provider job. The provider job is the dedup boundary, so several jobs
+    # in one run is still exactly-once per partition.
+    items_by_workload: dict[str, list[Item]] = {}
+    spec_by_workload: dict[str, JobSpec] = {}
+    for (workload, _, _, _), item in zip(accepted, items):
+        items_by_workload.setdefault(workload.name, []).append(item)
+        spec_by_workload[workload.name] = workload.job_spec
+
+    handles: dict[str, str] = {}
+    for workload_name, batch in items_by_workload.items():
+        spec = spec_by_workload[workload_name] or job_spec
+        handle = adapter.submit(batch, job_spec=spec)
+        handles[workload_name] = handle
+        for item in batch:
             instance.report_runless_asset_event(
                 AssetMaterialization(
                     asset_key=_SUBMITTED_KEY,
                     partition=item.custom_key,
-                    metadata={"handle": handle, "provider": adapter.name},
+                    metadata={
+                        "handle": handle,
+                        "provider": adapter.name,
+                        "workload": workload_name,
+                    },
                 )
             )
-        logger.info("Submitted %d item(s) under provider handle %s", len(items), handle)
+        logger.info(
+            "Submitted %d item(s) for workload %s under provider handle %s",
+            len(batch), workload_name, handle,
+        )
 
     return {
         "submitted": len(items),
@@ -331,7 +356,8 @@ def submit_pending(
         "discovered": candidates_seen,
         "candidates": len(accepted),
         "in_flight": len(suppressed),
-        "handle": handle,
+        "handle": next(iter(handles.values()), None),
+        "handles": handles,
         "dry_run": False,
     }
 
@@ -388,7 +414,7 @@ def submit_enrichment_op(
         f" — DRY RUN, est {result.get('estimate_tokens', 0)} tok / "
         f"${result.get('estimate_usd', 0)}"
         if result["dry_run"]
-        else "",
+        else f" — handles {result.get('handles', {}) or 'none'}",
     )
     return result
 

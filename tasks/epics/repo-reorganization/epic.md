@@ -5,7 +5,8 @@
 - **Status:** Active
 - **Depends on:** E-ENRICH-ENGINE (ADR-0011/0012 must have landed)
 - **Feeds:** services-extraction, storage-migration
-- **Relates to:** ADR-0015 (this epic's decision record)
+- **Relates to:** ADR-0015 (this epic's decision record), ADR-0016 (discovery folds into
+  submit)
 
 ## Outcome
 

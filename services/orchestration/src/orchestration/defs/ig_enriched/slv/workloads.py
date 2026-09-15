@@ -27,14 +27,27 @@ from dataclasses import dataclass
 
 from dagster import Config
 
-from orchestration.defs.engine.landing import WORKLOAD_CONTENT_CLASSIFICATION
-from orchestration.defs.engine.media import is_video_path
-from orchestration.defs.engine.provider import Item
+from orchestration.defs.engine.landing import (
+    WORKLOAD_CONTENT_CLASSIFICATION,
+    WORKLOAD_GROWTH_FACETS_TEXT,
+    WORKLOAD_GROWTH_FACETS_VISUAL,
+)
+from orchestration.defs.engine.media import (
+    is_video_path,
+    media_urls_to_local_paths,
+)
+from orchestration.defs.engine.provider import DEFAULT_JOBSPEC, Item, JobSpec
 from orchestration.defs.ig_core.slv.labels import LABEL_VERSION
 from orchestration.defs.ig_enriched.slv.prompts import (
+    _DEFAULT_QWEN_MODEL,
+    CURRENT_FACETS_PROMPT_HASH,
     CURRENT_PROMPT_HASH,
+    CURRENT_TEXT_FACETS_PROMPT_HASH,
     IG_GOLD_PROMPT,
+    build_growth_facets_prompt,
+    build_text_facets_prompt,
 )
+from orchestration.defs.ig_enriched.slv.schemas import GROWTH_FACETS_SCHEMA_VERSION
 from orchestration.defs.ig_enriched.slv.visual import UNIVERSAL_MAX_OUTPUT_TOKENS
 from orchestration.defs.platform.resources import SQLiteResource
 
@@ -232,6 +245,181 @@ def _classification_item(
     )
 
 
+# ── The growth-facets passes (visual + text) ────────────────────────────────
+
+
+def _facets_candidates(conn, cfg: SubmitConfig, mode: str) -> list[dict]:
+    """Posts eligible for a facet pass, in post_id order.
+
+    Eligibility is "no CONFORMED row for the current engine under this pass's
+    schema", read from that pass's typed silver table — never from the
+    retired ``gold_growth_facets`` table, which marked conform-quarantined
+    posts as done (21 posts were silently skipped; caught 2026-09-15).
+    """
+    where = "TRIM(caption) <> ''"
+    params: list = []
+    if mode == "visual":
+        where += " AND media_files IS NOT NULL AND media_files <> '[]'"
+    if cfg.post_ids:
+        where += " AND post_id IN (" + ",".join("?" * len(cfg.post_ids)) + ")"
+        params.extend(cfg.post_ids)
+    rows = conn.execute(
+        f"SELECT post_id, caption, media_files FROM silver_ig_posts "
+        f"WHERE {where} ORDER BY post_id",
+        params,
+    ).fetchall()
+    done = _facets_done_post_ids(conn, mode)
+    return [
+        {"post_id": r[0], "caption": r[1] or "", "media_files": r[2]}
+        for r in rows
+        if r[0] not in done
+    ]
+
+
+def _facets_done_post_ids(conn, mode: str) -> set[str]:
+    """Post_ids already CONFORMED into silver for this facet pass.
+
+    ADR-0012 D4: completion is a CONFORMED row. A state DB that has never run
+    conform has no silver tables yet — that means NOTHING is done, not an
+    error. Guard on THIS pass's table: a text-only state DB has no
+    ``silver_visual_annotations``, and checking the wrong table re-bills the
+    other pass on every run.
+    """
+    table = (
+        "silver_visual_annotations" if mode == "visual"
+        else "silver_text_annotations"
+    )
+    where = (
+        "model = ? AND schema_version = ?" if mode == "visual" else "model = ?"
+    )
+    params: list = (
+        [_DEFAULT_QWEN_MODEL, GROWTH_FACETS_SCHEMA_VERSION]
+        if mode == "visual"
+        else [_DEFAULT_QWEN_MODEL]
+    )
+    names = {
+        r[0]
+        for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main'"
+        ).fetchall()
+    }
+    if table not in names:
+        return set()
+    return {
+        r[0]
+        for r in conn.execute(f"SELECT post_id FROM {table} WHERE {where}", params).fetchall()
+    }
+
+
+def visual_facets_candidates(conn, cfg: SubmitConfig) -> list[dict]:
+    """Media-bearing posts with no current conformed visual facet row."""
+    return _facets_candidates(conn, cfg, "visual")
+
+
+def text_facets_candidates(conn, cfg: SubmitConfig) -> list[dict]:
+    """Caption-bearing posts with no current conformed text facet row."""
+    return _facets_candidates(conn, cfg, "text")
+
+
+def _visual_facets_item(ops: SQLiteResource, conn, candidate: dict) -> Item:
+    """A visual facet item: the growth prompt plus CACHED media paths.
+
+    The service frame-samples video files with ffmpeg on its own host, so the
+    client hands it absolute paths to the scrape-time byte cache, never URLs.
+    """
+    post_id = candidate["post_id"]
+    caption = (candidate.get("caption") or "").strip()
+    if not caption:
+        raise UnbuildablePostError(
+            "empty caption — nothing to enrich", retryable=False
+        )
+    images = media_urls_to_local_paths(
+        ops, candidate.get("media_files"), include_video=True
+    )
+    if not images:
+        # Deterministic but cache-dependent: the media may arrive later, so
+        # this is retryable rather than a permanent skip.
+        raise UnbuildablePostError(
+            "no cached media paths resolvable", retryable=True
+        )
+    return Item(
+        custom_key="",
+        prompt=build_growth_facets_prompt(caption, len(images)),
+        images=tuple(images),
+        post_id=post_id,
+        platform="instagram",
+    )
+
+
+def _text_facets_item(ops: SQLiteResource, conn, candidate: dict) -> Item:
+    """A text facet item: the text prompt, caption only, no media."""
+    post_id = candidate["post_id"]
+    caption = (candidate.get("caption") or "").strip()
+    if not caption:
+        raise UnbuildablePostError(
+            "empty caption — nothing to enrich", retryable=False
+        )
+    return Item(
+        custom_key="",
+        prompt=build_text_facets_prompt(caption),
+        images=(),
+        post_id=post_id,
+        platform="instagram",
+    )
+
+
+def estimate_facets_cost(items: list[Item]) -> tuple[int, float]:
+    """(estimated input tokens, projected USD) for a facet item list."""
+    input_tokens = 0
+    out_tokens = 0
+    for it in items:
+        n_video = sum(1 for p in it.images if is_video_path(p))
+        n_img = len(it.images) - n_video
+        input_tokens += (
+            len(it.prompt) // 4
+            + n_img * _TOKENS_PER_IMAGE
+            + n_video * _VIDEO_FRAMES * _TOKENS_PER_IMAGE
+        )
+        out_tokens += (
+            _EST_OUTPUT_TOKENS_VISUAL if it.images else _EST_OUTPUT_TOKENS_TEXT
+        )
+    cost = (
+        input_tokens / 1_000_000 * QWEN_INPUT_PRICE_PER_M
+        + out_tokens / 1_000_000 * QWEN_OUTPUT_PRICE_PER_M
+    )
+    return input_tokens, cost
+
+
+def _parse_visual_facets(conn, post_id: str, text: str) -> dict:
+    """Parse a visual facet response, with the post's media count as the
+    carousel guard (``n`` must equal ``len(image_summaries)``)."""
+    from orchestration.defs.ig_enriched.slv.visual import parse_universal_response
+
+    return parse_universal_response(text, n_media_for(conn, post_id))
+
+
+def _parse_text_facets(conn, post_id: str, text: str) -> dict:
+    """Parse a text facet response — no media, so the guard is caption-side."""
+    from orchestration.defs.ig_enriched.slv.text import parse_text_response
+
+    return parse_text_response(text)
+
+
+def n_media_for(conn, post_id: str) -> int:
+    """How many media files a post carries — the parse-time carousel guard."""
+    row = conn.execute(
+        "SELECT media_files FROM silver_ig_posts WHERE post_id = ?", [post_id]
+    ).fetchone()
+    if not row or not row[0]:
+        return 0
+    try:
+        urls = json.loads(row[0])
+    except json.JSONDecodeError:
+        return 0
+    return len(urls) if isinstance(urls, list) else 0
+
+
 # ── Cost projection ─────────────────────────────────────────────────────────
 
 
@@ -260,12 +448,17 @@ def estimate_classification_cost(items: list[Item]) -> tuple[int, float]:
 
 @dataclass(frozen=True)
 class Workload:
-    """One enrichment pass: eligibility, item construction, cost projection."""
+    """One enrichment pass: eligibility, item construction, cost projection.
+
+    The pass declares everything the engine would otherwise have to know
+    about it — including the job-level options its provider call needs — so
+    ``engine/submit.py`` stays domain-free.
+    """
 
     name: str
     #: The silver table a completed pass lands in — the anti-join check's
     #: left-hand side. A workload with no entry here is invisible to
-    #: ``check_no_silent_loss``, which is how the facet passes went unchecked.
+    #: ``check_no_silent_loss``.
     silver_table: str
     candidates: Callable[..., list[dict]]
     build_item: Callable[..., Item]
@@ -273,6 +466,21 @@ class Workload:
     #: Media-bearing passes submit only posts with cached media; a caption-only
     #: pass submits everything eligible.
     media_bearing: bool = False
+    #: Job-level options for this pass's provider call (``max_tokens``,
+    #: ``mode``). The classification pass needs none; the facet passes set
+    #: both, which is why they are per-workload and not per-run.
+    job_spec: JobSpec = DEFAULT_JOBSPEC
+    #: The prompt identity recorded on every bronze landing this pass makes.
+    #: Provenance rides on the row (ADR-0010/0011), so the pass must declare
+    #: it here rather than have the harvest stage guess per workload.
+    prompt_hash: str = CURRENT_PROMPT_HASH
+    #: The schema version the landing is validated against. The parse-time
+    #: guard for a carousel is ``n_media``; this is what conform reads.
+    schema_version: str = ""
+    #: The workload's parser: turns a landed response body into the pass's
+    #: typed facets, given the post's media count. ``None`` for passes whose
+    #: validation lives entirely in conform.
+    parse: Callable[..., dict] | None = None
 
 
 WORKLOADS: tuple[Workload, ...] = (
@@ -283,6 +491,32 @@ WORKLOADS: tuple[Workload, ...] = (
         build_item=_classification_item,
         estimate=estimate_classification_cost,
         media_bearing=True,
+    ),
+    Workload(
+        name=WORKLOAD_GROWTH_FACETS_VISUAL,
+        silver_table="silver_visual_annotations",
+        candidates=visual_facets_candidates,
+        build_item=_visual_facets_item,
+        estimate=estimate_facets_cost,
+        media_bearing=True,
+        job_spec=JobSpec(
+            max_tokens=UNIVERSAL_MAX_OUTPUT_TOKENS, mode="visual"
+        ),
+        prompt_hash=CURRENT_FACETS_PROMPT_HASH,
+        schema_version=GROWTH_FACETS_SCHEMA_VERSION,
+        parse=_parse_visual_facets,
+    ),
+    Workload(
+        name=WORKLOAD_GROWTH_FACETS_TEXT,
+        silver_table="silver_text_annotations",
+        candidates=text_facets_candidates,
+        build_item=_text_facets_item,
+        estimate=estimate_facets_cost,
+        media_bearing=False,
+        job_spec=JobSpec(max_tokens=1024, mode="text"),
+        prompt_hash=CURRENT_TEXT_FACETS_PROMPT_HASH,
+        schema_version=GROWTH_FACETS_SCHEMA_VERSION,
+        parse=_parse_text_facets,
     ),
 )
 

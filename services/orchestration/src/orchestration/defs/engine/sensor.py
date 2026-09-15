@@ -135,14 +135,14 @@ def enrichment_harvest_sensor(context: SensorEvaluationContext):
 #: what must be prompt, the submit leg is what must not be wasteful.
 DEFAULT_SUBMIT_INTERVAL_SECONDS = 300
 
-_submit_tags = {"adr": "0016", "driver": "submit"}
+_submit_tags = {"adr": "0012", "driver": "submit"}
 
 
 @sensor(
     job=enrichment_submit_job,
     minimum_interval_seconds=int(
         os.environ.get(
-            "ENRICHMENT_SUBMIT_INTERVAL_SECONDS",
+            "ENRICHMENT_SUBMIT_SENSOR_INTERVAL_SECONDS",
             str(DEFAULT_SUBMIT_INTERVAL_SECONDS),
         )
     ),
