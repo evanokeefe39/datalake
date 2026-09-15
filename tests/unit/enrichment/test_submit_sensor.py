@@ -81,26 +81,34 @@ def test_run_key_is_keyed_on_identity_not_size(monkeypatch):
     """
     from orchestration.defs.ig_enriched.slv import workloads as wl_mod
 
-    def sensor_key_for(post_ids: list[str]):
+    # Captured ONCE, before any patching: the helper below replaces WORKLOADS,
+    # so reading WORKLOADS[0] inside it would derive the second fake from the
+    # first — order-dependent, and right only while the fake faithfully copies
+    # the template it was built from.
+    template = wl_mod.WORKLOADS[0]
+
+    def sensor_key_for(post_ids: list[str]) -> str:
         """The run_key the real sensor yields for exactly these candidates."""
-        wl = wl_mod.WORKLOADS[0]
         fake = wl_mod.Workload(
-            name=wl.name,
-            silver_table=wl.silver_table,
+            name=template.name,
+            silver_table=template.silver_table,
             candidates=lambda conn, cfg: [
                 {"post_id": pid, "caption": "cap", "media_files": None}
                 for pid in post_ids
             ],
-            build_item=wl.build_item,
-            estimate=wl.estimate,
-            media_bearing=wl.media_bearing,
-            job_spec=wl.job_spec,
-            prompt_hash=wl.prompt_hash,
-            schema_version=wl.schema_version,
-            parse=wl.parse,
+            build_item=template.build_item,
+            estimate=template.estimate,
+            media_bearing=template.media_bearing,
+            job_spec=template.job_spec,
+            prompt_hash=template.prompt_hash,
+            schema_version=template.schema_version,
+            parse=template.parse,
         )
+        # Patch the LOOKUP the sensor performs, not just the tuple: the sensor
+        # resolves workloads through workloads_for(cfg) inside its body.
         monkeypatch.setattr(wl_mod, "WORKLOADS", (fake,))
         monkeypatch.setattr(wl_mod, "WORKLOAD_BY_NAME", {fake.name: fake})
+        monkeypatch.setattr(wl_mod, "workloads_for", lambda cfg: (fake,))
         reqs = _requests(_slice_ctx())
         assert len(reqs) == 1, reqs
         return reqs[0].run_key
