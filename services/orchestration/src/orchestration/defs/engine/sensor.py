@@ -26,7 +26,11 @@ from orchestration.defs.engine.harvest import (
     discover_handles,
     enrichment_harvest_job,
 )
-from orchestration.defs.engine.partitions import in_flight_partitions
+from orchestration.defs.engine.partitions import (
+    in_flight_partitions,
+    parse_partition_key,
+    partition_key,
+)
 from orchestration.defs.engine.submit import enrichment_submit_job
 
 logger = logging.getLogger("enrichment.sensor")
@@ -153,56 +157,81 @@ _submit_tags = {"adr": "0012", "driver": "submit"}
 def enrichment_submit_sensor(context: SensorEvaluationContext):
     """Request a submit run when discovery finds work — and only then.
 
-    The check is deliberately a cheap approximation of what submit will find:
-    an exact answer would require running discovery (which needs the DuckDB
-    connection) inside the sensor. So the sensor counts the labels-side
-    backlog and lets the run itself decide. A run that finds nothing is a
-    no-op; a sensor that fired on every tick would spawn an empty run every
-    300 s forever, which is the waste this gate exists to avoid.
+    The pending set is derived with the SAME helpers the submit run uses
+    (``workloads_for`` + each workload's ``candidates``), so the sensor cannot
+    disagree with what the run will actually find. It opens one short DuckDB
+    read per tick; a concurrent writer holding the file makes the tick raise —
+    loud, never swallowed (ADR-0012 decision 8). No retry, no fallback.
 
     This sensor never writes: it does not materialize partitions, does not
-    submit, and does not touch the lake. Discovering, guarding and
-    materializing all happen inside the run, where they share one snapshot
-    (ADR-0016).
+    pre-build items, does not submit, and does not touch the lake. Discovering,
+    guarding and materializing all happen inside the run, where they share one
+    snapshot (ADR-0016).
     """
     instance = context.instance
 
-    # In-flight work is the submit stage's own backlog; if anything is in
-    # flight, a submit run may have more to do (more candidates, or a retry
-    # round). A non-terminal in-flight set does NOT block new submissions —
-    # submit caps itself at ``limit`` per run.
-    in_flight = len(in_flight_partitions(instance))
+    # In-flight work is the submit stage's own backlog. It does NOT block new
+    # submissions — submit caps itself at ``limit`` per run — but a key already
+    # in flight is not pending, so it is excluded from the request identity.
+    in_flight = in_flight_partitions(instance)
 
-    from orchestration.defs.ig_enriched.slv.workloads import SubmitConfig
+    from orchestration.defs.ig_enriched.slv.workloads import SubmitConfig, workloads_for
 
+    cfg = SubmitConfig()
+    pending: list[str] = []
     with context.resources.duckdb.get_connection() as conn:
-        pending = _count_pending(conn, SubmitConfig())
+        for workload in workloads_for(cfg):
+            for candidate in workload.candidates(conn, cfg):
+                post_id = candidate["post_id"]
+                # A post in flight is already submitted; the run will suppress
+                # it, so it is not part of what this request is asking for.
+                if post_id in {_post_of(k) for k in in_flight}:
+                    continue
+                pending.append(
+                    partition_key(workload.name, 0, [post_id])
+                )
 
-    if pending == 0:
+    if not pending:
         logger.info(
             "enrichment submit: nothing pending (%d in flight) — no run requested",
-            in_flight,
+            len(in_flight),
         )
         return
 
-    # run_key deduplicates consecutive ticks that observe the same backlog
-    # magnitude before the previous run lands.
-    run_key = f"submit-{pending}-{in_flight}"
+    # The run_key is keyed on the IDENTITY of the pending set, never its size
+    # (ADR-0012 D5). A count-keyed run_key collapses two different backlogs of
+    # equal size into one key, so Dagster treats a genuinely-new set as the
+    # already-requested run and requests nothing — a silent stall of paid work.
+    # Identity-keying means the same still-pending set observed on consecutive
+    # ticks before the previous run lands deduplicates, while any change in
+    # membership is a new request.
+    keys = sorted(pending)
+    run_key = "submit-" + hashlib.sha256(
+        "\x00".join(keys).encode()
+    ).hexdigest()[:16]
     context.log.info(
         "enrichment submit: %d candidate(s) pending, %d in flight — "
         "requesting submit run (run_key=%s)",
-        pending,
-        in_flight,
+        len(keys),
+        len(in_flight),
         run_key,
     )
-    yield RunRequest(run_key=run_key, tags=_submit_tags)
+    yield RunRequest(
+        run_key=run_key,
+        tags={
+            **_submit_tags,
+            "enrichment/submit_partitions": json.dumps(keys),
+        },
+    )
 
 
-def _count_pending(conn, cfg) -> int:
-    """How many posts discovery would find, without building any item."""
-    from orchestration.defs.ig_enriched.slv.workloads import workloads_for
+def _post_of(key: str) -> str:
+    """The post a partition key names, or the key itself if unparseable.
 
-    total = 0
-    for workload in workloads_for(cfg):
-        total += len(workload.candidates(conn, cfg))
-    return total
+    A key from a retired grammar names no post; returning it unchanged keeps
+    the membership test total without pretending to understand it.
+    """
+    try:
+        return parse_partition_key(key).post_id
+    except ValueError:
+        return key
