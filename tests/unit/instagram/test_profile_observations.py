@@ -16,9 +16,9 @@ from unittest.mock import patch
 import polars as pl
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
-
-from orchestration.defs.platform.schemas import duckdb_ddl
 from orchestration.defs.ig_core.slv.profiles import _profile_observations, ig_profiles_slv
+from orchestration.defs.platform.schemas import duckdb_ddl
+
 from migrations.migrate_backfill_profile_observations import (
     apply_backfill,
     collect_observations,
@@ -72,7 +72,6 @@ def _pk_cols(con, table):
 def test_ddl_creates_table_with_pk(tmp_path):
     """``duckdb_ddl`` emits CREATE TABLE IF NOT EXISTS with the full PK."""
     import duckdb as duckdb_mod
-
     from orchestration.defs.platform.schemas import DUCKDB_TABLES
 
     ddl = duckdb_ddl("silver_ig_profile_observations")

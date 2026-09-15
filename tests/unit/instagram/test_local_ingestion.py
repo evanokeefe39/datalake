@@ -17,11 +17,6 @@ import polars as pl
 import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
-
-from orchestration.defs.engine.media import seed_media_from_file, url_hash
-from orchestration.defs.ig_core.bnz.scrape import ig_posts_local_raw
-from orchestration.defs.ig_core.slv.posts import ig_posts_slv
-from orchestration.defs.ig_core.bnz.scrape import LOCAL_INGEST_DIR
 from opsdb.roster import (
     AD_HOC_LIMIT,
     add_profile,
@@ -30,6 +25,10 @@ from opsdb.roster import (
     enabled_profiles,
     is_ad_hoc,
 )
+from orchestration.defs.engine.media import seed_media_from_file, url_hash
+from orchestration.defs.ig_core.bnz.scrape import LOCAL_INGEST_DIR, ig_posts_local_raw
+from orchestration.defs.ig_core.slv.posts import ig_posts_slv
+
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 ig_assets = importlib.import_module("orchestration.defs.ig_core.slv.posts")

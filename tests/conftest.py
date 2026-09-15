@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 from dagster_duckdb import DuckDBResource
-
 from orchestration.defs.platform.resources import ApifyResource, SQLiteResource
 
 

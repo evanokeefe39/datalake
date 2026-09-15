@@ -22,20 +22,20 @@ import sys
 from pathlib import Path
 
 import duckdb
-import pytest
-
-from orchestration.defs.platform.schemas import MODEL_LEGACY_NULL
+import orchestration.defs.engine.silver_rt as conform_mod
 import orchestration.defs.ig_enriched.slv.classification as classification
-import orchestration.defs.engine.silver_rt as conform
+import pytest
+from orchestration.defs.engine.landing import (
+    WORKLOAD_CONTENT_CLASSIFICATION,
+    land_response,
+)
 from orchestration.defs.engine.silver_rt import (
     SILVER_CONTENT_CLASSIFICATION,
     TABLE_SCHEMAS,
     conform,
 )
-from orchestration.defs.engine.landing import (
-    WORKLOAD_CONTENT_CLASSIFICATION,
-    land_response,
-)
+from orchestration.defs.ig_enriched.slv.quarantine import REASON_PARSE_ERROR
+from orchestration.defs.platform.schemas import MODEL_LEGACY_NULL
 
 NOW = __import__("datetime").datetime(2026, 9, 14, 12, 0, 0)
 
@@ -162,7 +162,7 @@ def test_malformed_payload_quarantines_never_vanishes(bronze_root, silver_root):
     assert result.counts == {"conformed": 1, "quarantined": 2}
     q = result.quarantine
     assert q.height == 2
-    assert set(q["reason_code"].to_list()) == {conform_mod.REASON_PARSE_ERROR}
+    assert set(q["reason_code"].to_list()) == {REASON_PARSE_ERROR}
     # the malformed post_ids are named, not lost
     assert set(q["post_id"].to_list()) == {"bad1", "bad2"}
     assert q["response_excerpt"].str.len_bytes().min() > 0

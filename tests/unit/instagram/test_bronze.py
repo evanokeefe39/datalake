@@ -12,10 +12,8 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 from dagster import build_asset_context
-
+from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig, ig_posts_raw
 from orchestration.defs.platform.resources import SQLiteResource
-from orchestration.defs.ig_core.bnz.scrape import ig_posts_raw
-from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig
 
 
 def _ops_resource(tmp_path: object) -> SQLiteResource:

@@ -15,20 +15,19 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
+import orchestration.defs.engine.landing as landing
+import orchestration.defs.engine.silver_rt as conform
+import orchestration.defs.ig_enriched.slv.checks as checks
 import polars as pl
 import pytest
 from dagster_duckdb import DuckDBResource
-
-from orchestration.defs.platform import paths as lake
-import orchestration.defs.ig_enriched.slv.checks as checks
-import orchestration.defs.engine.silver_rt as conform
-import orchestration.defs.engine.landing as landing
+from orchestration.defs.engine.silver_rt import SILVER_QUARANTINE
 from orchestration.defs.ig_enriched.slv.checks import (
     anti_join_losses,
     quarantine_growth,
     stale_snapshot_files,
 )
-from orchestration.defs.engine.silver_rt import SILVER_QUARANTINE
+from orchestration.defs.platform import paths as lake
 
 # Import the module under test for the payload builders (mirror the
 # validated shapes; keeps this file free of duplicated fixtures).
@@ -59,7 +58,7 @@ def _conform(bronze: Path, silver: Path) -> duckdb.DuckDBPyConnection:
     """Land one clean visual response, conform it, register into :memory:."""
     _land_visual(bronze)
     conn = duckdb.connect(":memory:")
-    conform_mod.conform(root=bronze, silver_root=silver, conn=conn, now=NOW)
+    conform.conform(root=bronze, silver_root=silver, conn=conn, now=NOW)
     return conn
 
 
@@ -98,10 +97,10 @@ def test_anti_join_passes_on_clean_conform(roots):
     """Clean world: bronze's every key is conformed → no losses."""
     bronze, silver = roots
     conn = _conform(bronze, silver)
-    bronze = landing_mod.read_responses(bronze)
+    bronze = landing.read_responses(bronze)
     losses = anti_join_losses(
-        conform_mod._latest_per_key(bronze),
-        {t: _conformed_keys(conn, t) for t in conform_mod.SILVER_TABLES},
+        conform._latest_per_key(bronze),
+        {t: _conformed_keys(conn, t) for t in conform.SILVER_TABLES},
         _quarantined_keys(conn),
     )
     assert losses == []
@@ -113,26 +112,26 @@ def test_anti_join_fires_on_silent_loss(roots):
     passed=False on the actual asset check, not just a helper list."""
     bronze, silver = roots
     conn = _conform(bronze, silver)
-    bronze_df = landing_mod.read_responses(bronze)
+    bronze_df = landing.read_responses(bronze)
     quarantined = _quarantined_keys(conn)
 
     # Inject the silent loss: drop BOTH visual counterparts without adding
     # a quarantine row (what a wrong-table done-guard effectively produced).
     ann, summ = (
-        conform_mod.SILVER_VISUAL_ANNOTATIONS,
-        conform_mod.SILVER_VISUAL_SUMMARIES,
+        conform.SILVER_VISUAL_ANNOTATIONS,
+        conform.SILVER_VISUAL_SUMMARIES,
     )
     conn.execute(f"DELETE FROM {ann} WHERE post_id = 'p1'")
     conn.execute(f"DELETE FROM {summ} WHERE post_id = 'p1'")
-    conformed = {t: _conformed_keys(conn, t) for t in conform_mod.SILVER_TABLES}
+    conformed = {t: _conformed_keys(conn, t) for t in conform.SILVER_TABLES}
 
     losses = anti_join_losses(
-        conform_mod._latest_per_key(bronze_df), conformed, quarantined
+        conform._latest_per_key(bronze_df), conformed, quarantined
     )
     assert losses and losses[0]["post_id"] == "p1"
 
     # The real check FIRES on that state and PASSES on the clean state.
-    result = checks_mod.check_no_silent_loss(_duckdb_resource(conn))
+    result = checks.check_no_silent_loss(_duckdb_resource(conn))
     assert result.passed is False
     assert result.metadata["silent_losses"].value == 1
 
@@ -143,10 +142,10 @@ def test_anti_join_tolerates_quarantined_rows(roots):
     # Land an ok=False response → conform quarantines it (provider_error).
     _land_visual(bronze, payload=None, ok=False, error_message="boom")
     conn = _conform(bronze, silver)
-    bronze_df = landing_mod.read_responses(bronze)
+    bronze_df = landing.read_responses(bronze)
     losses = anti_join_losses(
-        conform_mod._latest_per_key(bronze_df),
-        {t: _conformed_keys(conn, t) for t in conform_mod.SILVER_TABLES},
+        conform._latest_per_key(bronze_df),
+        {t: _conformed_keys(conn, t) for t in conform.SILVER_TABLES},
         _quarantined_keys(conn),
     )
     assert losses == []
@@ -182,21 +181,21 @@ def test_quarantine_growth_check_end_to_end(roots):
     conn = _conform(bronze, silver)
     resource = _duckdb_resource(conn)
 
-    first = checks_mod.check_quarantine_growth(resource)
+    first = checks.check_quarantine_growth(resource)
     assert first.passed is True  # baseline recorded
 
     # Grow the quarantine: land a second failed response under a new key and
     # re-conform (snapshot now has 2 quarantine rows).
     _land_visual(bronze, post_id="p2", payload=None, ok=False, error_message="boom2")
-    conform_mod.conform(root=bronze, silver_root=silver, conn=conn, now=NOW)
+    conform.conform(root=bronze, silver_root=silver, conn=conn, now=NOW)
 
-    second = checks_mod.check_quarantine_growth(resource)
+    second = checks.check_quarantine_growth(resource)
     assert second.passed is False
     assert second.metadata["quarantined"].value == 2
 
     # Clean again: shrink the snapshot back → passes, baseline follows.
     conn.execute(f"DELETE FROM {SILVER_QUARANTINE} WHERE post_id = 'p2'")
-    assert checks_mod.check_quarantine_growth(resource).passed is True
+    assert checks.check_quarantine_growth(resource).passed is True
 
 
 # ── 3. Freshness / volume expectations ─────────────────────────────────────
@@ -207,11 +206,11 @@ def test_freshness_passes_when_snapshots_are_current(roots):
     conn = _conform(bronze, silver)
     conn.close()  # ensure all snapshot writes are flushed before mtime math
     files = {
-        tid: conform_mod.table_path(tid, silver) for tid in conform_mod.SILVER_TABLES
+        tid: conform.table_path(tid, silver) for tid in conform.SILVER_TABLES
     }
-    files[SILVER_QUARANTINE] = conform_mod.table_path(SILVER_QUARANTINE, silver)
+    files[SILVER_QUARANTINE] = conform.table_path(SILVER_QUARANTINE, silver)
     assert stale_snapshot_files(
-        landing_mod.response_path(bronze), files
+        landing.response_path(bronze), files
     ) == []
 
 
@@ -221,19 +220,19 @@ def test_freshness_fires_on_stale_and_missing_snapshots(roots):
     # Backdate every silver snapshot: bronze is now newer than silver.
     old = (datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()
     files = {
-        tid: conform_mod.table_path(tid, silver) for tid in conform_mod.SILVER_TABLES
+        tid: conform.table_path(tid, silver) for tid in conform.SILVER_TABLES
     }
-    files[SILVER_QUARANTINE] = conform_mod.table_path(SILVER_QUARANTINE, silver)
+    files[SILVER_QUARANTINE] = conform.table_path(SILVER_QUARANTINE, silver)
     for p in files.values():
         os.utime(p, (old, old))
-    stale = stale_snapshot_files(landing_mod.response_path(bronze), files)
+    stale = stale_snapshot_files(landing.response_path(bronze), files)
     assert stale  # FIRES
     assert set(stale) == set(files)
 
     # A MISSING snapshot while bronze exists also fires (volume violation).
     files[SILVER_QUARANTINE].unlink()
     assert SILVER_QUARANTINE in stale_snapshot_files(
-        landing_mod.response_path(bronze), files
+        landing.response_path(bronze), files
     )
 
     # A missing BRONZE file is a dormant source — healthy, passes.
@@ -247,10 +246,10 @@ def test_freshness_check_end_to_end(roots):
     bronze, silver = roots
     _conform(bronze, silver)
     old = (datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()
-    for tid in (*conform_mod.SILVER_TABLES, SILVER_QUARANTINE):
-        os.utime(conform_mod.table_path(tid, silver), (old, old))
+    for tid in (*conform.SILVER_TABLES, SILVER_QUARANTINE):
+        os.utime(conform.table_path(tid, silver), (old, old))
     resource = _duckdb_resource(duckdb.connect(":memory:"))
-    result = checks_mod.check_silver_snapshot_freshness(resource)
+    result = checks.check_silver_snapshot_freshness(resource)
     assert result.passed is False
     assert result.metadata["stale_snapshots"]
 
@@ -284,18 +283,18 @@ def test_v_quarantine_triage_joins_bronze_and_post_context(roots):
     ).fetchall()
     assert rows, "triage view must surface the quarantined row"
     post_id, reason, bronze_err, bronze_text, owner, caption = rows[0]
-    assert reason == conform_mod.REASON_PROVIDER_ERROR
+    assert reason == conform.REASON_PROVIDER_ERROR
     assert bronze_err == "boom"
     assert owner == "demo_author"
     assert caption == "demo caption"
     # LEFT JOIN contract: even with an EMPTY bronze file the row survives
     # (bronze_* columns NULL; the quarantine row never disappears).
-    pl.DataFrame(schema=landing_mod.SCHEMA).write_parquet(
+    pl.DataFrame(schema=landing.SCHEMA).write_parquet(
         bronze / "bronze_enrichment_raw.parquet"
     )
     view_asset(_duckdb_resource(conn))
     rows = conn.execute(
         "SELECT reason_code, bronze_error_message FROM v_quarantine_triage"
     ).fetchall()
-    assert rows[0][0] == conform_mod.REASON_PROVIDER_ERROR
+    assert rows[0][0] == conform.REASON_PROVIDER_ERROR
     assert rows[0][1] is None

@@ -13,12 +13,12 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from orchestration.defs.platform.resources import SQLiteResource
 from orchestration.defs.engine.media import (
     cache_media_bytes,
     cached_local_path,
     url_hash,
 )
+from orchestration.defs.platform.resources import SQLiteResource
 
 
 def test_cache_media_bytes_downloads_and_records(tmp_path):

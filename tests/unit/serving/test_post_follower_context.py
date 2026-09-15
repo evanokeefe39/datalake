@@ -11,8 +11,9 @@ from __future__ import annotations
 import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
-
 from orchestration.defs.serving.views import v_post_follower_context as _v_post_follower_context
+
+
 @pytest.fixture
 def db(tmp_path) -> DuckDBResource:
     """DuckDB resource seeded with minimal v_post_detail + observations."""

@@ -17,7 +17,6 @@ import inspect
 import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
-
 from orchestration.defs.platform.schemas import (
     DUCKDB_TABLES,
     DUCKDB_VIEWS,

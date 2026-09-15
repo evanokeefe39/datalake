@@ -10,7 +10,6 @@ immutable + append-only, idempotent by the natural key
 from __future__ import annotations
 
 import pytest
-
 from orchestration.defs.engine.landing import (
     DATASET_ID,
     KEY_COLUMNS,

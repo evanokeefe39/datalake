@@ -1,41 +1,51 @@
-"""W3/W4 round-trip: drain → submit → harvest over ONE shared instance.
+"""Submit owns discovery: the round-trip over ONE shared instance.
 
-These tests join the real halves on a real (ephemeral) Dagster instance and
-a fake seam adapter — the acceptance contract is behavioral:
+ADR-0016 made the submit stage the sole discovery actor — it derives
+candidates, guards against double-submission, materializes its own
+``enrichment_submitted`` placeholder, and submits. There is no drain.
+
+These tests join the real halves on a real (ephemeral) Dagster instance and a
+fake seam adapter — the acceptance contract is behavioral:
 
 * the harvested producer exists and SHIFTS the in-flight set: delete
-  ``report_harvested`` and the release/suppression assertions below fail
-  (in-flight would never shrink — the stall defect ADR-0014 exists to kill);
-* drain run 2 re-enqueues the failed post AND suppresses the in-flight one
-  — BOTH asserted, so total suppression fails;
+  ``report_harvested`` and the release assertions fail (in-flight would never
+  shrink — the stall defect ADR-0014 exists to kill);
+* discovery reads the SAME ``in_flight_partitions`` derivation the guard uses,
+  so a second run suppresses what the first submitted and submits ONLY new work;
+* a build failure is terminal-loud (an ``ok=False`` bronze row + harvested
+  partition), so a partition cannot be stranded in flight;
 * the accounting identity holds over the corpus;
 * the whole loop runs with ZERO queue-table reads.
 """
 
-import pytest
-from dagster import AssetKey, AssetMaterialization, DagsterInstance
-
-from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
 import orchestration.defs.engine.harvest as harvest
 import orchestration.defs.engine.submit as submit
-from orchestration.defs.engine.landing import WORKLOAD_CONTENT_CLASSIFICATION, read_responses
+import pytest
+from dagster import AssetKey, AssetMaterialization, DagsterInstance
+from orchestration.defs.engine.landing import (
+    WORKLOAD_CONTENT_CLASSIFICATION,
+    read_responses,
+)
 from orchestration.defs.engine.partitions import (
     MAX_ROUNDS,
+    SUBMITTED_ASSET_NAME,
     account,
     failure_set,
     in_flight_partitions,
+    partition_key,
     post_partition_state,
 )
 from orchestration.defs.engine.provider import DEFAULT_JOBSPEC, Result
-from orchestration.defs.ig_core.slv import posts as ig_assets
+from orchestration.defs.ig_enriched.slv.workloads import SubmitConfig
+from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
 
 WORKLOAD = WORKLOAD_CONTENT_CLASSIFICATION
-SUBMITTED = AssetKey("enrichment_submitted")
+SUBMITTED = AssetKey(SUBMITTED_ASSET_NAME)
 HARVESTED = AssetKey("enrichment_harvested")
 
 
 def rkey(pid: str, round_n: int = 0) -> str:
-    return f"{WORKLOAD}\x00r{round_n}\x00{pid}"
+    return partition_key(WORKLOAD, round_n, [pid])
 
 
 class FakeAdapter:
@@ -80,9 +90,19 @@ class FakeAdapter:
 def instance():
     return DagsterInstance.ephemeral()
 
-def drain_enqueue(inst, posts: dict[str, int]) -> None:
-    """The drain's enqueue: one submitted partition per post at its round."""
-    ig_assets._materialize_submitted_partitions(inst, posts)
+
+def enqueue(inst, posts: dict[str, int]) -> None:
+    """Materialize the submitted placeholder, as submit does pre-POST.
+
+    Direct materialization, not a drain: ADR-0016 deleted the drain, and these
+    tests need a partition in the submitted space to observe guard behaviour.
+    """
+    keys = [rkey(pid, round_n) for pid, round_n in posts.items()]
+    inst.add_dynamic_partitions(SUBMITTED_ASSET_NAME, keys)
+    for key in keys:
+        inst.report_runless_asset_event(
+            AssetMaterialization(asset_key=SUBMITTED, partition=key)
+        )
 
 
 def record_handle(inst, key: str, handle: str) -> None:
@@ -105,6 +125,22 @@ def make_result(pid: str, ok: bool, round_n: int = 0) -> Result:
     )
 
 
+def approve(duckdb, post_ids: list[str]) -> None:
+    """Label-approve posts, which is what makes them discovery-eligible."""
+    from orchestration.defs.ig_core.slv.labels import LABEL_VERSION
+
+    with duckdb.get_connection() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS ig_post_labels ("
+            "post_id VARCHAR, enrich_decision VARCHAR, label_version INTEGER)"
+        )
+        for pid in post_ids:
+            conn.execute(
+                "INSERT INTO ig_post_labels VALUES (?, 'standout', ?)",
+                [pid, LABEL_VERSION],
+            )
+
+
 # ── The harvested producer (D2): completion genuinely releases work ─────────
 
 
@@ -114,15 +150,13 @@ def test_harvest_releases_only_its_own_partitions(instance, tmp_path):
     Fails if the harvested producer is deleted: P's key would stay in the
     in-flight set forever and the release assert below breaks.
     """
-    drain_enqueue(instance, {"P": 0, "Q": 0})
+    enqueue(instance, {"P": 0, "Q": 0})
     record_handle(instance, rkey("P"), "job1")
     record_handle(instance, rkey("Q"), "job1")
     assert in_flight_partitions(instance) == {rkey("P"), rkey("Q")}
 
     adapter = FakeAdapter(results_by_handle={"job1": [make_result("P", ok=False)]})
-    outcome = harvest.harvest_pending(
-        instance, adapter, root=str(tmp_path / "lake")
-    )
+    outcome = harvest.harvest_pending(instance, adapter, root=str(tmp_path / "lake"))
 
     # D2: the round-0 key moved OUT of in-flight — Q's did not.
     assert in_flight_partitions(instance) == {rkey("Q")}
@@ -131,49 +165,32 @@ def test_harvest_releases_only_its_own_partitions(instance, tmp_path):
     assert outcome["retried"] == 1
 
 
-def test_drain_run_two_reenqueues_failed_and_suppresses_in_flight(
-    instance, tmp_path
-):
-    """The W4 acceptance: run 2 re-enqueues the eligible failed post AND
-    suppresses the in-flight one — BOTH, so total suppression fails."""
-    drain_enqueue(instance, {"P": 0, "Q": 0})
-    record_handle(instance, rkey("P"), "job1")
-    record_handle(instance, rkey("Q"), "job1")
-    adapter = FakeAdapter(results_by_handle={"job1": [make_result("P", ok=False)]})
-    harvest.harvest_pending(instance, adapter, root=str(tmp_path / "lake"))
-
-    candidates = ["P", "Q"]
-    suppressed = ig_assets.drain_suppressed_post_ids(candidates, instance)
-    assert "Q" in suppressed          # in flight → suppressed
-    assert "P" not in suppressed      # harvested+failed → released
-
-    # Drain run 2's enqueue state: P re-enqueues at its retry round.
-    p_state = post_partition_state(instance, WORKLOAD, "P")
-    assert p_state.next_round == 1
-    drain_enqueue(instance, {"P": p_state.next_round})
-    assert rkey("P", 1) in in_flight_partitions(instance)
-    # Round 0 was NEVER re-materialized: P is in flight only at r1.
-    assert rkey("P", 0) not in in_flight_partitions(instance)
-
-
 def test_in_flight_empty_after_harvest_lands(instance, tmp_path):
-    drain_enqueue(instance, {"P": 0})
+    enqueue(instance, {"P": 0})
     record_handle(instance, rkey("P"), "job1")
     adapter = FakeAdapter(results_by_handle={"job1": [make_result("P", ok=True)]})
     harvest.harvest_pending(instance, adapter, root=str(tmp_path / "lake"))
     assert in_flight_partitions(instance) == set()
 
 
-def test_submit_discovers_retry_round_after_drain_reenqueue(instance, tmp_path):
-    drain_enqueue(instance, {"P": 0})
+def test_a_failed_post_is_released_and_its_retry_round_derives(instance, tmp_path):
+    """The W4 acceptance, restated for the submit-owned world: a harvested
+    failure is RELEASED (not suppressed) and its next round derives to 1."""
+    enqueue(instance, {"P": 0, "Q": 0})
     record_handle(instance, rkey("P"), "job1")
+    record_handle(instance, rkey("Q"), "job1")
     adapter = FakeAdapter(results_by_handle={"job1": [make_result("P", ok=False)]})
     harvest.harvest_pending(instance, adapter, root=str(tmp_path / "lake"))
-    drain_enqueue(instance, {"P": 1})
 
-    pending = submit.discover_pending(instance)
-    assert [p.round for p in pending] == [1]
-    assert [p.post_id for p in pending] == ["P"]
+    # Q is still in flight; P has been released and re-derives at round 1.
+    assert rkey("Q") in in_flight_partitions(instance)
+    assert rkey("P") not in in_flight_partitions(instance)
+    assert post_partition_state(instance, WORKLOAD, "P").next_round == 1
+
+    # A retry round is a NEW key; round 0 is never re-materialized.
+    enqueue(instance, {"P": 1})
+    assert rkey("P", 1) in in_flight_partitions(instance)
+    assert rkey("P", 0) not in in_flight_partitions(instance)
 
 
 # ── The accounting identity over the corpus ─────────────────────────────────
@@ -182,13 +199,13 @@ def test_submit_discovers_retry_round_after_drain_reenqueue(instance, tmp_path):
 def test_accounting_identity_holds_over_corpus(instance, tmp_path):
     """done + failed + in_flight + backlog == candidates, over the corpus.
 
-    Lake-derived counts: done = conformed silver rows (none here — no
-    conform ran); failed = the landed∖conformed failure set
+    Lake-derived counts: done = conformed silver rows (none here — no conform
+    ran); failed = the landed∖conformed failure set
     (``partitions.failure_set``); in_flight = instance-derived; backlog =
     candidates with no materialized key at all.
     """
     corpus = [f"P{i}" for i in range(8)]
-    drain_enqueue(instance, {pid: 0 for pid in corpus[:6]})
+    enqueue(instance, {pid: 0 for pid in corpus[:6]})
     for pid in corpus[:6]:
         record_handle(instance, rkey(pid), "job1")
     adapter = FakeAdapter(
@@ -202,15 +219,12 @@ def test_accounting_identity_holds_over_corpus(instance, tmp_path):
     in_flight = in_flight_partitions(instance)
     failed = len(failure_set(landed=set(harvested), conformed=set()))
     backlog = sum(
-        1 for pid in corpus
+        1
+        for pid in corpus
         if rkey(pid) not in harvested and rkey(pid) not in in_flight
     )
     a = account(
-        instance,
-        done=0,
-        failed=failed,
-        backlog=backlog,
-        total_candidates=len(corpus),
+        instance, done=0, failed=failed, backlog=backlog, total_candidates=len(corpus)
     )
     assert a.holds, f"identity broke: deficit={a.deficit}"
     assert failed == 2 and backlog == 2 and len(in_flight) == 4
@@ -222,6 +236,7 @@ def test_accounting_identity_holds_over_corpus(instance, tmp_path):
 @pytest.fixture()
 def dbs(tmp_path):
     from opsdb.schema import sqlite_ddl
+    from orchestration.defs.platform.schemas import duckdb_ddl
 
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
@@ -238,75 +253,194 @@ def dbs(tmp_path):
     return ops, duckdb
 
 
-def test_submit_roundtrip_records_handle_and_discovery(instance, dbs, tmp_path):
+def test_submit_discovers_builds_and_records_one_handle(instance, dbs, tmp_path):
+    """Submit discovers its own candidates — nothing pre-enqueued it."""
     ops, duckdb = dbs
-    drain_enqueue(instance, {"P1": 0, "P2": 0})
     adapter = FakeAdapter()
     result = submit.submit_pending(
-        instance, ops, duckdb, adapter, root=str(tmp_path / "lake")
+        instance,
+        ops,
+        duckdb,
+        adapter,
+        config=SubmitConfig(post_ids=["P1", "P2"], workload=WORKLOAD),
+        root=str(tmp_path / "lake"),
     )
 
     assert result["submitted"] == 2
-    assert len(adapter.submitted) == 1  # ONE provider job per run
-    items = adapter.submitted[0]
-    assert {i.custom_key for i in items} == {rkey("P1"), rkey("P2")}
-    # The handle is recorded Dagster-natively on the submitted partitions.
-    handles = harvest.discover_handles(instance)
-    assert set(handles.values()) == {result["handle"]}
+    assert len(adapter.submitted) == 1  # ONE provider job per workload per run
+    # The placeholder exists for both posts, and both carry the handle.
+    assert in_flight_partitions(instance) == {rkey("P1"), rkey("P2")}
+    assert harvest.discover_handles(instance) == {
+        rkey("P1"): "job1",
+        rkey("P2"): "job1",
+    }
+
+
+def test_second_submit_run_suppresses_what_the_first_submitted(instance, dbs, tmp_path):
+    """The guard and discovery read ONE derivation (ADR-0016).
+
+    GIVEN a label-approved post submitted by the DISCOVERY path
+    WHEN a second run discovers the same corpus
+    THEN it submits NOTHING — the post is in flight, not eligible again.
+
+    The discovery path is the one under test: ``post_ids`` deliberately
+    bypasses the guard, so using it here would prove nothing.
+    """
+    ops, duckdb = dbs
+    approve(duckdb, ["P1"])
+    adapter = FakeAdapter()
+
+    first = submit.submit_pending(
+        instance, ops, duckdb, adapter,
+        config=SubmitConfig(workload=WORKLOAD), root=str(tmp_path / "lake"),
+    )
+    assert first["submitted"] == 1
+
+    second = submit.submit_pending(
+        instance, ops, duckdb, adapter,
+        config=SubmitConfig(workload=WORKLOAD), root=str(tmp_path / "lake"),
+    )
+    assert second["submitted"] == 0
+    assert second["in_flight"] == 1  # reported as suppressed, not silent
+    assert len(adapter.submitted) == 1  # ONE provider call in total
 
 
 def test_empty_caption_is_terminal_without_retry(instance, dbs, tmp_path):
+    """An unbuildable post lands a FAILED row and is harvested — never
+    stranded in flight, and never retried (the cause is deterministic)."""
     ops, duckdb = dbs
     with duckdb.get_connection() as conn:
-        conn.execute("UPDATE silver_ig_posts SET caption = '' WHERE post_id = 'P1'")
-    drain_enqueue(instance, {"P1": 0})
+        conn.execute(
+            "INSERT INTO silver_ig_posts (post_id, caption, source_dataset)"
+            " VALUES ('P3', '   ', 'test')"
+        )
     adapter = FakeAdapter()
     result = submit.submit_pending(
-        instance, ops, duckdb, adapter, root=str(tmp_path / "lake")
+        instance,
+        ops,
+        duckdb,
+        adapter,
+        config=SubmitConfig(post_ids=["P3"], workload=WORKLOAD),
+        root=str(tmp_path / "lake"),
     )
 
-    assert result["failed"] == 1
     assert result["submitted"] == 0
-    # In-flight shrinks: the partition is terminal, minted nothing.
+    assert result["failed"] == 1
+    assert len(adapter.submitted) == 0  # no provider call for unbuildable work
+    # Terminal, not stranded: the key is no longer in flight.
+    assert rkey("P3") not in in_flight_partitions(instance)
+    landed = read_responses(str(tmp_path / "lake"))
+    assert landed.height >= 1
+    assert any(
+        (not row["ok"]) and row["workload"] == WORKLOAD
+        for row in landed.iter_rows(named=True)
+    )
+
+
+def test_explicit_post_ids_bypass_the_in_flight_guard(instance, dbs, tmp_path):
+    """Re-enrichment at will: an explicit post_id is submitted even though
+    the same post is already in flight."""
+    ops, duckdb = dbs
+    adapter = FakeAdapter()
+    submit.submit_pending(
+        instance, ops, duckdb, adapter,
+        config=SubmitConfig(post_ids=["P1"], workload=WORKLOAD), root=str(tmp_path / "lake"),
+    )
+    again = submit.submit_pending(
+        instance, ops, duckdb, adapter,
+        config=SubmitConfig(post_ids=["P1"], workload=WORKLOAD), root=str(tmp_path / "lake"),
+    )
+    assert again["submitted"] == 1
+    assert len(adapter.submitted) == 2
+
+
+def test_dry_run_writes_nothing_to_the_instance(instance, dbs, tmp_path):
+    """A dry run projects cost and materializes NO placeholder, so it cannot
+    change what the next real run sees."""
+    ops, duckdb = dbs
+    adapter = FakeAdapter()
+    result = submit.submit_pending(
+        instance,
+        ops,
+        duckdb,
+        adapter,
+        config=SubmitConfig(post_ids=["P1", "P2"], workload=WORKLOAD, dry_run=True),
+        root=str(tmp_path / "lake"),
+    )
+
+    assert result["dry_run"] is True
+    assert result["submitted"] == 0
+    assert result["candidates"] == 2
+    assert result["estimate_tokens"] > 0
+    assert len(adapter.submitted) == 0
     assert in_flight_partitions(instance) == set()
-    # The failure LANDED in bronze (loud, not dropped).
-    rows = read_responses(root=tmp_path / "lake")
-    assert len(rows) == 1 and not rows["ok"][0]
+
+    # And the next real run still sees the work.
+    real = submit.submit_pending(
+        instance,
+        ops,
+        duckdb,
+        adapter,
+        config=SubmitConfig(post_ids=["P1", "P2"], workload=WORKLOAD),
+        root=str(tmp_path / "lake"),
+    )
+    assert real["submitted"] == 2
 
 
-def test_discover_pending_raises_on_budget_exhausted_in_flight(instance):
-    drain_enqueue(instance, {"P": MAX_ROUNDS})
-    with pytest.raises(RuntimeError, match="MAX_ROUNDS"):
-        submit.discover_pending(instance)
+def test_unregistered_workload_raises(instance, dbs, tmp_path):
+    """A workload-name typo must not look like a successful empty run."""
+    ops, duckdb = dbs
+    with pytest.raises(ValueError, match="unknown workload"):
+        submit.submit_pending(
+            instance,
+            ops,
+            duckdb,
+            FakeAdapter(),
+            config=SubmitConfig(workload="no-such-workload"),
+            root=str(tmp_path / "lake"),
+        )
+
+
+def test_health_gate_fails_loudly(instance, dbs, tmp_path):
+    """US-EENG-2: a down provider raises — never a quiet 'nothing to do'."""
+    ops, duckdb = dbs
+
+    class Down(FakeAdapter):
+        def health(self) -> bool:
+            return False
+
+    with pytest.raises(RuntimeError, match="readiness gate"):
+        submit.submit_pending(
+            instance, ops, duckdb, Down(), config=SubmitConfig(), root=str(tmp_path)
+        )
+
+
+def test_poll_failure_raises_instead_of_warning_forever(instance, tmp_path):
+    enqueue(instance, {"P": 0})
+    record_handle(instance, rkey("P"), "job1")
+    adapter = FakeAdapter(fail_poll=True)
+    with pytest.raises(RuntimeError, match="transport down"):
+        harvest.harvest_pending(instance, adapter, root=str(tmp_path / "lake"))
+
+
+def test_non_terminal_handle_is_skipped_not_polled_forever(instance, tmp_path):
+    enqueue(instance, {"P": 0})
+    record_handle(instance, rkey("P"), "job1")
+    adapter = FakeAdapter(terminal=False)
+    outcome = harvest.harvest_pending(instance, adapter, root=str(tmp_path / "lake"))
+    assert outcome["harvested"] == 0
+    # Still in flight — skipped, not landed, not retried.
+    assert in_flight_partitions(instance) == {rkey("P")}
 
 
 def test_mint_retries_stops_at_budget(instance):
-    minted = harvest.mint_retries(
-        instance, {rkey("P", MAX_ROUNDS): "still failing"}
-    )
-    assert minted == []
+    enqueue(instance, {"P": MAX_ROUNDS - 1})
+    record_handle(instance, rkey("P", MAX_ROUNDS - 1), "job1")
+    minted = harvest.mint_retries(instance, {rkey("P", MAX_ROUNDS - 1): "boom"})
+    assert not minted  # budget spent; no round MAX_ROUNDS key was minted
 
 
-# ── Harvest: bounded loops, fail-loudly polls ────────────────────────────────
-
-
-def test_poll_failure_raises_instead_of_warning_forever(instance):
-    drain_enqueue(instance, {"P": 0})
-    handle = FakeAdapter().submit([], job_spec=DEFAULT_JOBSPEC)
-    record_handle(instance, rkey("P"), handle)
-    failer = FakeAdapter(fail_poll=True)
-    with pytest.raises(RuntimeError, match="transport down"):
-        harvest.harvest_pending(instance, failer)
-
-
-def test_non_terminal_handle_is_skipped_not_polled_forever(instance):
-    drain_enqueue(instance, {"P": 0})
-    handle = FakeAdapter().submit([], job_spec=DEFAULT_JOBSPEC)
-    record_handle(instance, rkey("P"), handle)
-    pending_adapter = FakeAdapter(terminal=False)
-    outcome = harvest.harvest_pending(instance, pending_adapter)
-    assert outcome["harvested"] == 0
-    assert in_flight_partitions(instance) == {rkey("P")}  # still in flight
+# ── The queue is gone (ADR-0012) ────────────────────────────────────────────
 
 
 def test_no_queue_read_anywhere_on_target_path():
@@ -314,10 +448,15 @@ def test_no_queue_read_anywhere_on_target_path():
 
     import orchestration.defs.engine.provider as batch_mod
 
-    for mod in (submit, harvest, ig_assets):
+    for mod in (submit, harvest):
         src = inspect.getsource(mod)
-        for pattern in ("FROM batch_jobs", "FROM batch_items", "FROM dead_letter",
-                        "batch_items bi", "INSERT INTO batch"):
+        for pattern in (
+            "FROM batch_jobs",
+            "FROM batch_items",
+            "FROM dead_letter",
+            "batch_items bi",
+            "INSERT INTO batch",
+        ):
             assert pattern not in src, f"{mod.__name__} still reads {pattern}"
     # The queue primitives themselves are gone.
     assert not hasattr(batch_mod, "claim_pending_items")

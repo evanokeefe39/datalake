@@ -63,7 +63,7 @@ from dagster import AssetCheckResult, OpDefinition, asset_check
 
 from orchestration.defs.engine import landing
 from orchestration.defs.engine import silver_rt as conform
-from orchestration.defs.engine.silver_rt import silver_enrichment
+from orchestration.defs.engine.silver_asset import silver_enrichment
 from orchestration.defs.ig_core.slv.labels import LABEL_VERSION
 from orchestration.defs.ig_enriched.slv.prompts import CURRENT_PROMPT_HASH
 from orchestration.defs.platform import paths as lake

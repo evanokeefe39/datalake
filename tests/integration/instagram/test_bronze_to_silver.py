@@ -17,8 +17,8 @@ from unittest.mock import patch
 import polars as pl
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
-
 from orchestration.defs.ig_core.slv.posts import ig_posts_slv
+
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Test: full schema round-trip ──────────────────────────────────────────

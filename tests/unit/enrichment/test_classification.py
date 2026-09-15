@@ -20,13 +20,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
+import orchestration.defs.ig_enriched.slv.classification as classification
 import polars as pl
 import pytest
-
+from orchestration.defs.engine import landing
 from orchestration.defs.platform import paths as lake
 from orchestration.defs.platform.schemas import MODEL_LEGACY_NULL as SHARED_MODEL_LEGACY_NULL
-import orchestration.defs.ig_enriched.slv.classification as classification
-from orchestration.defs.engine import landing
+
 from migrations.migrate_classification_to_silver import (
     MIGRATION_RUN_ID,
     backfill_bronze,

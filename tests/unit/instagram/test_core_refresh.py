@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import pytest
 from dagster import DefaultScheduleStatus, build_asset_context
-
+from opsdb.roster import ensure_schema
+from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig, ig_posts_raw
 from orchestration.defs.integration.apify_client import trigger_run
 from orchestration.defs.platform.resources import SQLiteResource
 from orchestration.defs.platform.schedules import (
@@ -16,9 +17,6 @@ from orchestration.defs.platform.schedules import (
 from orchestration.defs.platform.schedules import (
     core_refresh_run_requests as run_requests,
 )
-from orchestration.defs.ig_core.bnz.scrape import ig_posts_raw
-from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig
-from opsdb.roster import ensure_schema
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
 

@@ -15,11 +15,11 @@ from dagster import (
     build_asset_context,
 )
 from dagster_duckdb import DuckDBResource
-
 from orchestration.defs.ig_enriched.slv.classification import CLASSIFICATION_DDL
 from orchestration.defs.serving.checks import _v_post_detail_gold_attribute_coverage
 from orchestration.defs.serving.dims import dim_date as _dim_date_asset
 from orchestration.defs.serving.views import v_post_detail as _v_post_detail_asset
+
 from tests.fixtures.silver_factories import seed_silver_posts
 
 # ── Fixture helpers ─────────────────────────────────────────────────────────

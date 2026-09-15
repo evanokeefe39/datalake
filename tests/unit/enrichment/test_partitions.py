@@ -17,7 +17,6 @@ from dagster import (
     DagsterInstance,
     DynamicPartitionsDefinition,
 )
-
 from orchestration.defs.engine.partitions import (
     HARVESTED_ASSET_NAME,
     HARVESTED_PARTITIONS,

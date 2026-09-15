@@ -21,7 +21,6 @@ import importlib
 
 import duckdb
 import pytest
-
 from orchestration.defs.ig_enriched.slv.classification import CLASSIFICATION_DDL
 
 serving_assets = importlib.import_module("orchestration.defs.serving.views")

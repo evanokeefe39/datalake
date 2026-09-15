@@ -10,7 +10,6 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-
 from orchestration.defs.engine.media import (
     is_video_path,
     media_urls_to_local_paths,

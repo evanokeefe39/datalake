@@ -14,7 +14,6 @@ import sqlite3
 
 import duckdb
 import pytest
-
 from opsdb.schema import SQLITE_TABLES, sqlite_all_ddl
 from orchestration.defs.platform.schemas import DUCKDB_TABLES, duckdb_all_ddl, duckdb_ddl
 
