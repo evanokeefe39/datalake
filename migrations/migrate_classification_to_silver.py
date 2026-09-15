@@ -80,9 +80,33 @@ _GOLD_COLUMNS = (
 
 
 def read_gold(db_path: str) -> pl.DataFrame:
-    """Read every `gold_analyses` row (the legacy table is never mutated)."""
+    """Read every `gold_analyses` row (the legacy table is never mutated).
+
+    RETIRED 2026-09-15 (W9): ``gold_analyses`` was DROPPED and superseded by
+    ``silver_content_classification``. Against the live DB this read now fails
+    with a CatalogException, so it refuses LOUDLY and says why, instead of
+    surfacing a raw catalog error that reads like a bug in the caller.
+
+    This migration is HISTORICAL (already run — 9,576 rows). The read still
+    works against a pre-W9 backup, which is the only reason it is kept rather
+    than deleted: restoring from ``data/lake/archive/gold_analyses/`` and
+    re-running is a legitimate recovery path. See ISSUES.md #34.
+    """
     con = duckdb.connect(db_path, read_only=True)
     try:
+        exists = con.execute(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_name = 'gold_analyses'"
+        ).fetchone()[0]
+        if not exists:
+            raise SystemExit(
+                "REFUSING: `gold_analyses` does not exist in this database. It "
+                "was dropped by the W9 retirement (2026-09-15) and superseded "
+                "by `silver_content_classification`. This migration is "
+                "historical; point it at a pre-W9 backup, or use "
+                "scripts/conform_silver.py (the live publisher). "
+                "See ISSUES.md #34."
+            )
         return pl.from_arrow(
             con.execute(
                 f"SELECT {_GOLD_COLUMNS} FROM gold_analyses"

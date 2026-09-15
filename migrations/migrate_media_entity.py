@@ -53,14 +53,11 @@ def migrate() -> None:
                 """
             )
             con.execute("DROP TABLE IF EXISTS instagram_media_cache")
-            # media_metadata.expires_at was added to the catalog but never
-            # migrated to the live DB (multimodal Phase 2).
-            try:
-                con.execute(
-                    "ALTER TABLE media_metadata ADD COLUMN expires_at TEXT"
-                )
-            except sqlite3.OperationalError:
-                pass  # column already exists
+            # RETIRED 2026-09-15 (W9): `media_metadata` was DROPPED — it cached
+            # Gemini File-API uploads for a permanently retired provider, and
+            # its catalog spec is removed. The ALTER that used to sit here is
+            # deleted (not renamed): the table is gone. ISSUES.md #32.
+            pass
             con.commit()
             print(
                 "ops.sqlite: created media_cache, dropped instagram_media_cache, "

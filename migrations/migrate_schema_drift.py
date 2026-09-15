@@ -1,10 +1,15 @@
-"""Schema drift migration: gold_ig_analyses → gold_analyses, dead_letter move, cleanup.
+"""Schema drift migration (LARGELY RETIRED 2026-09-15, W9): cleanup only.
+
+Historical role: gold_ig_analyses → gold_analyses rename, dead_letter move.
+BOTH are retired — gold_analyses was dropped (superseded by
+silver_content_classification) and dead_letter went with the ops.sqlite queue
+(ADR-0012). What remains live is the vestigial-table cleanup below.
 
 Detected drift between live state.duckdb and the current schema catalog:
 
   gold_ig_analyses → gold_analyses  (rename, add domain+prompt_hash, drop schema_version)
   silver_ig_progress                (drop — vestigial; watermarks replaced it)
-  dead_letter in state.duckdb       (move to ops.sqlite where the queue architecture expects it)
+  dead_letter move                  (RETIRED — the table was dropped, ADR-0012)
 
 Idempotent — safe to re-run. Existing data is preserved.
 Backs up state.duckdb to data/state.duckdb.bak before modifying.
@@ -52,44 +57,21 @@ def _table_exists(conn: duckdb.DuckDBPyConnection, name: str) -> bool:
 
 
 def _sqlite_ensure_tables(ops_path: Path) -> None:
-    """Create ops.sqlite tables if they don't exist (idempotent)."""
-    conn = sqlite3.connect(str(ops_path))
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS enrichment_queue (
-            post_id       TEXT NOT NULL,
-            domain        TEXT NOT NULL DEFAULT 'instagram',
-            status        TEXT NOT NULL DEFAULT 'pending',
-            attempts      INTEGER NOT NULL DEFAULT 0,
-            last_error    TEXT,
-            scheduled_for TEXT,
-            created_at    TEXT NOT NULL,
-            updated_at    TEXT NOT NULL,
-            PRIMARY KEY (post_id, domain)
-        );
+    """RETIRED 2026-09-15 (W9) — creates NOTHING.
 
-        CREATE TABLE IF NOT EXISTS media_metadata (
-            media_url_hash TEXT PRIMARY KEY,
-            media_url      TEXT NOT NULL,
-            file_api_uri   TEXT,
-            mime_type      TEXT,
-            file_size      INTEGER,
-            upload_state   TEXT DEFAULT 'pending',
-            created_at     TEXT NOT NULL,
-            uploaded_at    TEXT
-        );
+    This used to ``CREATE TABLE IF NOT EXISTS`` enrichment_queue,
+    ``media_metadata`` and ``dead_letter``. All are retired (ADR-0012 for the
+    queue; ISSUES.md #32 for ``media_metadata``, a Gemini File-API upload cache
+    for a permanently retired provider).
 
-        CREATE TABLE IF NOT EXISTS dead_letter (
-            post_id     TEXT NOT NULL,
-            domain      TEXT NOT NULL DEFAULT 'instagram',
-            error       TEXT,
-            attempts    INTEGER NOT NULL DEFAULT 0,
-            failed_at   TEXT NOT NULL,
-            PRIMARY KEY (post_id, domain)
-        );
-    """)
-    conn.commit()
-    conn.close()
-    logger.info("Ensured ops.sqlite tables: enrichment_queue, media_metadata, dead_letter")
+    Retired — not deleted — because this file is the ONE migration the README
+    marks "RUN against live", so an operator may reach it. Deleting the call
+    site would hide that; a no-op body tells them why nothing happens.
+
+    This was one of SIX paths that recreated retired tables after the W9 drop.
+    One surviving creator makes the drop non-durable, so all six had to go.
+    """
+    return None
 
 
 # ── Migration ───────────────────────────────────────────────────────────────
@@ -101,84 +83,57 @@ def migrate(duckdb_path: Path, ops_path: Path, backup: bool = True) -> None:
 
     conn = duckdb.connect(str(duckdb_path))
 
-    # ── 1. gold_ig_analyses → gold_analyses ──────────────────────────────
-    if _table_exists(conn, "gold_ig_analyses") and not _table_exists(conn, "gold_analyses"):
-        conn.execute("""
-            CREATE TABLE gold_analyses (
-                post_id     VARCHAR,
-                domain      VARCHAR NOT NULL DEFAULT 'instagram',
-                prompt_hash VARCHAR,
-                result_json VARCHAR,
-                analysed_at VARCHAR NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
-        conn.execute("""
-            INSERT INTO gold_analyses
-            SELECT
-                post_id,
-                'instagram',
-                NULL,
-                result_json,
-                CAST(analysed_at AS VARCHAR)
-            FROM gold_ig_analyses
-        """)
-        count = conn.execute("SELECT COUNT(*) FROM gold_analyses").fetchone()[0]
-        logger.info("Created gold_analyses from gold_ig_analyses (%d rows)", count)
+    # ── 1. RETIRED 2026-09-15 (W9) — the gold_analyses steps are DELETED. ──
+    #
+    # This section used to rename gold_ig_analyses -> gold_analyses, INSERT the
+    # rows across, then recreate `analytics_views` with a LEFT JOIN onto
+    # gold_analyses. All of that is now wrong:
+    #
+    #   * gold_analyses was superseded by silver_content_classification and
+    #     DROPPED by the W9 retirement (archived at
+    #     data/lake/archive/gold_analyses/). ISSUES.md #34.
+    #   * `analytics_views` is BANNED: serving/assets.py:204 explicitly drops it
+    #     "so no serving view can keep referencing the retired table", and
+    #     test_state_compatibility.py flags its presence as stale drift.
+    #     Recreating it here would resurrect both the view AND the table.
+    #
+    # The statements are DELETED rather than renamed. A rename (e.g. to
+    # `retired_..._NEVER`) would CREATE junk tables on every run — the same
+    # defect class as the raw DDL it was meant to replace.
+    #
+    # This file is the one migration the README marks "RUN against live", so an
+    # operator may reach it: the section is kept as this explicit no-op record
+    # rather than removed silently.
+    logger.info(
+        "Skipping the gold_analyses steps — RETIRED by the W9 retirement "
+        "(2026-09-15). See ISSUES.md #34."
+    )
 
-    if _table_exists(conn, "gold_ig_analyses") and _table_exists(conn, "gold_analyses"):
-        conn.execute("DROP TABLE IF EXISTS gold_ig_analyses")
-        logger.info("Dropped gold_ig_analyses")
-
-    # ── 1b. Recreate analytics_views (references gold_analyses, not gold_ig_analyses) ─
-    conn.execute("DROP VIEW IF EXISTS analytics_views")
-    conn.execute("""
-        CREATE VIEW analytics_views AS
-        SELECT
-            sp.post_id, sp.shortcode, sp.url, sp.caption,
-            sp.owner_id, sp.owner_username,
-            sp.likes_count, sp.comments_count, sp.video_view_count,
-            sp.timestamp, sp.hashtags, sp.source_dataset, sp.processed_on,
-            ga.result_json,
-            ga.analysed_at AS gold_analysed_at,
-            dp.profile_key, dp.channel,
-            dp.effective_from, dp.effective_to, dp.is_current
-        FROM silver_ig_posts AS sp
-        LEFT JOIN gold_analyses AS ga ON sp.post_id = ga.post_id
-        LEFT JOIN dim_profile AS dp
-            ON sp.owner_id = dp.owner_id AND dp.is_current = true
-    """)
-    logger.info("Recreated analytics_views (gold_ig_analyses → gold_analyses)")
 
     # ── 2. Drop silver_ig_progress ───────────────────────────────────────
     if _table_exists(conn, "silver_ig_progress"):
         conn.execute("DROP TABLE IF EXISTS silver_ig_progress")
         logger.info("Dropped silver_ig_progress (vestigial)")
 
-    # ── 3. Move dead_letter from DuckDB → SQLite ─────────────────────────
+    # ── 3. RETIRED 2026-09-15 (W9) — the dead_letter move is DELETED. ──────
+    #
+    # This step moved dead_letter rows from state.duckdb into ops.sqlite, then
+    # dropped the DuckDB copy. Both halves are wrong now: the ops.sqlite
+    # dead_letter table was DROPPED (ADR-0012 retired the queue), so the
+    # `INSERT OR IGNORE INTO dead_letter` that stood here would either error or
+    # resurrect a retired table. The WRITERS are removed together with the
+    # creator — leaving them is a half-cut, and a half-cut is what made the W9
+    # drop non-durable in the first place.
+    #
+    # The DuckDB-side DROP is gone too: nothing creates that table now, so it
+    # is a no-op at best and a silent hazard at worst.
+    #
+    # See ISSUES.md #34 (W9 reconciliation).
     if _table_exists(conn, "dead_letter"):
-        rows = conn.execute(
-            "SELECT post_id, domain, error, attempts, failed_at FROM dead_letter"
-        ).fetchall()
-        if rows:
-            ops = sqlite3.connect(str(ops_path))
-            _sqlite_ensure_tables(ops_path)  # ensure table exists
-            for row in rows:
-                try:
-                    ops.execute(
-                        "INSERT OR IGNORE INTO dead_letter "
-                        "(post_id, domain, error, attempts, failed_at) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        row,
-                    )
-                except sqlite3.IntegrityError:
-                    pass
-            ops.commit()
-            ops.close()
-            logger.info("Moved %d dead_letter rows to ops.sqlite", len(rows))
-
-        conn.execute("DROP TABLE IF EXISTS dead_letter")
-        logger.info("Dropped dead_letter from state.duckdb")
+        logger.info(
+            "Found a dead_letter table in state.duckdb but LEFT IT ALONE: the "
+            "move is retired (W9, 2026-09-15 - ADR-0012). See ISSUES.md #34."
+        )
 
     # ── 4. Ensure ops.sqlite schema ──────────────────────────────────────
     _sqlite_ensure_tables(ops_path)
@@ -219,7 +174,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Migrate schema drift: gold_ig_analyses → gold_analyses, "
-            "dead_letter move, cleanup."
+            "cleanup (gold_analyses + dead_letter steps retired by W9)."
         ),
     )
     parser.add_argument(

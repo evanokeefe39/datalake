@@ -71,19 +71,11 @@ def migrate(db_path: Path) -> None:
     """)
     logger.info("Ensured watermarks table exists")
 
-    # ── 2. Create dead_letter table ───────────────────────────────────────
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS dead_letter (
-            post_id     TEXT NOT NULL,
-            domain      TEXT NOT NULL DEFAULT 'instagram',
-            error       TEXT,
-            attempts    INTEGER NOT NULL DEFAULT 0,
-            failed_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            status      TEXT NOT NULL DEFAULT 'pending',
-            PRIMARY KEY (post_id, domain)
-        )
-    """)
-    logger.info("Ensured dead_letter table exists")
+    # ── 2. dead_letter: RETIRED 2026-09-15 (W9) ─────────────────────────
+    # This step created `dead_letter`, which the W9 retirement DROPPED
+    # (ADR-0012 retired the ops.sqlite queue). The CREATE is deleted, not
+    # renamed — a renamed table would create junk on every run.
+    # See ISSUES.md #34.
 
     # ── 3. Create silver_ig_posts from silver_posts (if source exists) ────
     if _table_exists(conn, "silver_posts") and not _table_exists(conn, "silver_ig_posts"):
@@ -99,14 +91,16 @@ def migrate(db_path: Path) -> None:
         """)
         logger.info("Created silver_ig_posts (silvered_at → processed_on)")
 
-    # ── 4. Create gold_ig_analyses from gold_analyses (if source exists) ──
-    if _table_exists(conn, "gold_analyses") and not _table_exists(conn, "gold_ig_analyses"):
-        conn.execute("""
-            CREATE TABLE gold_ig_analyses AS
-            SELECT post_id, schema_version, result_json, analysed_at
-            FROM gold_analyses
-        """)
-        logger.info("Created gold_ig_analyses (dropped status/error/attempts)")
+    # ── 4. RETIRED 2026-09-15 (W9) — the gold_ig_analyses step is DELETED. ──
+    #
+    # This created `gold_ig_analyses` from `gold_analyses`. BOTH names are now
+    # retired: `gold_analyses` was dropped by the W9 retirement and superseded
+    # by `silver_content_classification`, and `gold_ig_analyses` was itself
+    # renamed away in the schema-drift migration. It only appeared inert
+    # because of the `_table_exists` guard — a guard is not a retirement.
+    #
+    # The statement is DELETED, not renamed: a rename would create junk tables.
+    # See ISSUES.md #34.
 
     # ── 5. Create silver_ig_progress from silver_progress (if source exists) ─
     if _table_exists(conn, "silver_progress") and not _table_exists(conn, "silver_ig_progress"):
@@ -141,18 +135,13 @@ def migrate(db_path: Path) -> None:
             )
             logger.info("Seeded watermarks.silver_ig from silver_ig_progress: %s", ts)
 
-    # gold_ig: use MAX(analysed_at) from gold_ig_analyses if available
-    if _table_exists(conn, "gold_ig_analyses"):
-        row = conn.execute(
-            "SELECT MAX(analysed_at) FROM gold_ig_analyses"
-        ).fetchone()[0]
-        ts = row if row is not None else now
-        if isinstance(ts, datetime):
-            conn.execute(
-                "INSERT OR REPLACE INTO watermarks (name, timestamp) VALUES (?, ?)",
-                ["gold_ig", ts],
-            )
-            logger.info("Seeded watermarks.gold_ig from gold_ig_analyses: %s", ts)
+    # gold_ig watermark: RETIRED 2026-09-15 (W9) — this step is DELETED.
+    #
+    # It read MAX(analysed_at) FROM gold_ig_analyses (both the table and the
+    # `gold_ig` watermark are retired — the table was renamed away then dropped
+    # by W9, and Epic 3 retired the watermark in favour of the label-driven
+    # drain). It appeared inert only because of the `_table_exists` guard.
+    # See ISSUES.md #34.
 
     # ── 8. Verify ─────────────────────────────────────────────────────────
     # Note: FK gold_ig_analyses → silver_ig_posts is not restored here

@@ -116,130 +116,32 @@ def phase1() -> int:
 # ── Phase 2: Silver/Gold → DuckDB ─────────────────────────────────────────
 
 def phase2() -> int:
-    """Upsert silver posts and gold analyses into DuckDB. Returns count of silver datasets."""
-    import duckdb
+    """RETIRED 2026-09-15 (W9) — refuses; creates NO tables.
 
-    db_path = _OLD_DATA_DIR / "pipeline.db"
-    if not db_path.exists():
-        log.info("No old pipeline.db found — creating fresh")
-        db_path = Path("data/state.duckdb")
+    Phase 2 upserted silver posts and ``gold_analyses`` into DuckDB. Both the
+    table and the migration are retired:
 
-    conn = duckdb.connect(str(db_path))
+    - ``gold_analyses`` was superseded by ``silver_content_classification`` and
+      DROPPED by the W9 retirement (archived at
+      ``data/lake/archive/gold_analyses/``). ISSUES.md #34.
+    - This was one of several paths that would RESURRECT a retired table; the
+      others were ``migrate_schema_drift.py``, ``migrate_to_v2.py`` and
+      ``migrate_media_entity.py``.
 
-    # Ensure tables exist (match old schema)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS silver_posts (
-            post_id        TEXT PRIMARY KEY,
-            shortcode      TEXT,
-            url            TEXT,
-            caption        TEXT,
-            owner_id       TEXT,
-            owner_username  TEXT,
-            likes_count    INTEGER,
-            comments_count INTEGER,
-            video_play_count  INTEGER,
-            video_view_count  INTEGER,
-            timestamp      TIMESTAMP,
-            hashtags       TEXT NOT NULL DEFAULT '[]',
-            meta_data      TEXT,
-            has_engagement_bait BOOLEAN NOT NULL DEFAULT FALSE,
-            media_files    TEXT NOT NULL DEFAULT '[]',
-            media_count    INTEGER NOT NULL DEFAULT 0,
-            source_dataset TEXT NOT NULL,
-            silvered_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS silver_progress (
-            source_dataset TEXT PRIMARY KEY,
-            post_count     INTEGER NOT NULL DEFAULT 0,
-            completed_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS gold_analyses (
-            post_id         TEXT PRIMARY KEY REFERENCES silver_posts(post_id),
-            schema_version  INTEGER NOT NULL DEFAULT 2,
-            status          TEXT NOT NULL DEFAULT 'pending',
-            result_json     TEXT,
-            error           TEXT,
-            attempts        INTEGER NOT NULL DEFAULT 0,
-            analysed_at     TIMESTAMP
-        )
-    """)
+    Refusing loudly (rather than deleting the function) keeps ``--phase2`` a
+    valid, honest CLI surface: an operator who runs it gets told why it cannot
+    run instead of silently getting a resurrected table.
 
-    # ── Silver posts ──────────────────────────────────────────────────────
-    silver_count = 0
-    for post_dir in _silver_post_dirs():
-        post_id = post_dir.name
-        post_path = post_dir / "post.json"
-        if not post_path.exists():
-            log.warning("  Skipping %s — no post.json", post_id)
-            continue
-
-        with open(post_path) as f:
-            post = json.load(f)
-
-        conn.execute("""
-            INSERT OR REPLACE INTO silver_posts
-                (post_id, shortcode, url, caption, owner_id, owner_username,
-                 likes_count, comments_count, video_view_count,
-                 timestamp, hashtags, source_dataset)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, [
-            post.get("id"),
-            post.get("shortCode"),
-            post.get("url"),
-            post.get("caption"),
-            post.get("ownerId"),
-            post.get("ownerUsername"),
-            post.get("likesCount", 0),
-            post.get("commentsCount", 0),
-            post.get("videoViewCount", 0),
-            post.get("timestamp"),
-            json.dumps(post.get("hashtags", [])),
-            post.get("inputUrl", ""),
-        ])
-        silver_count += 1
-
-    # Mark migration in silver_progress
-    conn.execute("""
-        INSERT OR REPLACE INTO silver_progress (source_dataset, post_count, completed_at)
-        VALUES ('migration_phase2', ?, CURRENT_TIMESTAMP)
-    """, [silver_count])
-
-    # ── Gold analyses ─────────────────────────────────────────────────────
-    gold_count = 0
-    for gp in _gold_analyses():
-        if not gp.exists():
-            continue
-        try:
-            with open(gp) as f:
-                analysis = json.load(f)
-        except json.JSONDecodeError:
-            log.warning("  Skipping %s — malformed JSON", gp.name)
-            continue
-
-        conn.execute("""
-            INSERT OR REPLACE INTO gold_analyses
-                (post_id, schema_version, status, result_json, error, attempts, analysed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, [
-            analysis.get("post_id", gp.stem),
-            analysis.get("schema_version", 2),
-            analysis.get("status", "completed"),
-            json.dumps(analysis.get("result_json", {})),
-            analysis.get("error"),
-            analysis.get("attempts", 1),
-            analysis.get("analysed_at"),
-        ])
-        gold_count += 1
-
-    conn.commit()
-    conn.close()
-
-    log.info("Phase 2 complete: %d silver posts, %d gold analyses", silver_count, gold_count)
-    return silver_count + gold_count
+    Phase 1 (NDJSON bronze import) is UNAFFECTED and still live — it is what
+    ``tests/test_migrate.py`` covers.
+    """
+    raise SystemExit(
+        "REFUSING: --phase2 is retired (W9, 2026-09-15). It wrote "
+        "`gold_analyses`, which was dropped and superseded by "
+        "`silver_content_classification`. Re-running it would resurrect a "
+        "retired table. See ISSUES.md #34. Phase 1 (bronze import) is "
+        "unaffected — run without --phase2."
+    )
 
 
 # ── Main ──────────────────────────────────────────────────────────────────

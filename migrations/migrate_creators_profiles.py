@@ -6,9 +6,14 @@ table. This one-shot script:
 1. Creates the ``creators`` and ``profiles`` tables.
 2. Backfills each existing ``scrape_targets`` row into a 1:1 creator + profile
    (creator name = the profile's ``full_name`` when known, else its handle).
-3. Recreates the batch tables (``batch_jobs``/``batch_items``/``media_metadata``/
-   ``dead_letter``) that were lost when ``ops.sqlite`` was recreated externally.
-4. Drops ``scrape_targets``.
+3. Drops ``scrape_targets``.
+
+It used to also recreate batch tables (``batch_jobs``/``batch_items``/
+``media_metadata``/``dead_letter``). Step 3 was RETIRED 2026-09-15 (W9): all
+four of those tables are dropped (ADR-0012 retired the queue; ``media_metadata``
+cached Gemini File-API uploads for a permanently retired provider). Recreating
+them from here is what made the W9 drop non-durable — see ISSUES.md #32/#34.
+``_ensure_batch_tables`` is now an explicit no-op.
 
 Idempotent — safe to re-run. Existing creators/profiles are preserved via the
 ``profiles`` (platform, handle) primary key.
@@ -27,7 +32,7 @@ from pathlib import Path
 
 import duckdb
 
-from datalake.defs.common.schemas import sqlite_ddl, sqlite_ddl_for
+from datalake.defs.common.schemas import sqlite_ddl
 
 logger = logging.getLogger("migrate_creators_profiles")
 
@@ -62,16 +67,24 @@ def _full_name_for(duckdb_con: duckdb.DuckDBPyConnection, username: str) -> str 
 
 
 def _ensure_batch_tables(con: sqlite3.Connection) -> None:
-    """Recreate the operational tables lost when ops.sqlite was recreated externally.
+    """RETIRED 2026-09-15 (W9) — no table recreation here.
 
-    Retirement note (ADR-0012): this used to recreate ``batch_jobs``, ``batch_items``
-    and ``dead_letter``. Those are the retired queue tables — they no longer exist in
-    ``_SQLITE_SPECS``, so the old call raised KeyError, and re-adding their specs to
-    "fix" that would resurrect the retired queue on live ``ops.sqlite``. Only
-    ``media_metadata`` survived retirement, and it is the only name this script needs:
-    the creators/profiles migration reads creators and profiles, not the queue.
+    This used to recreate ``batch_jobs``, ``batch_items``, ``dead_letter`` and
+    then ``media_metadata``. All four are retired:
+
+    - the queue trio by ADR-0012,
+    - ``media_metadata`` by the W9 retirement — it cached Gemini File-API
+      uploads for a permanently retired provider (ISSUES.md #32).
+
+    Recreating them from here is what made the W9 drop non-durable: the table
+    was dropped, then a migration call brought it back. This migration reads
+    ``creators`` and ``profiles``; it needs none of the retired names, so the
+    correct behaviour is to do nothing.
+
+    Kept as a no-op (rather than deleted) so the call site stays explicit and a
+    future reader sees WHY it does nothing.
     """
-    con.executescript(sqlite_ddl_for("media_metadata"))
+    return None
 
 
 def migrate(ops_path: Path, duckdb_path: Path) -> None:
