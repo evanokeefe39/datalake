@@ -195,17 +195,8 @@ def con(tmp_path):
             financial_year VARCHAR
         )
     """)
-    # Legacy gold table — coexists with the classification table; used only
-    # as the byte-identity reference for result_json.
-    connection.execute("""
-        CREATE TABLE gold_analyses (
-            post_id VARCHAR,
-            domain VARCHAR,
-            result_json VARCHAR,
-            analysed_at VARCHAR,
-            prompt_hash VARCHAR
-        )
-    """)
+    # (The legacy ``gold_analyses`` table is retired (W9) — no scratch copy
+    # is created; the byte-identity reference below is held in Python.)
     connection.execute(CLASSIFICATION_DDL)
     _materialize_v_post_detail(connection)
     # stub upstream views v_overview aggregates (after v_post_detail exists)
@@ -248,18 +239,14 @@ class TestPostDetailRebind:
         assert cols == _POST_DETAIL_COLUMNS  # order too — consumers index positionally
 
     def test_result_json_byte_identical_to_legacy_gold(self, con):
-        _seed_baseline(con)
+        legacy_gold: dict[str, str] = {}
         for post_id, payload in (("p1", _TRICKY_JSON), ("p2", _TRICKY_JSON_ARRAY_FORM)):
             con.execute(
                 "INSERT INTO silver_ig_posts VALUES (?, 'sc', 'u', 'c', 'o1', 'user',"
                 " 1, 1, NULL, NULL, '2024-06-01', NULL, NULL, FALSE, NULL, 0, 'src', NULL)",
                 [post_id],
             )
-            con.execute(
-                "INSERT INTO gold_analyses VALUES "
-                "(?, 'instagram', ?, '2024-06-01T00:00:00Z', 'hash1')",
-                [post_id, payload],
-            )
+            legacy_gold[post_id] = payload
             con.execute(
                 "INSERT INTO silver_content_classification VALUES "
                 "(?, 'instagram', 'dev', 'tooling', 'topic', 'subtopic', TRUE, FALSE, "
@@ -268,9 +255,8 @@ class TestPostDetailRebind:
                 [post_id, payload],
             )
         _materialize_v_post_detail(con)
-        # Reference: exactly what the legacy gold table held.
-        gold_rows = dict(con.execute(
-            "SELECT post_id, result_json FROM gold_analyses").fetchall())
+        # Reference: exactly what the legacy gold table held (in-memory).
+        gold_rows = legacy_gold
         served = dict(con.execute(
             "SELECT post_id, result_json FROM v_post_detail").fetchall())
         assert set(served) == {"p1", "p2"}

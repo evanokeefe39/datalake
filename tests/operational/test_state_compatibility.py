@@ -32,7 +32,11 @@ from tests.operational.expected_schema import (
 # with a migration hint.
 
 _STALE_DUCKDB_TABLES: dict[str, str] = {
-    "gold_ig_analyses": "Rename to 'gold_analyses' — run migrations/migrate_schema_drift.py",
+    "gold_ig_analyses": (
+        "Drop — legacy name; its successor gold_analyses was itself retired "
+        "(W9, superseded by silver_content_classification). "
+        "Run migrations/migrate_schema_drift.py"
+    ),
     "silver_ig_progress": (
         "Drop — vestigial table replaced by watermarks. "
         "Run migrations/migrate_schema_drift.py"

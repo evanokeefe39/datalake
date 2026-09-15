@@ -27,7 +27,6 @@ from datalake.defs.enrichment.growth_facets_schema import (
     validate_text_facets,
     validate_visual_facets,
 )
-from datalake.defs.enrichment.prompts import _DEFAULT_QWEN_MODEL
 
 logger = logging.getLogger("enrichment.facets")
 

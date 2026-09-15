@@ -41,7 +41,6 @@ load_dotenv()
 
 from datalake.defs.common.resources import GeminiResource, SQLiteResource  # noqa: E402
 from datalake.defs.enrichment import gemini_batch  # noqa: E402
-from datalake.defs.enrichment.media_cache import lookup_or_upload_all  # noqa: E402
 from datalake.defs.enrichment.prompts import _DEFAULT_GEMINI_MODEL  # noqa: E402
 
 logger = logging.getLogger("facet_experiment")
@@ -201,19 +200,33 @@ def sample_posts(duck: str, n: int, seed: int,
 
 def resolve_post_media(post: dict, ops: SQLiteResource,
                        gemini: GeminiResource) -> list:
-    """Resolve a post's media to File-API/inline dicts once (shared across runs).
+    """RETIRED 2026-09-15 (W9) — raises; there is no media path any more.
 
-    Mirrors the production per-item resilience: a dead CDN URL / File-API
-    failure for one post must NOT abort the run — return [] so the caller can
-    drop the post (empty = unresolvable).
+    This resolved a post's media to Gemini File-API / inline dicts via
+    ``media_cache.lookup_or_upload_all``, which has been DELETED: it cached
+    ``media_metadata`` rows for a provider permanently retired by ADR-0009, and
+    that table was dropped by the W9 retirement.
+
+    It RAISES rather than returning [] deliberately. Every caller treats an
+    empty return as "drop this post" (``facet_summary_spike`` skips on empty,
+    the other two drop posts whose ``media_files`` is non-empty), so a
+    silent-empty stub would make each media experiment complete successfully
+    while producing no media at all — a silent failure wearing a green run.
+
+    Two sibling experiments still import the name (``facet_menu_experiment``,
+    ``facet_summary_spike``) so the module stays importable; calling it fails
+    loudly and says why. To run a media experiment again, port it to the live
+    byte cache (``media_cache.cached_local_path``) — do not restore the Gemini
+    upload path.
     """
-    try:
-        return lookup_or_upload_all(ops, gemini, post["media_files"],
-                                    inline_images=True) or []
-    except Exception as exc:  # noqa: BLE001 — dead media is a per-post failure
-        logger.warning("dropping post %s (media unresolvable): %s",
-                       post["post_id"], str(exc)[:120])
-        return []
+    raise SystemExit(
+        "MEDIA PATH RETIRED (W9, 2026-09-15): resolve_post_media depended on "
+        "media_cache.lookup_or_upload_all (Gemini File-API), which was deleted "
+        "with the media_metadata table. There is no media resolver here any "
+        "more — a silent empty result would make this experiment look like it "
+        "ran. Port it to media_cache.cached_local_path instead. "
+        "See ISSUES.md #32/#34."
+    )
 
 
 def build_request(post: dict, run: int, media_files: list,

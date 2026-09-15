@@ -1,8 +1,9 @@
-"""Test that ``_ensure_state_tables`` no longer recreates ``gold_analyses``.
+"""Test that ``_ensure_state_tables`` never recreates the retired gold tables.
 
 ADR-0011 replaces ``gold_analyses`` with ``silver_content_classification``;
-a later phase drops ``gold_analyses``. Until then, the state-table bootstrap
-must STOP creating it so a retired table is never silently resurrected.
+W9 (2026-09-15) retired ``gold_analyses`` and ``gold_growth_facets`` — both
+were dropped and archived. The state-table bootstrap must NEVER recreate
+either, so a retired table is never silently resurrected.
 """
 
 from __future__ import annotations
@@ -12,10 +13,10 @@ from dagster_duckdb import DuckDBResource
 from datalake.defs.instagram.assets import _ensure_state_tables
 
 
-def test_ensure_state_tables_does_not_create_gold_analyses(tmp_path) -> None:
+def test_ensure_state_tables_does_not_create_retired_gold_tables(tmp_path) -> None:
     """GIVEN an empty DuckDB database
     WHEN _ensure_state_tables runs
-    THEN gold_analyses is NOT created, while its siblings are.
+    THEN the retired gold tables are NOT created, while siblings are.
     """
     db = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     _ensure_state_tables(db)
@@ -30,6 +31,7 @@ def test_ensure_state_tables_does_not_create_gold_analyses(tmp_path) -> None:
         }
 
     assert "gold_analyses" not in tables
+    assert "gold_growth_facets" not in tables
     # Siblings are untouched by the fix.
     assert {
         "ig_post_labels",

@@ -57,15 +57,12 @@ def test_enqueue_enqueues_silver_posts(db, ops_db, bronze_dir):
     WHEN ig_posts_gen_batches runs
     THEN posts are enqueued in ops.sqlite.
     """
-    # Setup serving table for enqueue NOT EXISTS guard
+    # Setup state table for the enqueue NOT EXISTS guard (classification
+    # replaces the retired gold_analyses, W9)
+    from datalake.defs.common.schemas import duckdb_ddl
+
     with db.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id TEXT NOT NULL, domain TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash TEXT, result_json TEXT, analysed_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
+        conn.execute(duckdb_ddl("silver_content_classification"))
 
     # Run silver
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
@@ -114,20 +111,16 @@ def test_enqueue_enqueues_silver_posts(db, ops_db, bronze_dir):
     assert result["candidates_seen"][0] >= 1
 
 
-def test_serving_runs_on_empty_gold(db, ops_db, bronze_dir):
+def test_serving_runs_on_empty_classification(db, ops_db, bronze_dir):
     """GIVEN silver from the committed bronze Parquet
-    WHEN serving assets run (with empty gold_analyses)
+    WHEN serving assets run (with an empty classification table)
     THEN views are created successfully.
     """
     # Setup serving schema
+    from datalake.defs.common.schemas import duckdb_ddl
+
     with db.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS gold_analyses (
-                post_id TEXT NOT NULL, domain TEXT NOT NULL DEFAULT 'instagram',
-                prompt_hash TEXT, result_json TEXT, analysed_at TEXT NOT NULL,
-                PRIMARY KEY (post_id, domain)
-            )
-        """)
+        conn.execute(duckdb_ddl("silver_content_classification"))
 
     with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
         ctx = build_asset_context(resources={"duckdb": db, "ops": ops_db})

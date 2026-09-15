@@ -187,13 +187,12 @@ class TestVPostDetailCheck:
             """)
             conn.execute("INSERT INTO silver_ig_posts VALUES ('p1', 'Post 1')")
             conn.execute("""
-                CREATE TABLE gold_analyses (
+                CREATE TABLE silver_content_classification (
                     post_id TEXT NOT NULL,
-                    domain TEXT NOT NULL DEFAULT 'instagram',
-                    prompt_hash TEXT,
+                    platform TEXT NOT NULL DEFAULT 'instagram',
                     result_json TEXT,
-                    analysed_at TEXT NOT NULL,
-                    PRIMARY KEY (post_id, domain)
+                    analysed_at TEXT,
+                    PRIMARY KEY (post_id, platform)
                 )
             """)
             conn.execute("""
@@ -211,8 +210,8 @@ class TestVPostDetailCheck:
                 CREATE OR REPLACE VIEW v_post_detail AS
                 SELECT sp.post_id
                 FROM silver_ig_posts sp
-                LEFT JOIN gold_analyses ga
-                    ON sp.post_id = ga.post_id AND ga.domain = 'instagram'
+                LEFT JOIN silver_content_classification scc
+                    ON sp.post_id = scc.post_id AND scc.platform = 'instagram'
                 LEFT JOIN dim_profile dp ON 1=0
             """)
 
@@ -233,13 +232,12 @@ class TestVPostDetailCheck:
                 )
             """)
             conn.execute("""
-                CREATE TABLE gold_analyses (
+                CREATE TABLE silver_content_classification (
                     post_id TEXT NOT NULL,
-                    domain TEXT NOT NULL DEFAULT 'instagram',
-                    prompt_hash TEXT,
+                    platform TEXT NOT NULL DEFAULT 'instagram',
                     result_json TEXT,
-                    analysed_at TEXT NOT NULL,
-                    PRIMARY KEY (post_id, domain)
+                    analysed_at TEXT,
+                    PRIMARY KEY (post_id, platform)
                 )
             """)
             conn.execute("""

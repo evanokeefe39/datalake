@@ -68,7 +68,6 @@ DEFAULT_SEED = 42
 # ops.sqlite tables retained under ADR-0012.
 OPS_TABLES = (
     "media_cache",
-    "media_metadata",
     "creators",
     "profiles",
     "creator_merges",

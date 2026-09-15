@@ -100,9 +100,9 @@ def test_ad_hoc_run_sequence(tmp_path):
 
     db_path = tmp_path / "test.duckdb"
     duckdb_res = DuckDBResource(database=str(db_path))
-    # Create state tables for the enqueue drain (labels + gold guard)
+    # Create state tables for the enqueue drain (labels + classification guard)
     with duckdb_res.get_connection() as conn:
-        for t in ("gold_analyses", "ig_post_labels",
+        for t in ("silver_content_classification", "ig_post_labels",
                   "silver_ig_post_observations"):
             conn.execute(duckdb_ddl(t))
 

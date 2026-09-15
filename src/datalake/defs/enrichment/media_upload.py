@@ -33,7 +33,6 @@ _API_MARKERS: tuple[str, ...] = (
     "batches.get",
     "batches.submit",
     "gemini_batch.",
-    "lookup_or_upload_all",
     ".analyze(",
 )
 
