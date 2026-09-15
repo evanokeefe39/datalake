@@ -1112,7 +1112,41 @@ already present. The missing layer is specifically **graph assembly**: proving
 Dagster can construct and run the graph, which is the only thing that would have
 caught the unloadable signature.
 
-### 31. Full `pytest tests/` run does not finish clean — cause UNVERIFIED
+### 31. `data/media` has no verified off-repo copy — the one asset nothing can regenerate
+>
+Listed FIRST among the post-W9 items because it is the only one whose loss is
+permanent, and because the queue retirement does NOT close it.
+
+**Status: UNVERIFIED. Open. Carried forward deliberately — not resolved by W9.**
+
+`data/media/` is 27,806 files / **55.36 GB** and is not a cache in the disposable
+sense: it is the **only copy** of the scraped bytes. CDN URLs expire in ~4-5 days,
+so no re-enrichment and no downstream action recovers it. The plan says this
+plainly (`remediation-plan.md:565-567`).
+
+The §3.0 gate records it as **"UNVERIFIED — do not treat as satisfied."** The
+owner's belief was *"i think we have the media backed up in a google storage
+bucket rn"* — a hypothesis, not a read-back.
+
+**Why W9 was still safe to run.** The drop's blast radius (§3.2,
+`remediation-plan.md:612`) is queue + enrichment tables only. `data/media` and
+`media_cache` are on the KEEP list, and the retirement verified `media_cache`
+intact at 27,748 rows after the drops. The unverified item is genuinely outside
+that drop's reach — which is why proceeding on owner approval was defensible, and
+also exactly why the retirement must not be read as clearing it.
+
+**What would close it.** List the bucket and spot-read N objects — an actual
+read-back, not a recollection. A local file count is not evidence of an off-repo
+copy; the count above only proves the bytes are still on this disk, which is the
+disk the backup exists to survive.
+
+**Recorded automatically.** `scripts/retire_queue_tables.py` now records §3.0 gate
+evidence into the W9 log on every `--apply`/`--rehearse` (step 0), and prints
+UNVERIFIED items as carried-forward. See
+`data/logs/w9-retirement-20260915T110342Z.json` for the drop that ran before this
+recording was added, and subsequent runs for the full record.
+
+### 32. Full `pytest tests/` run does not finish clean — cause UNVERIFIED
 
 **Observed, 2026-09-15. Cause is NOT established — nothing below is a diagnosis.**
 
@@ -1153,7 +1187,7 @@ of the observation.
 verified destination state, not this suite. Recorded so a failing suite is never
 mistaken for a green gate.
 
-### 32. W9 must reconcile the 4 `facets_batch_jobs` rows BEFORE the drop
+### 33. W9 must reconcile the 4 `facets_batch_jobs` rows BEFORE the drop
 
 **Found 2026-09-15** reviewing `scripts/retire_queue_tables.py` against the plan
 (`remediation-plan.md:473-478`).

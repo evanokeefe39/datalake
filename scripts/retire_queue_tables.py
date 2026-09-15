@@ -224,6 +224,91 @@ def drop_doomed(ops: sqlite3.Connection,
     return dropped
 
 
+def record_gate_evidence(now: str) -> dict:
+    """Record WHICH §3.0 gate items are satisfied and by what evidence.
+
+    The module docstring says --apply requires the §3.0 backup gate to have
+    passed. Nothing verified that, so the claim rested on operator memory.
+    This measures what is checkable on this host and records it in the W9
+    log, so the gate's status is an artifact rather than a recollection.
+
+    It does NOT gate the drop (the drop's blast radius is queue + enrichment
+    tables; `data/media` and `media_cache` are on the KEEP list). It exists so
+    an unverified item is carried forward LOUDLY instead of being assumed.
+
+    Caveat on scope: `data/media` is the one asset no downstream action can
+    regenerate, and whether an OFF-REPO copy exists cannot be established from
+    this host. Item 4 therefore stays UNVERIFIED until someone lists the
+    bucket and spot-reads objects -- a local file count is not that evidence.
+    """
+    import hashlib as _h
+
+    def _sha(path: Path) -> str:
+        h = _h.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    offrep = Path.home() / "backups" / "datalake" / "2026-09-14-pre-migration"
+    items: list[dict] = []
+
+    for name in ("state.duckdb", "ops.sqlite"):
+        f = offrep / name
+        items.append({
+            "item": f"off-repo {name}",
+            "path": str(f),
+            "status": "verified" if f.exists() else "MISSING",
+            "evidence": (
+                f"{f.stat().st_size:,} bytes, sha256={_sha(f)[:16]}…"
+                if f.exists() else "no file at the recorded off-repo path"
+            ),
+        })
+
+    # the snapshots taken immediately before THIS drop (near-term restore point)
+    for name in ("state.duckdb.pre-w9-drop", "ops.sqlite.pre-w9-drop"):
+        f = ROOT / "data" / "backups" / name
+        items.append({
+            "item": f"pre-drop {name}",
+            "path": str(f),
+            "status": "verified" if f.exists() else "MISSING",
+            "evidence": (
+                f"{f.stat().st_size:,} bytes, sha256={_sha(f)[:16]}…"
+                if f.exists() else "not taken before this drop"
+            ),
+        })
+
+    bronze = offrep / "bronze"
+    if bronze.exists():
+        files = [p for p in bronze.glob("*") if p.is_file()]
+        items.append({
+            "item": "off-repo bronze lake",
+            "path": str(bronze),
+            "status": "verified",
+            "evidence": f"{len(files)} files, "
+                        f"{sum(p.stat().st_size for p in files):,} bytes",
+        })
+
+    media = ROOT / "data" / "media"
+    local_n = (
+        sum(1 for p in media.rglob("*") if p.is_file())
+        if media.exists() else 0
+    )
+    items.append({
+        "item": "data/media (55.36 GB)",
+        "path": str(media),
+        "status": "UNVERIFIED",
+        "evidence": (
+            f"{local_n:,} files present locally, but an OFF-REPO copy cannot be "
+            "confirmed from this host. The GCS claim is recollection, not a "
+            "read-back. This is the one asset no downstream action can "
+            "regenerate -- confirm by listing the bucket and spot-reading "
+            "objects. Stays open AFTER this retirement."
+        ),
+    })
+    return {"recorded_at": now, "items": items}
+
+
 def reconcile_facets_jobs(before_drop: Path | None) -> list[dict]:
     """Resolve every ledger job id against the SERVICE's own job store.
 
@@ -408,6 +493,17 @@ def run(apply_: bool, rehearse: bool,
         _log("APPLY against LIVE databases")
 
     try:
+        _log("\n0. §3.0 gate evidence (recorded, not assumed)")
+        gate = record_gate_evidence(now)
+        for it in gate["items"]:
+            _log(f"  [{it['status']:10}] {it['item']}")
+        unver = [i for i in gate["items"] if i["status"] == "UNVERIFIED"]
+        if unver:
+            _log(f"\n  !! {len(unver)} gate item(s) UNVERIFIED -- carried "
+                 "forward in the log, NOT closed by this retirement:")
+            for i in unver:
+                _log(f"     {i['item']}: {i['evidence']}")
+
         _log("\n1. reconcile the facets_batch_jobs handle index BEFORE any drop")
         recon = reconcile_facets_jobs(OPS_DB)
         if not recon:
@@ -460,6 +556,7 @@ def run(apply_: bool, rehearse: bool,
         out = {
             "mode": "rehearse" if rehearse else "apply",
             "at": now,
+            "gate_evidence": gate,
             "reconciliation": recon,
             "open_handles": open_handles,
             "manifest": manifest,
@@ -489,7 +586,7 @@ def main() -> None:
         "--accept-open-handles", action="store_true", default=False,
         help="override the reconciliation gate: proceed even though a "
              "service job has no terminal state. Records that dropping "
-             "the handle index is deliberate (W9 issue #32).",
+             "the handle index is deliberate (W9 issue #33).",
     )
     p.add_argument(
         "--i-have-approval", action="store_true", default=False,
