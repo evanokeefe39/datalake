@@ -227,3 +227,35 @@ def test_default_root_is_bronze_lake():
     from orchestration.defs.platform import paths as lake
 
     assert response_path(None) == lake.BRONZE_LAKE / f"{DATASET_ID}.parquet"
+
+
+def test_every_registered_adapter_may_land_in_the_live_root():
+    """REGRESSION: the landing allowlist drifted from the adapter registry.
+
+    ``land_response(root=None)`` guards the LIVE bronze lake by refusing any
+    provider not in ``KNOWN_PROVIDERS``. When the Gemini path was retired the
+    surviving adapter was renamed to ``service_backed`` — named for the SEAM,
+    not the vendor — but the allowlist kept the old vendor names. Every harvest
+    was therefore refused at landing while submit, poll, the graph validation
+    and the whole suite stayed green: the failure only existed on the paid path.
+
+    This pins the two definitions together. A future adapter rename or addition
+    now fails HERE, in CI, instead of in production.
+    """
+    # Importing the adapter module performs its registration side effect.
+    from orchestration.defs.engine import (
+        provider,
+        service_backed,  # noqa: F401
+    )
+    from orchestration.defs.engine.landing import KNOWN_PROVIDERS
+
+    registered = set(provider.ADAPTER_REGISTRY)
+    assert registered, "no adapters registered — the registry contract is broken"
+
+    missing = registered - KNOWN_PROVIDERS
+    assert not missing, (
+        f"registered adapter(s) {sorted(missing)} are absent from "
+        f"KNOWN_PROVIDERS {sorted(KNOWN_PROVIDERS)} — every harvest from them "
+        "would be refused at landing with root=None (the live lake). Add the "
+        "adapter's registered name to KNOWN_PROVIDERS alongside its producer."
+    )
