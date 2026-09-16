@@ -419,6 +419,32 @@ but has not been fully re-executed since the module split (instagram / serving /
 operational were relinted, not rerun). The enrichment directory is the replanned
 one and is green.
 
+**Measured 2026-09-16 on the reorg stack** (`refactor/facets-native` @ `b1922a6`), from
+a CI run against the branch tip — the first execution of the full suite against the
+post-reorg tree. Ruff passes; the suite fails in five named classes (~40 tests):
+
+1. **`ModuleNotFoundError: orchestration.defs.ig_core.slv.creators`** — 10 failures, and
+   NOT a test artifact: `ig_core/slv/profiles.py` imported `enabled_profiles` from a
+   module the move never created (the roster lives in `opsdb.roster`). `ig_profiles_slv`
+   would have raised the next time it ran. FIXED (2026-09-16); an AST sweep of all 175
+   modules confirmed it was the tree's only unresolved relative import.
+2. **Tests monkeypatching relocated symbols** (`posts.bronze_path`,
+   `posts.ig_post_labels`) — 8 failures. The move re-homed those names; the tests still
+   patch them on `posts`.
+3. **`test_submit_sensor.py` hardcodes `data/smoke/state.duckdb`** — a gitignored local
+   artifact, so 5 failures that can never pass in CI. Every other data-dependent test
+   uses a `skipif` guard (`test_smoke_slice.py`); this one is the outlier.
+4. **Serving baseline resolves every asset from `serving.views`** — 6 errors. The reorg
+   split serving into five modules (`dims`/`metrics`/`marts`/`views`/`checks`), so
+   `getattr(serving, "dim_date")` no longer resolves.
+5. **Bronze→silver integration + silver unit tests produce zero rows** — 9 failures
+   (`assert 0 == 1`). Cause not established.
+
+**Intermediate tips are red in a different way:** slice 1 at `51aee30` has 143 lint
+errors (73 `F821 undefined-name`) and slice 2 at `3b4b410` has 130 (72 `F821`) — the
+suite re-target is a slice-3 commit, so slices 1 and 2 are not independently runnable.
+Merging the stack in order would put two red states on `main`.
+
 ---
 
 ### Retired tables kept coming back (retirement was not durable)

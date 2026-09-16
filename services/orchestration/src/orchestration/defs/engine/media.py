@@ -22,15 +22,35 @@ from pathlib import Path
 
 from opsdb.media_cache import (
     _ensure_media_cache_table,
-    cached_local_path,
     record_media_cache_row,
+    stored_local_path,
     url_hash,
 )
 
-from orchestration.defs.platform.paths import POST_MEDIA_DIR
+from orchestration.defs.platform.paths import POST_MEDIA_DIR, runtime_path
 from orchestration.defs.platform.resources import SQLiteResource
 
 logger = logging.getLogger("engine.media")
+
+
+def local_media_path(ops: SQLiteResource, media_url: str) -> str | None:
+    """Resolve a URL to a byte path THIS process can open, or None on a miss.
+
+    The stored path is expressed in the vocabulary of whichever process fetched
+    the bytes, so it is translated through the configured host↔container prefix
+    map BEFORE the existence test — a stored Windows path is unopenable inside a
+    Linux container even though the bytes are mounted right there. A stored path
+    outside the map passes through unchanged (a host run, the common case).
+
+    Returns None when there is no row, or the translated path is absent on disk:
+    a row whose file was deleted is a miss, so a caller re-fetches rather than
+    opening a dead path.
+    """
+    stored = stored_local_path(ops, media_url)
+    if not stored:
+        return None
+    path = runtime_path(stored)
+    return str(path.resolve()) if path.exists() else None
 
 # from the local bytes, falling back to the live CDN only on a cache miss.
 
@@ -84,7 +104,7 @@ def cache_media_bytes(
     already cached. Failure is non-fatal — the worker falls back to the CDN.
     """
     _ensure_media_cache_table(ops)
-    existing = cached_local_path(ops, media_url)
+    existing = local_media_path(ops, media_url)
     if existing:
         return existing
 
@@ -127,7 +147,7 @@ def seed_media_from_file(
     Returns None when the source file is missing (caller decides severity).
     """
     _ensure_media_cache_table(ops)
-    existing = cached_local_path(ops, media_url)
+    existing = local_media_path(ops, media_url)
     if existing:
         return existing
     if not src_path.exists():
@@ -197,7 +217,7 @@ def media_urls_to_local_paths(
     resolved: list[str] = []
     seen: set[str] = set()
     for url in urls:
-        local = cached_local_path(ops, url)
+        local = local_media_path(ops, url)
         if local is None:
             continue
         if not include_video and is_video_path(local):

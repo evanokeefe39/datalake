@@ -299,3 +299,34 @@ class TestSharedDerivation:
         _tick(inst, caplog)
 
         assert discover_handles(inst.raw) == {_key("P1"): "job-1"}
+
+
+# ─────────────────────────────────────────── shipped default status
+
+
+class TestDefaultStatusPolicy:
+    """The standing default-status policy, asserted so an edit cannot quietly
+    flip it. Harvest POLLS (spends nothing, starts no work) and therefore ships
+    RUNNING; submit SPENDS MONEY and stays manual; schedules stay stopped.
+    """
+
+    def test_harvest_sensor_ships_running(self) -> None:
+        from dagster import DefaultSensorStatus
+
+        assert enrichment_harvest_sensor.default_status == DefaultSensorStatus.RUNNING
+
+    def test_submit_sensor_ships_stopped(self) -> None:
+        """Submit triggers paid provider work — never automatically."""
+        from dagster import DefaultSensorStatus
+
+        from orchestration.defs.engine.sensor import enrichment_submit_sensor
+
+        assert enrichment_submit_sensor.default_status == DefaultSensorStatus.STOPPED
+
+    def test_schedules_ship_stopped(self) -> None:
+        from dagster import DefaultScheduleStatus
+
+        from orchestration.defs.platform.schedules import core_refresh, daily_medallion
+
+        for sched in (daily_medallion, core_refresh):
+            assert sched.default_status == DefaultScheduleStatus.STOPPED, sched.name

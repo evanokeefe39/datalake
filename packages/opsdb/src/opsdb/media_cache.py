@@ -14,9 +14,8 @@ decide *what* to fetch by URL and must agree on the key before any bytes exist.
 from __future__ import annotations
 
 import hashlib
-import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .schema import ConnectionFactory, sqlite_ddl
 
@@ -73,7 +72,7 @@ def record_media_cache_row(
                 local_path,
                 content_type,
                 size_bytes,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
                 source_url,
             ],
         )
@@ -82,15 +81,20 @@ def record_media_cache_row(
         conn.close()
 
 
-def cached_local_path(ops: ConnectionFactory, media_url: str) -> str | None:
-    """Return the local byte path for a URL if recorded and the file exists.
+def stored_local_path(ops: ConnectionFactory, media_url: str) -> str | None:
+    """Return the PERSISTED byte path for a URL, with no filesystem check.
 
     Precondition: none.
-    Postcondition: returns the recorded path when a row exists AND the file is
-    present on disk; otherwise None. A row whose file has been deleted is
-    treated as a miss, so a caller re-fetches rather than opening a dead path.
-    The absent-table case is a miss, not an error: before the first write there
-    is nothing to look up.
+    Postcondition: the recorded ``local_path`` when a row exists, else None. The
+    absent-table case is a miss, not an error: before the first write there is
+    nothing to look up.
+
+    This is the raw accessor and deliberately does NOT test the path: the path
+    was written by whichever process fetched the bytes, so it is expressed in
+    THAT filesystem's vocabulary (a Windows-absolute path, today). Whether it is
+    openable here is the caller's question, answered by translating it with
+    ``platform.paths.runtime_path`` first. Checking existence before translating
+    is what made the media cache look empty inside a container.
     """
     conn = ops.get_connection()
     try:
@@ -106,4 +110,4 @@ def cached_local_path(ops: ConnectionFactory, media_url: str) -> str | None:
     if not row:
         return None
     path = row["local_path"]
-    return path if path and os.path.exists(path) else None
+    return path or None

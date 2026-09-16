@@ -1,7 +1,7 @@
 """`silver_ig_profiles` — profile observations plus avatar fetch."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import polars as pl
 from dagster import asset
@@ -104,10 +104,10 @@ def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame
     Avatars are downloaded at scrape time — CDN URLs expire in ~4-5 days.
     """
 
+    from opsdb.roster import enabled_profiles
+
     from orchestration.defs.platform.paths import avatar_path
     from orchestration.defs.platform.schemas import DUCKDB_TABLES
-
-    from .creators import enabled_profiles
 
     db = duckdb
     _ensure_state_tables(db)
@@ -133,7 +133,7 @@ def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame
     if row and row[0] is not None:
         dt = row[0]
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         watermark_ts = dt.timestamp()
     else:
         watermark_ts = 0.0
@@ -184,7 +184,7 @@ def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame
         # file a no-op; a re-scrape under a new dataset appends exactly
         # one observation per profile.
         observed_at = _read_downloaded_at(meta_path) or datetime.fromtimestamp(
-            mtime, tz=timezone.utc
+            mtime, tz=UTC
         )
         obs = _profile_observations(df, entity_type, f.stem, observed_at)
         if obs is not None:
@@ -319,7 +319,7 @@ def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame
     if unified.is_empty():
         return pl.DataFrame(schema={"owner_id": pl.Utf8})
 
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     unified = unified.with_columns(
         pl.when(pl.col("processed_on").is_null())
         .then(pl.lit(now_iso))
@@ -336,7 +336,7 @@ def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame
         with db.get_connection() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO watermarks (name, timestamp) VALUES ('profiles_ig', ?)",
-                [datetime.fromtimestamp(max_mtime, tz=timezone.utc).replace(tzinfo=None)],
+                [datetime.fromtimestamp(max_mtime, tz=UTC).replace(tzinfo=None)],
             )
 
     return unified
