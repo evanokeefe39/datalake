@@ -70,6 +70,23 @@ _DUCKDB_SPECS: dict[str, Table] = {
             "processed_on": Column("TIMESTAMP"),
         },
     ),
+    "silver_ig_roster": Table(
+        columns={
+            "platform": Column("VARCHAR"),
+            "handle": Column("VARCHAR"),
+            "profile_url": Column("VARCHAR"),
+            "results_type": Column("VARCHAR"),
+            "results_limit": Column("INTEGER"),
+            "enabled": Column("BOOLEAN", not_null=True, default="FALSE"),
+            "tier": Column("VARCHAR"),
+            "creator_id": Column("INTEGER"),
+            "creator_name": Column("VARCHAR"),
+            "updated_at": Column("VARCHAR"),
+            "source_fetched_at": Column("VARCHAR", not_null=True),
+            "processed_on": Column("TIMESTAMP"),
+        },
+        primary_key=("platform", "handle"),
+    ),
     "silver_ig_comments": Table(
         columns={
             "comment_id": Column("VARCHAR", primary_key=True),

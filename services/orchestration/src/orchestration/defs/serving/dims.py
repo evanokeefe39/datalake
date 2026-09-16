@@ -20,10 +20,11 @@ def profile_dimension(duckdb: DuckDBResource, ops: SQLiteResource) -> None:
 
     Reads distinct owner profiles from ``silver_ig_posts`` and maintains
     ``effective_from``/``effective_to``/``is_current`` in DuckDB. ``creator_id``
-    and ``creator_name`` are linked from the ``profiles``/``creators`` tables in
-    ops.sqlite so every serving view can expose the owning creator.
+    and ``creator_name`` are linked from the PUBLISHED roster
+    (``silver_ig_roster``), which the dashboard owns and serves — so every
+    serving view can expose the owning creator without cross-database coupling.
     """
-    from opsdb.roster import creator_map
+    from orchestration.defs.ig_core.slv.roster import creator_map
 
     db = duckdb
     with db.get_connection() as conn:
@@ -49,8 +50,8 @@ def profile_dimension(duckdb: DuckDBResource, ops: SQLiteResource) -> None:
             WHERE owner_id IS NOT NULL
         """).fetchall()
 
-        # Creator link: {handle: {creator_id, creator_name}} from ops.
-        handle_map = creator_map(ops)
+        # Creator link: {handle: {creator_id, creator_name}} from the roster.
+        handle_map = creator_map(conn)
 
         if not profiles:
             return

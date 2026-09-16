@@ -104,16 +104,18 @@ def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame
     Avatars are downloaded at scrape time — CDN URLs expire in ~4-5 days.
     """
 
-    from opsdb.roster import enabled_profiles
-
+    from orchestration.defs.ig_core.slv.roster import enabled_profiles
     from orchestration.defs.platform.paths import avatar_path
     from orchestration.defs.platform.schemas import DUCKDB_TABLES
 
     db = duckdb
     _ensure_state_tables(db)
 
-    # Profile list comes from the profiles control table (ops).
-    targets = enabled_profiles(ops)
+    # Profile list comes from the PUBLISHED roster (`silver_ig_roster`), which
+    # the dashboard owns and serves. Reading ops.sqlite here would put the
+    # pipeline and the dashboard on one database again.
+    with db.get_connection() as conn:
+        targets = enabled_profiles(conn)
     if targets:
         logger.info(
             "Tracking %d enabled profile(s): %s",

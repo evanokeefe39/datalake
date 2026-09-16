@@ -41,6 +41,7 @@ Part of the [architecture documentation](../README.md).
 | [0014](0014-orchestration-dynamics.md) | The orchestration **dynamics**: the harvested driver, the retry driver, the quarantine disposition, and a partition key whose round survives derivation | Accepted — D1's writer amended by [0016](0016-discovery-and-guard-share-one-derivation.md) | 2026-09-14 |
 | [0015](0015-repository-layout.md) | **The repository layout**: a uv workspace (`services/`, `packages/`), module names that describe a role and never a provider, and the eight conventions the tree encodes | Accepted | 2026-09-15 |
 | [0016](0016-discovery-and-guard-share-one-derivation.md) | Discovery and the double-submit guard read **one** in-flight derivation; the submit stage materializes its own placeholder | Accepted | 2026-09-15 |
+| [0017](0017-compose-and-roster-boundary.md) | **One Compose brings up orchestration + jobs + dashboard**; the creator roster crosses the service boundary over HTTP, and persisted media paths are translated by a host↔container prefix map | Accepted | 2026-09-16 |
 
 ADR-0011, 0012 and 0013 **landed 2026-09-15** (W0–W9): the layered model is live,
 the `ops.sqlite` queue is retired, and no ledger exists. ADR-0013 reconciled

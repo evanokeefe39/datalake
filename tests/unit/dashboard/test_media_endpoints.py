@@ -13,13 +13,19 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
-from pathlib import Path
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-_SERVER_PATH = Path(__file__).resolve().parents[3] / "dashboard" / "server.py"
+from tests.paths import dashboard_server_path
+
+# boundary-mock-ok: the tests below redirect the ops database PATH to tmp (never
+# the real data/ops.sqlite) so a media-cache write is isolated per test. The
+# mock is a path substitution, not a stand-in for a client/endpoint — the real
+# sqlite file, the real record_media_cache_row, and the real FastAPI app all run.
+
+_SERVER_PATH = dashboard_server_path()
 _spec = importlib.util.spec_from_file_location("dashboard_server", _SERVER_PATH)
 assert _spec and _spec.loader, "dashboard/server.py not found"
 server = importlib.util.module_from_spec(_spec)
@@ -46,7 +52,9 @@ def avatar_dir(tmp_path, monkeypatch):
 @pytest.fixture
 def tmp_ops(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "OPS_PATH", tmp_path / "ops.sqlite")
-    server._ensure_media_cache_table()
+    # No table setup needed: record_media_cache_row ensures media_cache exists
+    # on first write. That is the property under test: the dashboard writes to a
+    # fresh ops.sqlite with no separate init step.
     return tmp_path / "ops.sqlite"
 
 

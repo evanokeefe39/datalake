@@ -7,9 +7,9 @@ JSON — it may never compute metrics itself.
 
 from __future__ import annotations
 
-from pathlib import Path
+from tests.paths import dashboard_server_path
 
-_SERVER = Path(__file__).resolve().parents[3] / "dashboard" / "server.py"
+_SERVER = dashboard_server_path()
 
 # Aggregation expressions, inline window functions, and the deleted Python
 # fan-out helpers. Any hit means aggregation crept back into the server.

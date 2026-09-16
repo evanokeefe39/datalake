@@ -13,16 +13,29 @@ import logging
 import os
 import sqlite3
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from . import __version__
 from .store import DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_TOKENS, Store
 from .worker import Worker
 
 log = logging.getLogger("jobs.app")
+
+
+def _version() -> str:
+    """The installed distribution's version.
+
+    Read from metadata rather than a module attribute: `jobs/__init__.py` must
+    stay a docstring and nothing else (ADR-0015), so it cannot hold the constant.
+    """
+    try:
+        return _pkg_version("jobs")
+    except PackageNotFoundError:  # running from a source tree without install
+        return "0.0.0+unknown"
 
 DEFAULT_MODEL = "qwen/qwen3.7-flash"
 
@@ -49,7 +62,7 @@ async def lifespan(app: FastAPI):
     worker.stop()
 
 
-app = FastAPI(title="qwen-batch-service", version=__version__, lifespan=lifespan)
+app = FastAPI(title="inference-service", version=_version(), lifespan=lifespan)
 
 
 # -- request/response models -------------------------------------------------
@@ -144,4 +157,4 @@ def health() -> dict:
     if reasons:
         raise HTTPException(503, "; ".join(reasons))
 
-    return {"status": "ok", "model": _model(), "version": __version__}
+    return {"status": "ok", "model": _model(), "version": _version()}

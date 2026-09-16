@@ -10,13 +10,14 @@ from __future__ import annotations
 import importlib.util
 import sys
 from datetime import date, timedelta
-from pathlib import Path
 
 import duckdb
 import pytest
 from fastapi.testclient import TestClient
 
-_SERVER_PATH = Path(__file__).resolve().parents[3] / "dashboard" / "server.py"
+from tests.paths import dashboard_server_path
+
+_SERVER_PATH = dashboard_server_path()
 _spec = importlib.util.spec_from_file_location("dashboard_server", _SERVER_PATH)
 assert _spec and _spec.loader, "dashboard/server.py not found"
 server = importlib.util.module_from_spec(_spec)

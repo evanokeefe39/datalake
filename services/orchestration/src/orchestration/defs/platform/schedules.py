@@ -9,8 +9,7 @@ from dagster import (
     ScheduleDefinition,
     SkipReason,
 )
-
-from .resources import SQLiteResource
+from dagster_duckdb import DuckDBResource
 
 # Daily medallion processing — materialize silver→gold→serving downstreams.
 # Bronze is on-demand (user launches from UI with ScrapeConfig).
@@ -33,20 +32,20 @@ CORE_REFRESH_CHARGE_CAP_USD = 0.50
 """Per-run Apify charge cap for a single profile refresh."""
 
 
-def core_refresh_run_requests(ops: SQLiteResource) -> list[RunRequest] | SkipReason:
+def core_refresh_run_requests(
+    duckdb: DuckDBResource,
+) -> list[RunRequest] | SkipReason:
     """Build one RunRequest per enabled tier1 instagram profile.
 
-    Reads the ``profiles`` control table at schedule-evaluation time so roster
-    changes take effect without a code deploy. Returns a SkipReason when the
-    roster is empty.
+    Reads the PUBLISHED roster (`silver_ig_roster`) at schedule-evaluation time,
+    so a roster change reaches the schedule once it is published — the dashboard
+    stays the owner, and the schedule never opens the dashboard's database.
+    Returns a SkipReason when the roster is empty.
     """
-    from opsdb.roster import enabled_profiles  # deferred: platform→opsdb cycle
+    from orchestration.defs.ig_core.slv.roster import enabled_profiles
 
-    tier1 = [
-        p
-        for p in enabled_profiles(ops)
-        if p["platform"] == "instagram" and p["tier"] == "tier1"
-    ]
+    with duckdb.get_connection() as conn:
+        tier1 = [p for p in enabled_profiles(conn) if p["tier"] == "tier1"]
     if not tier1:
         return SkipReason("No enabled tier1 instagram profiles to refresh.")
     return [
@@ -71,7 +70,7 @@ def core_refresh_run_requests(ops: SQLiteResource) -> list[RunRequest] | SkipRea
 
 
 def _core_refresh_evaluation(context) -> list[RunRequest] | SkipReason:
-    return core_refresh_run_requests(SQLiteResource())
+    return core_refresh_run_requests(context.resources.duckdb)
 
 
 # Monthly core refresh — re-scrape every enabled tier1 profile so maturity

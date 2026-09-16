@@ -8,6 +8,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "dashboard",
     "datalake",
     "jobs",
     "opsdb",
@@ -329,6 +330,31 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/44/25/588317cd015da68e1b79827c78426288748a80665bdb182c20c93252c7cd/dagster_webserver-1.13.11.tar.gz", hash = "sha256:c8ecf4af32f3b1d12f2f4a853d7e5b862ed501a96a9fe130b5e3942b56859344", size = 12353790, upload-time = "2026-06-25T17:36:53.756Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/aa/ec/8ffdaf4a0e9194da2eae28802070af456b06a6d311be7a071377c7dccd51/dagster_webserver-1.13.11-py3-none-any.whl", hash = "sha256:cbd773282168545f2bcade0239504c92791ed45d1451eaacbd84a82bc4565b5e", size = 12505616, upload-time = "2026-06-25T17:36:50.264Z" },
+]
+
+[[package]]
+name = "dashboard"
+version = "0.1.0"
+source = { virtual = "services/dashboard" }
+dependencies = [
+    { name = "duckdb" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "opsdb" },
+    { name = "orchestration" },
+    { name = "pydantic" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "duckdb" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "opsdb", editable = "packages/opsdb" },
+    { name = "orchestration", editable = "services/orchestration" },
+    { name = "pydantic" },
+    { name = "uvicorn" },
 ]
 
 [[package]]

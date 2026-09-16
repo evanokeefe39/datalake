@@ -58,6 +58,8 @@ services:
       OPS_DB_PATH: /data/ops.sqlite
       # 127.0.0.1 inside this container is this container, not the jobs service.
       JOBS_SERVICE_URL: http://jobs:8462
+      # The roster is read from the dashboard API, never from its database.
+      DASHBOARD_URL: http://dashboard:3002
       # The host↔container path map. The host prefix MUST be the absolute host
       # path of this checkout's data/ (the same tree mounted at /data).
       IG_HOST_PATH_PREFIX: ${DATALAKE_HOST_DATA_DIR:?set DATALAKE_HOST_DATA_DIR to the host data dir}
@@ -69,3 +71,22 @@ services:
       - "3000:3000"
     depends_on:
       - jobs
+      - dashboard
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: services/dashboard/Dockerfile
+    env_file:
+      - .env
+    environment:
+      IG_DATA_DIR: /data
+      IG_DB_PATH: /data/state.duckdb
+      OPS_DB_PATH: /data/ops.sqlite
+    volumes:
+      # Writable: the dashboard owns the roster tables in ops.sqlite and writes
+      # the avatar/thumbnail byte caches it serves.
+      - ./data:/data
+    ports:
+      - "3002:3002"
+    restart: unless-stopped

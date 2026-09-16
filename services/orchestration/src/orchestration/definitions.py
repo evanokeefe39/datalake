@@ -18,12 +18,14 @@ from .defs.engine.harvest import enrichment_harvest_job
 from .defs.engine.sensor import enrichment_harvest_sensor, enrichment_submit_sensor
 from .defs.engine.silver_asset import silver_enrichment
 from .defs.engine.submit import enrichment_submit_job
+from .defs.ig_core.bnz.roster import ig_roster_raw
 from .defs.ig_core.bnz.scrape import ig_posts_local_raw, ig_posts_raw
 from .defs.ig_core.slv.checks import ig_checks
 from .defs.ig_core.slv.comments import ig_comments_slv
 from .defs.ig_core.slv.labels import ig_post_labels
 from .defs.ig_core.slv.posts import ig_posts_slv
 from .defs.ig_core.slv.profiles import ig_profiles_slv
+from .defs.ig_core.slv.roster import ig_roster_slv
 from .defs.ig_enriched.slv import checks as enrichment_checks
 from .defs.platform import paths
 from .defs.platform.resources import (
@@ -67,6 +69,9 @@ all_assets = [
     ig_post_labels,
     ig_profiles_slv,
     ig_comments_slv,
+    # Roster: landed from the dashboard API, then published for the pipeline
+    ig_roster_raw,
+    ig_roster_slv,
     # Enrichment: submit discovers and materializes its own partitions
     # (ADR-0016) — there is no drain asset.
     silver_enrichment,
