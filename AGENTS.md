@@ -62,7 +62,7 @@ The user's priority is a **robust pipeline that extracts rich signal from video
 and image across multiple sources** — not hosting/infra. Hosting (S3/R2, DuckLake,
 MotherDuck, cloud warehouse) is explicitly deferred and migrates cleanly later.
 
-**Next branch = pipeline hardening.** The critical gap: `ig_posts_slv` hardcodes
+**Next branch = pipeline hardening.** The critical gap: `silver_ig_posts` hardcodes
 `media_files = "[]"` and `media_count = 0`, so bronze media URLs (`videoUrl`,
 `displayUrl`) never reach Gemini — every `gold_analyses` row is text-only. The
 multimodal worker code is correct but starved of input. Work items, in order:
@@ -266,7 +266,26 @@ one module never drags in its siblings' dependencies.
 
 ## Table naming convention
 
-Domain-scoped, not generic. Supports multi-source expansion (TikTok, YouTube, LinkedIn in future).
+**Layer prefix, domain-scoped.** Every asset key and DuckDB table starts with its medallion
+layer (`bronze_` / `silver_` / `gold_`), then the domain, then the entity:
+`bronze_ig_posts`, `silver_ig_posts`, `gold_post_enrichment`. Serving keys are `dim_*` /
+`v_*` and match their table exactly. This supports multi-source expansion (TikTok, YouTube,
+LinkedIn in future) without the layer being ambiguous in the name.
+
+The rule is **asset key == produced table** for silver/gold/serving. Bronze is the one
+deliberate exception on two counts: bronze keys name **Parquet datasets**, not DuckDB
+tables, and two bronze names are **on-disk identities** rather than graph keys:
+
+- `bronze_enrichment_raw` is the landing filename (`landing.py DATASET_ID` →
+  `data/lake/bronze/bronze_enrichment_raw.parquet`). Renaming it renames live bronze.
+- `ig_roster_raw` is a **directory** of append-only snapshots written by the dashboard's
+  roster fetch. It keeps its name: it is a source identity read via `ROSTER_BRONZE_DIR`,
+  and a rename would orphan the existing snapshots and leave the roster reading empty until
+  the next fetch (which recreates the directory, so the miss is silent, not loud).
+
+`ig_post_labels` likewise keeps its name (labels are a distinct artifact, not a layer).
+Module directories inside a domain package stay `{bnz,slv,gld}/` per ADR-0015 — that is the
+*source layout*, distinct from these runtime names.
 
 | Database | Table | Purpose |
 |---|---|---|
@@ -484,7 +503,7 @@ The dashboard OWNS `creators`/`profiles`/`creator_merges` and serves them at
 the roster FROM THE LAKE — never by opening `ops.sqlite`. Adding a profile is a
 registration; the `details_sweep` schedule reconciles which profiles need a details
 scrape (enabled `results_type='details'` past the sweep watermark), and the watermark
-advances in `ig_profile_details_raw` after the scrape lands, so a failure retries.
+advances in `bronze_ig_profile_details` after the scrape lands, so a failure retries.
 
 `media_cache` stays pipeline-owned (it is written on the scrape hot path); the dashboard
 is a writer to it through `opsdb.media_cache.record_media_cache_row`, which ensures the
@@ -545,7 +564,7 @@ acted on it). The determinism wall needs its own assertion too — an unreachabl
 check that FAILS when a path is introduced.
 
 
-## Bronze asset (ig_posts_raw)
+## Bronze asset (bronze_ig_posts)
 
 - **Manual trigger only** — not scheduled. User provides `ScrapeConfig` via Dagster launchpad.
 - **Apify flow:** trigger_run → poll_run → stream_dataset (NDJSON) → Polars read_ndjson → write_parquet

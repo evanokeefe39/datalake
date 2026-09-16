@@ -6,8 +6,8 @@ silver is source-agnostic. Two producers currently write here:
 
 | Producer | Source | File naming | `source_dataset` |
 |---|---|---|---|
-| `ig_posts_raw` | Apify [Instagram Scraper](https://apify.com/apify/instagram-scraper) actor | `<dataset_id>.parquet` | Apify dataset id |
-| `ig_posts_local_raw` | Local disk (scrape-ig-saved-list) | `local_<dataset_id>.parquet` | `local_<dataset_id>` |
+| `bronze_ig_posts` | Apify [Instagram Scraper](https://apify.com/apify/instagram-scraper) actor | `<dataset_id>.parquet` | Apify dataset id |
+| `bronze_ig_posts_local` | Local disk (scrape-ig-saved-list) | `local_<dataset_id>.parquet` | `local_<dataset_id>` |
 
 ## Contract (producer-agnostic)
 
@@ -28,7 +28,7 @@ table.
 
 ### Watermark + write-once discovery
 
-`ig_posts_slv` globs **all** `*.parquet` in `data/lake/bronze/` on each run
+`silver_ig_posts` globs **all** `*.parquet` in `data/lake/bronze/` on each run
 and processes files with `mtime > watermarks['silver_ig']`. Producers
 therefore MUST be **write-once**: never rewrite an existing Parquet file —
 an mtime bump re-triggers full silver processing of that file. New data =
@@ -124,9 +124,9 @@ Silver does not project these.
 
 Silver does not project this.
 
-## Producer 1: ig_posts_raw (Apify)
+## Producer 1: bronze_ig_posts (Apify)
 
-The `ig_posts_raw` asset scrapes Instagram via Apify's [Instagram Scraper](https://apify.com/apify/instagram-scraper) actor. The raw output is NDJSON; the asset writes it as typed Parquet to `data/lake/bronze/`.
+The `bronze_ig_posts` asset scrapes Instagram via Apify's [Instagram Scraper](https://apify.com/apify/instagram-scraper) actor. The raw output is NDJSON; the asset writes it as typed Parquet to `data/lake/bronze/`.
 
 ### Post scrapes vs profile scrapes
 
@@ -137,7 +137,7 @@ The same Apify actor is used for both, but the input URL determines the output s
 | Post scrape | `https://www.instagram.com/p/CODE/` | Present | Present |
 | Profile scrape | `https://www.instagram.com/username/` | **null** | Present (but in `username` column) |
 
-In profile-scraped rows, the author's handle appears in the `username` column (not `ownerUsername`). Silver handles this with a COALESCE fallback in ``ig_posts_slv``:
+In profile-scraped rows, the author's handle appears in the `username` column (not `ownerUsername`). Silver handles this with a COALESCE fallback in ``silver_ig_posts``:
 
 ```python
 owner_username = COALESCE("ownerUsername", "username")
@@ -166,7 +166,7 @@ Each file has a ``.parquet.meta`` JSON sidecar with full lineage:
 }
 ```
 
-The `ig_posts_slv` asset reads all `.parquet` files in `data/lake/bronze/` on each run, using a watermark to skip already-processed runs.
+The `silver_ig_posts` asset reads all `.parquet` files in `data/lake/bronze/` on each run, using a watermark to skip already-processed runs.
 
 ### Column names dropped by silver
 
@@ -185,7 +185,7 @@ Polars List and Struct types cannot be inserted directly into DuckDB VARCHAR col
 2. Packs remaining metadata fields (`display_url`, `video_url`, `image_urls`, `product_type`) into a `meta_data` JSON string
 3. Discards deeply nested structs (`latestComments`, `childPosts`, `taggedUsers`, `coauthorProducers`, `musicInfo`)
 
-## Producer 2: ig_posts_local_raw (local disk)
+## Producer 2: bronze_ig_posts_local (local disk)
 
 Second bronze producer (ISSUES.md #16; origin #14): ingests Instagram posts
 already collected ad hoc on local disk, so the ~9,465 saved-list posts flow

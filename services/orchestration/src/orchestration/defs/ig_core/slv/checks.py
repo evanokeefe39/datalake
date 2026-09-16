@@ -56,7 +56,7 @@ def _read_bronze_df() -> pl.DataFrame | None:
 
 
 @asset_check(
-    asset="ig_posts_raw",
+    asset="bronze_ig_posts",
     name="ig_posts_raw_has_rows",
     description="Bronze row count > 0.",
 )
@@ -75,7 +75,7 @@ def _ig_posts_raw_has_rows() -> AssetCheckResult:
 
 
 @asset_check(
-    asset="ig_posts_raw",
+    asset="bronze_ig_posts",
     name="ig_posts_raw_has_meta",
     description=".meta sidecar exists and is valid JSON.",
 )
@@ -114,7 +114,7 @@ def _ig_posts_raw_has_meta() -> AssetCheckResult:
 
 
 @asset_check(
-    asset="ig_posts_raw",
+    asset="bronze_ig_posts",
     name="ig_posts_raw_run_id_not_null",
     description="No null post IDs in bronze Parquet rows.",
 )
@@ -150,7 +150,7 @@ def _ig_posts_raw_run_id_not_null() -> AssetCheckResult:
 
 
 @asset_check(
-    asset="ig_posts_slv",
+    asset="silver_ig_posts",
     name="ig_posts_slv_no_duplicates",
     required_resource_keys={"duckdb"},
     description="DISTINCT post_id count = total row count (no duplicates).",
@@ -178,7 +178,7 @@ def _ig_posts_slv_no_duplicates(context) -> AssetCheckResult:
 
 
 @asset_check(
-    asset="ig_posts_slv",
+    asset="silver_ig_posts",
     name="ig_posts_slv_row_count_bounded",
     required_resource_keys={"duckdb"},
     description="Silver rows ≤ bronze rows (dedup guarantee).",
@@ -213,7 +213,7 @@ def _ig_posts_slv_row_count_bounded(context) -> AssetCheckResult:
 
 
 @asset_check(
-    asset="ig_posts_slv",
+    asset="silver_ig_posts",
     name="ig_posts_slv_owner_not_null",
     required_resource_keys={"duckdb"},
     description="Fail if any owner_username is null — every post must have an owner.",
@@ -352,7 +352,7 @@ def _ig_labels_coverage(context) -> AssetCheckResult:
 
 
 @asset_check(
-    asset="ig_posts_slv",
+    asset="silver_ig_posts",
     name="ig_observations_parity",
     required_resource_keys={"duckdb"},
     description="Observations exist for every distinct silver post_id.",

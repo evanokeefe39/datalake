@@ -17,7 +17,7 @@ single command that brought the platform up.
 
 *The graph contained references to nothing.* `silver_enrichment_conform` was named by an
 `@asset_check`, by a view's `deps=`, and in two messages, while the registered producer was
-`silver_enrichment`. `ig_posts_local_raw` was fully implemented and tested but absent from
+`silver_enrichment`. `bronze_ig_posts_local` was fully implemented and tested but absent from
 `all_assets`, so the local-ingest path was unreachable. `dagster definitions validate`
 passed in both cases — it checks that a code location *loads*, never that the keys inside it
 name anything.
@@ -85,7 +85,7 @@ the `details_sweep` schedule reconciles enabled `results_type='details'` rows wh
 profile is a registration rather than a paid side effect of an HTTP request, and a failed
 scrape is retried by the sweep instead of dying with the request.
 
-The watermark advances in `ig_profile_details_raw` **after** the scrape lands — never at
+The watermark advances in `bronze_ig_profile_details` **after** the scrape lands — never at
 schedule-evaluation time. That ordering is the whole point: if evaluation advanced it, a
 tick that emitted ten runs and had three fail would mark all ten done and never retry the
 three. `DEFAULT_MAX_PROFILES_PER_SWEEP` caps a single tick, and because the watermark

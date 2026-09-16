@@ -91,12 +91,12 @@ def _profile_observations(
 
 
 @asset(
-    name="ig_profiles_slv",
+    name="silver_ig_profiles",
     group_name="instagram",
     description="Extract profiles + download avatars from post/details scrapes.",
-    deps=["ig_posts_raw"],
+    deps=["bronze_ig_posts"],
 )
-def ig_profiles_slv(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
+def silver_ig_profiles(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
     """Extract profiles from post and details scrapes; download avatars.
 
     Post scrapes carry the author's profile fields (username, profilePicUrlHD,

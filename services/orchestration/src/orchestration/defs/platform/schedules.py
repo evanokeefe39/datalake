@@ -20,7 +20,7 @@ daily_medallion = ScheduleDefinition(
         # roster, so it must be fresh before they run.
         "ig_roster_raw",
         "silver_ig_roster",
-        "ig_posts_slv",
+        "silver_ig_posts",
         "ig_post_labels",
         "dim_profile",
         "dim_date",
@@ -55,10 +55,10 @@ def core_refresh_run_requests(
     return [
         RunRequest(
             run_key=f"core_refresh:instagram:{p['handle']}",
-            asset_selection=[AssetKey("ig_posts_raw")],
+            asset_selection=[AssetKey("bronze_ig_posts")],
             run_config={
                 "ops": {
-                    "ig_posts_raw": {
+                    "bronze_ig_posts": {
                         "config": {
                             "urls": [p["profile_url"]],
                             "results_limit": p["results_limit"],
@@ -82,7 +82,7 @@ def _core_refresh_evaluation(context) -> list[RunRequest] | SkipReason:
 # decision gate (owner + core-set composition + Gemini tier).
 core_refresh = ScheduleDefinition(
     name="core_refresh",
-    target=["ig_posts_raw"],
+    target=["bronze_ig_posts"],
     cron_schedule="0 4 2 * *",  # 4am on the 2nd of each month
     default_status=DefaultScheduleStatus.STOPPED,
     description=(

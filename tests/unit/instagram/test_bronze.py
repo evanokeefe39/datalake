@@ -1,4 +1,4 @@
-"""Tests for the ``ig_posts_raw`` bronze asset.
+"""Tests for the ``bronze_ig_posts`` bronze asset.
 
 Gap-fills per test-hardening plan:
 - Schema validation, row count, .meta integrity, run_id, partial data, list columns
@@ -12,7 +12,7 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 from dagster import build_asset_context
-from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig, ig_posts_raw
+from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig, bronze_ig_posts
 from orchestration.defs.platform.resources import SQLiteResource
 
 
@@ -113,7 +113,7 @@ def mock_apify_empty():
 
 def test_successful_scrape(mock_apify_success, tmp_path):
     """GIVEN valid config + Apify resource
-    WHEN ig_posts_raw executes
+    WHEN bronze_ig_posts executes
     THEN Parquet written with correct rows AND .meta sidecar exists
     AND asset returns pl.DataFrame
     """
@@ -127,7 +127,7 @@ def test_successful_scrape(mock_apify_success, tmp_path):
                 urls=["https://instagram.com/test"],
                 results_limit=2,
             )
-            result = ig_posts_raw(
+            result = bronze_ig_posts(
                 context, config=config, apify=_FakeApifyResource(),
                 ops=_ops_resource(tmp_path),
             )
@@ -151,7 +151,7 @@ def test_successful_scrape(mock_apify_success, tmp_path):
 
 def test_idempotent_rerun(mock_apify_success, tmp_path):
     """GIVEN Parquet file already exists
-    WHEN ig_posts_raw runs again
+    WHEN bronze_ig_posts runs again
     THEN it returns existing data (no re-download)
     """
     with patch("orchestration.defs.ig_core.bnz.scrape.BRONZE_LAKE", tmp_path):
@@ -169,7 +169,7 @@ def test_idempotent_rerun(mock_apify_success, tmp_path):
                 urls=["https://instagram.com/test"],
                 results_limit=2,
             )
-            result = ig_posts_raw(
+            result = bronze_ig_posts(
                 context, config=config, apify=_FakeApifyResource(),
                 ops=_ops_resource(tmp_path),
             )
@@ -179,7 +179,7 @@ def test_idempotent_rerun(mock_apify_success, tmp_path):
 
 def test_empty_dataset(mock_apify_empty, tmp_path):
     """GIVEN Apify returns 0 items
-    WHEN ig_posts_raw executes
+    WHEN bronze_ig_posts executes
     THEN Parquet with 0 rows (not an error)
     """
     with patch("orchestration.defs.ig_core.bnz.scrape.BRONZE_LAKE", tmp_path):
@@ -192,7 +192,7 @@ def test_empty_dataset(mock_apify_empty, tmp_path):
                 urls=["https://instagram.com/test"],
                 results_limit=0,
             )
-            result = ig_posts_raw(
+            result = bronze_ig_posts(
                 context, config=config, apify=_FakeApifyResource(),
                 ops=_ops_resource(tmp_path),
             )
@@ -205,7 +205,7 @@ def test_empty_dataset(mock_apify_empty, tmp_path):
 
 def test_apify_failure_raises(mock_apify_failed, tmp_path):
     """GIVEN Apify run fails
-    WHEN ig_posts_raw polls
+    WHEN bronze_ig_posts polls
     THEN RuntimeError with failure message
     """
     with patch("orchestration.defs.ig_core.bnz.scrape.BRONZE_LAKE", tmp_path):
@@ -218,7 +218,7 @@ def test_apify_failure_raises(mock_apify_failed, tmp_path):
                 results_limit=2,
             )
             with pytest.raises(RuntimeError, match="FAILED"):
-                ig_posts_raw(
+                bronze_ig_posts(
                     context, config=config,
                     apify=_FakeApifyResource(),
                     ops=_ops_resource(tmp_path),
@@ -227,7 +227,7 @@ def test_apify_failure_raises(mock_apify_failed, tmp_path):
 
 def test_apify_timeout_raises(mock_apify_timeout, tmp_path):
     """GIVEN Apify run times out
-    WHEN ig_posts_raw polls
+    WHEN bronze_ig_posts polls
     THEN RuntimeError indicating timeout
     """
     with patch("orchestration.defs.ig_core.bnz.scrape.BRONZE_LAKE", tmp_path):
@@ -240,7 +240,7 @@ def test_apify_timeout_raises(mock_apify_timeout, tmp_path):
                 results_limit=2,
             )
             with pytest.raises(RuntimeError, match="timed out"):
-                ig_posts_raw(
+                bronze_ig_posts(
                     context, config=config,
                     apify=_FakeApifyResource(),
                     ops=_ops_resource(tmp_path),
@@ -249,7 +249,7 @@ def test_apify_timeout_raises(mock_apify_timeout, tmp_path):
 
 def test_missing_token_raises(tmp_path):
     """GIVEN ApifyResource.token is empty
-    WHEN ig_posts_raw executes
+    WHEN bronze_ig_posts executes
     THEN RuntimeError before any API call
     """
     context = build_asset_context()
@@ -258,7 +258,7 @@ def test_missing_token_raises(tmp_path):
         results_limit=2,
     )
     with pytest.raises(RuntimeError, match="token is empty"):
-        ig_posts_raw(
+        bronze_ig_posts(
             context, config=config,
             apify=_FakeApifyResource(token=""),
             ops=_ops_resource(tmp_path),

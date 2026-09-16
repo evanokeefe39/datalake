@@ -29,7 +29,7 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
 ## Media byte cache (the expiry-race fix)
 
 - Instagram CDN URLs die in ~4-5 days. Media **bytes** are cached at scrape time
-  in `ig_posts_slv` (via `cache_media_bytes` → `media_cache` table → local file
+  in `silver_ig_posts` (via `cache_media_bytes` → `media_cache` table → local file
   under `data/media/posts/`). The worker's `lookup_or_upload_all` uploads from
   the **local cache** and falls back to the live CDN **only** on a cache miss.
 - Do not make `lookup_or_upload_all` download from the CDN as its primary path —
@@ -342,7 +342,7 @@ wrong side of a boundary**. Concretely, check:
   `media_cache` is the one shared table, and it is pipeline-OWNED with a single shared
   INSERT (`opsdb.media_cache.record_media_cache_row`, which ensures the table exists).
 - **The details-sweep watermark advances in the ASSET, never in the schedule.**
-  `ig_profile_details_raw` calls `advance_watermark` after the bytes land. Advancing at
+  `bronze_ig_profile_details` calls `advance_watermark` after the bytes land. Advancing at
   schedule-evaluation would mark emitted-but-unexecuted runs as covered, so one Apify
   error would retire that profile permanently. If a change moves that call into
   `details_sweep_run_requests`, it has reintroduced silent loss of paid intent.

@@ -8,7 +8,7 @@ import pytest
 from dagster import DefaultScheduleStatus, build_asset_context
 from dagster_duckdb import DuckDBResource
 from opsdb.roster import ensure_schema
-from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig, ig_posts_raw
+from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig, bronze_ig_posts
 from orchestration.defs.integration.apify_client import trigger_run
 from orchestration.defs.platform.resources import SQLiteResource
 from orchestration.defs.platform.schedules import (
@@ -129,7 +129,7 @@ def _invoke_bronze(tmp_path, config) -> None:
         patch("orchestration.defs.ig_core.bnz.scrape.BRONZE_LAKE", tmp_path),
         patch("orchestration.defs.ig_core.bnz.scrape.stream_dataset", return_value=0),
     ):
-        ig_posts_raw(
+        bronze_ig_posts(
             build_asset_context(),
             config=config,
             apify=_FakeApifyResource(),
@@ -172,7 +172,7 @@ def test_trigger_run_body_unchanged_by_charge_cap(fake_post):
     assert fake_post.call_args.args[0] == "acts/apify~instagram-scraper/runs"
 
 
-# ── US-C1: ig_posts_raw forwards the cap ───────────────────────────────────
+# ── US-C1: bronze_ig_posts forwards the cap ───────────────────────────────────
 
 
 def test_ig_posts_raw_forwards_max_charge_usd(tmp_path):
@@ -205,7 +205,7 @@ def test_core_refresh_one_run_request_per_enabled_tier1_profile(roster_db):
     assert len(requests) == 1
     req = requests[0]
     assert req.run_key == "core_refresh:instagram:alpha"
-    cfg = req.run_config["ops"]["ig_posts_raw"]["config"]
+    cfg = req.run_config["ops"]["bronze_ig_posts"]["config"]
     assert cfg == {
         "urls": ["https://www.instagram.com/alpha/"],
         "results_limit": 7,
@@ -234,7 +234,7 @@ def test_core_refresh_run_config_validates_against_scrape_config(roster_db):
     """The emitted run_config must parse as a valid ScrapeConfig."""
     _publish(roster_db, "alpha")
     req = run_requests(roster_db)[0]
-    cfg = req.run_config["ops"]["ig_posts_raw"]["config"]
+    cfg = req.run_config["ops"]["bronze_ig_posts"]["config"]
     parsed = ScrapeConfig(**cfg)
     assert parsed.max_charge_usd == 0.50
     assert parsed.results_limit == 7

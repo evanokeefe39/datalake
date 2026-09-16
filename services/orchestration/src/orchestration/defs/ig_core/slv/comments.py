@@ -13,12 +13,12 @@ from orchestration.defs.platform.resources import (
 logger = logging.getLogger(__name__)
 
 @asset(
-    name="ig_comments_slv",
+    name="silver_ig_comments",
     group_name="instagram",
     description="Comment scrapes from bronze → silver (STUB — not yet implemented).",
-    deps=["ig_posts_raw"],
+    deps=["bronze_ig_posts"],
 )
-def ig_comments_slv(duckdb: DuckDBResource) -> pl.DataFrame:
+def silver_ig_comments(duckdb: DuckDBResource) -> pl.DataFrame:
     """Stub for comment-type bronze processing.
 
     No comment-type bronze datasets exist yet. Full implementation deferred
@@ -27,5 +27,5 @@ def ig_comments_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     exists so the schema contract holds, but reads no bronze files.
     """
     _ensure_state_tables(duckdb)
-    logger.warning("ig_comments_slv: not yet implemented — returning empty")
+    logger.warning("silver_ig_comments: not yet implemented — returning empty")
     return pl.DataFrame(schema={"comment_id": pl.Utf8})

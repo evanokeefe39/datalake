@@ -441,7 +441,7 @@ def v_creator_underperformer_rate(duckdb: DuckDBResource) -> None:
     ),
     deps=[
         AssetKey(["v_post_detail"]),
-        AssetKey(["ig_profiles_slv"]),
+        AssetKey(["silver_ig_profiles"]),
     ],
 )
 def v_post_follower_context(duckdb: DuckDBResource) -> None:

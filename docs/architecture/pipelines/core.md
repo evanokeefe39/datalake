@@ -29,15 +29,15 @@ the last asset on this side of the boundary.
 The stages, with their real asset names:
 
 ```
-ig_posts_raw ──→ ig_posts_slv ──→ ig_post_labels ──→ ig_posts_gen_batches ─ (enrichment, other pipeline)
+bronze_ig_posts ──→ silver_ig_posts ──→ ig_post_labels ──→ ig_posts_gen_batches ─ (enrichment, other pipeline)
       │                │                                     │
-      └ ig_posts_local_raw (second bronze producer)          └ ops.sqlite: batch_jobs / batch_items
-ig_posts_slv ──→ dim_profile (SCD2), dim_date ──→ v_post_detail ──→ downstream serving views
+      └ bronze_ig_posts_local (second bronze producer)          └ ops.sqlite: batch_jobs / batch_items
+silver_ig_posts ──→ dim_profile (SCD2), dim_date ──→ v_post_detail ──→ downstream serving views
 ```
 
-## Stage 1 — Ingest (Apify): `ig_posts_raw`
+## Stage 1 — Ingest (Apify): `bronze_ig_posts`
 
-- **Runs it:** the Dagster asset `ig_posts_raw` (`defs/instagram/assets.py`),
+- **Runs it:** the Dagster asset `bronze_ig_posts` (`defs/instagram/assets.py`),
   parameterized by `ScrapeConfig`, using the `ApifyResource` (APIFY_API_TOKEN)
   and `SQLiteResource` (ops.sqlite) resources.
 - **What it does:** triggers the `apify~instagram-scraper` actor via
@@ -55,17 +55,17 @@ ig_posts_slv ──→ dim_profile (SCD2), dim_date ──→ v_post_detail ─�
 - **State:** none beyond the files themselves (bronze is file-based; see the
   watermarks section for how silver discovers new files by mtime).
 
-A second bronze producer, `ig_posts_local_raw`, ingests local ad-hoc scrape
+A second bronze producer, `bronze_ig_posts_local`, ingests local ad-hoc scrape
 dumps into the same bronze directory and schema — the silver asset reads both.
 
 The bronze contract — what columns the files carry and who produces them — is
 specified once in [`../bronze-schema.md`](../bronze-schema.md); this doc does
 not restate it.
 
-## Stage 2 — Silver: `ig_posts_slv`
+## Stage 2 — Silver: `silver_ig_posts`
 
-- **Runs it:** the Dagster asset `ig_posts_slv` (`deps=["ig_posts_raw",
-  "ig_posts_local_raw"]`), using the `DuckDBResource`.
+- **Runs it:** the Dagster asset `silver_ig_posts` (`deps=["bronze_ig_posts",
+  "bronze_ig_posts_local"]`), using the `DuckDBResource`.
 - **Reads:** bronze Parquet files under `IG_BRONZE_DIR` (default
   `data/lake/bronze/`) whose file mtime is newer than the `silver_ig`
   watermark (see [Incrementality](#incrementality-watermarks-processed_on-and-the-drain)).
@@ -96,12 +96,12 @@ not restate it.
   `silver_ig_post_observations` = 12,701 rows. (A figure of ~2,200 posts floats
   around the repo and is stale — do not cite it.)
 
-`ig_posts_slv` is a pure transform — no network I/O, no caching. Re-running
+`silver_ig_posts` is a pure transform — no network I/O, no caching. Re-running
 with no new bronze files is a no-op that returns existing state.
 
 ## Stage 3 — Labels: `ig_post_labels` (the pass between silver and enrichment)
 
-- **Runs it:** the Dagster asset `ig_post_labels` (`deps=["ig_posts_slv"]`),
+- **Runs it:** the Dagster asset `ig_post_labels` (`deps=["silver_ig_posts"]`),
   daily per its schedule; the logic lives in
   `defs/instagram/labels.py` (`run_label_pass`).
 - **What it does:** for every silver post it reads the latest non-sentinel
@@ -209,7 +209,7 @@ Polars DataFrame to `data/lake/<asset_key>.parquet` and reloads it on input.
 
 **Watermarks.** One DuckDB table, `watermarks (name, timestamp)`, tracks
 progress per pipeline. Silver uses the `silver_ig` row: at materialization,
-`ig_posts_slv` re-reads only bronze Parquet files whose mtime is newer than the
+`silver_ig_posts` re-reads only bronze Parquet files whose mtime is newer than the
 watermark, then advances the watermark to the newest file examined. No new
 files → no-op. (Profiles use the analogous `profiles_ig` watermark; the
 `gold_ig` watermark is retired — see the drain.)
