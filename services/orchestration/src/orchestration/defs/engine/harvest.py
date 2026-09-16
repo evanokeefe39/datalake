@@ -79,6 +79,15 @@ _PLATFORM_BY_WORKLOAD: dict[str, str] = {
 
 _SUBMITTED_KEY = AssetKey(SUBMITTED_ASSET_NAME)
 _HARVESTED_KEY = AssetKey(HARVESTED_ASSET_NAME)
+#: The bronze landing this harvest writes. `bronze_enrichment_raw` is a Parquet
+#: dataset (not a materializable asset), but an EVENT for it is what lets a
+#: `deps=`-declared consumer un-gate: an `eager()` condition on a spec-declared
+#: key fires once a materialization is recorded for it, measured with
+#: `dg.evaluate_automation_conditions` (a spec-declared key with no producer DOES
+#: un-gate its downstream once an event lands). Before this, only
+#: `enrichment_harvested` was reported, so nothing downstream of bronze ever woke
+#: — bronze landed, silver sat still, and the chain stopped there (ADR-0018).
+_BRONZE_KEY = AssetKey(["bronze_enrichment_raw"])
 
 _SUBMITTED_DYN: DynamicPartitionsDefinition = partitions.SUBMITTED_PARTITIONS
 _HARVESTED_DYN: DynamicPartitionsDefinition = partitions.HARVESTED_PARTITIONS
@@ -96,6 +105,14 @@ def report_harvested(
     dynamic partitions, then report runless materializations on the SAME
     injected instance the in-flight guard reads. Re-running with the same
     keys is idempotent (a set membership, not a counter).
+
+    Also reports ONE runless materialization for ``bronze_enrichment_raw``,
+    because this is the path that actually writes bronze bytes: every call
+    here follows ``land_result`` calls that appended verbatim rows, and the
+    guard above (``if not keys: return``) means a harvest that landed nothing
+    reports nothing. That discipline is the point — a bronze event emitted on
+    a path that did not write would make the graph lie, and downstream
+    ``eager()`` conditions would fire on a no-op.
     """
     if not keys:
         return
@@ -104,6 +121,15 @@ def report_harvested(
         instance.report_runless_asset_event(
             AssetMaterialization(asset_key=_HARVESTED_KEY, partition=key)
         )
+    # The bronze landing event: un-gates the `deps=`-declared consumers of
+    # `bronze_enrichment_raw` (silver). Not partitioned — the dataset is one
+    # append-only Parquet file, so the event is about the file, not a key.
+    instance.report_runless_asset_event(
+        AssetMaterialization(
+            asset_key=_BRONZE_KEY,
+            metadata={"landed_partitions": int(len(keys))},
+        )
+    )
     logger.info("Harvested %d partition(s): %s", len(keys), sorted(keys))
 
 

@@ -221,3 +221,146 @@ def test_blocking_checks_are_ancestors_of_a_mart() -> None:
         "BLOCKING check(s) gate no mart — they cannot block any downstream "
         f"materialization, so they are gates in name only: {sorted(inert)}"
     )
+
+
+# ── ADR-0018: the automation wall ───────────────────────────────────────────
+
+#: The paid edge. Auto-materialization must NEVER reach it (ADR-0018 decision 4):
+#: `silver_*` has to stay a pure deterministic replay of `bronze_enrichment_raw`
+#: (ADR-0011), so if a `materialize` on silver could transitively call the
+#: provider, re-publishing silver would produce different rows on different runs
+#: and "a schema change is a replay, not a re-bill" would stop being true.
+#: This is NOT a cost measure — cost sits on the API credential as
+#: defense-in-depth, and the wall does not become removable when cost is handled.
+_SUBMIT_KEYS = frozenset({"enrichment_submit", "enrichment_submitted"})
+
+
+def test_no_automation_path_reaches_submit() -> None:
+    """The determinism wall, asserted on a surface that can actually break.
+
+    The paid edge is NOT an asset: `enrichment_submit` is an op-JOB with no
+    asset layer and no `asset_selection` (it discovers its own work), and the
+    in-flight `enrichment_submitted` is a dynamic partition space reported via
+    runless events. A first version of this guard walked the asset graph
+    downstream looking for a submit KEY, could therefore never fail, and was
+    proven non-discriminating by injecting a `deps=` on `enrichment_submit`
+    into the silver producer — the guard still passed. A wall guard that cannot
+    fail is worse than none: it reads as ADR-0018 compliance.
+
+    So assert the three things that would actually make silver provider-
+    dependent, each independently checkable:
+
+    1. **No asset depends on a submit key.** The only way to wire provider work
+       into the asset graph is a `deps=`, and that is exactly what would make a
+       `materialize` on silver transitively call the provider.
+    2. **No automated asset's dep chain reaches one either** (transitive form of
+       1, so a chain through an intermediate node cannot hide it).
+    3. **The submit job consumes no asset selection**, so no asset materialization
+       (automatic or otherwise) can be the thing that feeds it.
+    """
+    graph = defs.defs.resolve_asset_graph()
+    automated = {
+        s.key
+        for a in defs.defs.assets
+        for s in getattr(a, "specs", [])
+        if s.automation_condition is not None
+    }
+    assert automated, "no asset carries an automation condition; the guard would be vacuous"
+
+    def ancestors(key: AssetKey) -> set[AssetKey]:
+        seen: set[AssetKey] = set()
+        stack = [key]
+        while stack:
+            for parent in graph.get(stack.pop()).parent_entity_keys:
+                if parent not in seen:
+                    seen.add(parent)
+                    stack.append(parent)
+        return seen
+
+    # 1 + 2: no automated asset (nor any asset at all) sits on a submit key.
+    breaches: list[str] = []
+    for key in _registered_keys():
+        for parent in ancestors(key):
+            if parent.to_user_string() in _SUBMIT_KEYS:
+                breaches.append(f"{key.to_user_string()} -> {parent.to_user_string()}")
+    assert not breaches, (
+        "an asset depends (transitively) on a submit key — a materialize on it "
+        "would reach the provider, so silver is no longer a pure replay of "
+        f"bronze (ADR-0018 decision 4): {sorted(breaches)}"
+    )
+
+    # No automated asset may be upstream of the paid edge either.
+    reach = sorted(
+        f"{k.to_user_string()} -> {d.to_user_string()}"
+        for k in automated
+        for d in ancestors(k)
+        if d.to_user_string() in _SUBMIT_KEYS
+    )
+    assert not reach, f"auto-materialized asset feeds submit: {reach}"
+
+    # 3: the submit job must consume no assets at all.
+    for job in defs.defs.jobs or []:
+        if job.name != "enrichment_submit":
+            continue
+        selected = set()
+        try:
+            selected = {k.to_user_string() for k in job.asset_layer.asset_keys}
+        except Exception:
+            selected = set()
+        assert not selected, (
+            "the submit job now consumes assets — an asset materialization "
+            f"could feed the paid edge: {sorted(selected)}"
+        )
+
+
+def test_only_the_replay_path_is_automated() -> None:
+    """The automated set is exactly the free replay path — and submit is NOT in it.
+
+    Two failure modes this catches: (1) an asset is made automatic that should
+    not be (the paid edge being the catastrophic case), and (2) the automation
+    silently vanishes in a refactor, taking the pipeline back to "nothing acts
+    on correct lineage" — the ADR-0018 gap this work exists to close.
+    """
+    expected = {
+        "silver_visual_annotations", "silver_visual_summaries", "silver_audio_transcripts",
+        "silver_text_annotations", "silver_text_summaries", "silver_content_classification",
+        "silver_enrichment_quarantine",
+        "gold_post_enrichment", "gold_creator_performance",
+        "gold_content_shape_performance", "gold_top_posts",
+    }
+    actual = {
+        s.key.to_user_string()
+        for a in defs.defs.assets
+        for s in getattr(a, "specs", [])
+        if s.automation_condition is not None
+    }
+    assert actual == expected, (
+        "the automated set drifted from the declared replay path; "
+        f"missing={sorted(expected - actual)} unexpected={sorted(actual - expected)}"
+    )
+    # The paid edge must never carry a condition.
+    paid = actual & _SUBMIT_KEYS
+    assert not paid, f"submit carries an automation condition: {sorted(paid)}"
+
+
+def test_automation_sensor_ships_stopped() -> None:
+    """Declarative automation ships INERT until the owner enables it (ADR-0018).
+
+    A new condition does not start spending effort on its own. The sensor is
+    synthesized by the repository (not declared in `Definitions`), so this
+    asserts it exists AND that its declared default is STOPPED — if it ever
+    defaults RUNNING, the owner has lost the deliberate-enable boundary.
+    """
+    from dagster._core.definitions.utils import get_default_automation_condition_sensor
+
+    sensor = get_default_automation_condition_sensor({}, defs.defs.resolve_asset_graph())
+    assert sensor is not None, (
+        "no automation-condition sensor was synthesized — assets carry "
+        "conditions but nothing would ever evaluate them, so automation is "
+        "decoration"
+    )
+    assert sensor.name == "default_automation_condition_sensor"
+    assert sensor.default_status.value == "STOPPED", (
+        "the automation sensor no longer ships STOPPED — a new schedule or "
+        f"condition must not start running on its own (got {sensor.default_status})"
+    )
