@@ -116,7 +116,7 @@ def test_slv_skips_profile_bronze(tmp_path, ops):
     _details_df(rows=3).write_parquet(tmp_path / "ds_profile.parquet")
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
@@ -130,7 +130,7 @@ def test_slv_skips_comment_bronze(tmp_path, ops):
     )
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
@@ -146,7 +146,7 @@ def test_profiles_slv_upsert(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.profiles.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_profiles_slv(context)
 
@@ -163,7 +163,7 @@ def test_profiles_slv_no_bronze(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.profiles.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_profiles_slv(context)
 
@@ -181,7 +181,7 @@ def test_profiles_slv_extracts_from_post_bronze(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.profiles.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_profiles_slv(context)
 

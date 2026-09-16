@@ -446,6 +446,48 @@ Set in `.env` to `C:/Users/evano/repos/datalake/data/dagster_home`. Both `dagste
 and CLI commands (`dagster asset materialize`, `dagster job execute`) share this instance.
 Without it, CLI runs go to a different temp directory and aren't visible in the UI.
 
+## Running the platform (Compose)
+
+`docker compose up -d --build` from the repo root brings up all three services:
+
+| Service | Port | What it is |
+|---|---|---|
+| `orchestration` | 3000 | Dagster (`dagster dev` — webserver + daemon, so sensors tick) |
+| `jobs` | 8462 | the inference service (`services/jobs`) |
+| `dashboard` | 3002 | FastAPI + the built Vite SPA |
+
+**`DATALAKE_HOST_DATA_DIR` is required** — the absolute host path of this checkout's
+`data/` (e.g. `C:/Users/evano/repos/datalake/data`). It is the host side of the path map
+that translates persisted media paths into the `/data` paths both containers see, and
+compose refuses to start without it rather than handing the inference service paths it
+cannot open.
+
+**Never run `docker compose down -v`.** The `jobs` service keeps its job store on the
+`/jobs-data` volume; `-v` deletes it.
+
+DuckDB is single-writer, so a host `dagster dev` and the containers must not run at once.
+
+## The roster boundary (ADR-0017)
+
+The dashboard OWNS `creators`/`profiles`/`creator_merges` and serves them at
+`GET /api/roster`. The pipeline lands that response as append-only bronze
+(`ig_roster_raw`, one snapshot per `fetched_at`), publishes `silver_ig_roster`, and reads
+the roster FROM THE LAKE — never by opening `ops.sqlite`. Adding a profile is a
+registration; the `details_sweep` schedule reconciles which profiles need a details
+scrape (enabled `results_type='details'` past the sweep watermark), and the watermark
+advances in `ig_profile_details_raw` after the scrape lands, so a failure retries.
+
+`media_cache` stays pipeline-owned (it is written on the scrape hot path); the dashboard
+is a writer to it through `opsdb.media_cache.record_media_cache_row`, which ensures the
+table exists.
+
+**Host↔container media paths.** Rows hold whatever path vocabulary the fetching process
+had (Windows-absolute, for host writes). `platform.paths.runtime_path` translates them
+through `IG_HOST_PATH_PREFIX` → `IG_CONTAINER_PATH_PREFIX`; a host run with the host
+prefix unset is identity. A container-written row (`/data/media/...`) will not resolve on
+the host without the reverse mapping — run the pipeline in Compose once it is the runtime
+of record.
+
 
 ## Bronze asset (ig_posts_raw)
 

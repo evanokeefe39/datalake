@@ -31,7 +31,7 @@ from orchestration.defs.ig_core.slv.posts import ig_posts_slv
 
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
-ig_assets = importlib.import_module("orchestration.defs.ig_core.slv.posts")
+ig_assets = importlib.import_module("orchestration.defs.ig_core.bnz.scrape")
 media_cache_mod = importlib.import_module("orchestration.defs.engine.media")
 
 # ── Fixtures / helpers ──────────────────────────────────────────────────────
@@ -394,7 +394,10 @@ def test_silver_dedup_prefers_newer_scrape_across_producers(tmp_path, ops):
         json.dumps({"downloaded_at": "2026-06-01T00:00:00+00:00"}), encoding="utf-8"
     )
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    # `posts` does `from platform.paths import BRONZE_LAKE`, so the name is bound
+    # in posts' OWN namespace: patching platform.paths leaves the module reading
+    # the real lake (the failure here was 10,038 live rows vs the 2 fixtures).
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         with patch("orchestration.defs.engine.media.cache_media_bytes", lambda *a, **k: None):
             result = ig_posts_slv(
                 build_asset_context(resources={"duckdb": duckdb, "ops": ops})
