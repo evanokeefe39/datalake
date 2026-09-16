@@ -545,12 +545,11 @@ class TestNoRestatedConstants:
             "0.5 *", "0.3 *", "0.2 *",          # engagement_score weights
             "recent_posts", "baseline_avg >= ",  # rising gates
         ]
-        module_src = inspect.getsource(serving_assets)
-        start = module_src.index("# ── Gold marts")
-        end = module_src.index("# ── Exported")
-        marts_src = module_src[start:end]
+        module_src = inspect.getsource(
+            importlib.import_module("orchestration.defs.serving.marts")
+        )
         for tok in forbidden:
-            assert tok not in marts_src, (
+            assert tok not in module_src, (
                 f"marts restate canonical constant {tok!r}"
             )
 

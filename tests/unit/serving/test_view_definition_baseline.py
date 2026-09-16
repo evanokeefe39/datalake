@@ -109,6 +109,25 @@ _RETIRED_TABLE_DDL = [
 ]
 
 
+def _serving_asset(name: str):
+    """Resolve a serving asset by name across the serving modules.
+
+    Assets live in `dims`, `metrics`, `marts` and `views` — the modules split
+    them by KIND (dimensions, canonical metrics, analytic marts, consumer
+    views), so a single-module `getattr` is wrong for any name that is not a
+    view. Resolving across all four is what keeps this baseline honest.
+    """
+    modules = [
+        importlib.import_module(f"orchestration.defs.serving.{m}")
+        for m in ("dims", "metrics", "marts", "views")
+    ]
+    for module in modules:
+        obj = getattr(module, name, None)
+        if obj is not None:
+            return obj
+    raise AttributeError(f"no serving asset named {name!r} in dims/metrics/marts/views")
+
+
 def _build_view_world(tmp_path: Path) -> str:
     """Materialize every serving view into a scratch DuckDB from asset code."""
     db_path = tmp_path / "state.duckdb"
@@ -122,7 +141,7 @@ def _build_view_world(tmp_path: Path) -> str:
     resource = DuckDBResource(database=str(db_path))
     ctx = build_asset_context(resources={"duckdb": resource})
     for name in _ASSET_ORDER:
-        getattr(serving, name)(ctx)
+        _serving_asset(name)(ctx)
     return str(db_path)
 
 

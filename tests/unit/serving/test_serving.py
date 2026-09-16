@@ -9,11 +9,14 @@ from __future__ import annotations
 import pytest
 from dagster import build_asset_context
 from orchestration.defs.ig_enriched.slv.classification import CLASSIFICATION_DDL
+from orchestration.defs.platform.schemas import duckdb_ddl
 from orchestration.defs.serving.dims import dim_date as _dim_date_asset
 from orchestration.defs.serving.dims import profile_dimension as _profile_dimension_asset
 from orchestration.defs.serving.views import v_post_detail as _v_post_detail_asset
 
 from tests.fixtures.silver_factories import seed_silver_posts
+
+ROSTER_DDL = duckdb_ddl("silver_ig_roster")
 
 
 def _ensure_classification_table(db):
@@ -24,7 +27,19 @@ def _ensure_classification_table(db):
         conn.execute(CLASSIFICATION_DDL)
 
 
+def _ensure_roster_table(db):
+    """Create an empty ``silver_ig_roster`` so ``dim_profile`` can read it.
+
+    The creator link comes from the PUBLISHED roster (the dashboard owns the
+    original and serves it), so a dim_profile test needs the table to exist even
+    when it seeds no creators — an empty roster is the "no creator link" case.
+    """
+    with db.get_connection() as conn:
+        conn.execute(ROSTER_DDL)
+
+
 def _run_profile_dimension(db, ops):
+    _ensure_roster_table(db)
     _profile_dimension_asset(build_asset_context(resources={"duckdb": db, "ops": ops}))
 
 
@@ -193,12 +208,11 @@ def test_v_post_detail_empty_data(db, ops):
 
 
 def test_profile_dimension_links_creator(db, ops):
-    """dim_profile gains creator_id/creator_name from ops profiles/creators."""
-    from opsdb.roster import add_profile, create_creator
+    """dim_profile gains creator_id/creator_name from the PUBLISHED roster.
 
-    creator = create_creator(ops, "Jane Doe")
-    add_profile(ops, creator_id=creator["id"], platform="instagram", handle="user_a")
-
+    The dashboard owns the registry; the pipeline reads its published copy, so
+    the link source is `silver_ig_roster`, not the dashboard's ops tables.
+    """
     seed_silver_posts(
         db,
         [("1", "owner_a", "user_a", "Post")],
@@ -206,13 +220,24 @@ def test_profile_dimension_links_creator(db, ops):
         owner_id_idx=1,
         owner_username_idx=2,
     )
+    with db.get_connection() as conn:
+        conn.execute(ROSTER_DDL)
+        conn.execute(
+            """INSERT INTO silver_ig_roster
+               (platform, handle, profile_url, results_type, results_limit,
+                enabled, tier, creator_id, creator_name, updated_at,
+                source_fetched_at, processed_on)
+               VALUES ('instagram', 'user_a', 'https://www.instagram.com/user_a/',
+                       'posts', 12, TRUE, 'tier1', 7, 'Jane Doe', NULL,
+                       '2026-01-01T00:00:00+00:00', NULL)"""
+        )
     _run_profile_dimension(db, ops)
 
     with db.get_connection() as conn:
         row = conn.execute(
             "SELECT creator_id, creator_name FROM dim_profile WHERE owner_id = 'owner_a'"
         ).fetchone()
-    assert row == (creator["id"], "Jane Doe")
+    assert row == (7, "Jane Doe")
 
 
 def test_profile_dimension_unlinked_creator_null(db, ops):
