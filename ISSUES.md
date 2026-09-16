@@ -246,7 +246,7 @@ the containers, not simulated.
   raised `ProviderError: inference service http://jobs:8462 is DOWN (/health: [Errno -2] Name
   or service not known); refusing to submit` — a loud failure, never a quiet nothing-to-do.
 - `DAGSTER_HOME` correctly resolves to `/data/dagster_home` (the compose `environment:`
-  override beats `.env`'s Windows path), which is ISSUES #36 defeated in the container.
+  override beats `.env`'s Windows path), which is ISSUES #36 (`.env` `DAGSTER_HOME` beats a shell export) defeated in the container.
 
 **V6 — one real enrichment cycle. Passed, destination-verified.**
 
@@ -361,7 +361,7 @@ in production. Commit `e1c38b0`.
 
 ---
 
-### 36. Smoke E2E wrote to the live lake and the live Dagster instance
+### 39. Smoke E2E wrote to the live lake and the live Dagster instance
 
 **Status:** RESOLVED (state restored) — recorded because a future session will see
 cleared instance history and a backup trail, and would otherwise assume corruption.
@@ -424,7 +424,7 @@ procedure. Treat any future smoke run's instance state as UNVERIFIED until measu
 
 ---
 
-### 37. Retry-budget guard: was unreachable, now over-broad (2026-09-15)
+### 40. Retry-budget guard: was unreachable, now over-broad (2026-09-15)
 
 **Status:** the unreachable half is FIXED; the over-broad half is **OPEN**.
 
