@@ -77,6 +77,13 @@ from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
 # they actually read.
 _QUARANTINE_KEY = silver_enrichment.keys_by_output_name[conform.SILVER_QUARANTINE]
 _CLASSIFICATION_KEY = silver_enrichment.keys_by_output_name[conform.SILVER_CONTENT_CLASSIFICATION]
+#: Whole-publish gates (silent-loss, freshness) assert over ALL six tables, so
+#: their blocking reach is the point: a failure must be an ancestor of every
+#: mart. The six are siblings in the graph (no output gates another), so the
+#: gate anchors on a key the marts DO depend on. Anchoring on the quarantine
+#: output instead left the gate guarding nothing — quarantine is a parent of
+#: `v_quarantine_triage` only, and no mart depends on it.
+_BLOCKING_GATE_KEY = _CLASSIFICATION_KEY
 
 # ── Workload → silver tables (the anti-join's conformed counterpart) ───────
 
@@ -188,7 +195,7 @@ def quarantine_growth(conn, quarantined: int) -> tuple[bool, dict]:
 # ── Asset checks (wired via ENRICHMENT_DQ_CHECKS → definitions.py) ─────────
 
 
-@asset_check(asset=_QUARANTINE_KEY, blocking=True)
+@asset_check(asset=_BLOCKING_GATE_KEY, blocking=True)
 def check_no_silent_loss(duckdb: DuckDBResource) -> AssetCheckResult:
     """BLOCKING ADR-0012 anti-join: landed(bronze) \\ conformed(silver).
 
@@ -273,7 +280,7 @@ def check_quarantine_growth(duckdb: DuckDBResource) -> AssetCheckResult:
     return AssetCheckResult(passed=True, metadata=meta)
 
 
-@asset_check(asset=_QUARANTINE_KEY)
+@asset_check(asset=_BLOCKING_GATE_KEY)
 def check_silver_snapshot_freshness(duckdb: DuckDBResource) -> AssetCheckResult:
     """Freshness/volume expectation: silver snapshots cover the bronze file.
 

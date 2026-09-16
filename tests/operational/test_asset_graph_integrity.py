@@ -179,3 +179,45 @@ def _selected_keys(selection) -> set[AssetKey]:
     for operand in getattr(selection, "operands", None) or ():
         found |= _selected_keys(operand)
     return found
+
+
+def test_blocking_checks_are_ancestors_of_a_mart() -> None:
+    """A BLOCKING check that gates nothing looks like a gate but is not one.
+
+    Found by the multi_asset refactor: `check_no_silent_loss` was BLOCKING on
+    the single `silver_enrichment` asset, so it gated the whole publish. After
+    the producer split into seven outputs it landed on the quarantine output —
+    which no mart depends on (quarantine's only consumer is
+    `v_quarantine_triage`) — so the check blocked nothing while still
+    advertising `blocking=True`. That is worse than a non-blocking check,
+    because it reads as protection.
+
+    Rule: every blocking check must be an ancestor of at least one mart, so a
+    failure actually stops downstream materialization.
+    """
+    graph = defs.defs.resolve_asset_graph()
+    marts = [k for k in _registered_keys() if k.to_user_string().startswith("gold_")]
+
+    def ancestors(key: AssetKey) -> set[AssetKey]:
+        seen: set[AssetKey] = set()
+        stack = [key]
+        while stack:
+            for parent in graph.get(stack.pop()).parent_entity_keys:
+                if parent not in seen:
+                    seen.add(parent)
+                    stack.append(parent)
+        return seen
+
+    mart_ancestors: set[AssetKey] = set()
+    for mart in marts:
+        mart_ancestors |= ancestors(mart)
+
+    inert: list[str] = []
+    for check in defs.defs.asset_checks or []:
+        for spec in check.check_specs:
+            if spec.blocking and spec.asset_key not in mart_ancestors:
+                inert.append(f"{spec.name} -> {spec.asset_key.to_user_string()}")
+    assert not inert, (
+        "BLOCKING check(s) gate no mart — they cannot block any downstream "
+        f"materialization, so they are gates in name only: {sorted(inert)}"
+    )
