@@ -80,7 +80,7 @@ def _run_phase1(data_dir: Path, lake_dir: Path):
         with patch.object(
             migrate, "_OLD_BRONZE_DIR", data_dir / "bronze" / "datasets",
         ):
-            with patch("orchestration.defs.platform.paths.BRONZE_LAKE", lake_dir):
+            with patch.object(migrate, "bronze_path", lambda d: lake_dir / f"{d}.parquet"):
                 marker = data_dir / ".migration_complete"
                 if marker.exists():
                     marker.unlink()

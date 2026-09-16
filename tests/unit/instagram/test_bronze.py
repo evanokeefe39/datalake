@@ -117,8 +117,8 @@ def test_successful_scrape(mock_apify_success, tmp_path):
     THEN Parquet written with correct rows AND .meta sidecar exists
     AND asset returns pl.DataFrame
     """
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
-        with patch("orchestration.defs.platform.paths.bronze_path") as mbp:
+    with patch("orchestration.defs.ig_core.bnz.scrape.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.ig_core.bnz.scrape.bronze_path") as mbp:
             dest = tmp_path / "ds_1.parquet"
             mbp.return_value = dest
 
@@ -154,8 +154,8 @@ def test_idempotent_rerun(mock_apify_success, tmp_path):
     WHEN ig_posts_raw runs again
     THEN it returns existing data (no re-download)
     """
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
-        with patch("orchestration.defs.platform.paths.bronze_path") as mbp:
+    with patch("orchestration.defs.ig_core.bnz.scrape.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.ig_core.bnz.scrape.bronze_path") as mbp:
             dest = tmp_path / "ds_1.parquet"
             mbp.return_value = dest
 
@@ -182,8 +182,8 @@ def test_empty_dataset(mock_apify_empty, tmp_path):
     WHEN ig_posts_raw executes
     THEN Parquet with 0 rows (not an error)
     """
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
-        with patch("orchestration.defs.platform.paths.bronze_path") as mbp:
+    with patch("orchestration.defs.ig_core.bnz.scrape.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.ig_core.bnz.scrape.bronze_path") as mbp:
             dest = tmp_path / "ds_empty.parquet"
             mbp.return_value = dest
 
@@ -208,8 +208,8 @@ def test_apify_failure_raises(mock_apify_failed, tmp_path):
     WHEN ig_posts_raw polls
     THEN RuntimeError with failure message
     """
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
-        with patch("orchestration.defs.platform.paths.bronze_path") as mbp:
+    with patch("orchestration.defs.ig_core.bnz.scrape.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.ig_core.bnz.scrape.bronze_path") as mbp:
             mbp.return_value = tmp_path / "ds_fail.parquet"
 
             context = build_asset_context()
@@ -230,8 +230,8 @@ def test_apify_timeout_raises(mock_apify_timeout, tmp_path):
     WHEN ig_posts_raw polls
     THEN RuntimeError indicating timeout
     """
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
-        with patch("orchestration.defs.platform.paths.bronze_path") as mbp:
+    with patch("orchestration.defs.ig_core.bnz.scrape.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.ig_core.bnz.scrape.bronze_path") as mbp:
             mbp.return_value = tmp_path / "ds_timeout.parquet"
 
             context = build_asset_context()

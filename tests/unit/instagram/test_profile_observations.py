@@ -28,7 +28,7 @@ from migrations.migrate_backfill_profile_observations import (
 
 
 def _run_profiles(tmp_path, ops, duckdb):
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.profiles.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         return ig_profiles_slv(context)
 
