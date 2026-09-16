@@ -228,6 +228,67 @@ and the schema drift detector catches table mismatches.
 
 ## Active
 
+### 38. Compose acceptance (V5/V6) could not be executed — Docker Desktop not running
+
+**Status:** BLOCKED on the host, not on the code. Everything else about the platform
+work is verified (see the entries below and `docs/architecture/adr/0017`).
+
+**Symptom.** `docker version` fails:
+`failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`.
+So `docker compose up -d --build` could not run, and with it the two acceptance steps
+that require containers:
+
+- **V5** — all three services up; `/health` 200; Dagster webserver 200; harvest sensor
+  RUNNING and submit STOPPED in the UI; the `docker compose stop jobs` negative control.
+- **V6** — one real enrichment cycle through Compose (submit → poll → harvest), asserting
+  landed bronze rows, silver rows, and that media genuinely reached the model.
+
+**What WAS verified without Docker** (so the remaining gap is narrow):
+
+- `docker compose config -q` passes with all three services and every env override
+  resolving (`DAGSTER_HOME` correctly overridden to `/data/dagster_home` for
+  orchestration, `JOBS_SERVICE_URL`/`DASHBOARD_URL` on the service names, the path map
+  populated).
+- Every `COPY` source in all three Dockerfiles exists, and every `uv sync --package <n>`
+  names a package present in `uv.lock` — the two most common build failures.
+- The container **path** defects are proven fixed by simulation: with no `.git` ancestor
+  and `IG_DATA_DIR` set, `orchestration.definitions` loads (38 assets); and a REAL
+  `media_cache` row holding a Windows path resolved through the prefix map to its actual
+  148 KB image bytes — the exact chain that returned a miss before.
+- The `/health` gate end-to-end against the live service: 200 with the worker up, 503 with
+  it disabled, and the datalake adapter raising `ProviderError` loudly when the service is
+  stopped.
+
+**To close.** Start Docker Desktop (Linux containers) and run `docker compose up -d --build`
+from the repo root with `DATALAKE_HOST_DATA_DIR` set, then work V5 and V6.
+
+### 37. `media_cache` rows are written in the writer's path vocabulary
+
+**Status:** RESOLVED for the container path (ADR-0017); the mixed-runtime caveat remains.
+
+**Symptom.** 8,425 of 8,431 items in the live job store carry media paths, all
+Windows-absolute (`C:\Users\evano\repos\datalake\data\media\posts\<sha>.jpg`). Into a
+Linux container those are unopenable, so every item would fail `_missing_images` even
+though the bytes are mounted at `/data/media/posts/`.
+
+**Root cause.** The stored path is whatever the FETCHING process had, and
+`opsdb.media_cache.cached_local_path` tested it with `os.path.exists` before any
+translation — so the cache read as empty rather than misconfigured.
+
+**Fix.** `stored_local_path` (no filesystem check) + `engine.media.local_media_path`
+(translate via `platform.paths.runtime_path`, then test). Both containers mount
+`./data` at `/data`, so one vocabulary works at the wire.
+
+**Remaining caveat (accepted, not a defect):** a row written FROM a container holds
+`/data/media/...` and will not resolve on the host without the reverse mapping. Compose is
+the runtime of record; a host run after a container run needs a re-seed.
+
+### 36. `.env` `DAGSTER_HOME` beats a shell export for the `dagster` CLI
+
+**Status:** OPEN (unchanged) — the Compose orchestration service works around it by setting
+`DAGSTER_HOME=/data/dagster_home` in `environment:`, which overrides `env_file`. The trap
+remains for host CLI runs.
+
 ### 35. Enrichment harvest could not land anything (`KNOWN_PROVIDERS` drift)
 
 **Status:** RESOLVED — found by the first real paid run through the seam.
