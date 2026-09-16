@@ -34,14 +34,19 @@ can transitively cause a provider call. A system where **a read spends money** i
 an accidental CLI invocation, a re-run, or a sensor misfire each re-bill. That is why the
 plan shipped submit manual and left the harvest sensor running.
 
-**The judgement this ADR settles.** The owner has decided that cost is protected
-*externally*: the OpenRouter API key carries its own credit limit, the owner sets the spend
+**The judgement this ADR settles is twofold.** First, cost is protected *externally*: the
+OpenRouter API key carries its own credit limit, the owner sets the spend
 ceiling and rotates keys on the period they are comfortable with. Cost management is
 therefore a property of the **credential**, not of the orchestration graph. Dagster must not
 encode spend policy — no manual-submit gate *whose purpose is cost control*, no budget
 arithmetic, no per-run cost ceiling as a correctness property.
 
-That decision removes the tension. The paid edge is no longer a special case requiring an
+Second, and independently: the submit edge stays unreachable by transitive
+auto-materialization from silver or gold, because `silver_*` must remain a pure replay of
+`bronze_enrichment_raw` (ADR-0011). That wall is decision 4 and is **not** a cost measure —
+removing the manual-submit cost guard does not remove it.
+
+Removing the cost tension means the paid edge is no longer a special case requiring an
 operator, and the pipeline can be expressed the way Dagster intends: declarative lineage
 with jobs that run the graph.
 
@@ -65,6 +70,11 @@ Consequently:
   the workload selector remain as **operational controls** — ways to scope a run for
   debugging or a narrow backfill — not as the safety mechanism. Removing them would be a
   mistake; treating them as the guarantee would be one too.
+- **This decision does not create the submit wall, and removing cost tension does not remove
+  it.** The wall is decision 4's determinism boundary: `silver_*` stays a pure replay of
+  bronze, so no auto-materialization path may transitively reach `submit`. Stating it here
+  would let a later reader conclude the wall is a spend policy that expires when cost is
+  handled.
 - A run that would call the provider is allowed to do so. It is not gated behind a human
   approval step, and no asset check fails because a run *could* cost money.
 - When the key's credit limit is reached, the provider returns an error; that is handled as

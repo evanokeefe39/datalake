@@ -284,8 +284,9 @@ bronze landing is replaceable by locked decision, so a live run is recoverable, 
 isolation the smoke slice appears to offer is not there. Threading a root through harvest +
 silver is the fix if isolation is wanted.
 
-**Port note:** Dagster publishes host **3001** → container 3000 on this machine because the
-`langfuse-spike` stack owns 3000. See the pending item about making that an override.
+**Port note:** Dagster publishes host **7642** → container 3000 (compose default), chosen so it
+does not collide with the dev-server ports (3000/3001/8000/8080) that this machine's other
+stacks occupy. Override with `DAGSTER_HOST_PORT`.
 
 **Follow-on observed (now ADR-0018):** the harvest landed bronze while
 `silver_visual_annotations` sat at 0 — the lineage was correct but nothing acted on it.

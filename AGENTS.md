@@ -436,7 +436,7 @@ exist. `CURRENT_PROMPT_HASH` lives in
 
 Re-processing is a **replay, not a re-bill**: bronze holds every provider response
 verbatim, so bumping `DERIVATION_VERSION` in `engine/silver_rt.py` and
-re-materializing `silver_enrichment` republishes silver deterministically with
+re-materializing the silver tables republishes silver deterministically with
 zero API calls. Only a genuinely new prompt needs new provider calls, and those go
 out through the submit sensor.
 
