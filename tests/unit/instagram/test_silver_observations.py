@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from dagster import build_asset_context
@@ -78,10 +78,10 @@ def test_observation_appended_per_post_with_meta_provenance(tmp_path, ops):
     obs = _obs(duckdb)
     assert len(obs) == 2
     by_id = {r[0]: r for r in obs}
-    assert by_id["1"][1] == datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
+    assert by_id["1"][1] == datetime(2026, 1, 15, 10, 0, tzinfo=UTC)
     assert by_id["1"][2] == 10  # likes, raw
     assert by_id["1"][6] == "ds_001"
-    assert by_id["2"][1] == datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
+    assert by_id["2"][1] == datetime(2026, 1, 15, 10, 0, tzinfo=UTC)
 
 
 def test_observed_at_falls_back_to_file_mtime(tmp_path, ops):
@@ -95,7 +95,7 @@ def test_observed_at_falls_back_to_file_mtime(tmp_path, ops):
     _run(tmp_path, ops, duckdb)
 
     (obs,) = _obs(duckdb)
-    assert obs[1] == datetime.fromtimestamp(stamp, tz=timezone.utc)
+    assert obs[1] == datetime.fromtimestamp(stamp, tz=UTC)
 
 
 def test_sentinels_kept_raw(tmp_path, ops):

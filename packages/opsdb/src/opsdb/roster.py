@@ -24,7 +24,7 @@ here: this module touches only the database.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .schema import ConnectionFactory, sqlite_ddl
 
@@ -44,7 +44,7 @@ DEFAULT_DEPTH = 1
 
 def _now_iso() -> str:
     """Current UTC timestamp as ISO 8601 string."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _default_profile_url(platform: str, handle: str) -> str:

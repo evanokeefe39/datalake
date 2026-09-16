@@ -44,7 +44,7 @@ import json
 import shutil
 import sqlite3
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 import duckdb
@@ -436,7 +436,7 @@ def _open_rehearsal() -> tuple[sqlite3.Connection, duckdb.DuckDBPyConnection,
 
 def run(apply_: bool, rehearse: bool,
         accept_open_handles: bool = False) -> dict:
-    now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    now = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
     if not apply_ and not rehearse:
         # --plan: measure, report, write nothing.

@@ -13,7 +13,7 @@ Both land typed Parquet plus a `.meta` JSON sidecar for lineage.
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 
@@ -39,8 +39,15 @@ logger = logging.getLogger(__name__)
 # ── Config ──────────────────────────────────────────────────────────────────
 
 
-class ResultsType(str, Enum):
-    """Valid ``resultsType`` values for the Apify Instagram scraper."""
+class ResultsType(str, Enum):  # noqa: UP042 — deliberately not StrEnum
+    """Valid ``resultsType`` values for the Apify Instagram scraper.
+
+    Kept as ``(str, Enum)`` rather than ``StrEnum`` on purpose: a ``StrEnum``
+    member IS its value, so ``str(ResultsType.POSTS)`` becomes ``"posts"``
+    instead of ``"ResultsType.POSTS"``, and membership/format checks against
+    these members change meaning. This enum crosses the Dagster config boundary
+    and the Apify client, so the representation is part of the contract.
+    """
 
     POSTS = "posts"
     DETAILS = "details"
@@ -170,7 +177,7 @@ def _write_meta(
             "results_limit": results_limit,
             "results_type": results_type,
         },
-        "downloaded_at": datetime.now(timezone.utc).isoformat(),
+        "downloaded_at": datetime.now(UTC).isoformat(),
     }
     meta_path = parquet_path.with_suffix(".parquet.meta")
     meta_path.write_text(json.dumps(meta, indent=2))

@@ -23,7 +23,7 @@ snapshot, never a day7 judgment.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import polars as pl
 from dagster import asset
@@ -129,7 +129,7 @@ def run_label_pass(
 
     conn.execute(_DDL)
     core_handles = {h.lower().lstrip("@") for h in (core_handles or set())}
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     now = now.replace(tzinfo=None) if now.tzinfo else now  # silver is naive UTC
 
     posts, likes, _ = _load_inputs(conn)
@@ -141,7 +141,7 @@ def run_label_pass(
     for p in posts:
         key = (p["owner_id"] or "").lower()
         by_creator.setdefault(key, []).append(p)
-    _min_aware = datetime.min.replace(tzinfo=timezone.utc)  # aware-epoch fallback for the sort key
+    _min_aware = datetime.min.replace(tzinfo=UTC)  # aware-epoch fallback for the sort key
     for plist in by_creator.values():
         plist.sort(key=lambda p: p["ts"] or p["processed_on"] or _min_aware)
 

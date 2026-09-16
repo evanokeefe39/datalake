@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -42,10 +42,10 @@ def _observed_at(fp: Path) -> datetime:
             raw = json.loads(meta_path.read_text(encoding="utf-8")).get("downloaded_at")
             if raw:
                 dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-                return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+                return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
         except (json.JSONDecodeError, ValueError, OSError):
             pass
-    return datetime.fromtimestamp(fp.stat().st_mtime, tz=timezone.utc)
+    return datetime.fromtimestamp(fp.stat().st_mtime, tz=UTC)
 
 
 def _int(row: dict, *keys: str) -> int | None:

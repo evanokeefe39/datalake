@@ -318,14 +318,12 @@ class TestDefaultStatusPolicy:
     def test_submit_sensor_ships_stopped(self) -> None:
         """Submit triggers paid provider work — never automatically."""
         from dagster import DefaultSensorStatus
-
         from orchestration.defs.engine.sensor import enrichment_submit_sensor
 
         assert enrichment_submit_sensor.default_status == DefaultSensorStatus.STOPPED
 
     def test_schedules_ship_stopped(self) -> None:
         from dagster import DefaultScheduleStatus
-
         from orchestration.defs.platform.schedules import core_refresh, daily_medallion
 
         for sched in (daily_medallion, core_refresh):

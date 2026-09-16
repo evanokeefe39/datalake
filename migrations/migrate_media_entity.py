@@ -14,7 +14,7 @@ Idempotent — safe to re-run.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -27,7 +27,7 @@ def _backup(path: Path) -> Path | None:
     """Copy a DB file to a timestamped backup before destructive changes."""
     if not path.exists():
         return None
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     backup = path.with_suffix(f".media_entity_bak_{ts}{path.suffix}")
     backup.write_bytes(path.read_bytes())
     print(f"Backed up {path} -> {backup}")

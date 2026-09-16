@@ -7,7 +7,7 @@ assets import it from here.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
@@ -44,7 +44,7 @@ def _write_meta(
             "results_limit": results_limit,
             "results_type": results_type,
         },
-        "downloaded_at": datetime.now(timezone.utc).isoformat(),
+        "downloaded_at": datetime.now(UTC).isoformat(),
     }
     meta_path = parquet_path.with_suffix(".parquet.meta")
     meta_path.write_text(json.dumps(meta, indent=2))
@@ -101,7 +101,7 @@ def _read_downloaded_at(meta_path: Path | None) -> datetime | None:
             return None
         dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except (json.JSONDecodeError, ValueError, OSError):
         return None
@@ -207,7 +207,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     if row and row[0] is not None:
         dt = row[0]
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         watermark_ts = dt.timestamp()
     else:
         watermark_ts = 0.0
@@ -330,7 +330,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
         # stamped before the union and dropped after dedup so it never
         # becomes a silver_ig_posts column.
         scraped_at = _read_downloaded_at(meta_path) or datetime.fromtimestamp(
-            mtime, tz=timezone.utc
+            mtime, tz=UTC
         )
         df = df.with_columns(pl.lit(scraped_at).alias("scraped_at"))
 
@@ -414,7 +414,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     deduped = deduped.drop("scraped_at")
 
     # Only stamp processed_on on genuinely new posts (existing keep their value)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     deduped = deduped.with_columns(
         pl.when(pl.col("processed_on").is_null())
         .then(pl.lit(now_iso))
@@ -434,7 +434,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             conn.execute(
                 "INSERT OR REPLACE INTO watermarks (name, timestamp) "
                 "VALUES ('silver_ig', ?)",
-                [datetime.fromtimestamp(max_mtime, tz=timezone.utc).replace(tzinfo=None)],
+                [datetime.fromtimestamp(max_mtime, tz=UTC).replace(tzinfo=None)],
             )
 
     return deduped
