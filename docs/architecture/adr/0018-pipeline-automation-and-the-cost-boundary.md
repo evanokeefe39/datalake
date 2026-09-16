@@ -147,10 +147,15 @@ refactor — which is precisely how this gap arose.
 
 **Not decided here.**
 
-- **Whether `silver_enrichment` gains partitions or an incremental policy.** It currently
-  re-derives from the whole bronze root, so auto-materializing it means a full conform per
-  landing. That is a performance design question with its own tradeoffs, deliberately left
-  open. The correctness contract does not depend on it; only the cost of recomputation does.
+- **How silver avoids a full re-conform per landing.** This ADR leaves the *mechanism* open,
+  but the GOAL is now decided by the owner: silver must not re-conform the whole bronze root on
+  every trigger. That work needs its own design — the unit of increment, the backfill/replay
+  story, and how it preserves `conform()`'s "pure function, zero API calls" structural guard.
+  The correctness contract does not depend on which mechanism is chosen; only the cost of
+  recomputation does. **See `tasks/plans/asset-modeling-gap-analysis.md` §2 before proposing
+  one** — a measurement there corrects an assumption that was briefly recorded as fact: an
+  unproduced `deps=` key does NOT permanently block `eager()`; it is un-gated as soon as a
+  materialization event is recorded for it. The blocking condition is a missing *event*.
 - **Whether the submit edge is driven by a schedule, a sensor on a discovery asset, or only
   by job invocation.** All three are consistent with this ADR. The scheduled variants ship
   STOPPED per decision 3.
@@ -160,18 +165,25 @@ refactor — which is precisely how this gap arose.
 This decision is implemented when, and only when, all of the following are observed against
 the running system:
 
-1. Materializing a gold mart from an empty silver runs silver (and any upstream work it
-   needs) with no manual intermediate step.
-2. A new landed bronze row reaches `silver_*` without an operator materializing silver.
+1. **A new landed bronze row reaches `silver_*` with no manual intermediate step**, and the
+   marts then fire in turn — observed as a SENSOR-LAUNCHED run, never a manual materialize
+   (a manual materialize bypasses the condition and would pass while automation never
+   triggers).
+2. **The same chain reaches NO provider.** Running the mart materialization to completion
+   leaves the provider untouched: no submit step in the run graph, and the job store's item
+   count unchanged. (This is decision 4 observed, not merely asserted — cf. criterion 5.)
 3. The asset-graph-integrity guard asserts each asset's automation policy, and FAILS when a
    policy is removed — proven by injecting the removal.
 4. A provider-side failure (credit limit / 429) surfaces as a loud seam error and is
    retryable, never as a quiet no-op.
 5. **The determinism wall is enforced, not merely documented.** A graph assertion proves no
-   auto-materialization path from `silver_enrichment` (or any mart) reaches `submit` — and
+   auto-materialization path from the silver outputs (or any mart) reaches `submit` — and
    the guard FAILS when such a path is introduced, proven by injecting one. If this
    assertion is absent, decision 4 rests on prose alone and the next refactor can quietly
    make silver provider-dependent.
-6. **Replay purity still holds end to end**: materializing `silver_enrichment` twice against
-   an unchanged bronze produces identical rows and issues zero provider calls (the property
-   ADR-0011's "replay, not a re-bill" claim depends on).
+6. **Replay purity still holds end to end**: conforming the same bronze twice yields identical
+   rows and issues zero provider calls — the property ADR-0011's "replay, not a re-bill" claim
+   depends on. (`silver_enrichment` is named in the plan's modeling decision and may retire as
+   an asset key; this criterion is about the CONFORM computation, not the key.)
+7. The `default_automation_condition_sensor` is ENABLED, and its enabled state is asserted by
+   a test — without it, every condition above is inert decoration that looks like policy.
