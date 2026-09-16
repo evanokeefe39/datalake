@@ -505,7 +505,7 @@ the rest from declared lineage. There is no required sequence of hand-run stages
 stage whose normal operation is "someone remembers to trigger it."
 
 **The submit edge is a DETERMINISM boundary, not a cost boundary.** No auto-materialization
-path from `silver_enrichment` or any mart may reach `submit`. `silver_*` must stay a *pure
+path from the silver outputs or any mart may reach `submit`. `silver_*` must stay a *pure
 deterministic replay of `bronze_enrichment_raw`* (ADR-0011): if a `materialize` on silver
 could transitively call the provider, silver would become a function of live provider state
 and sampling — different rows on different runs — and "a schema change is a replay, not a

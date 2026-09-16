@@ -289,8 +289,10 @@ silver is the fix if isolation is wanted.
 
 **Follow-on observed (now ADR-0018):** the harvest landed bronze while
 `silver_visual_annotations` sat at 0 — the lineage was correct but nothing acted on it.
-The chain stopped at bronze until silver was materialized by hand. The owner's decision that
-cost is enforced at the API credential (not in the graph) settles the design; see
+The chain stopped at bronze until silver was materialized by hand. The owner's decision —
+auto-materialize the replay path, while the submit edge stays a **determinism boundary** so
+`silver_*` remains a pure replay of bronze (cost sits on the API credential as
+defense-in-depth) — settles the design; see
 `docs/architecture/adr/0018-pipeline-automation-and-the-cost-boundary.md`. The
 auto-materialization implementation is separate, open work.
 
