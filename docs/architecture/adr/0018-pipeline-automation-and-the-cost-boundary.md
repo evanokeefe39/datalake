@@ -55,9 +55,10 @@ computes the rest from the declared lineage. There is no required sequence of ha
 stages, and no stage whose normal operation is "someone remembers to trigger it". The
 default posture is: **materializing a downstream asset runs everything it depends on.**
 
-**2. Cost is enforced at the credential, never in the graph.**
+**2. Cost lives on the API credential, as defense-in-depth — not as orchestration logic.**
 
-The spend boundary lives on the API key (provider-side credit limit, rotated by the owner).
+The spend boundary is the API key's provider-side credit limit, set and rotated by the owner.
+It is a backstop, not the reason the submit boundary exists (that is decision 4, replay purity).
 Consequently:
 
 - No orchestration logic exists *for the purpose of* limiting spend. `dry_run`, `limit` and
