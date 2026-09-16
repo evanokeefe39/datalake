@@ -79,11 +79,12 @@ services:
       # with half the JS ecosystem). Override with DAGSTER_HOST_PORT.
       - "${DAGSTER_HOST_PORT:-7642}:3000"
     depends_on:
-      # `jobs` has a healthcheck, so wait for HEALTHY, not merely started — a
-      # bare list waits for container start only, and on a cold boot (or after a
-      # reboot) orchestration came up before the service answered /health and
-      # exited 255. `dashboard` has no healthcheck, so started is the best it can
-      # express.
+      # Wait for a READY dependency, not merely a started container: a bare list
+      # waits only for start, so orchestration could come up before `jobs` was
+      # answering. (After a reboot it exited 255; the exact cause was not
+      # captured, so this is stated as the correct wiring rather than as the
+      # diagnosed fix.) `dashboard` has no healthcheck, so started is the
+      # strongest condition it can express.
       jobs:
         condition: service_healthy
       dashboard:
