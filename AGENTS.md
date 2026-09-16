@@ -488,6 +488,40 @@ prefix unset is identity. A container-written row (`/data/media/...`) will not r
 the host without the reverse mapping — run the pipeline in Compose once it is the runtime
 of record.
 
+## Pipeline automation and the cost boundary (ADR-0018)
+
+**The pipeline is job-driven.** Asking for a downstream asset runs its upstream work — an
+operator asks for an outcome ("publish silver", "refresh the marts") and Dagster computes
+the rest from declared lineage. There is no required sequence of hand-run stages, and no
+stage whose normal operation is "someone remembers to trigger it."
+
+**Cost is enforced at the API credential, never in the orchestration graph.** The
+OpenRouter key carries its own credit limit, which the owner sets and rotates per period
+they choose. Consequences an agent must respect:
+
+- Do NOT add orchestration logic whose purpose is limiting spend. No budget arithmetic, no
+  cost gate, no asset check that fails because a run *could* cost money.
+- `dry_run` / `limit` / the workload selector are **operational controls** for scoping a
+  run (debugging, narrow backfills) — they are NOT the safety mechanism, and neither
+  removing nor relying on them as a guarantee is correct.
+- A provider credit-limit error is a **loud, retryable failure at the seam**
+  (`ProviderError`, 429-class handling). It must never be pre-empted by graph logic or
+  silently absorbed.
+
+What stays human-triggered, for reasons that are NOT cost:
+
+- **Schedules ship STOPPED** (`DefaultScheduleStatus.STOPPED`) — policy about surprise: a
+  new schedule does not start spending effort on its own. The owner enables it deliberately.
+- **Bounded fan-out ops keep an explicit cap** (e.g. `DEFAULT_MAX_PROFILES_PER_SWEEP`) so a
+  first tick cannot fan out into an unbounded paid sweep. That cap bounds *blast radius*,
+  chosen once and reviewable — it is not per-run cost accounting.
+
+Any auto-materialization policy an asset carries MUST be asserted by a test, in the same
+spirit as the asset-graph-integrity guard: a policy that exists only as a decorator
+argument silently disappears in the next refactor, which is exactly how the bronze→silver
+gap arose (bronze landed, silver sat still, because the lineage was correct but nothing
+acted on it).
+
 
 ## Bronze asset (ig_posts_raw)
 
@@ -785,6 +819,8 @@ any other loader would.
 | 2026-09-10 | Dagster-native orchestration (ADR-0012) | Retires the `ops.sqlite` queue (`batch_jobs`/`batch_items`/`dead_letter`/`facets_batch_jobs`); retains media/identity/prompt tables. Queue DROP EXECUTED 2026-09-15 (archived first) |
 | 2026-09-10 | Inference seam (ADR-0008/0009): three verbs + `submit`/`poll-to-terminal`/`retrieve`, `ProviderAdapter` swap | One seam serves both the qwen-batch-service (async wrapper over a synchronous provider) and Gemini's native batch. Proven in the enrichment spike; not yet wired in |
 | 2026-09-15 | Repository layout (ADR-0015): a uv workspace (`services/`, `packages/`), `datalake`→`orchestration`, role-based modules, providers named only in the adapter layer | The layout no longer matched what the code did; a retired provider was still selectable by config; two entry points fought over orchestration state. `src/` is gone, the Gemini path is deleted, `__init__.py` files are docstrings-only |
+| 2026-09-16 | Compose + roster boundary (ADR-0017): one Compose brings up orchestration/jobs/dashboard; the dashboard owns the creator roster and serves it over HTTP; persisted media paths translate through a host↔container prefix map | The pipeline was hand-started from a separate checkout, and the roster had two writers on one `ops.sqlite`. Roster now crosses the boundary as a published bronze source; media paths are stored in the writer's vocabulary and translated at read |
+| 2026-09-16 | Pipeline automation + cost boundary (ADR-0018): a downstream materialization runs its upstream work; cost is enforced at the API credential, never in the graph | A real run landed 4 bronze rows while `silver_visual_annotations` stayed at 0 — lineage was correct but nothing acted on it, so the chain stopped at bronze. Manual submit existed as a spend guard; with cost protected at the key, that guard has no purpose in the graph |
 
 ## Verification plane — defense in depth (2026-09-15, BINDING)
 
