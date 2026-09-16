@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 
+import duckdb
 import pytest
 from dagster import DagsterInstance, build_sensor_context
 from orchestration.defs.engine.sensor import enrichment_submit_sensor
@@ -21,8 +22,42 @@ from orchestration.defs.platform.resources import DuckDBResource
 WORKLOAD = "content-classification"
 
 
-def _slice_ctx(database: str = "data/smoke/state.duckdb"):
-    """A sensor context over the smoke slice with the real resource binding."""
+@pytest.fixture
+def labels_db(tmp_path):
+    """A self-contained DuckDB carrying the three tables the workloads read.
+
+    This test used to point at `data/smoke/state.duckdb`, which is GITIGNORED —
+    so it passed only on a machine where someone had built the smoke slice, and
+    failed on a bare checkout. DDL comes from the catalog, so the fixture cannot
+    drift from the real tables.
+    """
+    from orchestration.defs.platform.schemas import duckdb_ddl
+
+    path = tmp_path / "state.duckdb"
+    conn = duckdb.connect(str(path))
+    for table in ("silver_ig_posts", "ig_post_labels", "silver_content_classification"):
+        conn.execute(duckdb_ddl(table))
+
+    conn.executemany(
+        "INSERT INTO silver_ig_posts (post_id, caption, owner_id, owner_username, "
+        "media_files, media_count, source_dataset, processed_on) "
+        "VALUES (?, ?, 'owner_a', 'user_a', '[]', 0, 'test', current_timestamp)",
+        [(f"p{i:03d}", f"Caption {i}") for i in range(12)],
+    )
+    conn.executemany(
+        "INSERT INTO ig_post_labels (post_id, label, method, enrich_decision, "
+        "judged_at, is_provisional, label_version) "
+        "VALUES (?, 'standard', 'test', 'standout', current_timestamp, FALSE, 1)",
+        [(f"p{i:03d}",) for i in range(12)],
+    )
+    conn.close()
+    return str(path)
+
+
+def _slice_ctx(database: str | None = None):
+    """A sensor context over a DuckDB with real resource binding."""
+    if database is None:
+        database = "data/smoke/state.duckdb"
     return build_sensor_context(
         instance=DagsterInstance.ephemeral(),
         resources={"duckdb": DuckDBResource(database=database)},
@@ -36,13 +71,13 @@ def _requests(ctx):
 # ── The request shape (ADR-0012 D5) ─────────────────────────────────────────
 
 
-def test_pending_work_yields_one_identity_keyed_request():
+def test_pending_work_yields_one_identity_keyed_request(labels_db):
     """GIVEN eligible posts with nothing in flight
     WHEN the sensor ticks
     THEN it yields exactly ONE RunRequest whose run_key is keyed on the
     IDENTITY of the pending set and whose tag carries the pending keys.
     """
-    ctx = _slice_ctx()
+    ctx = _slice_ctx(labels_db)
     reqs = _requests(ctx)
 
     assert len(reqs) == 1
@@ -59,14 +94,14 @@ def test_pending_work_yields_one_identity_keyed_request():
         assert key.count("\x00") == 2, key
 
 
-def test_run_key_is_stable_for_the_same_pending_set():
+def test_run_key_is_stable_for_the_same_pending_set(labels_db):
     """Consecutive ticks before the previous run lands must dedupe: the same
     still-pending set produces the SAME run_key, so Dagster requests once."""
-    first, second = _requests(_slice_ctx()), _requests(_slice_ctx())
+    first, second = _requests(_slice_ctx(labels_db)), _requests(_slice_ctx(labels_db))
     assert first[0].run_key == second[0].run_key
 
 
-def test_run_key_is_keyed_on_identity_not_size(monkeypatch):
+def test_run_key_is_keyed_on_identity_not_size(labels_db, monkeypatch):
     """REGRESSION: a count-keyed run_key silently stalls paid work.
 
     ``run_key = f"submit-{len(keys)}"`` collapses two DIFFERENT backlogs of
@@ -109,7 +144,7 @@ def test_run_key_is_keyed_on_identity_not_size(monkeypatch):
         monkeypatch.setattr(wl_mod, "WORKLOADS", (fake,))
         monkeypatch.setattr(wl_mod, "WORKLOAD_BY_NAME", {fake.name: fake})
         monkeypatch.setattr(wl_mod, "workloads_for", lambda cfg: (fake,))
-        reqs = _requests(_slice_ctx())
+        reqs = _requests(_slice_ctx(labels_db))
         assert len(reqs) == 1, reqs
         return reqs[0].run_key
 
@@ -129,23 +164,26 @@ def test_run_key_is_keyed_on_identity_not_size(monkeypatch):
     assert sensor_key_for(set_a) == key_a
 
 
-def test_the_tag_carries_every_pending_key():
+def test_the_tag_carries_every_pending_key(labels_db):
     """The tag is the request's payload of record: the run uses it to know
     what was asked for. A truncated or partial tag would under-report work."""
-    req = _requests(_slice_ctx())[0]
+    req = _requests(_slice_ctx(labels_db))[0]
     tagged = json.loads(req.tags["enrichment/submit_partitions"])
     assert len(tagged) == len(set(tagged)), "tagged keys must be unique"
-    # The smoke slice has 170 eligible posts across the three workloads.
-    assert len(tagged) >= 100
+    # One key per (workload, eligible post) pair, and nothing else. With 12
+    # eligible posts and two applicable workloads (content-classification +
+    # growth-facets-text; growth-facets-visual needs media), that is 24. A
+    # partial tag would under-report the work the run is asked to do.
+    assert len(tagged) == 24
 
 
 # ── The sensor does not act ─────────────────────────────────────────────────
 
 
-def test_sensor_materializes_nothing():
+def test_sensor_materializes_nothing(labels_db):
     """The sensor requests; it never writes. Discovering, guarding and
     materializing happen inside the run, where they share one snapshot."""
-    ctx = _slice_ctx()
+    ctx = _slice_ctx(labels_db)
     _requests(ctx)
     inst = ctx.instance
     assert list(inst.get_dynamic_partitions("enrichment_submitted")) == []
@@ -154,7 +192,7 @@ def test_sensor_materializes_nothing():
     ) == set()
 
 
-def test_sensor_never_submits_or_harvests():
+def test_sensor_never_submits_or_harvests(labels_db):
     """Source-level guard: the submit sensor must not reach any acting verb."""
     import inspect
 

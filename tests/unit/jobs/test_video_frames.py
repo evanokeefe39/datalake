@@ -43,6 +43,16 @@ def _fake_ffmpeg_run(frames: int, *, fail: bool = False):
 def _clean_env(monkeypatch):
     monkeypatch.delenv(video.FRAMES_PER_VIDEO_ENV, raising=False)
     monkeypatch.delenv(video.FRAME_MAX_SIDE_ENV, raising=False)
+    # Every test here mocks `subprocess.run`, so ffmpeg is never really invoked —
+    # but `sample_video` gates on `shutil.which("ffmpeg")` BEFORE it calls the
+    # mocked runner. Left real, these tests pass only on a machine that happens
+    # to have ffmpeg installed and fail on a bare CI runner, which is a false
+    # signal in both directions. Declare the capability instead of discovering it.
+    monkeypatch.setattr(video.shutil, "which", lambda name: f"/usr/bin/{name}")
+    # Same reasoning as ffmpeg above: `qwen.chat` reads the key BEFORE it posts,
+    # and every test here intercepts the httpx call, so no real request is made.
+    # Without this the tests demand a live credential to exercise local logic.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-used")
 
 
 def test_video_path_yields_n_frame_parts(monkeypatch, tmp_path):
