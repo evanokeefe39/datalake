@@ -26,7 +26,7 @@ hand-written, so adding a table to the runtime cannot silently desync the graph.
 
 import logging
 
-from dagster import AssetKey, AssetOut, Nothing, multi_asset
+from dagster import AssetKey, AssetOut, AutomationCondition, Nothing, multi_asset
 
 from orchestration.defs.engine import silver_rt as conform
 from orchestration.defs.platform import paths as lake
@@ -85,6 +85,12 @@ _ReturnAnnotation = tuple[tuple(Nothing for _ in _PUBLISHED_TABLES)]
             key=AssetKey([table]),
             description=_DESCRIPTIONS[table],
             group_name="enrichment",
+            # Auto-materialize on new bronze: these seven are a pure replay of
+            # `bronze_enrichment_raw` with zero provider calls, so running them
+            # automatically costs nothing and the pipeline needs no operator.
+            # The paid `submit` edge stays unreachable — see the
+            # unreachable-submit guard, which fails if a path is introduced.
+            automation_condition=AutomationCondition.eager(),
         )
         for table in _PUBLISHED_TABLES
     },

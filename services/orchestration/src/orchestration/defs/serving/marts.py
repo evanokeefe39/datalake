@@ -4,13 +4,14 @@ Each mart COMPOSES the canonical metric views; none restates a tier
 bucket, momentum constant, baseline or z-score."""
 
 
-from dagster import AssetKey, asset
+from dagster import AssetKey, AutomationCondition, asset
 from dagster_duckdb import DuckDBResource
 
 
 @asset(
     name="gold_post_enrichment",
     group_name="serving",
+    automation_condition=AutomationCondition.eager(),
     description=(
         "Wide per-post enrichment mart: canonical engagement metrics + "
         "classification shape + all five silver channel outputs + provenance. "
@@ -144,6 +145,7 @@ def gold_post_enrichment(duckdb: DuckDBResource) -> None:
 @asset(
     name="gold_creator_performance",
     group_name="serving",
+    automation_condition=AutomationCondition.eager(),
     description=(
         "Q1 mart — who performs well in X domain. Composes v_creator_profile "
         "+ v_post_metrics + v_post_follower_context; PK (creator_id, platform)."
@@ -234,6 +236,7 @@ def gold_creator_performance(duckdb: DuckDBResource) -> None:
 @asset(
     name="gold_content_shape_performance",
     group_name="serving",
+    automation_condition=AutomationCondition.eager(),
     description=(
         "Q2 mart — what content shape performs. LONG form keyed "
         "(platform, domain, topic, follower_tier, facet_name, facet_value); "
@@ -403,6 +406,7 @@ def gold_content_shape_performance(duckdb: DuckDBResource) -> None:
 @asset(
     name="gold_top_posts",
     group_name="serving",
+    automation_condition=AutomationCondition.eager(),
     description=(
         "Q3 mart — what performs across ALL domains: rank/percentile over "
         "the canonical engagement score, joined to the full content shape. "
