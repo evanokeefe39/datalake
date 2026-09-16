@@ -88,11 +88,13 @@ def _tick(instance: DagsterInstance, cursor: str | None = None) -> tuple[list, s
 
 
 def _requested_keys(requests: list) -> set[str]:
-    """Every asset key a RunRequest names.
+    """Every ASSET key a RunRequest names.
 
     The automation sensor emits `asset_selection` as a LIST of AssetKeys (not a
-    selection object with `.selected_keys`), plus an `entity_keys` field. Read
-    both, tolerantly, since a future Dagster may shape either differently.
+    selection object with `.selected_keys`). `entity_keys` is deliberately NOT
+    consulted: it is `asset_selection + asset_check_keys`, so reading it would
+    pull check keys such as `check_no_silent_loss` into a set this module
+    compares against asset keys.
     """
     found: set[str] = set()
     for req in requests:
@@ -103,26 +105,24 @@ def _requested_keys(requests: list) -> set[str]:
         else:
             for key in getattr(selection, "selected_keys", None) or ():
                 found.add(key.to_user_string())
-        for key in getattr(req, "entity_keys", None) or ():
-            found.add(key.to_user_string() if hasattr(key, "to_user_string") else str(key))
     return found
 
 
-def _assert_tick_observes_keys(requests: list) -> set[str]:
-    """The keys named by these run requests. Fails loudly if requests name none.
+def _tick_after_bronze(instance: DagsterInstance) -> set[str]:
+    """Baseline tick, bronze event, second tick — return the keys requested.
 
-    An automation RunRequest may carry its selection on the sensor rather than
-    the request, so unnamed requests are still evidence that the sensor FIRED —
-    but they cannot evidence WHICH assets. Assert we can see them, so the test
-    never passes vacuously.
+    Asserts the requests are non-empty and NAME keys, so a negative assertion
+    built on this cannot pass vacuously when the sensor fired nothing.
     """
-    if not requests:
-        return set()
+    _, cursor = _tick(instance)
+    instance.report_runless_asset_event(AssetMaterialization(asset_key=_BRONZE))
+    requests, _ = _tick(instance, cursor=cursor)
     keys = _requested_keys(requests)
     assert keys, (
-        "the sensor issued run requests but none named an asset key, so this "
-        "test cannot distinguish which assets fired — the assertion would be "
-        f"vacuous. requests={[type(r).__name__ for r in requests]}"
+        "the sensor issued no named run requests after a bronze landing event, "
+        "so any negative assertion below ('no marts', 'no paid edge') would be "
+        "vacuously true. The positive test is the one that must fail here; this "
+        "guard stops the negatives from passing for the wrong reason."
     )
     return keys
 
@@ -145,13 +145,29 @@ def test_bronze_landing_event_alone_causes_a_sensor_run(instance: DagsterInstanc
     instance.report_runless_asset_event(AssetMaterialization(asset_key=_BRONZE))
 
     requests, _ = _tick(instance, cursor=cursor)
-    requested = _assert_tick_observes_keys(requests)
+    requested = _requested_keys(requests)
+    assert requested, (
+        "the sensor issued run requests but none named an asset key, so this "
+        "assertion would be vacuous — the key extraction is wrong, not the "
+        f"pipeline. requests={[type(r).__name__ for r in requests]}"
+    )
     silver_requested = {k for k in requested if k.startswith("silver_")}
-    assert silver_requested, (
-        "a bronze landing event did not cause the SENSOR to request the silver "
-        "outputs — the pipeline is not event-driven, so it regressed to the "
-        "ADR-0018 stall where bronze lands and silver waits for a human. "
-        f"sensor requested={sorted(requested)}"
+    # NOTE on what this proves, and what it does NOT: the sensor evaluates
+    # `AssetSelection.all()` and falls back to `default_condition` when an asset
+    # carries none (`automation_context.py:76` — `.automation_condition or
+    # evaluator.default_condition`). So this asserts the SENSOR requests the full
+    # replay path after a bronze landing event; it does NOT prove each output
+    # carries `eager()`. That property is asserted structurally in
+    # `test_asset_graph_integrity.py::test_only_the_replay_path_is_automated`,
+    # which reads the specs directly. Verified by injection: dropping one
+    # output's condition leaves this test green (the default covers it) while the
+    # structural guard fails.
+    assert silver_requested == set(_SILVER), (
+        "a bronze landing event did not fire the FULL replay path — the missing "
+        "outputs mean that table will not republish when bronze lands, which is "
+        "the ADR-0018 stall in miniature. missing="
+        f"{sorted(set(_SILVER) - silver_requested)} unexpected="
+        f"{sorted(silver_requested - set(_SILVER))}"
     )
 
 
@@ -162,10 +178,7 @@ def test_marts_are_not_requested_off_the_bronze_event(instance: DagsterInstance)
     not been republished yet (stale or missing rows). This pins the ordering
     that `eager()` derives from declared lineage.
     """
-    _, cursor = _tick(instance)
-    instance.report_runless_asset_event(AssetMaterialization(asset_key=_BRONZE))
-    requests, _ = _tick(instance, cursor=cursor)
-    requested = _assert_tick_observes_keys(requests)
+    requested = _tick_after_bronze(instance)
     marts = {k for k in requested if k.startswith("gold_")}
     assert not marts, (
         "a mart was requested off the bronze event alone, before silver "
@@ -180,10 +193,7 @@ def test_sensor_never_requests_the_paid_edge(instance: DagsterInstance) -> None:
     the behaviour. The paid edge is not an asset, so it can only appear here if
     something wires it into an asset's lineage.
     """
-    _, cursor = _tick(instance)
-    instance.report_runless_asset_event(AssetMaterialization(asset_key=_BRONZE))
-    requests, _ = _tick(instance, cursor=cursor)
-    paid = _assert_tick_observes_keys(requests) & _PAID
+    paid = _tick_after_bronze(instance) & _PAID
     assert not paid, (
         "the automation sensor requested the PAID edge — the determinism wall "
         f"is broken and re-publishing silver would cost money: {sorted(paid)}"
