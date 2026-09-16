@@ -18,13 +18,14 @@ from .defs.engine.harvest import enrichment_harvest_job
 from .defs.engine.sensor import enrichment_harvest_sensor, enrichment_submit_sensor
 from .defs.engine.silver_asset import silver_enrichment
 from .defs.engine.submit import enrichment_submit_job
-from .defs.ig_core.bnz.scrape import ig_posts_raw
+from .defs.ig_core.bnz.scrape import ig_posts_local_raw, ig_posts_raw
 from .defs.ig_core.slv.checks import ig_checks
 from .defs.ig_core.slv.comments import ig_comments_slv
 from .defs.ig_core.slv.labels import ig_post_labels
 from .defs.ig_core.slv.posts import ig_posts_slv
 from .defs.ig_core.slv.profiles import ig_profiles_slv
 from .defs.ig_enriched.slv import checks as enrichment_checks
+from .defs.platform import paths
 from .defs.platform.resources import (
     ApifyResource,
     PolarsIOManager,
@@ -39,7 +40,12 @@ load_dotenv()
 # ── Resources ─────────────────────────────────────────────────────────────────
 
 all_resources = {
-    "io_manager": PolarsIOManager(lake_root="data/lake"),
+    # Root follows the ONE configured data root rather than a cwd-relative
+    # literal: `"data/lake"` survives every IG_* override, so in a container
+    # (where the mount is /data) it silently pointed at a nonexistent
+    # /app/data/lake. With IG_DATA_DIR unset on a host this resolves to exactly
+    # the same <repo>/data/lake as before.
+    "io_manager": PolarsIOManager(lake_root=str(paths.DATA_DIR / "lake")),
     "duckdb": DuckDBResource(
         database=os.environ.get("IG_DB_PATH", "data/state.duckdb"),
     ),
@@ -56,6 +62,7 @@ all_resources = {
 all_assets = [
     # Instagram core
     ig_posts_raw,
+    ig_posts_local_raw,
     ig_posts_slv,
     ig_post_labels,
     ig_profiles_slv,

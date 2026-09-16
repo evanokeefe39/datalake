@@ -1,0 +1,31 @@
+# Build context for the Compose images (repo root).
+#
+# `data/` alone is ~55 GB of scraped media and the Parquet lake — without this
+# file a `docker build .` would try to send all of it to the daemon. The lake
+# and the databases are MOUNTED at runtime, never baked into an image.
+
+data/
+.venv/
+.git/
+.github/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.ruff_cache/
+*.parquet
+*.duckdb
+*.sqlite
+*.sqlite3
+
+# Dashboard build/test artifacts (node_modules is installed inside the image).
+node_modules/
+**/node_modules/
+dashboard/test-results/
+dashboard/dist/
+services/dashboard/test-results/
+services/dashboard/dist/
+
+# Local scratch that never belongs in an image.
+HANDOFF.md
+tasks/

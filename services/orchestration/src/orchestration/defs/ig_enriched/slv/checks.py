@@ -1,6 +1,6 @@
 """Blocking data-quality gates for the enrichment conform seam (ADR-0012, W8).
 
-Three gates, all attached to ``silver_enrichment_conform`` as BLOCKING asset
+Three gates, all attached to ``silver_enrichment`` as BLOCKING asset
 checks (``blocking=True``: a failed check blocks downstream materialization
 instead of decorating a log line):
 
@@ -294,7 +294,7 @@ def check_silver_snapshot_freshness(duckdb: DuckDBResource) -> AssetCheckResult:
             metadata=metadata,
             description=(
                 f"Stale/missing silver snapshots vs bronze: {stale} — "
-                "re-run silver_enrichment_conform to republish."
+                "re-run silver_enrichment to republish."
             ),
         )
     return AssetCheckResult(passed=True, metadata=metadata)

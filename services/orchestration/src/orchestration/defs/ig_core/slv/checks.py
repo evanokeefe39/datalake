@@ -251,7 +251,7 @@ def _ig_posts_slv_owner_not_null(context) -> AssetCheckResult:
 
 
 @asset_check(
-    asset="silver_enrichment_conform",
+    asset="silver_enrichment",
     name="ig_classification_valid_admiralty",
     required_resource_keys={"duckdb"},
     description="Admiralty codes in known set (instagram platform rows).",

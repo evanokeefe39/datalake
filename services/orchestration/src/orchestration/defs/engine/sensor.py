@@ -20,7 +20,7 @@ import json
 import logging
 import os
 
-from dagster import RunRequest, SensorEvaluationContext, sensor
+from dagster import DefaultSensorStatus, RunRequest, SensorEvaluationContext, sensor
 
 from orchestration.defs.engine.harvest import (
     discover_handles,
@@ -49,6 +49,13 @@ _sensor_tags = {"adr": "0012", "driver": "harvest"}
             "ENRICHMENT_SENSOR_INTERVAL_SECONDS", str(DEFAULT_INTERVAL_SECONDS)
         )
     ),
+    # The ONE standing exception to the "everything ships stopped" policy: this
+    # sensor is a pure POLLER — it re-reads in-flight state each tick and
+    # requests a harvest run only for partitions already terminal provider-side.
+    # It spends no money and starts no work, so a stopped default would only
+    # mean completed provider work sits unlanded until someone opens the UI.
+    # Submit stays manual (it spends money); schedules stay STOPPED.
+    default_status=DefaultSensorStatus.RUNNING,
     tags=_sensor_tags,
     description="Re-derives the full in-flight set every tick; requests a "
     "harvest run only for terminal partitions (ADR-0012 D2).",

@@ -201,7 +201,7 @@ def _resolve_media_paths(
     A cache miss raises — the caller makes it a terminal failure for that post
     alone; submitting partial media would silently change the analysis input.
     """
-    from orchestration.defs.engine.media import cached_local_path
+    from orchestration.defs.engine.media import local_media_path
 
     if not media_files_json:
         return ()
@@ -213,7 +213,7 @@ def _resolve_media_paths(
         ) from exc
     paths: list[str] = []
     for url in urls:
-        path = cached_local_path(ops, url)
+        path = local_media_path(ops, url)
         if not path:
             raise UnbuildablePostError(
                 f"media cache miss for {url[:120]} — not submitting partial media",

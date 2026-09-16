@@ -612,7 +612,7 @@ def v_recent_hot_posts(duckdb: DuckDBResource) -> None:
         "quarantined row joined to its offending bronze excerpt and post "
         "context."
     ),
-    deps=[AssetKey(["silver_enrichment_conform"])],
+    deps=[AssetKey(["silver_enrichment"])],
 )
 def v_quarantine_triage(duckdb: DuckDBResource) -> None:
     """Create the quarantine triage view.

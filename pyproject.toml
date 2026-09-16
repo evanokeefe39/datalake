@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Dagster + Parquet + DuckDB medallion lakehouse platform"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 # Interim: deps of the not-yet-extracted root consumers — the dashboard
 # (`dashboard/server.py`, still at the repo root) and `scripts/*.py`.
 dependencies = ["fastapi", "uvicorn", "boto3>=1.43.89"]
@@ -15,7 +15,7 @@ dependencies = ["fastapi", "uvicorn", "boto3>=1.43.89"]
 # every one of them is imported from here — `orchestration` provides the code
 # location `[tool.dagster]` names, and the dashboard and `scripts/` import
 # `opsdb`.
-dev = ["pytest", "pytest-asyncio", "ruff", "orchestration", "opsdb", "storage"]
+dev = ["pytest", "pytest-asyncio", "ruff", "orchestration", "opsdb", "storage", "jobs"]
 
 # Virtual project: the root holds no importable package of its own until
 # `services-extraction` moves the dashboard out. Its members are the real
@@ -33,6 +33,7 @@ members = ["services/*", "packages/*"]
 orchestration = { workspace = true }
 opsdb = { workspace = true }
 storage = { workspace = true }
+jobs = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -40,7 +41,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]

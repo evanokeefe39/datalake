@@ -27,7 +27,7 @@ def media_files(tmp_path):
 
 def _patch_cache(mapping):
     return patch(
-        "orchestration.defs.engine.media.cached_local_path",
+        "orchestration.defs.engine.media.local_media_path",
         side_effect=lambda ops, url: mapping.get(url),
     )
 
