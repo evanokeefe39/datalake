@@ -74,9 +74,10 @@ services:
     volumes:
       - ./data:/data
     ports:
-      # 3000 is the documented Dagster port; this host publishes 3001 because
-      # another local stack owns 3000. Override with DAGSTER_HOST_PORT.
-      - "${DAGSTER_HOST_PORT:-3000}:3000"
+      # 7642 is deliberately NOT 3000/3001/8000/8080 — those are grabbed by dev
+      # tools and other stacks constantly (Dagster's own default 3000 collides
+      # with half the JS ecosystem). Override with DAGSTER_HOST_PORT.
+      - "${DAGSTER_HOST_PORT:-7642}:3000"
     depends_on:
       - jobs
       - dashboard

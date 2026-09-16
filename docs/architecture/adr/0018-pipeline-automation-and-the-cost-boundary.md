@@ -1,8 +1,11 @@
-# ADR-0018: Pipeline automation — auto-materialize the graph, externalize the cost boundary
+# ADR-0018: Pipeline automation — auto-materialize the replay path, keep the submit edge a determinism boundary
 
 - Status: Accepted
 - Decided: 2026-09-16
 - Supersedes: the manual-submit guidance in `tasks/plans/compose-services-and-roster-plan.md` S11 (submit STOPPED as the *only* spend guard)
+- Relates to: [ADR-0011](0011-enrichment-layered-model.md) (replay purity — the reason the submit
+  edge is a boundary at all), [ADR-0012](0012-dagster-native-orchestration.md) (the provider's
+  credit limit), [ADR-0013](0013-seam-keeps-no-ledger.md) (the seam owns its own state)
 
 ## Context
 
@@ -80,17 +83,30 @@ Two things stay human-triggered, and for reasons that are *not* cost:
   into an unbounded paid sweep. The cap is a **blast-radius bound on a fan-out**, chosen
   once and reviewable — not per-run cost accounting.
 
-**4. Auto-materialization is declared per asset, with the free/paid edge made explicit.**
+**4. Auto-materialization is declared per asset, with the submit edge as a DETERMINISM boundary.**
 
 - Silver conformance and the gold marts are pure functions of already-landed bytes. They
   auto-materialize on new upstream data.
-- The enrichment boundary (`submit` → provider → `harvest` → bronze) is where bytes enter
-  from outside. Its automation is expressed explicitly (a sensor and/or the harvest
-  partition machinery already in place), so the graph states — legibly — where the system
-  reaches outside itself.
-- Because cost is external, the *reason* to keep this edge explicit is **legibility and
-  blast radius**, not spend. A reader must be able to see where external work happens
-  without inferring it.
+- **`submit` is never reachable by transitive auto-materialization from silver or gold.**
+  This is not a spend preference and it does not become removable when cost is handled —
+  it is the replay-purity contract of ADR-0011. `silver_*` must remain a *deterministic
+  function of `bronze_enrichment_raw`*. If a `materialize` on silver could transitively
+  reach the provider, then silver becomes a function of **live provider state and sampling**
+  rather than a pure replay of landed bytes: re-publishing silver would produce different
+  rows on different runs, "a schema change is a replay, not a re-bill" would stop being
+  true, and the parity/purity evidence from the v3 migration would be meaningless. The wall
+  exists to keep that function total and deterministic.
+- **The API credit limit is defense-in-depth, not the justification.** It bounds the *submit*
+  edge (OpenRouter returns 403 "key limit exceeded", recorded in ADR-0012) and protects
+  against a runaway fan-out. It does not protect the free replay path, and its presence must
+  never be read as "the wall is now unnecessary".
+- Therefore the enrichment boundary is expressed explicitly in the graph (a sensor and/or
+  the harvest partition machinery already in place), so that where the system reaches
+  outside itself is a *declared, legible* property — and so that no reader infers the wall
+  from a cost argument that can later evaporate.
+- A second, weaker reason to keep it legible: blast radius. An unbounded fan-out that
+  reaches the provider spends quickly. That is a consequence of the boundary, not its
+  purpose.
 
 **5. Any auto-materialization policy is a tested contract.**
 
@@ -104,7 +120,11 @@ refactor — which is precisely how this gap arose.
 **Positive.**
 
 - The system behaves the way a Dagster user expects: ask for an outcome, get the upstream
-  work. The "materialize gold and nothing happens" surprise is gone.
+  work — for everything upstream of the submit boundary. The "materialize gold and nothing
+  happens" surprise is gone.
+- **Silver stays a pure replay of bronze.** Because submit is unreachable transitively, a
+  schema or mapping change remains a replay rather than a re-bill (ADR-0011), and the
+  parity and replay-purity evidence from the v3 migration keeps its meaning.
 - Cost control has one owner (the credential) and one failure mode (a provider error),
   instead of being spread across graph shape, operator discipline, and hope.
 - The graph states where external work occurs, so the boundary is reviewable rather than
@@ -112,13 +132,14 @@ refactor — which is precisely how this gap arose.
 
 **Negative / accepted.**
 
-- A `materialize` on a downstream asset can now cause provider calls. This is intentional
-  under the external-cost decision, and it is exactly the behaviour a naive reader would
-  expect anyway. The mitigation is legibility (which assets cross the boundary), not
-  gating.
-- An unbounded fan-out (e.g. a first details sweep across every profile) can spend quickly
-  if the credential's limit is generous. Bounded by the declared cap on fan-out ops and by
-  the schedule policy above.
+- **A `materialize` on gold or silver does NOT reach the provider** — by design, and this is
+  the whole point of decision 4. The accepted cost is that submitting new work is a
+  *separate, explicit act*: the system does not discover-and-submit as a side effect of a
+  read. Reaching the provider therefore requires choosing to (a job invocation, a sensor,
+  or a schedule the owner enables).
+- An unbounded fan-out (e.g. a first details sweep across every profile) can spend quickly.
+  Bounded by the declared cap on fan-out ops and by the schedule policy above; the
+  credential limit is the backstop.
 - Key rotation is now an operational dependency of the pipeline. If the key lapses, runs
   fail loudly at the seam. This is accepted: a loud failure at a known boundary is
   preferable to a silent spend guard of unclear authority.
@@ -145,3 +166,11 @@ the running system:
    policy is removed — proven by injecting the removal.
 4. A provider-side failure (credit limit / 429) surfaces as a loud seam error and is
    retryable, never as a quiet no-op.
+5. **The determinism wall is enforced, not merely documented.** A graph assertion proves no
+   auto-materialization path from `silver_enrichment` (or any mart) reaches `submit` — and
+   the guard FAILS when such a path is introduced, proven by injecting one. If this
+   assertion is absent, decision 4 rests on prose alone and the next refactor can quietly
+   make silver provider-dependent.
+6. **Replay purity still holds end to end**: materializing `silver_enrichment` twice against
+   an unchanged bronze produces identical rows and issues zero provider calls (the property
+   ADR-0011's "replay, not a re-bill" claim depends on).
