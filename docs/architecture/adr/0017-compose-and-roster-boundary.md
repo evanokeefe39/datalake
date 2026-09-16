@@ -80,10 +80,17 @@ never imports the pipeline. `media_cache` stays pipeline-owned (it is written on
 hot path).
 
 The dashboard's scrape trigger is removed with this. A roster row **is** the scrape intent:
-the pipeline reconciles `results_type='details'` against `updated_at` past a watermark and
-scrapes what is new, so adding a profile is a registration rather than a paid side effect of
-an HTTP request, and a failed scrape is retried by the sweep instead of dying with the
-request.
+the `details_sweep` schedule reconciles enabled `results_type='details'` rows whose
+`updated_at` is past a `watermarks` row and emits one run per due profile, so adding a
+profile is a registration rather than a paid side effect of an HTTP request, and a failed
+scrape is retried by the sweep instead of dying with the request.
+
+The watermark advances in `ig_profile_details_raw` **after** the scrape lands — never at
+schedule-evaluation time. That ordering is the whole point: if evaluation advanced it, a
+tick that emitted ten runs and had three fail would mark all ten done and never retry the
+three. `DEFAULT_MAX_PROFILES_PER_SWEEP` caps a single tick, and because the watermark
+tracks completion rather than emission, a capped backlog simply stays due and drains over
+subsequent ticks.
 
 ### Readiness and default status are explicit
 

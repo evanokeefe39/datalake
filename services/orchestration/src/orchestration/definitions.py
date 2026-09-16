@@ -19,7 +19,11 @@ from .defs.engine.sensor import enrichment_harvest_sensor, enrichment_submit_sen
 from .defs.engine.silver_asset import silver_enrichment
 from .defs.engine.submit import enrichment_submit_job
 from .defs.ig_core.bnz.roster import ig_roster_raw
-from .defs.ig_core.bnz.scrape import ig_posts_local_raw, ig_posts_raw
+from .defs.ig_core.bnz.scrape import (
+    ig_posts_local_raw,
+    ig_posts_raw,
+    ig_profile_details_raw,
+)
 from .defs.ig_core.slv.checks import ig_checks
 from .defs.ig_core.slv.comments import ig_comments_slv
 from .defs.ig_core.slv.labels import ig_post_labels
@@ -28,6 +32,7 @@ from .defs.ig_core.slv.profiles import ig_profiles_slv
 from .defs.ig_core.slv.roster import ig_roster_slv
 from .defs.ig_enriched.slv import checks as enrichment_checks
 from .defs.platform import paths
+from .defs.platform.details_sweep import details_sweep
 from .defs.platform.resources import (
     ApifyResource,
     PolarsIOManager,
@@ -72,6 +77,8 @@ all_assets = [
     # Roster: landed from the dashboard API, then published for the pipeline
     ig_roster_raw,
     ig_roster_slv,
+    # Details scrapes, reconciled from the roster by the sweep schedule
+    ig_profile_details_raw,
     # Enrichment: submit discovers and materializes its own partitions
     # (ADR-0016) — there is no drain asset.
     silver_enrichment,
@@ -93,7 +100,7 @@ defs = Definitions(
         *serving_checks_mod.serving_checks,
     ],
     resources=all_resources,
-    schedules=[daily_medallion, core_refresh],
+    schedules=[daily_medallion, core_refresh, details_sweep],
     jobs=[enrichment_harvest_job, enrichment_submit_job],
     sensors=[enrichment_harvest_sensor, enrichment_submit_sensor],
 )
