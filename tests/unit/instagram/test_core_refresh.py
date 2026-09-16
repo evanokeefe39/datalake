@@ -126,7 +126,7 @@ def _invoke_bronze(tmp_path, config) -> None:
         patch("orchestration.defs.ig_core.bnz.scrape.trigger_run",
               return_value=_FakeRunInfo()) as trigger,
         patch("orchestration.defs.ig_core.bnz.scrape.poll_run", return_value="ds_fwd"),
-        patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path),
+        patch("orchestration.defs.ig_core.bnz.scrape.BRONZE_LAKE", tmp_path),
         patch("orchestration.defs.ig_core.bnz.scrape.stream_dataset", return_value=0),
     ):
         ig_posts_raw(
