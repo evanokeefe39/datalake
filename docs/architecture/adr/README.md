@@ -42,7 +42,7 @@ Part of the [architecture documentation](../README.md).
 | [0015](0015-repository-layout.md) | **The repository layout**: a uv workspace (`services/`, `packages/`), module names that describe a role and never a provider, and the eight conventions the tree encodes | Accepted | 2026-09-15 |
 | [0016](0016-discovery-and-guard-share-one-derivation.md) | Discovery and the double-submit guard read **one** in-flight derivation; the submit stage materializes its own placeholder | Accepted | 2026-09-15 |
 | [0017](0017-compose-and-roster-boundary.md) | **One Compose brings up orchestration + jobs + dashboard**; the creator roster crosses the service boundary over HTTP, and persisted media paths are translated by a host↔container prefix map | Accepted | 2026-09-16 |
-| [0018](0018-pipeline-automation-and-the-cost-boundary.md) | **The pipeline is job-driven — a downstream materialization runs its upstream work**; cost is enforced at the API credential, never in the graph, so no orchestration logic exists to limit spend | Accepted | 2026-09-16 |
+| [0018](0018-pipeline-automation-and-the-cost-boundary.md) | **Auto-materialize the replay path; keep the submit edge a DETERMINISM boundary** (silver stays a pure replay of bronze). Cost lives on the API credential as defense-in-depth, not in the graph | Accepted | 2026-09-16 |
 
 ADR-0011, 0012 and 0013 **landed 2026-09-15** (W0–W9): the layered model is live,
 the `ops.sqlite` queue is retired, and no ledger exists. ADR-0013 reconciled

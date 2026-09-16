@@ -108,12 +108,19 @@ Two things stay human-triggered, and for reasons that are *not* cost:
   reaches the provider spends quickly. That is a consequence of the boundary, not its
   purpose.
 
-**5. Any auto-materialization policy is a tested contract.**
+**5. Any auto-materialization policy is a tested contract — and the ABSENCE of one at the
+submit edge is asserted too.**
 
-Whatever policy an asset carries is asserted by a test, in the same spirit as the
-asset-graph-integrity guard (S3) that made dead keys impossible to reintroduce. A policy
-that exists only as a decorator argument is a policy that silently disappears in the next
-refactor — which is precisely how this gap arose.
+Whatever policy an AUTOMATED asset carries (the silver outputs and the marts) is asserted by a
+test, in the same spirit as the asset-graph-integrity guard (S3) that made dead keys impossible
+to reintroduce. A policy that exists only as a decorator argument is a policy that silently
+disappears in the next refactor — which is precisely how this gap arose.
+
+The reverse direction is asserted as well: the submit edge carries NO auto-materialization
+policy, and the guard FAILS if one is introduced. Read literally, "assert every asset's policy"
+would demand a policy on keys that deliberately have none (the externally-evented bronze
+landing and, under the cheap modeling option, the `deps=`-declared silver keys) — the guard
+must state which set is expected to be automated, not merely that policy exists.
 
 ## Consequences
 
@@ -172,8 +179,9 @@ the running system:
 2. **The same chain reaches NO provider.** Running the mart materialization to completion
    leaves the provider untouched: no submit step in the run graph, and the job store's item
    count unchanged. (This is decision 4 observed, not merely asserted — cf. criterion 5.)
-3. The asset-graph-integrity guard asserts each asset's automation policy, and FAILS when a
-   policy is removed — proven by injecting the removal.
+3. The asset-graph-integrity guard asserts the automation policy each AUTOMATED asset carries
+   (the silver outputs and the marts) and asserts the submit edge carries NONE — and FAILS when
+   either is changed, proven by injecting each.
 4. A provider-side failure (credit limit / 429) surfaces as a loud seam error and is
    retryable, never as a quiet no-op.
 5. **The determinism wall is enforced, not merely documented.** A graph assertion proves no
