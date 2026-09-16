@@ -118,3 +118,39 @@ def test_lifecycle_partition_spaces_exist() -> None:
     # exact strings and the in-flight guard reads them back by name.
     assert partitions.SUBMITTED_ASSET_NAME == "enrichment_submitted"
     assert partitions.HARVESTED_ASSET_NAME == "enrichment_harvested"
+
+
+def test_every_schedule_target_is_a_registered_asset() -> None:
+    """A schedule targeting a key nothing supplies fails to build its job.
+
+    This is the same dangling-reference class as the checks and deps above, and
+    it presents identically: `definitions validate` is the only thing that
+    notices, and only because it eagerly builds each schedule's asset job. A
+    target written from a function's name instead of its registered key is the
+    way it happens in practice.
+    """
+    registered = _registered_keys()
+    dangling: list[str] = []
+    for schedule in defs.defs.schedules or []:
+        # An asset schedule compiles to an anonymous asset job; its selection is
+        # where the target keys live.
+        job = getattr(schedule, "job", None)
+        selection = getattr(job, "selection", None)
+        if selection is None:
+            continue
+        for key in _selected_keys(selection):
+            if key not in registered:
+                dangling.append(f"{schedule.name} -> {key.to_user_string()}")
+    assert not dangling, (
+        f"schedule(s) target keys no registered asset supplies: {sorted(dangling)}"
+    )
+
+
+def _selected_keys(selection) -> set[AssetKey]:
+    """Every AssetKey a selection names, walking nested operands."""
+    found: set[AssetKey] = set()
+    for key in getattr(selection, "selected_keys", None) or ():
+        found.add(key)
+    for operand in getattr(selection, "operands", None) or ():
+        found |= _selected_keys(operand)
+    return found

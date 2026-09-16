@@ -29,6 +29,7 @@ from orchestration.defs.integration.apify_client import poll_run, stream_dataset
 from orchestration.defs.platform.paths import BRONZE_LAKE, bronze_path
 from orchestration.defs.platform.resources import (
     ApifyResource,
+    DuckDBResource,
     SQLiteResource,
 )
 
@@ -53,6 +54,80 @@ class ScrapeConfig(Config):
     results_limit: int = 12
     results_type: ResultsType = ResultsType.POSTS
     max_charge_usd: float | None = None
+
+
+class DetailsScrapeConfig(Config):
+    """Configuration for one profile's details scrape.
+
+    Carries the roster identity (`platform`/`handle`/`roster_updated_at`) so the
+    run can advance the sweep watermark on SUCCESS — the schedule must not
+    advance it at evaluation time, or a failed scrape would be skipped forever.
+    """
+
+    profile_url: str
+    results_limit: int = 1
+    max_charge_usd: float | None = None
+    platform: str = "instagram"
+    handle: str = ""
+    roster_updated_at: str = ""
+
+
+@asset(
+    name="ig_profile_details_raw",
+    group_name="instagram",
+    description=(
+        "One profile's details scrape → bronze Parquet. Driven by the "
+        "details-sweep schedule, which reconciles the roster against what has "
+        "already been scraped; never triggered by an HTTP request."
+    ),
+)
+def ig_profile_details_raw(
+    config: DetailsScrapeConfig,
+    apify: ApifyResource,
+    ops: SQLiteResource,
+    duckdb: DuckDBResource,
+) -> str:
+    """Run the details scrape for one profile, land it, and record completion.
+
+    Returns the dataset id. Raises when APIFY_API_TOKEN is absent: a scrape that
+    silently did nothing would leave the sweep believing it had covered the
+    profile, so this must fail loudly and be re-run.
+
+    The sweep watermark advances HERE, after the bytes are landed — the only
+    moment at which "this profile has been scraped" is true. A failure raises
+    before that point, so the profile stays due and the next tick retries it.
+    """
+    import os
+
+    token = apify.token or os.environ.get("APIFY_API_TOKEN", "")
+    if not token:
+        raise RuntimeError(
+            "ig_profile_details_raw: no APIFY_API_TOKEN — refusing to record a "
+            "scrape that did not happen"
+        )
+
+    dataset_id = scrape_details_to_bronze(
+        config.profile_url,
+        token=token,
+        results_limit=config.results_limit,
+        max_charge_usd=config.max_charge_usd,
+    )
+    logger.info(
+        "details scrape for %s -> dataset %s", config.profile_url, dataset_id
+    )
+
+    if config.roster_updated_at:
+        from orchestration.defs.platform.details_sweep import advance_watermark
+
+        with duckdb.get_connection() as conn:
+            advance_watermark(conn, through=config.roster_updated_at)
+        logger.info(
+            "details sweep watermark advanced to %s (%s)",
+            config.roster_updated_at,
+            config.handle or config.profile_url,
+        )
+
+    return dataset_id
 
 
 # ── Local ad-hoc ingestion ─────────────────────────────────────────────────
@@ -297,6 +372,7 @@ def scrape_details_to_bronze(
     *,
     token: str,
     results_limit: int = 1,
+    max_charge_usd: float | None = None,
 ) -> str:
     """Run a details-type Apify scrape for one profile → bronze Parquet.
 
@@ -313,6 +389,7 @@ def scrape_details_to_bronze(
         token=token,
         results_limit=results_limit,
         results_type="details",
+        max_charge_usd=max_charge_usd,
     )
     dataset_id = poll_run(run.run_id, token=token)
 

@@ -16,6 +16,10 @@ from dagster_duckdb import DuckDBResource
 daily_medallion = ScheduleDefinition(
     name="daily_medallion",
     target=[
+        # Roster first: the label pass and dim_profile read the published
+        # roster, so it must be fresh before they run.
+        "ig_roster_raw",
+        "silver_ig_roster",
         "ig_posts_slv",
         "ig_post_labels",
         "dim_profile",
@@ -24,7 +28,7 @@ daily_medallion = ScheduleDefinition(
     ],
     cron_schedule="0 3 * * *",  # 3am daily
     default_status=DefaultScheduleStatus.STOPPED,
-    description="Silver dedup + gold enrich + dims + views. Bronze is on-demand.",
+    description="Roster ingest + silver dedup + labels + dims + views. Bronze is on-demand.",
 )
 
 
