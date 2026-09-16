@@ -452,9 +452,14 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
 
 | Service | Port | What it is |
 |---|---|---|
-| `orchestration` | 3000 | Dagster (`dagster dev` — webserver + daemon, so sensors tick) |
+| `orchestration` | 7642 | Dagster (`dagster dev` — webserver + daemon, so sensors tick). Host `7642` → container `3000`; override with `DAGSTER_HOST_PORT` |
 | `jobs` | 8462 | the inference service (`services/jobs`) |
 | `dashboard` | 3002 | FastAPI + the built Vite SPA |
+
+**Ports are chosen to not collide.** Dagster's own default (3000) is one of the most
+contended ports in development — it collides with Node/Next/CRA dev servers, langfuse, and
+much else — so this Compose publishes it on **7642** instead and keeps the container
+listening on 3000 internally. Change the host side with `DAGSTER_HOST_PORT`.
 
 **`DATALAKE_HOST_DATA_DIR` is required** — the absolute host path of this checkout's
 `data/` (e.g. `C:/Users/evano/repos/datalake/data`). It is the host side of the path map
@@ -467,11 +472,9 @@ cannot open.
 
 DuckDB is single-writer, so a host `dagster dev` and the containers must not run at once.
 
-**If host port 3000 is taken**, set `DAGSTER_HOST_PORT` (e.g. `DAGSTER_HOST_PORT=3001`);
-the container still listens on 3000 internally and 3000 stays the documented default. Note
-that a container which starts while its declared port is occupied comes up **unpublished**
-(`docker ps` shows `3002/tcp` with no `0.0.0.0:N->N/tcp`) rather than failing — so check the
-mapping, not just the `Up` status.
+Note that a container which starts while its declared host port is occupied comes up
+**unpublished** (`docker ps` shows `3002/tcp` with no `0.0.0.0:N->N/tcp`) rather than
+failing — so check the mapping, not just the `Up` status.
 
 ## The roster boundary (ADR-0017)
 
@@ -501,32 +504,45 @@ operator asks for an outcome ("publish silver", "refresh the marts") and Dagster
 the rest from declared lineage. There is no required sequence of hand-run stages, and no
 stage whose normal operation is "someone remembers to trigger it."
 
-**Cost is enforced at the API credential, never in the orchestration graph.** The
-OpenRouter key carries its own credit limit, which the owner sets and rotates per period
-they choose. Consequences an agent must respect:
+**The submit edge is a DETERMINISM boundary, not a cost boundary.** No auto-materialization
+path from `silver_enrichment` or any mart may reach `submit`. `silver_*` must stay a *pure
+deterministic replay of `bronze_enrichment_raw`* (ADR-0011): if a `materialize` on silver
+could transitively call the provider, silver would become a function of live provider state
+and sampling — different rows on different runs — and "a schema change is a replay, not a
+re-bill" would stop being true.
+
+This does NOT become removable when cost is handled. Do not read the credit limit below as
+"the wall is unnecessary":
 
 - Do NOT add orchestration logic whose purpose is limiting spend. No budget arithmetic, no
   cost gate, no asset check that fails because a run *could* cost money.
-- `dry_run` / `limit` / the workload selector are **operational controls** for scoping a
-  run (debugging, narrow backfills) — they are NOT the safety mechanism, and neither
-  removing nor relying on them as a guarantee is correct.
-- A provider credit-limit error is a **loud, retryable failure at the seam**
-  (`ProviderError`, 429-class handling). It must never be pre-empted by graph logic or
-  silently absorbed.
+- Do NOT wire an auto-materialization policy that lets gold/silver transitively reach
+  `submit` — even if the API key makes it "safe".
+- `dry_run` / `limit` / the workload selector are **operational controls** for scoping a run
+  (debugging, narrow backfills) — NOT the safety mechanism, and neither removing nor relying
+  on them as a guarantee is correct.
+- A provider failure (credit limit 403 / 429) is a **loud, retryable failure at the seam**
+  (`ProviderError`). It must never be pre-empted by graph logic or silently absorbed.
+
+**Cost is enforced at the API credential, as DEFENSE IN DEPTH.** The OpenRouter key carries
+its own credit limit (403 "key limit exceeded"), set and rotated by the owner per period.
+It bounds the *submit* edge and a runaway fan-out. It does not protect the free replay path
+and it is not the reason the submit boundary exists.
 
 What stays human-triggered, for reasons that are NOT cost:
 
 - **Schedules ship STOPPED** (`DefaultScheduleStatus.STOPPED`) — policy about surprise: a
   new schedule does not start spending effort on its own. The owner enables it deliberately.
 - **Bounded fan-out ops keep an explicit cap** (e.g. `DEFAULT_MAX_PROFILES_PER_SWEEP`) so a
-  first tick cannot fan out into an unbounded paid sweep. That cap bounds *blast radius*,
-  chosen once and reviewable — it is not per-run cost accounting.
+  first tick cannot fan out into an unbounded sweep. That cap bounds *blast radius*, chosen
+  once and reviewable.
 
 Any auto-materialization policy an asset carries MUST be asserted by a test, in the same
 spirit as the asset-graph-integrity guard: a policy that exists only as a decorator
 argument silently disappears in the next refactor, which is exactly how the bronze→silver
 gap arose (bronze landed, silver sat still, because the lineage was correct but nothing
-acted on it).
+acted on it). The determinism wall needs its own assertion too — an unreachable-submit
+check that FAILS when a path is introduced.
 
 
 ## Bronze asset (ig_posts_raw)
