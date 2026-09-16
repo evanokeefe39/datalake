@@ -16,10 +16,9 @@ Two clauses:
    never executes and never reports — the exact failure mode a "blocking" DQ
    gate exists to prevent.
 2. **Every asset dependency names a registered asset, or is a declared
-   external input.** Some keys in `deps=` deliberately name a table produced
-   by a single upstream publisher rather than an asset of their own (the six
-   `silver_*` tables are published by `silver_enrichment`; `bronze_enrichment_raw`
-   is written by the harvest landing code). Those are declared below. An
+   external input.** Some keys in `deps=` deliberately name a thing produced
+   outside the graph — `bronze_enrichment_raw` is written by the harvest landing
+   code, not a Dagster-managed asset. Those are declared below. An
    UNDECLARED missing key is a real dangling reference and fails — that is what
    keeps this clause from being vacuous.
 """
@@ -32,20 +31,18 @@ from orchestration import definitions as defs
 #: Dependency keys that legitimately name a thing other than a registered
 #: asset. Each entry states WHY it is not an `@asset`:
 #:
-#: - ``silver_*``: the six conformed tables are all published by the single
-#:   ``silver_enrichment`` asset (ADR-0011). Marts depend on the table they
-#:   read, which documents the data edge the SQL actually has.
 #: - ``bronze_enrichment_raw``: verbatim Parquet landed by the harvest path,
 #:   not a Dagster-managed asset. ``silver_enrichment`` declares it as its dep.
+#:   (Unit 2 emits a materialization EVENT for it, but an event does not
+#:   register an asset — so it stays declared here.)
+#:
+#: The six ``silver_*`` tables used to be listed here because the single
+#: ``silver_enrichment`` asset published them as a side effect. That producer is
+#: now a ``@multi_asset`` whose seven outputs ARE registered assets, so they are
+#: removed — see ``test_declared_external_deps_are_not_registered``.
 DECLARED_EXTERNAL_DEPS: frozenset[str] = frozenset(
     {
         "bronze_enrichment_raw",
-        "silver_audio_transcripts",
-        "silver_content_classification",
-        "silver_text_annotations",
-        "silver_text_summaries",
-        "silver_visual_annotations",
-        "silver_visual_summaries",
     }
 )
 
@@ -59,7 +56,13 @@ LIFECYCLE_PARTITION_SPACES: tuple[str, ...] = ("enrichment_submitted", "enrichme
 
 
 def _registered_keys() -> set[AssetKey]:
-    return {a.get_asset_spec().key for a in defs.defs.assets}
+    """Every asset key the graph registers.
+
+    A `@multi_asset` carries SEVERAL keys and has no single `.key` — asking for
+    `.key` on one raises. `keys` returns them all, so this collects every key
+    from every definition, single- or multi-asset.
+    """
+    return {key for a in defs.defs.assets for key in a.keys}
 
 
 def test_graph_is_populated() -> None:
@@ -83,20 +86,42 @@ def test_every_check_targets_a_registered_asset() -> None:
 
 
 def test_every_asset_dependency_resolves() -> None:
-    """Clause 2 — no dangling dep keys beyond the declared external inputs."""
+    """Clause 2 — no dangling dep keys beyond the declared external inputs.
+
+    Iterates the GRAPH, not the definitions: a `@multi_asset` is one definition
+    with several keys and no single `.key`, so per-key deps must come from the
+    resolved graph (`get(key).parent_entity_keys`).
+    """
     registered = _registered_keys()
+    graph = defs.defs.resolve_asset_graph()
     dangling: list[str] = []
-    for asset in defs.defs.assets:
-        spec = asset.get_asset_spec()
-        for dep in spec.deps:
-            if dep.asset_key in registered:
+    for key in registered:
+        for parent in graph.get(key).parent_entity_keys:
+            if parent in registered:
                 continue
-            if dep.asset_key.to_user_string() in DECLARED_EXTERNAL_DEPS:
+            if parent.to_user_string() in DECLARED_EXTERNAL_DEPS:
                 continue
-            dangling.append(f"{spec.key.to_user_string()} -> {dep.asset_key.to_user_string()}")
+            dangling.append(f"{key.to_user_string()} -> {parent.to_user_string()}")
     assert not dangling, (
         "assets depend on keys that are neither registered assets nor declared "
         f"external inputs: {sorted(dangling)}"
+    )
+
+
+def test_declared_external_deps_are_not_registered() -> None:
+    """A stale entry here would MASK a future deregistration.
+
+    Clause 2 resolves a registered key before consulting the declared set, so a
+    stale entry is harmless TODAY — but it would silently absorb the key if it
+    were ever deregistered, turning a dangling reference into a quiet pass. That
+    is precisely the class the declared set exists to prevent, so assert the two
+    sets are disjoint.
+    """
+    overlap = sorted(set(DECLARED_EXTERNAL_DEPS) & {k.to_user_string() for k in _registered_keys()})
+    assert not overlap, (
+        "these keys are declared external AND registered as assets — once "
+        "registered they must be removed from DECLARED_EXTERNAL_DEPS or they "
+        f"mask a future deregistration: {overlap}"
     )
 
 
