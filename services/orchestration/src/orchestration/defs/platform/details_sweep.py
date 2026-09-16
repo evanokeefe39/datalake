@@ -97,7 +97,7 @@ def profiles_needing_details(
 def advance_watermark(conn, *, through: str) -> None:
     """Advance the sweep watermark to `through`, never backwards.
 
-    Called by `ig_profile_details_raw` after a SUCCESSFUL scrape — not by the
+    Called by `bronze_ig_profile_details` after a SUCCESSFUL scrape — not by the
     schedule. Advancing at evaluation time would move the watermark past runs
     that had not executed yet: an Apify error or a cap would then never be
     retried, and the profile would be silently skipped forever. Recording
@@ -138,10 +138,10 @@ def details_sweep_run_requests(
     return [
         RunRequest(
             run_key=f"details:{p['platform']}:{p['handle']}:{p['updated_at']}",
-            asset_selection=[AssetKey("ig_profile_details_raw")],
+            asset_selection=[AssetKey("bronze_ig_profile_details")],
             run_config={
                 "ops": {
-                    "ig_profile_details_raw": {
+                    "bronze_ig_profile_details": {
                         "config": {
                             "profile_url": p["profile_url"],
                             "results_limit": p["results_limit"] or 1,
@@ -166,7 +166,7 @@ def _details_sweep_evaluation(context) -> list[RunRequest] | SkipReason:
 # owner enables it deliberately, because it spends money.
 details_sweep = ScheduleDefinition(
     name="details_sweep",
-    target=["ig_profile_details_raw"],
+    target=["bronze_ig_profile_details"],
     cron_schedule="0 * * * *",
     default_status=DefaultScheduleStatus.STOPPED,
     description=(

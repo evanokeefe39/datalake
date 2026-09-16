@@ -16,7 +16,7 @@ from unittest.mock import patch
 import polars as pl
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
-from orchestration.defs.ig_core.slv.profiles import _profile_observations, ig_profiles_slv
+from orchestration.defs.ig_core.slv.profiles import _profile_observations, silver_ig_profiles
 from orchestration.defs.platform.schemas import duckdb_ddl
 
 from migrations.migrate_backfill_profile_observations import (
@@ -30,7 +30,7 @@ from migrations.migrate_backfill_profile_observations import (
 def _run_profiles(tmp_path, ops, duckdb):
     with patch("orchestration.defs.ig_core.slv.profiles.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        return ig_profiles_slv(context)
+        return silver_ig_profiles(context)
 
 
 def _write_details(fp, rows, downloaded_at: str | None = None) -> None:

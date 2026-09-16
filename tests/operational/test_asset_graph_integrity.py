@@ -364,3 +364,61 @@ def test_automation_sensor_ships_stopped() -> None:
         "the automation sensor no longer ships STOPPED — a new schedule or "
         f"condition must not start running on its own (got {sensor.default_status})"
     )
+
+# ── Unit 3: the layer-prefix naming convention ──────────────────────────────
+
+#: Deliberate exceptions, each for a stated reason — NOT oversights:
+#:
+#: - ``ig_roster_raw``: a source IDENTITY, not a graph convenience. It is a
+#:   directory of append-only snapshots read via ``ROSTER_BRONZE_DIR``; renaming
+#:   it orphans the snapshots and leaves the roster reading empty until the next
+#:   fetch (and the miss is SILENT — ``latest_roster_path()`` returns None and
+#:   the sweep simply finds no profiles).
+#: - ``ig_post_labels``: labels are a distinct ARTIFACT, not a medallion layer.
+#:   There is no ``bronze_``/``silver_``/``gold_`` stage that describes it.
+_NAMING_EXCEPTIONS = frozenset({"ig_roster_raw", "ig_post_labels"})
+
+#: The layer prefixes an asset key may carry. Serving keys are ``dim_*``/``v_*``
+#: and match their table exactly; the medallion layers match theirs.
+_LAYER_PREFIXES = ("bronze_", "silver_", "gold_", "dim_", "v_")
+
+
+def test_asset_keys_follow_the_layer_prefix_convention() -> None:
+    """Every asset key is layer-prefixed, or a declared exception.
+
+    The convention (AGENTS.md "Table naming convention"): a key starts with its
+    medallion layer, so the layer is never ambiguous and multi-source expansion
+    does not need a new naming scheme. Bronze is the documented carve-out on two
+    counts: bronze keys name Parquet DATASETS rather than DuckDB tables, and two
+    bronze names are on-disk identities.
+
+    Without this guard the convention drifts back one key at a time — the state
+    it was in before: three `*_slv` keys, five `*_raw` keys and the newer
+    `silver_*`/`gold_*` set all coexisting.
+    """
+    offenders: list[str] = []
+    for key in sorted(_registered_keys()):
+        name = key.to_user_string()
+        if name in _NAMING_EXCEPTIONS:
+            continue
+        if not name.startswith(_LAYER_PREFIXES):
+            offenders.append(name)
+    assert not offenders, (
+        "asset key(s) violate the layer-prefix convention — every key must start "
+        f"with one of {_LAYER_PREFIXES}, or be a declared exception "
+        f"({sorted(_NAMING_EXCEPTIONS)}): {offenders}"
+    )
+
+
+def test_naming_exceptions_are_still_real_keys() -> None:
+    """A stale exception would silently excuse a new non-conforming key.
+
+    Same failure class as `DECLARED_EXTERNAL_DEPS`: an allowlist entry that no
+    longer names a real key widens the exemption without anyone noticing.
+    """
+    registered = {k.to_user_string() for k in _registered_keys()}
+    stale = sorted(_NAMING_EXCEPTIONS - registered)
+    assert not stale, (
+        f"naming exception(s) no longer name a registered asset: {stale} — "
+        "remove them, or the exemption quietly excuses a future bad key"
+    )

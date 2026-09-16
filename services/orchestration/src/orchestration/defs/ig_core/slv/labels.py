@@ -358,7 +358,7 @@ def _quantile(values: list, q: float) -> float:
         "Tukey-fence standout labels + triage decisions per post "
         "(daily; self-versioned via LABEL_VERSION)."
     ),
-    deps=["ig_posts_slv"],
+    deps=["silver_ig_posts"],
 )
 def ig_post_labels(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
     """Stamp ``ig_post_labels`` for every silver post (plan §4 rule table).

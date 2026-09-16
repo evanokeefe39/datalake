@@ -46,10 +46,10 @@ Dagster CLI, which records what it does.
 ```bash
 # the medallion path end to end
 uv run dagster asset materialize -m orchestration.definitions \
-  --select ig_posts_slv+v_post_detail+dim_profile+dim_date
+  --select silver_ig_posts+v_post_detail+dim_profile+dim_date
 
 # one asset
-uv run dagster asset materialize -m orchestration.definitions --select ig_posts_slv
+uv run dagster asset materialize -m orchestration.definitions --select silver_ig_posts
 ```
 
 `-m orchestration.definitions` is required: the code location is that module, not

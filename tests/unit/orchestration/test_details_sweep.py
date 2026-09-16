@@ -5,7 +5,7 @@ profile. The sweep replaces it, and the load-bearing difference is RETRYABILITY:
 a request-triggered scrape that fails is gone, while a swept one stays due.
 
 The property that makes that true is where the watermark moves. It advances when
-`ig_profile_details_raw` SUCCEEDS — never at schedule-evaluation time. If it
+`bronze_ig_profile_details` SUCCEEDS — never at schedule-evaluation time. If it
 advanced at evaluation, a tick that emitted ten runs and had three fail would
 leave those three permanently skipped (the watermark would already be past
 them), which is silent loss of paid intent. These tests pin that ordering.
@@ -151,7 +151,7 @@ def test_run_request_carries_the_roster_identity(roster_db):
     _profile(roster_db, "a", updated_at="2026-01-01 00:00:00")
     req = ds.details_sweep_run_requests(roster_db)[0]
     assert isinstance(req, RunRequest)
-    cfg = req.run_config["ops"]["ig_profile_details_raw"]["config"]
+    cfg = req.run_config["ops"]["bronze_ig_profile_details"]["config"]
     assert cfg["profile_url"] == "https://www.instagram.com/a/"
     assert cfg["roster_updated_at"] == "2026-01-01 00:00:00"
     assert cfg["max_charge_usd"] == ds.DETAILS_CHARGE_CAP_USD

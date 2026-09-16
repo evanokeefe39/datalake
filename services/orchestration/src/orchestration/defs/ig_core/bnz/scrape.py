@@ -6,8 +6,8 @@ while the CDN URLs are still fresh — enrichment runs months later on a backlog
 long after the CDN URLs expire. Producers own ingestion-time caching; silver
 never caches.
 
-Two ingestion paths share this module: the Apify scrape (`ig_posts_raw`, remote
-CDN) and the local-disk ad-hoc path (`ig_posts_local_raw`, `LOCAL_INGEST_DIR`).
+Two ingestion paths share this module: the Apify scrape (`bronze_ig_posts`, remote
+CDN) and the local-disk ad-hoc path (`bronze_ig_posts_local`, `LOCAL_INGEST_DIR`).
 Both land typed Parquet plus a `.meta` JSON sidecar for lineage.
 """
 import json
@@ -80,7 +80,7 @@ class DetailsScrapeConfig(Config):
 
 
 @asset(
-    name="ig_profile_details_raw",
+    name="bronze_ig_profile_details",
     group_name="instagram",
     description=(
         "One profile's details scrape → bronze Parquet. Driven by the "
@@ -88,7 +88,7 @@ class DetailsScrapeConfig(Config):
         "already been scraped; never triggered by an HTTP request."
     ),
 )
-def ig_profile_details_raw(
+def bronze_ig_profile_details(
     config: DetailsScrapeConfig,
     apify: ApifyResource,
     ops: SQLiteResource,
@@ -109,7 +109,7 @@ def ig_profile_details_raw(
     token = apify.token or os.environ.get("APIFY_API_TOKEN", "")
     if not token:
         raise RuntimeError(
-            "ig_profile_details_raw: no APIFY_API_TOKEN — refusing to record a "
+            "bronze_ig_profile_details: no APIFY_API_TOKEN — refusing to record a "
             "scrape that did not happen"
         )
 
@@ -183,11 +183,13 @@ def _write_meta(
     meta_path.write_text(json.dumps(meta, indent=2))
 
 @asset(
-    name="ig_posts_raw",
+    name="bronze_ig_posts",
     group_name="instagram",
     description="Apify Instagram scrape → typed Parquet in bronze lake.",
 )
-def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource, ops: SQLiteResource) -> pl.DataFrame:
+def bronze_ig_posts(
+    config: ScrapeConfig, apify: ApifyResource, ops: SQLiteResource
+) -> pl.DataFrame:
     """Scrape Instagram profiles via Apify, store as typed Parquet.
 
     Media bytes are cached into ``media_cache`` at scrape time (ingestion),
@@ -281,11 +283,11 @@ def _local_post_media_pairs(post: dict, post_dir: Path) -> list[tuple[str, Path]
     return pairs
 
 @asset(
-    name="ig_posts_local_raw",
+    name="bronze_ig_posts_local",
     group_name="instagram",
     description="Local ad-hoc scrape dumps → bronze Parquet (write-once) + media seeding.",
 )
-def ig_posts_local_raw(ops: SQLiteResource) -> pl.DataFrame:
+def bronze_ig_posts_local(ops: SQLiteResource) -> pl.DataFrame:
     """Ingest local ad-hoc scrape dumps as a second bronze producer.
 
     Reads ``<LOCAL_INGEST_DIR>/<dataset_id>/<post_id>/post_metadata.json``
@@ -324,7 +326,7 @@ def ig_posts_local_raw(ops: SQLiteResource) -> pl.DataFrame:
                 logger.warning("Skipping %s — no post_metadata.json found", dataset_dir.name)
                 continue
 
-            # NDJSON roundtrip mirrors ig_posts_raw's proven read path for
+            # NDJSON roundtrip mirrors bronze_ig_posts's proven read path for
             # the same wire format. infer_schema_length=None scans ALL rows:
             # sparse fields (e.g. a caption-like column null for the first
             # N posts) otherwise infer as NULL and a later non-null row

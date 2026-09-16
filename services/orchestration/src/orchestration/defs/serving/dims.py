@@ -13,7 +13,7 @@ from orchestration.defs.platform.schemas import duckdb_ddl
     name="dim_profile",
     group_name="serving",
     description="SCD2 profile dimension tracking owner attributes over time.",
-    deps=[AssetKey("ig_posts_slv")],
+    deps=[AssetKey("silver_ig_posts")],
 )
 def profile_dimension(duckdb: DuckDBResource, ops: SQLiteResource) -> None:
     """Upsert profile dimension with SCD2 tracking.

@@ -100,7 +100,7 @@ def _ops_connect() -> sqlite3.Connection:
 # *bytes* to disk — never the URLs. Two endpoints:
 #   - thumbnails: fetched from Instagram's public /media/ endpoint on first
 #     request, then served from disk (byte-cache, tracked in ops.sqlite).
-#   - avatars: populated at pipeline time by ig_profiles_slv; served from
+#   - avatars: populated at pipeline time by silver_ig_profiles; served from
 #     disk, or a DiceBear identicon redirect when absent.
 
 
@@ -188,7 +188,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
 def avatar(username: str):
     """Serve a profile picture from disk, or redirect to a DiceBear identicon.
 
-    Avatars are populated at pipeline time (ig_profiles_slv), never fetched
+    Avatars are populated at pipeline time (silver_ig_profiles), never fetched
     from Instagram here — CDN URLs expire and can't be refreshed at runtime.
     """
     local = avatar_path(username)

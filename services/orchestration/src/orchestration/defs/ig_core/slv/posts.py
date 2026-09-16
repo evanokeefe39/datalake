@@ -175,16 +175,16 @@ def _derive_media(df: pl.DataFrame) -> pl.DataFrame:
 
 
 @asset(
-    name="ig_posts_slv",
+    name="silver_ig_posts",
     group_name="instagram",
     description="Dedup bronze posts → silver Parquet + DuckDB state.",
-    deps=["ig_posts_raw", "ig_posts_local_raw"],
+    deps=["bronze_ig_posts", "bronze_ig_posts_local"],
 )
-def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
+def silver_ig_posts(duckdb: DuckDBResource) -> pl.DataFrame:
     """Read unprocessed bronze files, dedup via DuckDB DISTINCT ON, persist.
 
     PURE TRANSFORM — no network I/O and no media caching. Producers
-    (``ig_posts_raw``, ``ig_posts_local_raw``) cache media bytes at ingestion
+    (``bronze_ig_posts``, ``bronze_ig_posts_local``) cache media bytes at ingestion
     while CDN URLs are fresh. Idempotent: re-running with no new bronze files
     is a no-op (returns the existing silver DataFrame).
     """
