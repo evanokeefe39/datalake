@@ -227,40 +227,72 @@ and the schema drift detector catches table mismatches.
 - [ ] State readiness test updated and passing
 
 ## Active
+### 38. Compose acceptance (V5/V6) — EXECUTED 2026-09-16, both passed
 
-### 38. Compose acceptance (V5/V6) could not be executed — Docker Desktop not running
+**Status:** RESOLVED. Docker Desktop was started and the acceptance was run for real against
+the containers, not simulated.
 
-**Status:** BLOCKED on the host, not on the code. Everything else about the platform
-work is verified (see the entries below and `docs/architecture/adr/0017`).
+**V5 — the platform comes up. All criteria met.**
 
-**Symptom.** `docker version` fails:
-`failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`.
-So `docker compose up -d --build` could not run, and with it the two acceptance steps
-that require containers:
+- `docker compose build` built all three images; `up -d` brought up orchestration, jobs and
+  dashboard.
+- `jobs` `/health` → 200 `{"status":"ok","model":"qwen/qwen3.7-flash","version":"0.1.0"}`;
+  the container is `healthy` per its healthcheck.
+- Dagster webserver → 200; all six daemons running (`SensorDaemon` among them), and the log
+  shows `Checking for new runs for sensor: enrichment_harvest_sensor` on its 30 s interval.
+- Sensor policy confirmed against the instance (GraphQL, i.e. what the UI shows):
+  `enrichment_harvest_sensor` **RUNNING**, `enrichment_submit_sensor` **STOPPED**.
+- Negative control PASSED: with `jobs` stopped, `ServiceBackedAdapter().require_health()`
+  raised `ProviderError: inference service http://jobs:8462 is DOWN (/health: [Errno -2] Name
+  or service not known); refusing to submit` — a loud failure, never a quiet nothing-to-do.
+- `DAGSTER_HOME` correctly resolves to `/data/dagster_home` (the compose `environment:`
+  override beats `.env`'s Windows path), which is ISSUES #36 defeated in the container.
 
-- **V5** — all three services up; `/health` 200; Dagster webserver 200; harvest sensor
-  RUNNING and submit STOPPED in the UI; the `docker compose stop jobs` negative control.
-- **V6** — one real enrichment cycle through Compose (submit → poll → harvest), asserting
-  landed bronze rows, silver rows, and that media genuinely reached the model.
+**V6 — one real enrichment cycle. Passed, destination-verified.**
 
-**What WAS verified without Docker** (so the remaining gap is narrow):
+Run against live as the owner directed, with `data/backups/v6-pre/` snapshotted first.
 
-- `docker compose config -q` passes with all three services and every env override
-  resolving (`DAGSTER_HOME` correctly overridden to `/data/dagster_home` for
-  orchestration, `JOBS_SERVICE_URL`/`DASHBOARD_URL` on the service names, the path map
-  populated).
-- Every `COPY` source in all three Dockerfiles exists, and every `uv sync --package <n>`
-  names a package present in `uv.lock` — the two most common build failures.
-- The container **path** defects are proven fixed by simulation: with no `.git` ancestor
-  and `IG_DATA_DIR` set, `orchestration.definitions` loads (38 assets); and a REAL
-  `media_cache` row holding a Windows path resolved through the prefix map to its actual
-  148 KB image bytes — the exact chain that returned a miss before.
-- The `/health` gate end-to-end against the live service: 200 with the worker up, 503 with
-  it disabled, and the datalake adapter raising `ProviderError` loudly when the service is
-  stopped.
+|Assertion|Result|
+|---|---|
+|submit|`2 submitted, 0 failed, 2 candidate(s) of 21 discovered`; real service job handle|
+|media reached the model|items carried **14 and 16 images**; both `completed` with 3–4 KB of output|
+|harvest|sensor fired **autonomously**, ran `enrichment_harvest` → `RUN_SUCCESS`|
+|bronze destination|9,576 → **9,580** rows, new rows `provider='service_backed'`|
+|silver destination|`silver_visual_annotations` 0 → **2**; `silver_visual_summaries` 0 → **2**|
+|failures recorded, not dropped|2 pre-mount items quarantined with `reason_code='provider_error'`|
 
-**To close.** Start Docker Desktop (Linux containers) and run `docker compose up -d --build`
-from the repo root with `DATALAKE_HOST_DATA_DIR` set, then work V5 and V6.
+**Two container-only defects found by actually running it** (neither visible to any test):
+
+1. **A stale host dev server squatted port 3002.** An earlier `uvicorn` on
+   `127.0.0.1:3002` held the port, so the dashboard container started *unpublished*
+   (`3002/tcp` with no host mapping) and every `curl localhost:3002` hit the stale process,
+   which served an older `server.py` without the SPA mount. This is why `/` 404'd while
+   `/api/roster` 200'd. Killed the process; `up -d --force-recreate dashboard` bound the
+   port. **Lesson:** a container that starts without its declared port mapping is silent —
+   check `docker ps` for `0.0.0.0:N->N/tcp`, not just `Up`.
+2. **The launchpad configs in `data/smoke/*.json` are host-relative.** `submit-live.json`
+   says `database: "data/smoke/state.duckdb"`, which resolves against the container WORKDIR
+   `/app` and fails `Cannot open file "/app/data/smoke/state.duckdb"`. Added
+   `data/smoke/submit-container.json` with absolute `/data/...` paths. The smoke configs are
+   dev artifacts (gitignored) so this is documented rather than "fixed" in-repo.
+
+**A third finding — the smoke slice does not isolate the bronze landing.** The smoke config
+swaps only the `duckdb` and `ops` resources; `harvest.py` and `silver_rt.py` call
+`land_response`/`read_responses` with `root=None`, which defaults to the LIVE lake root. So
+a smoke-configured run still appends to live bronze. Recorded rather than papered over: the
+bronze landing is replaceable by locked decision, so a live run is recoverable, but the
+isolation the smoke slice appears to offer is not there. Threading a root through harvest +
+silver is the fix if isolation is wanted.
+
+**Port note:** Dagster publishes host **3001** → container 3000 on this machine because the
+`langfuse-spike` stack owns 3000. See the pending item about making that an override.
+
+**Follow-on observed (now ADR-0018):** the harvest landed bronze while
+`silver_visual_annotations` sat at 0 — the lineage was correct but nothing acted on it.
+The chain stopped at bronze until silver was materialized by hand. The owner's decision that
+cost is enforced at the API credential (not in the graph) settles the design; see
+`docs/architecture/adr/0018-pipeline-automation-and-the-cost-boundary.md`. The
+auto-materialization implementation is separate, open work.
 
 ### 37. `media_cache` rows are written in the writer's path vocabulary
 

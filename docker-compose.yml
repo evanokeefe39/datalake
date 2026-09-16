@@ -27,6 +27,12 @@ services:
     volumes:
       - ./data/jobs:/jobs-data # service-private job store, survives restarts
       - ./data/media:/data/media:ro # read-only: paths identical to what the adapter sends
+      # The dev/smoke slice keeps its OWN media root (data/smoke/media), so a
+      # smoke-slice run sends /data/smoke/media/... paths. Without this mount the
+      # service correctly reports every item's images as missing — which is the
+      # preflight working, but it blocks a smoke E2E. Read-only for the same
+      # reason as above: these bytes are the sole copy.
+      - ./data/smoke/media:/data/smoke/media:ro
     ports:
       - "8462:8462"
     healthcheck:
@@ -68,7 +74,9 @@ services:
     volumes:
       - ./data:/data
     ports:
-      - "3000:3000"
+      # 3000 is the documented Dagster port; this host publishes 3001 because
+      # another local stack owns 3000. Override with DAGSTER_HOST_PORT.
+      - "${DAGSTER_HOST_PORT:-3000}:3000"
     depends_on:
       - jobs
       - dashboard

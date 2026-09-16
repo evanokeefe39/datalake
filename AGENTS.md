@@ -467,6 +467,12 @@ cannot open.
 
 DuckDB is single-writer, so a host `dagster dev` and the containers must not run at once.
 
+**If host port 3000 is taken**, set `DAGSTER_HOST_PORT` (e.g. `DAGSTER_HOST_PORT=3001`);
+the container still listens on 3000 internally and 3000 stays the documented default. Note
+that a container which starts while its declared port is occupied comes up **unpublished**
+(`docker ps` shows `3002/tcp` with no `0.0.0.0:N->N/tcp`) rather than failing — so check the
+mapping, not just the `Up` status.
+
 ## The roster boundary (ADR-0017)
 
 The dashboard OWNS `creators`/`profiles`/`creator_merges` and serves them at
