@@ -18,12 +18,9 @@ consumer.
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    import sqlite3
-
+from typing import Protocol, runtime_checkable
 
 # ── Connection contract ─────────────────────────────────────────────────────
 
@@ -41,6 +38,46 @@ class ConnectionFactory(Protocol):
 
     def get_connection(self) -> sqlite3.Connection:  # pragma: no cover - protocol
         ...
+
+
+class _ConnectionSpec:
+    """A `ConnectionFactory` bound to one path — see :func:`connect`.
+
+    Exists so a non-Dagster caller (the dashboard) can satisfy the protocol
+    without importing the orchestration layer's resource class.
+    """
+
+    __slots__ = ("_path",)
+
+    def __init__(self, path: str) -> None:
+        self._path = path
+
+    def get_connection(self) -> sqlite3.Connection:
+        return connect(self._path)
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics
+        return f"_ConnectionSpec({self._path!r})"
+
+
+def connect(path: str) -> sqlite3.Connection:
+    """Open the ops database with the shared pragmas. Caller closes.
+
+    ONE definition of "how ops.sqlite is opened": WAL, foreign keys on, a busy
+    timeout, and a row factory. A caller that builds its own `sqlite3.connect`
+    silently opts out of all four — which is how a reader ends up blocked by a
+    writer, or receiving tuples where the rest of the codebase expects mappings.
+    """
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def connection_factory(path: str) -> ConnectionFactory:
+    """A `ConnectionFactory` for `path` — the object callers pass to opsdb helpers."""
+    return _ConnectionSpec(path)
 
 # ── Spec model (shared with the DuckDB catalog) ─────────────────────────────
 

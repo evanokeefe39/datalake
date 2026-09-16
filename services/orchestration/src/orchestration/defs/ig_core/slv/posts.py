@@ -449,6 +449,7 @@ def ensure_state_tables(db: DuckDBResource) -> None:
             "silver_ig_profile_observations",
             "watermarks",
             "silver_ig_profiles",
+            "silver_ig_roster",
             "silver_ig_comments",
         ):
             conn.execute(duckdb_ddl(name))

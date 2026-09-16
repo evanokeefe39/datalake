@@ -60,7 +60,13 @@ def record_media_cache_row(
     Postcondition: exactly one row exists for `cache_key`, carrying `local_path`,
     `content_type`, `size_bytes`, the URL, and a fresh UTC `fetched_at`. A prior
     row for the same key is replaced.
+
+    Ensures the table exists first: every writer of this table must be able to
+    write to a fresh ops.sqlite without knowing a separate initialisation step.
+    The DDL lives in this module's catalog and `CREATE TABLE IF NOT EXISTS` is
+    idempotent, so this costs nothing on the common path.
     """
+    _ensure_media_cache_table(ops)
     conn = ops.get_connection()
     try:
         conn.execute(

@@ -27,7 +27,6 @@ from datetime import datetime, timedelta, timezone
 
 import polars as pl
 from dagster import asset
-from opsdb.roster import enabled_profiles
 
 from orchestration.defs.ig_core.slv.posts import ensure_state_tables as _ensure_state_tables
 from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
@@ -370,12 +369,14 @@ def ig_post_labels(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
     immutable. Idempotent — re-running with no new data is a no-op.
     """
     _ensure_state_tables(duckdb)
-    core_handles = {
-        (p["handle"] or "").lower().lstrip("@")
-        for p in enabled_profiles(ops)
-        if p["platform"] == "instagram" and p["tier"] == "tier1"
-    }
+    from orchestration.defs.ig_core.slv.roster import enabled_profiles
+
     with duckdb.get_connection() as conn:
+        core_handles = {
+            (p["handle"] or "").lower().lstrip("@")
+            for p in enabled_profiles(conn)
+            if p["tier"] == "tier1"
+        }
         stats = run_label_pass(conn, core_handles=core_handles)
         labels = pl.from_arrow(
             conn.execute("SELECT * FROM ig_post_labels").arrow().read_all()

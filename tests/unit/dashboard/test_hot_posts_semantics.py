@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from pathlib import Path
 
 import duckdb
 import pytest
 from fastapi.testclient import TestClient
 
-_SERVER_PATH = Path(__file__).resolve().parents[3] / "dashboard" / "server.py"
+from tests.paths import dashboard_server_path
+
+_SERVER_PATH = dashboard_server_path()
 _spec = importlib.util.spec_from_file_location("dashboard_server_semantics", _SERVER_PATH)
 assert _spec and _spec.loader
 server = importlib.util.module_from_spec(_spec)

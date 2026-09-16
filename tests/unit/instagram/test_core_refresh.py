@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from dagster import DefaultScheduleStatus, build_asset_context
+from dagster_duckdb import DuckDBResource
 from opsdb.roster import ensure_schema
 from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig, ig_posts_raw
 from orchestration.defs.integration.apify_client import trigger_run
@@ -49,6 +50,53 @@ def ops_db(tmp_path) -> SQLiteResource:
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
     ensure_schema(ops)
     return ops
+
+
+@pytest.fixture
+def roster_db(tmp_path) -> DuckDBResource:
+    """A DuckDB holding ``silver_ig_roster``, empty until a profile is added.
+
+    The schedule reads the PUBLISHED roster (the dashboard owns the original and
+    serves it over the API), so these tests publish what they would otherwise
+    have written to ops.sqlite. The intent of each test — "this roster produces
+    these run requests" — is unchanged.
+    """
+    db = DuckDBResource(database=str(tmp_path / "state.duckdb"))
+    with db.get_connection() as conn:
+        from orchestration.defs.platform.schemas import duckdb_ddl
+
+        conn.execute(duckdb_ddl("silver_ig_roster"))
+    return db
+
+
+def _publish(
+    db: DuckDBResource,
+    handle: str,
+    *,
+    enabled: int = 1,
+    tier: str = "tier1",
+    results_limit: int = 7,
+    platform: str = "instagram",
+) -> None:
+    """Publish one profile row into ``silver_ig_roster``."""
+    with db.get_connection() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO silver_ig_roster
+               (platform, handle, profile_url, results_type, results_limit,
+                enabled, tier, creator_id, creator_name, updated_at,
+                source_fetched_at, processed_on)
+               VALUES (?, ?, ?, 'details', ?, ?, ?, 1, ?, '2026-01-01T00:00:00',
+                       '2026-01-01T00:00:00', NULL)""",
+            [
+                platform,
+                handle,
+                f"https://www.instagram.com/{handle}/",
+                results_limit,
+                bool(enabled),
+                tier,
+                handle,
+            ],
+        )
 
 
 def _add_profile(ops: SQLiteResource, handle: str, *, enabled: int = 1, tier: str = "tier1"):
@@ -147,12 +195,12 @@ def test_core_refresh_stopped_monthly():
     assert core_refresh.cron_schedule == "0 4 2 * *"
 
 
-def test_core_refresh_one_run_request_per_enabled_tier1_profile(ops_db):
-    _add_profile(ops_db, "alpha")                    # enabled tier1 → included
-    _add_profile(ops_db, "beta", enabled=0)          # disabled → excluded
-    _add_profile(ops_db, "gamma", tier="tier2")      # tier2 → excluded
+def test_core_refresh_one_run_request_per_enabled_tier1_profile(roster_db):
+    _publish(roster_db, "alpha")                    # enabled tier1 -> included
+    _publish(roster_db, "beta", enabled=0)          # disabled -> excluded
+    _publish(roster_db, "gamma", tier="tier2")      # tier2 -> excluded
 
-    requests = run_requests(ops_db)
+    requests = run_requests(roster_db)
     assert isinstance(requests, list)
     assert len(requests) == 1
     req = requests[0]
@@ -166,26 +214,26 @@ def test_core_refresh_one_run_request_per_enabled_tier1_profile(ops_db):
     }
 
 
-def test_core_refresh_multiple_enabled_profiles_get_separate_requests(ops_db):
-    _add_profile(ops_db, "alpha")
-    _add_profile(ops_db, "beta")
-    requests = run_requests(ops_db)
+def test_core_refresh_multiple_enabled_profiles_get_separate_requests(roster_db):
+    _publish(roster_db, "alpha")
+    _publish(roster_db, "beta")
+    requests = run_requests(roster_db)
     assert [r.run_key for r in requests] == [
         "core_refresh:instagram:alpha",
         "core_refresh:instagram:beta",
     ]
 
 
-def test_core_refresh_skips_when_roster_empty(ops_db):
-    result = run_requests(ops_db)
+def test_core_refresh_skips_when_roster_empty(roster_db):
+    result = run_requests(roster_db)
     assert not isinstance(result, list)
     assert "No enabled tier1" in str(result)
 
 
-def test_core_refresh_run_config_validates_against_scrape_config(ops_db):
+def test_core_refresh_run_config_validates_against_scrape_config(roster_db):
     """The emitted run_config must parse as a valid ScrapeConfig."""
-    _add_profile(ops_db, "alpha")
-    req = run_requests(ops_db)[0]
+    _publish(roster_db, "alpha")
+    req = run_requests(roster_db)[0]
     cfg = req.run_config["ops"]["ig_posts_raw"]["config"]
     parsed = ScrapeConfig(**cfg)
     assert parsed.max_charge_usd == 0.50
