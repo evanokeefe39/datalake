@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import csv
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -41,7 +41,7 @@ def main() -> int:
         raise SystemExit(f"no {DB}")
     c = sqlite3.connect(str(DB))
     c.row_factory = sqlite3.Row
-    date = datetime.now(timezone.utc).strftime("%Y%m%d")
+    date = datetime.now(UTC).strftime("%Y%m%d")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out = OUT_DIR / f"roster_{date}.csv"
     rows = c.execute(SELECT).fetchall()

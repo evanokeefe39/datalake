@@ -1,6 +1,6 @@
 """Durable dimensions — SCD2 profile history and the generated calendar."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from dagster import AssetKey, asset
 from dagster_duckdb import DuckDBResource
@@ -61,7 +61,7 @@ def profile_dimension(duckdb: DuckDBResource, ops: SQLiteResource) -> None:
             0
         ]
 
-        now_ts = datetime.now(timezone.utc).isoformat()
+        now_ts = datetime.now(UTC).isoformat()
 
         for owner_id, owner_username in profiles:
             creator = handle_map.get(owner_username, {})

@@ -33,7 +33,7 @@ import argparse
 import hashlib
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -41,7 +41,7 @@ LOCAL_BACKUP_DIR = ROOT / "data" / "backups"
 
 
 def _stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _sha256(path: Path) -> str:
@@ -103,7 +103,7 @@ def main() -> int:
     stamp = _stamp()
     date = stamp[:8]
     LOCAL_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    manifest: dict = {"created": datetime.now(timezone.utc).isoformat(),
+    manifest: dict = {"created": datetime.now(UTC).isoformat(),
                       "source_db": {"ops": str(ops), "duckdb": str(duck)},
                       "files": {}}
 

@@ -7,14 +7,14 @@ control determinism, and the floor-filler top-up.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from orchestration.defs.ig_core.slv.labels import LABEL_VERSION, run_label_pass
 from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
 from orchestration.defs.platform.schemas import duckdb_ddl
 
-NOW = datetime(2026, 8, 31, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 31, tzinfo=UTC)
 
 
 @pytest.fixture()

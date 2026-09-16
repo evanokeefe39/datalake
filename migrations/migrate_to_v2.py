@@ -22,7 +22,7 @@ import argparse
 import logging
 import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -127,7 +127,7 @@ def migrate(db_path: Path) -> None:
         logger.info("Dropped silver_watermark table")
 
     # ── 7. Seed watermarks from existing data ─────────────────────────────
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # silver_ig: use MAX(completed_at) from silver_ig_progress if available
     if _table_exists(conn, "silver_ig_progress"):

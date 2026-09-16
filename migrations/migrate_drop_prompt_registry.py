@@ -32,7 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 OPS_PATH = Path("data/ops.sqlite")
@@ -97,7 +97,7 @@ def main() -> int:
         cols = tuple(r["name"] for r in conn.execute(f"PRAGMA table_info({TABLE})").fetchall())
         print(f"{TABLE}: {live} row(s), columns {cols}")
 
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
         if args.plan:
             print(f"would archive to {ARCHIVE_ROOT / TABLE / stamp / (TABLE + '.parquet')}")

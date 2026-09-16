@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import polars as pl
 from dagster import build_asset_context
@@ -70,7 +70,7 @@ def _scrape_details(urls: list[str], token: str) -> str:
             "results_limit": 1,
             "results_type": "details",
         },
-        "downloaded_at": datetime.now(timezone.utc).isoformat(),
+        "downloaded_at": datetime.now(UTC).isoformat(),
     }
     dest.with_suffix(".parquet.meta").write_text(json.dumps(meta, indent=2))
     print(f"  bronze: {dest.name} ({item_count} items)")

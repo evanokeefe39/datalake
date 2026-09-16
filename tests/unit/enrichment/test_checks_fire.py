@@ -11,7 +11,7 @@ state, not just the green side. Tests use tmp roots and in-memory/tmp DuckDB
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -37,7 +37,7 @@ from tests.unit.enrichment.test_conform import (
     visual_payload,  # noqa: F401
 )
 
-NOW = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 10, 12, 0, 0, tzinfo=UTC)
 
 
 # ── Fixtures / helpers ─────────────────────────────────────────────────────
@@ -218,7 +218,7 @@ def test_freshness_fires_on_stale_and_missing_snapshots(roots):
     bronze, silver = roots
     _conform(bronze, silver)
     # Backdate every silver snapshot: bronze is now newer than silver.
-    old = (datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()
+    old = (datetime.now(UTC) - timedelta(hours=1)).timestamp()
     files = {
         tid: conform.table_path(tid, silver) for tid in conform.SILVER_TABLES
     }
@@ -245,7 +245,7 @@ def test_freshness_check_end_to_end(roots):
     """The asset check itself fires on the stale state."""
     bronze, silver = roots
     _conform(bronze, silver)
-    old = (datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()
+    old = (datetime.now(UTC) - timedelta(hours=1)).timestamp()
     for tid in (*conform.SILVER_TABLES, SILVER_QUARANTINE):
         os.utime(conform.table_path(tid, silver), (old, old))
     resource = _duckdb_resource(duckdb.connect(":memory:"))
