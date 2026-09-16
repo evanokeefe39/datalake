@@ -125,8 +125,9 @@ refactor — which is precisely how this gap arose.
 - **Silver stays a pure replay of bronze.** Because submit is unreachable transitively, a
   schema or mapping change remains a replay rather than a re-bill (ADR-0011), and the
   parity and replay-purity evidence from the v3 migration keeps its meaning.
-- Cost control has one owner (the credential) and one failure mode (a provider error),
-  instead of being spread across graph shape, operator discipline, and hope.
+- The submit boundary is stated where a reader looks for it (decision 4 and its assertion), so
+  "can a `materialize` spend money?" has a single, checkable answer rather than one that
+  depends on which paragraph was read first.
 - The graph states where external work occurs, so the boundary is reviewable rather than
   emergent.
 
