@@ -2,7 +2,7 @@
 
 - **Theme:** Collection strategy & cost governance
 - **Owner:** dlc-worker (warehouse/serving) / sdlc-worker (dashboard)
-- **Status:** Active — governance complete; **US-DISC-7 and US-DISC-8 implemented** (PR #89, 2026-09-17). US-DISC-1..6 remaining.
+- **Status:** Active — governance complete; **US-DISC-7 and US-DISC-8 implemented** (PR #89, 2026-09-17). Remaining: US-DISC-1..4 (US-DISC-5 was absorbed by US-DISC-7, US-DISC-6 superseded by US-DISC-8).
 - **Depends on:** E-IDENTITY (creators/profiles), E-ENRICH-LABELS (standout/hot signal), E-SERVING-ANALYTICS (metric views)
 - **Feeds:** E-DASHBOARD (admin/cost surface)
 
