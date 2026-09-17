@@ -32,13 +32,14 @@ from .defs.ig_core.slv.profiles import silver_ig_profiles
 from .defs.ig_core.slv.roster import ig_roster_slv
 from .defs.ig_enriched.slv import checks as enrichment_checks
 from .defs.platform import paths
+from .defs.platform.core_refresh import core_refresh
 from .defs.platform.details_sweep import details_sweep
 from .defs.platform.resources import (
     ApifyResource,
     PolarsIOManager,
     SQLiteResource,
 )
-from .defs.platform.schedules import core_refresh, daily_medallion
+from .defs.platform.schedules import daily_medallion
 from .defs.serving import checks as serving_checks_mod
 from .defs.serving import dims, marts, metrics, views
 

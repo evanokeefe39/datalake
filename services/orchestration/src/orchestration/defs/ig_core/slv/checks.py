@@ -381,6 +381,61 @@ def _ig_observations_parity(context) -> AssetCheckResult:
     )
 
 
+#: A dataset counts as "fresh" if any of its observations landed within this
+#: window. The schedule runs monthly, so the window is wider than one tick.
+_OBSERVATION_FRESHNESS_DAYS = 45
+
+
+@asset_check(
+    asset="silver_ig_posts",
+    name="ig_observation_freshness",
+    required_resource_keys={"duckdb"},
+    description=(
+        "At least one observation DATASET landed recently — freshness counted "
+        "as distinct datasets, never as rows."
+    ),
+)
+def _ig_observation_freshness(context) -> AssetCheckResult:
+    """Fail when no scrape has landed a dataset inside the freshness window.
+
+    Counted as ``COUNT(DISTINCT source_dataset)``, not rows with a recent
+    ``observed_at``. A dataset assigns a distinct observation and a replay
+    appends nothing (``INSERT OR IGNORE``), so a row count would report
+    freshness that did not happen — re-observing existing posts produces no new
+    rows at all, and a run that fetched nothing would look identical to one
+    that fetched everything.
+    """
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        fresh = conn.execute(
+            """
+            SELECT COUNT(DISTINCT source_dataset)
+            FROM silver_ig_post_observations
+            WHERE observed_at >= now() - INTERVAL (?) DAY
+            """,
+            [_OBSERVATION_FRESHNESS_DAYS],
+        ).fetchone()[0]
+        newest = conn.execute(
+            "SELECT MAX(observed_at) FROM silver_ig_post_observations"
+        ).fetchone()[0]
+    if not fresh:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=(
+                f"No scrape landed an observation dataset in the last "
+                f"{_OBSERVATION_FRESHNESS_DAYS} days "
+                f"(newest observation: {newest}) — check the core_refresh "
+                "schedule and the Apify credentials."
+            ),
+            metadata={"fresh_datasets": 0, "newest_observation": str(newest)},
+        )
+    return AssetCheckResult(
+        passed=True,
+        metadata={"fresh_datasets": fresh, "newest_observation": str(newest)},
+    )
+
+
 ig_checks = [
     _ig_posts_raw_has_rows,
     _ig_posts_raw_has_meta,
@@ -392,4 +447,5 @@ ig_checks = [
     _ig_labels_current_version,
     _ig_labels_coverage,
     _ig_observations_parity,
+    _ig_observation_freshness,
 ]

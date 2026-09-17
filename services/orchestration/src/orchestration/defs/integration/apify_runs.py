@@ -77,6 +77,8 @@ def trigger_run(
     results_limit: int = 1,
     results_type: str = "posts",
     max_charge_usd: float | None = None,
+    only_posts_newer_than: str | None = None,
+    memory_mbytes: int | None = None,
 ) -> RunInfo:
     """Start an actor run. Returns immediately with run_id and dataset_id.
 
@@ -87,6 +89,12 @@ def trigger_run(
     what the run may bill. ``Decimal(str(...))``, not ``Decimal(...)``: the float
     constructor reproduces binary error and would send a cap like
     ``0.5000000000000000277...``.
+
+    ``only_posts_newer_than`` is an absolute UTC date; it is omitted entirely
+    when None, because sending None or an empty string gives the actor a
+    boundary it cannot parse. ``memory_mbytes`` is a RUN option
+    (``memoryMbytes``), not an actor input — it is absent from the actor's
+    ``input.properties``, so putting it in ``run_input`` would be ignored.
     """
     run_input = {
         "directUrls": urls,
@@ -94,11 +102,14 @@ def trigger_run(
         "resultsLimit": results_limit,
         "proxy": {"useApifyProxy": True},
     }
+    if only_posts_newer_than is not None:
+        run_input["onlyPostsNewerThan"] = only_posts_newer_than
     run = _client(token).actor(actor).start(
         run_input=run_input,
         max_total_charge_usd=(
             Decimal(str(max_charge_usd)) if max_charge_usd is not None else None
         ),
+        memory_mbytes=memory_mbytes,
     )
     log.info("Triggered run %s (dataset %s)", run.id, run.default_dataset_id)
     return RunInfo(

@@ -1,4 +1,4 @@
-"""Tests for US-C1 (max_charge_usd → maxTotalChargeUsd) and US-C2 (core_refresh schedule)."""
+"""Tests for US-DISC-7 (per-creator watermark sync) and US-DISC-8 (SDK transport)."""
 
 from __future__ import annotations
 
@@ -8,17 +8,19 @@ from unittest.mock import patch
 import pytest
 from dagster import DefaultScheduleStatus, build_asset_context
 from dagster_duckdb import DuckDBResource
-from opsdb.roster import ensure_schema
+from opsdb.roster import AD_HOC_LIMIT, ensure_schema
 from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig, bronze_ig_posts
 from orchestration.defs.integration.apify_runs import RunOutcome, trigger_run
-from orchestration.defs.platform.resources import SQLiteResource
-from orchestration.defs.platform.schedules import (
+from orchestration.defs.platform.core_refresh import (
     CORE_REFRESH_CHARGE_CAP_USD,
+    DEFAULT_MAX_PARALLEL_SCRAPE_RUNS,
+    SCRAPE_RUN_MEMORY_MB,
     core_refresh,
 )
-from orchestration.defs.platform.schedules import (
+from orchestration.defs.platform.core_refresh import (
     core_refresh_run_requests as run_requests,
 )
+from orchestration.defs.platform.resources import SQLiteResource
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -99,18 +101,20 @@ def ops_db(tmp_path) -> SQLiteResource:
 
 @pytest.fixture
 def roster_db(tmp_path) -> DuckDBResource:
-    """A DuckDB holding ``silver_ig_roster``, empty until a profile is added.
+    """A DuckDB holding ``silver_ig_roster`` and ``silver_ig_posts``.
 
     The schedule reads the PUBLISHED roster (the dashboard owns the original and
     serves it over the API), so these tests publish what they would otherwise
-    have written to ops.sqlite. The intent of each test — "this roster produces
-    these run requests" — is unchanged.
+    have written to ops.sqlite. ``silver_ig_posts`` is here because the
+    per-profile watermark is derived from it — the schedule's date boundary is a
+    query over silver, not a stored table.
     """
     db = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     with db.get_connection() as conn:
         from orchestration.defs.platform.schemas import duckdb_ddl
 
-        conn.execute(duckdb_ddl("silver_ig_roster"))
+        for table in ("silver_ig_roster", "silver_ig_posts"):
+            conn.execute(duckdb_ddl(table))
     return db
 
 
@@ -140,6 +144,27 @@ def _publish(
                 bool(enabled),
                 tier,
                 handle,
+            ],
+        )
+
+
+def _observe(
+    db: DuckDBResource, handle: str, timestamp: str | None
+) -> None:
+    """Give `handle` a post in silver at `timestamp` (None = no posts)."""
+    if timestamp is None:
+        return
+    with db.get_connection() as conn:
+        conn.execute(
+            """INSERT INTO silver_ig_posts
+               (post_id, url, owner_username, timestamp, source_dataset)
+               VALUES (?, ?, ?, ?, ?)""",
+            [
+                f"{handle}-{timestamp}",
+                f"https://www.instagram.com/p/{handle}-{timestamp}/",
+                handle,
+                timestamp,
+                f"ds_{handle}",
             ],
         )
 
@@ -230,7 +255,7 @@ def test_ig_posts_raw_forwards_none_by_default(tmp_path):
     _invoke_bronze(tmp_path, ScrapeConfig(urls=["https://instagram.com/x"]))
 
 
-# ── US-C2: core_refresh schedule ───────────────────────────────────────────
+# ── US-DISC-7: core_refresh schedule ───────────────────────────────────────
 
 
 def test_core_refresh_stopped_monthly():
@@ -247,25 +272,17 @@ def test_core_refresh_one_run_request_per_enabled_tier1_profile(roster_db):
     requests = run_requests(roster_db)
     assert isinstance(requests, list)
     assert len(requests) == 1
-    req = requests[0]
-    assert req.run_key == "core_refresh:instagram:alpha"
-    cfg = req.run_config["ops"]["bronze_ig_posts"]["config"]
+    # The key is deterministic and names the run's boundary (or backfill).
+    assert requests[0].run_key == "core_refresh:instagram:00-backfill"
+    cfg = requests[0].run_config["ops"]["bronze_ig_posts"]["config"]
     assert cfg == {
         "urls": ["https://www.instagram.com/alpha/"],
         "results_limit": 7,
         "results_type": "details",
         "max_charge_usd": CORE_REFRESH_CHARGE_CAP_USD,
+        "only_posts_newer_than": None,
+        "memory_mbytes": SCRAPE_RUN_MEMORY_MB,
     }
-
-
-def test_core_refresh_multiple_enabled_profiles_get_separate_requests(roster_db):
-    _publish(roster_db, "alpha")
-    _publish(roster_db, "beta")
-    requests = run_requests(roster_db)
-    assert [r.run_key for r in requests] == [
-        "core_refresh:instagram:alpha",
-        "core_refresh:instagram:beta",
-    ]
 
 
 def test_core_refresh_skips_when_roster_empty(roster_db):
@@ -282,3 +299,179 @@ def test_core_refresh_run_config_validates_against_scrape_config(roster_db):
     parsed = ScrapeConfig(**cfg)
     assert parsed.max_charge_usd == 0.50
     assert parsed.results_limit == 7
+    assert parsed.memory_mbytes == SCRAPE_RUN_MEMORY_MB
+
+
+# ── US-DISC-7 AC 14: same-depth profiles batch into ONE run ────────────────
+
+
+def test_same_depth_profiles_share_one_run_carrying_both_urls(roster_db):
+    _publish(roster_db, "alpha")
+    _publish(roster_db, "beta")
+    requests = run_requests(roster_db)
+    assert isinstance(requests, list)
+    assert len(requests) == 1
+    cfg = requests[0].run_config["ops"]["bronze_ig_posts"]["config"]
+    assert sorted(cfg["urls"]) == [
+        "https://www.instagram.com/alpha/",
+        "https://www.instagram.com/beta/",
+    ]
+    # The cap scales with the run's URL count, not a flat per-profile figure.
+    assert cfg["max_charge_usd"] == 2 * CORE_REFRESH_CHARGE_CAP_USD
+
+
+# ── US-DISC-7 AC 15: the ad-hoc sentinel is excluded ───────────────────────
+
+
+def test_ad_hoc_profiles_are_excluded(roster_db):
+    _publish(roster_db, "alpha")
+    _publish(roster_db, "ad_hoc", results_limit=AD_HOC_LIMIT)
+    requests = run_requests(roster_db)
+    urls = [
+        u
+        for r in requests
+        for u in r.run_config["ops"]["bronze_ig_posts"]["config"]["urls"]
+    ]
+    assert urls == ["https://www.instagram.com/alpha/"]
+
+
+# ── US-DISC-7 AC 10: never-scraped selects a full backfill, never a drop ───
+
+
+def test_never_scraped_profile_gets_full_backfill(roster_db):
+    _publish(roster_db, "alpha")  # no silver posts -> never scraped
+    cfg = run_requests(roster_db)[0].run_config["ops"]["bronze_ig_posts"]["config"]
+    assert [u for u in cfg["urls"]] == ["https://www.instagram.com/alpha/"]
+    assert cfg["only_posts_newer_than"] is None
+
+
+def test_never_scraped_profiles_never_land_in_a_dated_run(roster_db):
+    """AC 10: every never-scraped profile is in a full-backfill run.
+
+    Fixed-size chunking of a mixed group must not sweep an unscraped profile
+    into a dated chunk — it would inherit that chunk's boundary and skip the
+    history it has never fetched. Order the roster so an unscraped profile sits
+    past a chunk boundary of dated ones.
+    """
+    for i in range(3):
+        _publish(roster_db, f"dated{i}", results_limit=30)
+        _observe(roster_db, f"dated{i}", f"2026-0{i + 1}-01 10:00:00")
+    for i in range(12):
+        _publish(roster_db, f"fresh{i}", results_limit=30)  # never scraped
+
+    runs = run_requests(roster_db)
+    placed = {
+        u: r.run_config["ops"]["bronze_ig_posts"]["config"]["only_posts_newer_than"]
+        for r in runs
+        for u in r.run_config["ops"]["bronze_ig_posts"]["config"]["urls"]
+    }
+    fresh_urls = [u for u in placed if "/fresh" in u]
+    assert len(fresh_urls) == 12, "a never-scraped profile went missing"
+    assert all(
+        placed[u] is None for u in fresh_urls
+    ), "a never-scraped profile inherited a dated run's boundary"
+
+
+# ── US-DISC-7 AC 2: a run transmits its OLDEST member's boundary ───────────
+
+
+def test_run_boundary_is_the_oldest_member_watermark(roster_db):
+    _publish(roster_db, "older")
+    _publish(roster_db, "newer")
+    _observe(roster_db, "older", "2026-03-01 10:00:00")
+    _observe(roster_db, "newer", "2026-08-01 10:00:00")
+
+    cfg = run_requests(roster_db)[0].run_config["ops"]["bronze_ig_posts"]["config"]
+    # One date per run, and it must be the earliest — a newer member's date
+    # would silently exclude the older member's posts.
+    assert cfg["only_posts_newer_than"] == "2026-03-01"
+
+
+def test_unscraped_and_dated_profiles_split_into_separate_runs(
+    roster_db,
+):
+    """An unscraped profile beside a dated one splits into separate runs.
+
+    This is also where the two timezone frames meet: silver timestamps come back
+    naive from DuckDB while the never-scraped sentinel is UTC-aware. That mix
+    must resolve into a total order rather than raising, and it must not merge
+    the two profiles — the dated one keeps its real boundary, the unscraped one
+    gets the full backfill it needs.
+    """
+    _publish(roster_db, "dated")
+    _publish(roster_db, "fresh")
+    _observe(roster_db, "dated", "2026-06-15 10:00:00")
+
+    runs = run_requests(roster_db)
+    by_url = {
+        u: r.run_config["ops"]["bronze_ig_posts"]["config"]["only_posts_newer_than"]
+        for r in runs
+        for u in r.run_config["ops"]["bronze_ig_posts"]["config"]["urls"]
+    }
+    assert by_url["https://www.instagram.com/dated/"] == "2026-06-15"
+    assert by_url["https://www.instagram.com/fresh/"] is None
+
+
+# ── US-DISC-7 AC 6: the fan-out is capped ──────────────────────────────────
+
+
+def test_fanout_is_capped_at_max_parallel_runs(roster_db):
+    # 200 profiles at one per run would be 200 runs without the cap.
+    for i in range(200):
+        _publish(roster_db, f"p{i:03d}", results_limit=1)
+    requests = run_requests(roster_db)
+    assert len(requests) == DEFAULT_MAX_PARALLEL_SCRAPE_RUNS
+
+
+# ── US-DISC-7 AC 7 / AC 5: the pre-flight guard names the limit it hit ─────
+
+
+def test_fanout_guard_rejects_too_many_parallel_runs(roster_db):
+    _publish(roster_db, "alpha")
+    with pytest.raises(RuntimeError, match="32"):
+        run_requests(roster_db, max_parallel_runs=33)
+
+
+def test_fanout_guard_rejects_exceeding_account_memory(monkeypatch):
+    from orchestration.defs.platform import core_refresh as cr
+
+    monkeypatch.setattr(cr, "ACCOUNT_MAX_MEMORY_MB", 2048)
+    with pytest.raises(RuntimeError, match="combined-memory ceiling"):
+        cr.validate_fanout(4, memory_mb=1024, max_parallel_runs=16)
+
+
+# ── US-DISC-7 AC 8: no profile is scraped twice in one tick ────────────────
+
+
+def test_no_url_appears_in_two_runs(roster_db):
+    for i in range(25):
+        _publish(roster_db, f"p{i:03d}", results_limit=(12 if i % 2 else 30))
+    urls = [
+        u
+        for r in run_requests(roster_db)
+        for u in r.run_config["ops"]["bronze_ig_posts"]["config"]["urls"]
+    ]
+    assert len(urls) == len(set(urls)) == 25
+
+
+# ── US-DISC-7 AC 4: the boundary is a top-level input, memory a run option ─
+
+
+def test_payload_carries_boundary_and_memory(fake_client):
+    trigger_run(
+        "apify~instagram-scraper",
+        ["https://instagram.com/x"],
+        token="tok",
+        results_limit=12,
+        only_posts_newer_than="2026-03-01",
+        memory_mbytes=2048,
+    )
+    kwargs = _start_kwargs(fake_client)
+    assert kwargs["run_input"]["onlyPostsNewerThan"] == "2026-03-01"
+    assert "memoryMbytes" not in kwargs["run_input"]
+    assert kwargs["memory_mbytes"] == 2048
+
+
+def test_boundary_is_omitted_entirely_when_none(fake_client):
+    trigger_run("apify~instagram-scraper", ["https://instagram.com/x"], token="tok")
+    assert "onlyPostsNewerThan" not in _start_kwargs(fake_client)["run_input"]

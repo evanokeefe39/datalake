@@ -61,6 +61,11 @@ class ScrapeConfig(Config):
     results_limit: int = 12
     results_type: ResultsType = ResultsType.POSTS
     max_charge_usd: float | None = None
+    #: Absolute UTC date (YYYY-MM-DD). None means no date filter — a full
+    #: backfill, which is what a never-scraped profile needs.
+    only_posts_newer_than: str | None = None
+    #: Actor run memory. An Apify RUN option, not an actor input.
+    memory_mbytes: int | None = None
 
 
 class DetailsScrapeConfig(Config):
@@ -164,6 +169,8 @@ def _write_meta(
     results_limit: int,
     results_type: str,
     estimated_cost_usd: float = 0.0,
+    only_posts_newer_than: str | None = None,
+    memory_mbytes: int | None = None,
 ) -> None:
     """Write a ``.meta`` JSON sidecar alongside the Parquet file."""
     meta = {
@@ -176,6 +183,11 @@ def _write_meta(
             "urls": urls,
             "results_limit": results_limit,
             "results_type": results_type,
+            # Both are recorded so the sidecar states the date boundary the run
+            # actually used and the memory it ran in — the two facts needed to
+            # explain why a run returned what it returned.
+            "only_posts_newer_than": only_posts_newer_than,
+            "memory_mbytes": memory_mbytes,
         },
         "downloaded_at": datetime.now(UTC).isoformat(),
     }
@@ -209,6 +221,8 @@ def bronze_ig_posts(
         results_limit=config.results_limit,
         results_type=config.results_type,
         max_charge_usd=config.max_charge_usd,
+        only_posts_newer_than=config.only_posts_newer_than,
+        memory_mbytes=config.memory_mbytes,
     )
     outcome = poll_run(run.run_id, token=apify.token)
     dataset_id = outcome.dataset_id
@@ -254,6 +268,8 @@ def bronze_ig_posts(
         config.results_limit,
         config.results_type,
         outcome.usage_total_usd,
+        config.only_posts_newer_than,
+        config.memory_mbytes,
     )
 
     return df
