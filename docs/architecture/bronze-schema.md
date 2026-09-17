@@ -2,12 +2,13 @@
 
 Bronze is a **producer-agnostic** Parquet lake in `data/lake/bronze/`. Any
 producer conforming to the contract below feeds the same silver pipeline;
-silver is source-agnostic. Two producers currently write here:
+silver is source-agnostic. Three producers currently write here:
 
 | Producer | Source | File naming | `source_dataset` |
 |---|---|---|---|
 | `bronze_ig_posts` | Apify [Instagram Scraper](https://apify.com/apify/instagram-scraper) actor | `<dataset_id>.parquet` | Apify dataset id |
 | `bronze_ig_posts_local` | Local disk (scrape-ig-saved-list) | `local_<dataset_id>.parquet` | `local_<dataset_id>` |
+| `bronze_enrichment_raw` | External model responses (the enrichment harvest) | `bronze_enrichment_raw.parquet` | n/a — keyed by `run_id` |
 
 ## Contract (producer-agnostic)
 
@@ -21,10 +22,14 @@ bronze never touches DuckDB and never uses the I/O manager.
 ### Scrape run memory
 
 Apify actor runs bill **GB-seconds**, so memory multiplies wall-clock spend.
-Every IG scrape run requests `SCRAPE_RUN_MEMORY_MB`
+The `core_refresh` schedule requests `SCRAPE_RUN_MEMORY_MB`
 (`defs/platform/core_refresh.py`), currently **256 MB** — the smallest
 allocation Apify offers, and deliberately below the actor's own
-`defaultRunOptions.memory_mbytes` (1024) to keep compute cost down.
+`defaultRunOptions.memory_mbytes` (1024).
+
+**Scope:** only `core_refresh` sets this. The launchpad path (`bronze_ig_posts`),
+`scrape_details_to_bronze` and the local ingest leave `memory_mbytes=None`, which
+means the actor's own default (1024) applies to those runs.
 
 **Memory is a RUN option, not an actor input.** The actor's input properties are
 exactly `addParentData`, `directUrls`, `onlyPostsNewerThan`, `resultsLimit`,
@@ -42,10 +47,13 @@ ApifyClient(token).run(<run_id>).get().options.memory_mbytes   # what was GRANTE
 The bronze `.parquet.meta` sidecar's `input.memory_mbytes` records what we
 **requested**; the run record is the only source for what was **granted**.
 
-**Monitoring for OOM.** 256 MB is verified working for a single-profile scrape
-(2026-09-17: run SUCCEEDED, `options.memory_mbytes` granted 256, 10/10 requested
-items returned, $0.0115) but has NOT been load-tested across a full roster or a
-10-URL batch. Two signals mean "raise it":
+**Monitoring for OOM.** 256 MB is verified on a SINGLE live run (2026-09-17:
+SUCCEEDED, `options.memory_mbytes` granted 256, 1 item, `usage_total_usd`
+$0.0023) — one run proves it does not crash, not that it is the right size, and
+it is untested at roster scale or on 10-URL chunks. It is also **not
+established as a cost win**: billing is GB-seconds (`mem x duration`), so a
+slower run at lower memory can cost more than a faster one at higher memory. The
+paired comparison has not been run. Two signals mean "raise it":
 
 1. A run with status `FAILED` whose `status_message` mentions memory.
 2. A bronze file whose `item_count` is below the requested `results_limit`

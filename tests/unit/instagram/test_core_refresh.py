@@ -344,6 +344,28 @@ def test_same_depth_different_results_type_never_share_a_run(roster_db):
     assert by_url["https://www.instagram.com/details_profile/"] == "details"
 
 
+def test_run_order_is_deterministic_across_rebuilds(roster_db):
+    """Two groups sharing a depth must order by type, not by insertion.
+
+    Without `results_type` in the sort key, the relative order of same-depth
+    groups depends on dict insertion and the run_key position index shifts
+    between evaluations — the same roster would produce different run keys.
+    """
+    _publish(roster_db, "posts_a", results_type="posts", results_limit=7)
+    _publish(roster_db, "details_a", results_type="details", results_limit=7)
+    _publish(roster_db, "posts_b", results_type="posts", results_limit=7)
+
+    first = [r.run_key for r in run_requests(roster_db)]
+    second = [r.run_key for r in run_requests(roster_db)]
+    assert first == second
+    # details sorts before posts at equal depth.
+    types = [
+        r.run_config["ops"]["bronze_ig_posts"]["config"]["results_type"]
+        for r in run_requests(roster_db)
+    ]
+    assert types == sorted(types)
+
+
 # ── US-DISC-7 AC 15: the ad-hoc sentinel is excluded ───────────────────────
 
 

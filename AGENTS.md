@@ -41,7 +41,7 @@ change is a replay, never a re-bill.
 | Silver | Parquet + DuckDB | PolarsIOManager; watermarks in DuckDB |
 | Gold | DuckDB tables | Analytic marts |
 | Serving | DuckDB dims/views | `dim_*` SCD2, `v_*` views |
-| Ops | `data/ops.sqlite` | Dashboard app DB only — media_cache, creators, profiles, creator_merges, prompt_registry |
+| Ops | `data/ops.sqlite` | Dashboard app DB only — media_cache, creators, profiles, creator_merges |
 
 Engine boundary: Polars handles all Parquet I/O; DuckDB handles SQL transforms (dedup,
 watermarks, SCD2, views); Arrow is the zero-copy interchange between them.
@@ -83,8 +83,11 @@ older docs. Check the owning file:
 | What invariants must hold? | `WATCHDOG.md` |
 | What work is open? | `ISSUES.md` |
 
-Live state (verified 2026-09-17): `data/ops.sqlite` holds exactly five tables —
-`creator_merges`, `creators`, `media_cache`, `profiles`, `prompt_registry`. Schedules:
+Live state (verified 2026-09-17): `data/ops.sqlite` holds five tables —
+`creator_merges`, `creators`, `media_cache`, `profiles`, and `prompt_registry`, which is
+PRESENT BUT PENDING DROP: the readiness catalog already declares it dropped per ADR-0011
+(`migrations/migrate_drop_prompt_registry.py` performs it), and `test_no_stale_table_names`
+fails until that migration runs. Schedules:
 `daily_medallion`, `core_refresh`, `details_sweep`. Sensors:
 `enrichment_submit_sensor`, `enrichment_harvest_sensor`. There is no batch queue, no
 Gemini job, and no `gold_analyses`/`gold_growth_facets` — all dropped 2026-09-15.
@@ -174,8 +177,8 @@ Done bar: green suite AND materialized destination AND one observed run through 
 - One test per behavioral contract, one per edge case.
 - **Before writing any asset that reads from disk, read ONE real input file and display
   its schema.** Do not model against test data (Phase 2 false start, 2026-06-30).
-- Full suite is slow (~15-20 min; exceeds a 600s timeout) — use scoped runs during work;
-  full suite only as a final gate.
+- Full suite is the final gate, not the inner loop: measured ~200s (779 tests, 2026-09-17)
+  but it exceeds a 600s timeout under load, so use scoped runs while working.
 
 ## Env vars (essentials)
 

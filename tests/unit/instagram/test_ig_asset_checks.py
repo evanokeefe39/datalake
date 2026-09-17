@@ -276,15 +276,22 @@ class TestObservationFreshness:
     """
 
     def _obs(self, duckdb, dataset: str, age_days: int, post: str | None = None) -> None:
+        """Insert one observation, mirroring the producer's INSERT OR IGNORE.
+
+        The interval is interpolated rather than bound: DuckDB rejects a
+        parameter placeholder inside `INTERVAL ... DAY` (verified — "syntax error
+        at or near ?"), which is why the check itself inlines its window.
+        `age_days` is an int from the test, never user input.
+        """
         from orchestration.defs.platform.schemas import duckdb_ddl
 
         with duckdb.get_connection() as conn:
             conn.execute(duckdb_ddl("silver_ig_post_observations"))
             conn.execute(
-                "INSERT INTO silver_ig_post_observations "
+                "INSERT OR IGNORE INTO silver_ig_post_observations "
                 "(post_id, observed_at, source_dataset) "
-                "VALUES (?, now() - INTERVAL (?) DAY, ?)",
-                [post or f"p_{dataset}_{age_days}", age_days, dataset],
+                f"VALUES (?, now() - INTERVAL {int(age_days)} DAY, ?)",
+                [post or f"p_{dataset}_{age_days}", dataset],
             )
 
     def _run(self, duckdb):
@@ -312,21 +319,30 @@ class TestObservationFreshness:
         assert result.metadata["fresh_datasets"].value == 0
 
     def test_replay_does_not_inflate_freshness(self, duckdb):
-        """GIVEN one dataset carrying three observations of different posts
+        """GIVEN one dataset observed three times, one repeat of the same post
         WHEN the check runs
-        THEN freshness is 1, not 3 — rows are not datasets.
+        THEN freshness is 1, not 2 or 3 — rows are not datasets.
 
-        This is the failure the check exists to catch: a dataset assigns one
-        observation the first time, and a later replay of the same dataset adds
-        posts but no new dataset, so a row count would report freshness that
-        did not happen.
+        The repeat mirrors what a replay actually does: the producer writes with
+        INSERT OR IGNORE, so re-observing a post already seen for this dataset
+        adds nothing. Freshness must therefore be the distinct-DATASET count.
         """
         self._obs(duckdb, "ds_replay", 0, post="p1")
+        self._obs(duckdb, "ds_replay", 0, post="p1")  # replay: no-op
         self._obs(duckdb, "ds_replay", 0, post="p2")
-        self._obs(duckdb, "ds_replay", 1, post="p3")
         result = self._run(duckdb)
         assert result.passed is True
         assert result.metadata["fresh_datasets"].value == 1
+
+        # And the table really holds 2 rows, not 3 — the OR IGNORE held.
+        from orchestration.defs.platform.schemas import duckdb_ddl
+
+        with duckdb.get_connection() as conn:
+            conn.execute(duckdb_ddl("silver_ig_post_observations"))
+            rows = conn.execute(
+                "SELECT COUNT(*) FROM silver_ig_post_observations"
+            ).fetchone()[0]
+        assert rows == 2
 
     def test_no_observations_at_all_fails(self, duckdb):
         """GIVEN an empty observations table
