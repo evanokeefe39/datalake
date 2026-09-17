@@ -125,6 +125,7 @@ def _publish(
     enabled: int = 1,
     tier: str = "tier1",
     results_limit: int = 7,
+    results_type: str = "details",
     platform: str = "instagram",
 ) -> None:
     """Publish one profile row into ``silver_ig_roster``."""
@@ -134,12 +135,13 @@ def _publish(
                (platform, handle, profile_url, results_type, results_limit,
                 enabled, tier, creator_id, creator_name, updated_at,
                 source_fetched_at, processed_on)
-               VALUES (?, ?, ?, 'details', ?, ?, ?, 1, ?, '2026-01-01T00:00:00',
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, '2026-01-01T00:00:00',
                        '2026-01-01T00:00:00', NULL)""",
             [
                 platform,
                 handle,
                 f"https://www.instagram.com/{handle}/",
+                results_type,
                 results_limit,
                 bool(enabled),
                 tier,
@@ -318,6 +320,28 @@ def test_same_depth_profiles_share_one_run_carrying_both_urls(roster_db):
     ]
     # The cap scales with the run's URL count, not a flat per-profile figure.
     assert cfg["max_charge_usd"] == 2 * CORE_REFRESH_CHARGE_CAP_USD
+
+
+def test_same_depth_different_results_type_never_share_a_run(roster_db):
+    """`resultsType` is one input field per run, like `resultsLimit`.
+
+    Two profiles at the same depth but different types must not merge: the run
+    would send one type for both URLs, and the mis-typed scrape would land the
+    wrong shape under the wrong `results_type` in its sidecar. Live data
+    currently avoids this only because the one `details` profile sits at a
+    different depth — that is luck, not a guarantee.
+    """
+    _publish(roster_db, "posts_profile", results_type="posts", results_limit=7)
+    _publish(roster_db, "details_profile", results_type="details", results_limit=7)
+
+    runs = run_requests(roster_db)
+    by_url = {
+        u: r.run_config["ops"]["bronze_ig_posts"]["config"]["results_type"]
+        for r in runs
+        for u in r.run_config["ops"]["bronze_ig_posts"]["config"]["urls"]
+    }
+    assert by_url["https://www.instagram.com/posts_profile/"] == "posts"
+    assert by_url["https://www.instagram.com/details_profile/"] == "details"
 
 
 # ── US-DISC-7 AC 15: the ad-hoc sentinel is excluded ───────────────────────

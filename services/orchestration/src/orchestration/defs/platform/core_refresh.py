@@ -176,14 +176,15 @@ def plan_refresh_runs(
     max_parallel_runs: int = DEFAULT_MAX_PARALLEL_SCRAPE_RUNS,
     max_profiles_per_run: int = MAX_PROFILES_PER_SCRAPE_RUN,
 ) -> list[RefreshRun]:
-    """Group refreshable profiles into bounded, depth-homogeneous runs.
+    """Group refreshable profiles into bounded, input-homogeneous runs.
 
     Four rules, in order, each load-bearing:
 
-    1. **Group by `results_limit` first.** `resultsLimit` is ONE input field
-       applied to every URL in the body, so a run cannot carry profiles of
-       differing depths. Skipping this grouping does not spread the depths — it
-       silently applies one profile's depth to all of them.
+    1. **Group by `(results_limit, results_type)` first.** Both are single
+       top-level input fields applied to EVERY URL in the body, so a run cannot
+       carry profiles differing on either. Grouping by depth alone silently
+       applies one member's `results_type` to the rest — the same defect as
+       applying one member's depth to all of them.
     2. **Order each group oldest-boundary-first**, never-scraped profiles
        leading. The stalest profiles are the ones most likely to have new posts,
        so the queue drains in the order that recovers the most data.
@@ -196,9 +197,9 @@ def plan_refresh_runs(
     4. **Scale the charge cap by URL count**, so the cap means "this run may not
        exceed its fair share" rather than a fixed budget that a deep run busts.
     """
-    groups: dict[int, list[dict]] = {}
+    groups: dict[tuple[int, str], list[dict]] = {}
     for p in profiles:
-        groups.setdefault(p["results_limit"], []).append(p)
+        groups.setdefault((p["results_limit"], p["results_type"]), []).append(p)
 
     def _boundary(profile: dict) -> datetime:
         """Sort key: never-scraped profiles lead, then oldest first."""
@@ -206,8 +207,8 @@ def plan_refresh_runs(
         return watermarks.get(key, NEVER_SCRAPED)
 
     planned: list[RefreshRun] = []
-    for results_limit in sorted(groups):
-        group = groups[results_limit]
+    for results_limit, results_type in sorted(groups):
+        group = groups[(results_limit, results_type)]
         # Never-scraped profiles are partitioned out FIRST, so fixed-size
         # chunking of the dated remainder cannot sweep them into a dated run.
         # A never-scraped profile needs the full history, and a dated chunk
