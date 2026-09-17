@@ -75,11 +75,21 @@ ACCOUNT_MAX_MEMORY_MB = 65_536  # 64 GB combined across concurrent runs
 #: BELOW the platform default: if runs start failing on OOM, raise this rather
 #: than debugging the actor.
 #:
-#: **NOT YET MEASURED** — the 1024-vs-4096 GB-seconds comparison (US-DISC-7
-#: AC 13) has not been run, and 256 has not been load-tested. Watch the first
-#: scheduled cycles for runs failing with a memory error (a FAILED status whose
-#: status_message mentions memory) and for bronze files landing with item_count
-#: below the requested results_limit. See AGENTS.md § Scrape run memory.
+#: **Partially verified, and NOT cost-optimised on evidence.** A single live run
+#: at 256 MB SUCCEEDED (granted=256, 1 item, $0.0023) — but one run proves it does
+#: not crash, NOT that it is cheaper: billing is GB-seconds, so a slower run can
+#: cost more than a faster one at higher memory. The 1024-vs-4096 GB-seconds
+#: comparison (US-DISC-7 AC 13) has not been run, and 256 is untested at roster
+#: scale or on 10-URL chunks.
+#:
+#: Watch the first scheduled cycles for a FAILED status whose status_message
+#: mentions memory, or a bronze file whose item_count is below the requested
+#: results_limit with no date filter to explain it. Raise this constant rather
+#: than debugging the actor.
+#:
+#: NOTE: only `core_refresh` sets this. The launchpad path (`bronze_ig_posts`),
+#: `scrape_details_to_bronze` and the local ingest leave `memory_mbytes=None`,
+#: which means the actor's own default (1024) — so those runs are unaffected.
 #:
 #: Note: Apify does NOT log run options, so the granted memory is not visible in
 #: the run log. To confirm what a run actually used:
@@ -176,7 +186,7 @@ def plan_refresh_runs(
     max_parallel_runs: int = DEFAULT_MAX_PARALLEL_SCRAPE_RUNS,
     max_profiles_per_run: int = MAX_PROFILES_PER_SCRAPE_RUN,
 ) -> list[RefreshRun]:
-    """Group refreshable profiles into bounded, input-homogeneous runs.
+    """Group refreshable profiles into bounded, depth- and type-homogeneous runs.
 
     Four rules, in order, each load-bearing:
 
@@ -225,7 +235,7 @@ def plan_refresh_runs(
                     run_key="",  # keyed below, once the order is final
                     urls=[p["profile_url"] for p in chunk],
                     results_limit=results_limit,
-                    results_type=chunk[0]["results_type"],
+                    results_type=results_type,
                     only_posts_newer_than=None,  # full backfill
                     max_charge_usd=CORE_REFRESH_CHARGE_CAP_USD * len(chunk),
                 )
@@ -242,16 +252,22 @@ def plan_refresh_runs(
                     run_key="",  # keyed below, once the order is final
                     urls=[p["profile_url"] for p in chunk],
                     results_limit=results_limit,
-                    results_type=chunk[0]["results_type"],
+                    results_type=results_type,
                     only_posts_newer_than=boundary,
                     max_charge_usd=CORE_REFRESH_CHARGE_CAP_USD * len(chunk),
                 )
             )
 
-    # Depth ascending, then oldest boundary first — a deterministic total order,
-    # so the same data always yields the same keys.
+    # Depth, then type, then oldest boundary first — a deterministic TOTAL order.
+    # The type is part of the key because two groups can share a depth: without
+    # it their relative order would depend on dict insertion, and run_key's
+    # position index would shift between runs.
     planned.sort(
-        key=lambda r: (r.results_limit, r.only_posts_newer_than or "0000-00-00")
+        key=lambda r: (
+            r.results_limit,
+            r.results_type,
+            r.only_posts_newer_than or "0000-00-00",
+        )
     )
     keyed = [
         RefreshRun(
@@ -351,9 +367,10 @@ core_refresh = ScheduleDefinition(
     cron_schedule="0 4 2 * *",  # 4am on the 2nd of each month
     default_status=DefaultScheduleStatus.STOPPED,
     description=(
-        "Monthly roster refresh: depth-homogeneous batches bounded by "
-        "DEFAULT_MAX_PARALLEL_SCRAPE_RUNS, each bounded by its own profile "
-        "watermark. STOPPED pending enablement owner."
+        "Monthly roster refresh: depth- and type-homogeneous batches of up to "
+        "MAX_PROFILES_PER_SCRAPE_RUN profiles, bounded by "
+        "DEFAULT_MAX_PARALLEL_SCRAPE_RUNS; each run is bounded by its OLDEST "
+        "member's watermark. STOPPED pending enablement owner."
     ),
     execution_fn=_core_refresh_evaluation,
 )
