@@ -2,7 +2,7 @@
 
 - **Theme:** Collection strategy & cost governance
 - **Owner:** dlc-worker (warehouse/serving) / sdlc-worker (dashboard)
-- **Status:** Open — intent + design complete; implementation NOT started (2026-09-17)
+- **Status:** Active — governance complete; **US-DISC-7 and US-DISC-8 implemented** (PR #89, 2026-09-17). US-DISC-1..6 remaining.
 - **Depends on:** E-IDENTITY (creators/profiles), E-ENRICH-LABELS (standout/hot signal), E-SERVING-ANALYTICS (metric views)
 - **Feeds:** E-DASHBOARD (admin/cost surface)
 
@@ -198,12 +198,19 @@ of maturing. The open decision is therefore **whether to force-recompute the
   `creator_merges`; the pipeline lands the roster as bronze `ig_roster_raw`).
 - Implementation layout: ADR-0015.
 
-## Status: intent + design complete; implementation NOT started
+## Status: governance complete; US-DISC-7/8 implemented
 
 **Epic state (2026-09-17):** intent captured, cross-checked against design docs
 and the live implementation, decisions recorded, and eight user stories written
 (US-DISC-1..8)
-with binary AC + DoD. **No implementation code has been written.**
+with binary AC + DoD.
+
+**Update 2026-09-17:** **US-DISC-7 (per-creator watermark sync) and US-DISC-8
+(SDK migration) are implemented** on `feat/us-disc-7-ingestion-upgrade`
+(PR #89) — the hand-rolled Apify client is replaced by the official
+`apify-client` SDK, and `core_refresh` now syncs per creator. The acceptance run
+landed 270 items across 7 successful runs. US-DISC-1..6 remain unbuilt, and
+US-DISC-7 AC 13 (the run-memory measurement) is open.
 
 **Authoring note for whoever edits this epic next — the five defect classes
 this doc set was swept for eight times.** Each was introduced during authoring
@@ -237,7 +244,7 @@ production suite to governance prose is a poor trade for a frozen surface. The
 checks that remain mechanically valuable (AC contiguity, `AC n` range) are
 listed above for a human to run on edit.
 
-**Carried by the approved next branch (owner decision 2026-09-17; originally deferred, now scheduled):**
+**Carried by the approved next branch (owner decision 2026-09-17; originally deferred, now scheduled) — US-DISC-8's item is DONE:**
 
 - **US-DISC-6** (replace the hand-rolled Apify client with `apify-client`) —
   `ISSUES.md` #41. **Now scheduled, not deferred:** carried by **US-DISC-8** on

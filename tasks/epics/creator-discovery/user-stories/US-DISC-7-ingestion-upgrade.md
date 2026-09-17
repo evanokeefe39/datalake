@@ -2,7 +2,10 @@
 
 - **Epic:** E-DISCOVERY
 - **Persona:** P1 (Pipeline Operator), P2 (Platform Engineer)
-- **Status:** Open — **owner-approved as the next branch** (2026-09-17)
+- **Status:** **Implemented** (PR #89, 2026-09-17) — built with US-DISC-8 on
+  `feat/us-disc-7-ingestion-upgrade`; acceptance run landed 270 items across 7
+  successful runs. AC 13 (memory measurement) is open — `SCRAPE_RUN_MEMORY_MB`
+  is provisional.
 - **Depends on:** —
 - **Absorbs:** US-DISC-5 (date filter)
 - **Related (same branch):** US-DISC-8 — the SDK migration (ISSUES #41, #42)

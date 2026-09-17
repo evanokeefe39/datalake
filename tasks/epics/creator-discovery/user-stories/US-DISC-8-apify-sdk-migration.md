@@ -1,7 +1,8 @@
 # US-DISC-8 — Official Apify SDK migration
 
 **Epic:** E-DISCOVERY · **Branch:** `feat/us-disc-7-ingestion-upgrade` (same
-branch as US-DISC-7; split for independent acceptance) · **Depends on:** nothing
+branch as US-DISC-7; split for independent acceptance) · **Status:**
+**Implemented** (PR #89, 2026-09-17) · **Depends on:** nothing
 in US-DISC-7 · **Absorbs:** the former US-DISC-6, `ISSUES.md` #41 and #42.
 
 ## Story
