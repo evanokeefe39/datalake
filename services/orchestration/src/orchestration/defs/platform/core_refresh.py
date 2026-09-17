@@ -209,7 +209,15 @@ def plan_refresh_runs(
     """
     groups: dict[tuple[int, str], list[dict]] = {}
     for p in profiles:
-        groups.setdefault((p["results_limit"], p["results_type"]), []).append(p)
+        # `results_type` is a nullable VARCHAR in the roster schema and the
+        # selection applies no COALESCE, so a NULL reaches here. Sorting a
+        # tuple that holds None raises TypeError ('<' not supported between
+        # 'NoneType' and 'str'), which would crash the whole tick and emit no
+        # runs at all. Normalise to the actor's own default rather than
+        # trusting the column.
+        groups.setdefault(
+            (p["results_limit"], p["results_type"] or "posts"), []
+        ).append(p)
 
     def _boundary(profile: dict) -> datetime:
         """Sort key: never-scraped profiles lead, then oldest first."""
