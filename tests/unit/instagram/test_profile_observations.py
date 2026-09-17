@@ -10,15 +10,15 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import polars as pl
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
-
+from orchestration.defs.ig_core.slv.profiles import _profile_observations, silver_ig_profiles
 from orchestration.defs.platform.schemas import duckdb_ddl
-from orchestration.defs.ig_core.slv.profiles import _profile_observations, ig_profiles_slv
+
 from migrations.migrate_backfill_profile_observations import (
     apply_backfill,
     collect_observations,
@@ -28,9 +28,9 @@ from migrations.migrate_backfill_profile_observations import (
 
 
 def _run_profiles(tmp_path, ops, duckdb):
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.profiles.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        return ig_profiles_slv(context)
+        return silver_ig_profiles(context)
 
 
 def _write_details(fp, rows, downloaded_at: str | None = None) -> None:
@@ -72,7 +72,6 @@ def _pk_cols(con, table):
 def test_ddl_creates_table_with_pk(tmp_path):
     """``duckdb_ddl`` emits CREATE TABLE IF NOT EXISTS with the full PK."""
     import duckdb as duckdb_mod
-
     from orchestration.defs.platform.schemas import DUCKDB_TABLES
 
     ddl = duckdb_ddl("silver_ig_profile_observations")
@@ -132,7 +131,7 @@ def test_details_file_appends_observation_with_meta_provenance(tmp_path, ops):
     assert len(obs) == 2
     by_owner = {r[0]: r for r in obs}
     assert by_owner["111"][1] == "alice"
-    assert by_owner["111"][2] == datetime(2026, 3, 1, 9, 30, tzinfo=timezone.utc)
+    assert by_owner["111"][2] == datetime(2026, 3, 1, 9, 30, tzinfo=UTC)
     assert by_owner["111"][3] == 1500
     assert by_owner["111"][4] == 300
     assert by_owner["111"][5] == 42
@@ -154,7 +153,7 @@ def test_observed_at_falls_back_to_file_mtime(tmp_path, ops):
 
     obs = _profile_obs(duckdb)
     assert len(obs) == 1
-    assert obs[0][2] == datetime.fromtimestamp(stamp, tz=timezone.utc)
+    assert obs[0][2] == datetime.fromtimestamp(stamp, tz=UTC)
 
 
 def test_posts_file_without_followers_count_emits_nothing(tmp_path, ops):
@@ -246,7 +245,7 @@ def test_gate_unit_details_vs_posts(tmp_path):
     details = pl.DataFrame(
         {"id": ["111"], "username": ["alice"], "followersCount": [1500]}
     )
-    ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 1, tzinfo=UTC)
     obs = _profile_observations(details, "details", "ds", ts)
     assert obs is not None and obs["owner_id"][0] == "111"
 
@@ -346,7 +345,7 @@ def test_backfill_idempotent_and_provenance_correct(tmp_path):
         assert len(rows) == 2
         assert {r[0] for r in rows} == {"111", "222"}
         assert all(
-            r[2] == datetime(2026, 2, 15, 12, 0, tzinfo=timezone.utc) for r in rows
+            r[2] == datetime(2026, 2, 15, 12, 0, tzinfo=UTC) for r in rows
         )
 
         first = apply_backfill(db, rows)
@@ -373,4 +372,4 @@ def test_backfill_mtime_fallback(tmp_path):
 
     rows = collect_observations(bronze_dir=bronze)
     assert len(rows) == 1
-    assert rows[0][2] == datetime.fromtimestamp(stamp, tz=timezone.utc)
+    assert rows[0][2] == datetime.fromtimestamp(stamp, tz=UTC)

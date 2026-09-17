@@ -41,11 +41,11 @@ import argparse
 import logging
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
-from orchestration.defs.platform.schemas import sqlite_ddl_for
+from opsdb.schema import sqlite_ddl_for
 
 logger = logging.getLogger("migrate_curated_creator_merge")
 
@@ -61,7 +61,7 @@ DEFAULT_MERGES: list[tuple[int, int, str]] = [
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _ensure_ledger(con: sqlite3.Connection) -> None:

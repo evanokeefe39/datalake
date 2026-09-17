@@ -3,19 +3,14 @@ the Gemini SDK verbs are faked/monkeypatched."""
 
 from __future__ import annotations
 
-import httpx
-import pytest
-
 import orchestration.defs.engine.service_backed as adapters
+import pytest
 from orchestration.defs.engine import provider as seam
 from orchestration.defs.engine.provider import (
     COMPLETED,
     FAILED,
     PENDING,
     PROCESSING,
-    RETRYABLE,
-    TERMINAL,
-    UNKNOWN,
     Capabilities,
     Item,
     ProviderError,
@@ -152,153 +147,18 @@ def test_service_health(service_routes):
     a = service_routes()
     assert a.health() is True
 
-# ─────────────────────────────────────────────── direct-batch adapter
-
-
-@pytest.fixture
-def gemini_jobs(monkeypatch):
-    """Monkeypatch the repo's REAL Gemini verbs on the gemini_batch module —
-    the adapter must reuse them, so the fakes sit exactly where production
-    code paths sit."""
-    import orchestration.defs.engine.service_backed as gemini_batch
-
-    state = {"submitted": None, "polled": [], "retrieved": []}
-
-    def fake_submit(gemini, model, requests, display_name, max_tokens=None):
-        # mimic tier chunking: two names for one logical submit
-        state["submitted"] = (model, requests, display_name)
-        return ["jobs/aaa", "jobs/bbb"]
-
-    def fake_poll(gemini, job_name):
-        state["polled"].append(job_name)
-
-        class Job:
-            state = {"jobs/aaa": "JOB_STATE_SUCCEEDED", "jobs/bbb": "JOB_STATE_RUNNING"}[
-                job_name
-            ]
-
-        return Job()
-
-    def fake_retrieve(gemini, job_name):
-        state["retrieved"].append(job_name)
-        return {
-            "jobs/aaa": {"p1": {"ok": True, "text": "result-a", "error": None}},
-            "jobs/bbb": {"p2": {"ok": False, "text": None, "error": "quota"}},
-        }[job_name]
-
-    monkeypatch.setattr(gemini_batch, "submit", fake_submit)
-    monkeypatch.setattr(gemini_batch, "poll", fake_poll)
-    monkeypatch.setattr(gemini_batch, "job_state", lambda job: job.state[10:])
-    monkeypatch.setattr(gemini_batch, "retrieve", fake_retrieve)
-    monkeypatch.setattr(
-        adapters.DirectBatchAdapter, "_gemini", lambda self: object()
-    )
-    return state
-
-
-def test_direct_batch_roundtrip_composite_handle(gemini_jobs):
-    a = adapters.DirectBatchAdapter()
-    handle = a.submit(ITEMS)
-    assert handle == '["jobs/aaa", "jobs/bbb"]'
-    assert adapters.handle_codec(handle) == ["jobs/aaa", "jobs/bbb"]
-    raw = a.poll(handle)
-    # one RUNNING + one SUCCEEDED → the aggregate is PROCESSING, never terminal
-    assert a.normalize_state(raw) == PROCESSING
-    results = a.retrieve(handle)
-    assert sorted((r.custom_key, r.ok, r.response_text, r.error) for r in results) == [
-        ("p1", True, "result-a", None),
-        ("p2", False, None, "quota"),
-    ]
-    assert all(r.provider == "direct_batch" for r in results)
-    assert gemini_jobs["retrieved"] == ["jobs/aaa", "jobs/bbb"]
-
-
-def test_direct_batch_normalize_maps_every_native_state(gemini_jobs):
-    a = adapters.DirectBatchAdapter()
-    for native, canonical in [
-        ("STATE_UNSPECIFIED", PENDING),
-        ("SUBMITTED", PENDING),
-        ("PENDING", PENDING),
-        ("QUEUED", PENDING),
-        ("PAUSED", PENDING),
-        ("RUNNING", PROCESSING),
-        ("SUCCEEDED", COMPLETED),
-        ("FAILED", FAILED),
-        ("CANCELLED", FAILED),
-        ("EXPIRED", FAILED),
-    ]:
-        assert a.normalize_state({"job_states": [native]}) == canonical
-    assert a.normalize_state({"job_states": ["SUCCEEDED", "SUCCEEDED"]}) == COMPLETED
-    assert a.normalize_state({"job_states": ["PENDING", "RUNNING"]}) == PROCESSING
-
-
-def test_direct_batch_normalize_unknown_state_raises(gemini_jobs):
-    a = adapters.DirectBatchAdapter()
-    with pytest.raises(ProviderError, match="unrecognized"):
-        a.normalize_state({"job_states": ["JOB_STATE_PENDING"]})  # prefix not stripped
-
-
-def test_direct_batch_health_is_tier_gate(monkeypatch):
-    from orchestration.defs.ig_core.bnz.scrape import GeminiTier, GeminiTierConfig
-
-    a = adapters.DirectBatchAdapter()
-    monkeypatch.setattr(GeminiTierConfig, "detect", lambda: GeminiTierConfig(GeminiTier.FREE))
-    assert a.health() is False
-    monkeypatch.setattr(GeminiTierConfig, "detect", lambda: GeminiTierConfig(GeminiTier.TIER_1))
-    assert a.health() is True
-
-
-def test_direct_batch_detect_provider(monkeypatch):
-    from orchestration.defs.ig_core.bnz.scrape import GeminiTier, GeminiTierConfig
-
-    monkeypatch.setattr(GeminiTierConfig, "detect", lambda: GeminiTierConfig(GeminiTier.TIER_2))
-    assert adapters.detect_provider() == "direct_batch"
-    monkeypatch.setattr(GeminiTierConfig, "detect", lambda: GeminiTierConfig(GeminiTier.FREE))
-    assert adapters.detect_provider() == "service_backed"
-
-
-# ─────────────────────────────────────────────── error classification
-
-
-@pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
-def test_classify_terminal_statuses(service_routes, status):
-    a = service_routes()
-    assert a.classify_error(ProviderError("x", status_code=status)) == TERMINAL
-
-
-@pytest.mark.parametrize("status", [500, 502, 503, 429])
-def test_classify_retryable_statuses(service_routes, status):
-    a = service_routes()
-    assert a.classify_error(ProviderError("x", status_code=status)) == RETRYABLE
-
-
-@pytest.mark.parametrize(
-    "exc",
-    [httpx.TimeoutException("t"), httpx.ConnectError("c")],
-)
-def test_classify_transport_errors_retryable(service_routes, exc):
-    a = service_routes()
-    assert a.classify_error(exc) == RETRYABLE
-
-
-def test_classify_other_exceptions_unknown(service_routes):
-    """UNKNOWN is a distinct outcome: the caller must FAIL LOUDLY, never
-    treat an unclassifiable error as terminal (adapters.py:98-110)."""
-    a = service_routes()
-    assert a.classify_error(ValueError("nope")) == UNKNOWN
-
 
 # ─────────────────────────────────────────────── registry
 
 
 def test_build_adapter_resolves_registered_names():
+    """``service_backed`` is the only provider after the Gemini retirement."""
     a = seam.build_adapter("service_backed")
-    b = seam.build_adapter("direct_batch")
     assert type(a).__name__ == "ServiceBackedAdapter"
-    assert type(b).__name__ == "DirectBatchAdapter"
     assert isinstance(a.capabilities, Capabilities)
+    # No provider is gated on a vendor tier any more: the service owns its
+    # own concurrency control (ADR-0009).
     assert a.capabilities.requires_tier_gate is False
-    assert b.capabilities.requires_tier_gate is True
 
 
 def test_build_adapter_unknown_name_raises():
@@ -306,15 +166,10 @@ def test_build_adapter_unknown_name_raises():
         seam.build_adapter("nope")
 
 
-def test_is_terminal_agrees_with_normalize(service_routes, gemini_jobs):
+def test_is_terminal_agrees_with_normalize(service_routes):
     s = service_routes()
     for native, canonical in _SERVICE_CASES:
         assert s.is_terminal(s.normalize_state({"state": native})) == (
-            canonical in (COMPLETED, FAILED)
-        ), native
-    d = adapters.DirectBatchAdapter()
-    for native, canonical in _GEMINI_CASES:
-        assert d.is_terminal(d.normalize_state({"job_states": [native]})) == (
             canonical in (COMPLETED, FAILED)
         ), native
 
@@ -324,18 +179,6 @@ _SERVICE_CASES = [
     ("processing", PROCESSING),
     ("completed", COMPLETED),
     ("failed", FAILED),
-]
-_GEMINI_CASES = [
-    ("STATE_UNSPECIFIED", PENDING),
-    ("SUBMITTED", PENDING),
-    ("PENDING", PENDING),
-    ("QUEUED", PENDING),
-    ("PAUSED", PENDING),
-    ("RUNNING", PROCESSING),
-    ("SUCCEEDED", COMPLETED),
-    ("FAILED", FAILED),
-    ("CANCELLED", FAILED),
-    ("EXPIRED", FAILED),
 ]
 
 
@@ -358,7 +201,4 @@ def test_service_backed_path_imports_no_gemini_symbols():
         if isinstance(value, types.ModuleType):
             assert "gemini" not in value.__name__.lower(), name
         else:
-            assert "gemini" not in name.lower() or name in {
-                "_GEMINI_STATES",
-                "_DEFAULT_GEMINI_MODEL",
-            }, name
+            assert "gemini" not in name.lower(), name

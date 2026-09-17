@@ -1,6 +1,6 @@
 """Durable dimensions — SCD2 profile history and the generated calendar."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from dagster import AssetKey, asset
 from dagster_duckdb import DuckDBResource
@@ -13,17 +13,18 @@ from orchestration.defs.platform.schemas import duckdb_ddl
     name="dim_profile",
     group_name="serving",
     description="SCD2 profile dimension tracking owner attributes over time.",
-    deps=[AssetKey("ig_posts_slv")],
+    deps=[AssetKey("silver_ig_posts")],
 )
 def profile_dimension(duckdb: DuckDBResource, ops: SQLiteResource) -> None:
     """Upsert profile dimension with SCD2 tracking.
 
     Reads distinct owner profiles from ``silver_ig_posts`` and maintains
     ``effective_from``/``effective_to``/``is_current`` in DuckDB. ``creator_id``
-    and ``creator_name`` are linked from the ``profiles``/``creators`` tables in
-    ops.sqlite so every serving view can expose the owning creator.
+    and ``creator_name`` are linked from the PUBLISHED roster
+    (``silver_ig_roster``), which the dashboard owns and serves — so every
+    serving view can expose the owning creator without cross-database coupling.
     """
-    from opsdb.roster import creator_map
+    from orchestration.defs.ig_core.slv.roster import creator_map
 
     db = duckdb
     with db.get_connection() as conn:
@@ -49,8 +50,8 @@ def profile_dimension(duckdb: DuckDBResource, ops: SQLiteResource) -> None:
             WHERE owner_id IS NOT NULL
         """).fetchall()
 
-        # Creator link: {handle: {creator_id, creator_name}} from ops.
-        handle_map = creator_map(ops)
+        # Creator link: {handle: {creator_id, creator_name}} from the roster.
+        handle_map = creator_map(conn)
 
         if not profiles:
             return
@@ -60,7 +61,7 @@ def profile_dimension(duckdb: DuckDBResource, ops: SQLiteResource) -> None:
             0
         ]
 
-        now_ts = datetime.now(timezone.utc).isoformat()
+        now_ts = datetime.now(UTC).isoformat()
 
         for owner_id, owner_username in profiles:
             creator = handle_map.get(owner_username, {})

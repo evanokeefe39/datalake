@@ -15,23 +15,31 @@ from dagster_duckdb import DuckDBResource
 from dotenv import load_dotenv
 
 from .defs.engine.harvest import enrichment_harvest_job
-from .defs.engine.sensor import enrichment_harvest_sensor
-from .defs.engine.silver_rt import silver_enrichment
+from .defs.engine.sensor import enrichment_harvest_sensor, enrichment_submit_sensor
+from .defs.engine.silver_asset import silver_enrichment
 from .defs.engine.submit import enrichment_submit_job
-from .defs.ig_core.bnz.scrape import ig_posts_raw
+from .defs.ig_core.bnz.roster import ig_roster_raw
+from .defs.ig_core.bnz.scrape import (
+    bronze_ig_posts,
+    bronze_ig_posts_local,
+    bronze_ig_profile_details,
+)
 from .defs.ig_core.slv.checks import ig_checks
-from .defs.ig_core.slv.comments import ig_comments_slv
+from .defs.ig_core.slv.comments import silver_ig_comments
 from .defs.ig_core.slv.labels import ig_post_labels
-from .defs.ig_core.slv.posts import ig_posts_slv
-from .defs.ig_core.slv.profiles import ig_profiles_slv
+from .defs.ig_core.slv.posts import silver_ig_posts
+from .defs.ig_core.slv.profiles import silver_ig_profiles
+from .defs.ig_core.slv.roster import ig_roster_slv
 from .defs.ig_enriched.slv import checks as enrichment_checks
-from .defs.ig_enriched.slv.workloads import ig_posts_gen_batches
+from .defs.platform import paths
+from .defs.platform.core_refresh import core_refresh
+from .defs.platform.details_sweep import details_sweep
 from .defs.platform.resources import (
     ApifyResource,
     PolarsIOManager,
     SQLiteResource,
 )
-from .defs.platform.schedules import core_refresh, daily_medallion
+from .defs.platform.schedules import daily_medallion
 from .defs.serving import checks as serving_checks_mod
 from .defs.serving import dims, marts, metrics, views
 
@@ -40,7 +48,12 @@ load_dotenv()
 # ── Resources ─────────────────────────────────────────────────────────────────
 
 all_resources = {
-    "io_manager": PolarsIOManager(lake_root="data/lake"),
+    # Root follows the ONE configured data root rather than a cwd-relative
+    # literal: `"data/lake"` survives every IG_* override, so in a container
+    # (where the mount is /data) it silently pointed at a nonexistent
+    # /app/data/lake. With IG_DATA_DIR unset on a host this resolves to exactly
+    # the same <repo>/data/lake as before.
+    "io_manager": PolarsIOManager(lake_root=str(paths.DATA_DIR / "lake")),
     "duckdb": DuckDBResource(
         database=os.environ.get("IG_DB_PATH", "data/state.duckdb"),
     ),
@@ -56,13 +69,19 @@ all_resources = {
 
 all_assets = [
     # Instagram core
-    ig_posts_raw,
-    ig_posts_slv,
+    bronze_ig_posts,
+    bronze_ig_posts_local,
+    silver_ig_posts,
     ig_post_labels,
-    ig_profiles_slv,
-    ig_comments_slv,
-    # Enrichment
-    ig_posts_gen_batches,
+    silver_ig_profiles,
+    silver_ig_comments,
+    # Roster: landed from the dashboard API, then published for the pipeline
+    ig_roster_raw,
+    ig_roster_slv,
+    # Details scrapes, reconciled from the roster by the sweep schedule
+    bronze_ig_profile_details,
+    # Enrichment: submit discovers and materializes its own partitions
+    # (ADR-0016) — there is no drain asset.
     silver_enrichment,
     # Serving: dimensions, then the canonical metrics, then the marts, then views
     *dims.ASSETS,
@@ -82,7 +101,7 @@ defs = Definitions(
         *serving_checks_mod.serving_checks,
     ],
     resources=all_resources,
-    schedules=[daily_medallion, core_refresh],
+    schedules=[daily_medallion, core_refresh, details_sweep],
     jobs=[enrichment_harvest_job, enrichment_submit_job],
-    sensors=[enrichment_harvest_sensor],
+    sensors=[enrichment_harvest_sensor, enrichment_submit_sensor],
 )

@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 
 import polars as pl
-from dagster import AssetCheckResult, AssetCheckSeverity, asset_check
+from dagster import AssetCheckResult, AssetCheckSeverity, AssetKey, asset_check
 
 from orchestration.defs.platform.paths import BRONZE_LAKE
 
@@ -56,7 +56,7 @@ def _read_bronze_df() -> pl.DataFrame | None:
 
 
 @asset_check(
-    asset="ig_posts_raw",
+    asset="bronze_ig_posts",
     name="ig_posts_raw_has_rows",
     description="Bronze row count > 0.",
 )
@@ -75,7 +75,7 @@ def _ig_posts_raw_has_rows() -> AssetCheckResult:
 
 
 @asset_check(
-    asset="ig_posts_raw",
+    asset="bronze_ig_posts",
     name="ig_posts_raw_has_meta",
     description=".meta sidecar exists and is valid JSON.",
 )
@@ -114,7 +114,7 @@ def _ig_posts_raw_has_meta() -> AssetCheckResult:
 
 
 @asset_check(
-    asset="ig_posts_raw",
+    asset="bronze_ig_posts",
     name="ig_posts_raw_run_id_not_null",
     description="No null post IDs in bronze Parquet rows.",
 )
@@ -150,7 +150,7 @@ def _ig_posts_raw_run_id_not_null() -> AssetCheckResult:
 
 
 @asset_check(
-    asset="ig_posts_slv",
+    asset="silver_ig_posts",
     name="ig_posts_slv_no_duplicates",
     required_resource_keys={"duckdb"},
     description="DISTINCT post_id count = total row count (no duplicates).",
@@ -178,7 +178,7 @@ def _ig_posts_slv_no_duplicates(context) -> AssetCheckResult:
 
 
 @asset_check(
-    asset="ig_posts_slv",
+    asset="silver_ig_posts",
     name="ig_posts_slv_row_count_bounded",
     required_resource_keys={"duckdb"},
     description="Silver rows ≤ bronze rows (dedup guarantee).",
@@ -213,7 +213,7 @@ def _ig_posts_slv_row_count_bounded(context) -> AssetCheckResult:
 
 
 @asset_check(
-    asset="ig_posts_slv",
+    asset="silver_ig_posts",
     name="ig_posts_slv_owner_not_null",
     required_resource_keys={"duckdb"},
     description="Fail if any owner_username is null — every post must have an owner.",
@@ -251,7 +251,7 @@ def _ig_posts_slv_owner_not_null(context) -> AssetCheckResult:
 
 
 @asset_check(
-    asset="silver_enrichment_conform",
+    asset=AssetKey(["silver_content_classification"]),
     name="ig_classification_valid_admiralty",
     required_resource_keys={"duckdb"},
     description="Admiralty codes in known set (instagram platform rows).",
@@ -352,7 +352,7 @@ def _ig_labels_coverage(context) -> AssetCheckResult:
 
 
 @asset_check(
-    asset="ig_posts_slv",
+    asset="silver_ig_posts",
     name="ig_observations_parity",
     required_resource_keys={"duckdb"},
     description="Observations exist for every distinct silver post_id.",
@@ -381,6 +381,60 @@ def _ig_observations_parity(context) -> AssetCheckResult:
     )
 
 
+#: A dataset counts as "fresh" if any of its observations landed within this
+#: window. The schedule runs monthly, so the window is wider than one tick.
+_OBSERVATION_FRESHNESS_DAYS = 45
+
+
+@asset_check(
+    asset="silver_ig_posts",
+    name="ig_observation_freshness",
+    required_resource_keys={"duckdb"},
+    description=(
+        "At least one observation DATASET landed recently — freshness counted "
+        "as distinct datasets, never as rows."
+    ),
+)
+def _ig_observation_freshness(context) -> AssetCheckResult:
+    """Fail when no scrape has landed a dataset inside the freshness window.
+
+    Counted as ``COUNT(DISTINCT source_dataset)``, not rows with a recent
+    ``observed_at``. A dataset assigns a distinct observation and a replay
+    appends nothing (``INSERT OR IGNORE``), so a row count would report
+    freshness that did not happen — re-observing existing posts produces no new
+    rows at all, and a run that fetched nothing would look identical to one
+    that fetched everything.
+    """
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        fresh = conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT source_dataset)
+            FROM silver_ig_post_observations
+            WHERE observed_at >= now() - INTERVAL {_OBSERVATION_FRESHNESS_DAYS} DAY
+            """
+        ).fetchone()[0]
+        newest = conn.execute(
+            "SELECT MAX(observed_at) FROM silver_ig_post_observations"
+        ).fetchone()[0]
+    if not fresh:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=(
+                f"No scrape landed an observation dataset in the last "
+                f"{_OBSERVATION_FRESHNESS_DAYS} days "
+                f"(newest observation: {newest}) — check the core_refresh "
+                "schedule and the Apify credentials."
+            ),
+            metadata={"fresh_datasets": 0, "newest_observation": str(newest)},
+        )
+    return AssetCheckResult(
+        passed=True,
+        metadata={"fresh_datasets": fresh, "newest_observation": str(newest)},
+    )
+
+
 ig_checks = [
     _ig_posts_raw_has_rows,
     _ig_posts_raw_has_meta,
@@ -392,4 +446,5 @@ ig_checks = [
     _ig_labels_current_version,
     _ig_labels_coverage,
     _ig_observations_parity,
+    _ig_observation_freshness,
 ]

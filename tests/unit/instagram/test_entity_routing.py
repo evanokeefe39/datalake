@@ -14,13 +14,13 @@ import polars as pl
 import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
+from orchestration.defs.ig_core.bnz.scrape import ResultsType, ScrapeConfig
+from orchestration.defs.ig_core.slv.comments import silver_ig_comments
+from orchestration.defs.ig_core.slv.posts import _classify_bronze, silver_ig_posts
+from orchestration.defs.ig_core.slv.profiles import silver_ig_profiles
+from orchestration.defs.platform.resources import SQLiteResource
 from pydantic import ValidationError
 
-from orchestration.defs.platform.resources import SQLiteResource
-from orchestration.defs.ig_core.slv.comments import ig_comments_slv
-from orchestration.defs.ig_core.slv.posts import _classify_bronze, ig_posts_slv
-from orchestration.defs.ig_core.slv.profiles import ig_profiles_slv
-from orchestration.defs.ig_core.bnz.scrape import ResultsType, ScrapeConfig
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Classifier (US-01) ───────────────────────────────────────────────────
@@ -116,9 +116,9 @@ def test_slv_skips_profile_bronze(tmp_path, ops):
     _details_df(rows=3).write_parquet(tmp_path / "ds_profile.parquet")
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     assert result.is_empty()
 
@@ -130,9 +130,9 @@ def test_slv_skips_comment_bronze(tmp_path, ops):
     )
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     assert result.is_empty()
 
@@ -146,9 +146,9 @@ def test_profiles_slv_upsert(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.profiles.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_profiles_slv(context)
+        result = silver_ig_profiles(context)
 
     assert len(result) == 2
     assert set(result["owner_id"].to_list()) == {"own_0", "own_1"}
@@ -163,9 +163,9 @@ def test_profiles_slv_no_bronze(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.profiles.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_profiles_slv(context)
+        result = silver_ig_profiles(context)
 
     assert result.is_empty()
 
@@ -181,9 +181,9 @@ def test_profiles_slv_extracts_from_post_bronze(tmp_path):
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.profiles.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_profiles_slv(context)
+        result = silver_ig_profiles(context)
 
     # 3 posts, 2 distinct authors → 2 profiles (deduped by owner_id)
     assert set(result["owner_id"].to_list()) == {"own_1", "own_2"}
@@ -197,7 +197,7 @@ def test_comments_slv_returns_empty_and_creates_table(tmp_path):
     """Stub returns empty DataFrame and ensures the table exists."""
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     context = build_asset_context(resources={"duckdb": duckdb})
-    result = ig_comments_slv(context)
+    result = silver_ig_comments(context)
 
     assert result.is_empty()
 

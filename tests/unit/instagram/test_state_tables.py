@@ -9,7 +9,6 @@ either, so a retired table is never silently resurrected.
 from __future__ import annotations
 
 from dagster_duckdb import DuckDBResource
-
 from orchestration.defs.ig_core.slv.posts import ensure_state_tables
 
 

@@ -13,10 +13,10 @@ import polars as pl
 import pytest
 from dagster import build_asset_check_context
 from dagster_duckdb import DuckDBResource
-
 from orchestration.defs.ig_core.slv.checks import (
     ig_checks,
 )
+
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Resolve individual check functions by name ─────────────────────────────
@@ -261,3 +261,98 @@ class TestClassificationChecks:
         result = check(ctx)
         assert result.passed is True
         assert result.metadata["null_admiralty"].value == 1
+
+
+# ===== Observation freshness (US-DISC-7 AC 12) ==============================
+
+
+class TestObservationFreshness:
+    """Tests for ``ig_observation_freshness``.
+
+    Freshness is counted as DISTINCT datasets, never as rows: a dataset assigns
+    one observation and a replay appends nothing (INSERT OR IGNORE), so a row
+    count would report freshness that never happened. These tests also exercise
+    the check's interval arithmetic, which has no other coverage.
+    """
+
+    def _obs(self, duckdb, dataset: str, age_days: int, post: str | None = None) -> None:
+        """Insert one observation, mirroring the producer's INSERT OR IGNORE.
+
+        The interval is interpolated rather than bound: DuckDB rejects a
+        parameter placeholder inside `INTERVAL ... DAY` (verified — "syntax error
+        at or near ?"), which is why the check itself inlines its window.
+        `age_days` is an int from the test, never user input.
+        """
+        from orchestration.defs.platform.schemas import duckdb_ddl
+
+        with duckdb.get_connection() as conn:
+            conn.execute(duckdb_ddl("silver_ig_post_observations"))
+            conn.execute(
+                "INSERT OR IGNORE INTO silver_ig_post_observations "
+                "(post_id, observed_at, source_dataset) "
+                f"VALUES (?, now() - INTERVAL {int(age_days)} DAY, ?)",
+                [post or f"p_{dataset}_{age_days}", dataset],
+            )
+
+    def _run(self, duckdb):
+        ctx = build_asset_check_context(resources={"duckdb": duckdb})
+        return _CHECKS_BY_NAME["ig_observation_freshness"](ctx)
+
+    def test_fresh_dataset_passes(self, duckdb):
+        """GIVEN an observation dataset landed today
+        WHEN the check runs
+        THEN it passes and reports one fresh dataset.
+        """
+        self._obs(duckdb, "ds_today", 0)
+        result = self._run(duckdb)
+        assert result.passed is True
+        assert result.metadata["fresh_datasets"].value == 1
+
+    def test_stale_dataset_fails(self, duckdb):
+        """GIVEN every dataset older than the window
+        WHEN the check runs
+        THEN it fails.
+        """
+        self._obs(duckdb, "ds_old", 400)
+        result = self._run(duckdb)
+        assert result.passed is False
+        assert result.metadata["fresh_datasets"].value == 0
+
+    def test_replay_does_not_inflate_freshness(self, duckdb):
+        """GIVEN one dataset observed three times, one repeat of the same post
+        WHEN the check runs
+        THEN freshness is 1, not 2 or 3 — rows are not datasets.
+
+        The repeat mirrors what a replay actually does: the producer writes with
+        INSERT OR IGNORE, so re-observing a post already seen for this dataset
+        adds nothing. Freshness must therefore be the distinct-DATASET count.
+        """
+        self._obs(duckdb, "ds_replay", 0, post="p1")
+        self._obs(duckdb, "ds_replay", 0, post="p1")  # replay: no-op
+        self._obs(duckdb, "ds_replay", 0, post="p2")
+        result = self._run(duckdb)
+        assert result.passed is True
+        assert result.metadata["fresh_datasets"].value == 1
+
+        # And the table really holds 2 rows, not 3 — the OR IGNORE held.
+        from orchestration.defs.platform.schemas import duckdb_ddl
+
+        with duckdb.get_connection() as conn:
+            conn.execute(duckdb_ddl("silver_ig_post_observations"))
+            rows = conn.execute(
+                "SELECT COUNT(*) FROM silver_ig_post_observations"
+            ).fetchone()[0]
+        assert rows == 2
+
+    def test_no_observations_at_all_fails(self, duckdb):
+        """GIVEN an empty observations table
+        WHEN the check runs
+        THEN it fails rather than crashing on the empty query.
+        """
+        from orchestration.defs.platform.schemas import duckdb_ddl
+
+        with duckdb.get_connection() as conn:
+            conn.execute(duckdb_ddl("silver_ig_post_observations"))
+        result = self._run(duckdb)
+        assert result.passed is False
+        assert result.metadata["fresh_datasets"].value == 0

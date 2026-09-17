@@ -2,12 +2,12 @@
 id: US-REORG-2
 epic: E-REORG
 persona: P1
-status: Open
+status: Done
 ---
 # US-REORG-2 — The drain folds into submit, and a sensor closes the trigger gap
 
 - **Epic:** E-REORG
-- **Status:** Open
+- **Status:** Done — branch `refactor/submit-discovery`
 - **Branch:** `refactor/submit-discovery`
 - **Relates to:** US-EENG-4 (the in-flight guard this preserves), ADR-0014 (D1, amended here),
   ADR-0016 (the decision), ADR-0012/0013 (orchestration state)

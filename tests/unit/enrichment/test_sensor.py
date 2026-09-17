@@ -17,6 +17,7 @@ import importlib
 import json
 import logging
 
+import orchestration.defs.engine.provider as seam
 import pytest
 from dagster import (
     AssetKey,
@@ -25,8 +26,6 @@ from dagster import (
     RunRequest,
     build_sensor_context,
 )
-
-import orchestration.defs.engine.provider as seam
 from orchestration.defs.engine.harvest import discover_handles
 from orchestration.defs.engine.partitions import (
     SUBMITTED_ASSET_NAME,
@@ -81,7 +80,14 @@ class FakeAdapter:
 
 @pytest.fixture
 def fake_adapter(monkeypatch: pytest.MonkeyPatch):
-    """Route build_adapter(detect_provider()) at a scripted FakeAdapter."""
+    """Route ``build_adapter(service_backed.PROVIDER_NAME)`` at a scripted adapter.
+
+    The engine names no provider: callers pass ``PROVIDER_NAME`` from the
+    service-backed module and only ``build_adapter`` resolves it. Pointing that
+    name at the probe is therefore the whole hook — there is no
+    ``detect_provider`` to patch (it was deleted with the Gemini path,
+    ADR-0015).
+    """
     holder: dict[str, FakeAdapter] = {}
 
     def factory(**kwargs):
@@ -89,7 +95,7 @@ def fake_adapter(monkeypatch: pytest.MonkeyPatch):
 
     adapters_mod = importlib.import_module("orchestration.defs.engine.service_backed")
     seam.register_adapter("fake_sensor_probe", factory)
-    monkeypatch.setattr(adapters_mod, "detect_provider", lambda: "fake_sensor_probe")
+    monkeypatch.setattr(adapters_mod, "PROVIDER_NAME", "fake_sensor_probe")
 
     def install(adapter: FakeAdapter) -> FakeAdapter:
         holder["adapter"] = adapter
@@ -293,3 +299,34 @@ class TestSharedDerivation:
         _tick(inst, caplog)
 
         assert discover_handles(inst.raw) == {_key("P1"): "job-1"}
+
+
+# ─────────────────────────────────────────── shipped default status
+
+
+class TestDefaultStatusPolicy:
+    """The standing default-status policy, asserted so an edit cannot quietly
+    flip it. Harvest POLLS (spends nothing, starts no work) and therefore ships
+    RUNNING; submit SPENDS MONEY and stays manual; schedules stay stopped.
+    """
+
+    def test_harvest_sensor_ships_running(self) -> None:
+        from dagster import DefaultSensorStatus
+
+        assert enrichment_harvest_sensor.default_status == DefaultSensorStatus.RUNNING
+
+    def test_submit_sensor_ships_stopped(self) -> None:
+        """Submit triggers paid provider work — never automatically."""
+        from dagster import DefaultSensorStatus
+        from orchestration.defs.engine.sensor import enrichment_submit_sensor
+
+        assert enrichment_submit_sensor.default_status == DefaultSensorStatus.STOPPED
+
+    def test_schedules_ship_stopped(self) -> None:
+        from dagster import DefaultScheduleStatus
+        from orchestration.defs.platform.core_refresh import core_refresh
+        from orchestration.defs.platform.details_sweep import details_sweep
+        from orchestration.defs.platform.schedules import daily_medallion
+
+        for sched in (daily_medallion, core_refresh, details_sweep):
+            assert sched.default_status == DefaultScheduleStatus.STOPPED, sched.name

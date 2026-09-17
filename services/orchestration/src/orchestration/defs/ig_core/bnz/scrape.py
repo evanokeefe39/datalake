@@ -6,14 +6,14 @@ while the CDN URLs are still fresh — enrichment runs months later on a backlog
 long after the CDN URLs expire. Producers own ingestion-time caching; silver
 never caches.
 
-Two ingestion paths share this module: the Apify scrape (`ig_posts_raw`, remote
-CDN) and the local-disk ad-hoc path (`ig_posts_local_raw`, `LOCAL_INGEST_DIR`).
+Two ingestion paths share this module: the Apify scrape (`bronze_ig_posts`, remote
+CDN) and the local-disk ad-hoc path (`bronze_ig_posts_local`, `LOCAL_INGEST_DIR`).
 Both land typed Parquet plus a `.meta` JSON sidecar for lineage.
 """
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 
@@ -25,10 +25,11 @@ from orchestration.defs.engine.media import cache_media_bytes, seed_media_from_f
 from orchestration.defs.ig_core.slv.posts import (
     _derive_media,
 )
-from orchestration.defs.integration.apify_client import poll_run, stream_dataset, trigger_run
+from orchestration.defs.integration.apify_runs import poll_run, stream_dataset, trigger_run
 from orchestration.defs.platform.paths import BRONZE_LAKE, bronze_path
 from orchestration.defs.platform.resources import (
     ApifyResource,
+    DuckDBResource,
     SQLiteResource,
 )
 
@@ -38,8 +39,15 @@ logger = logging.getLogger(__name__)
 # ── Config ──────────────────────────────────────────────────────────────────
 
 
-class ResultsType(str, Enum):
-    """Valid ``resultsType`` values for the Apify Instagram scraper."""
+class ResultsType(str, Enum):  # noqa: UP042 — deliberately not StrEnum
+    """Valid ``resultsType`` values for the Apify Instagram scraper.
+
+    Kept as ``(str, Enum)`` rather than ``StrEnum`` on purpose: a ``StrEnum``
+    member IS its value, so ``str(ResultsType.POSTS)`` becomes ``"posts"``
+    instead of ``"ResultsType.POSTS"``, and membership/format checks against
+    these members change meaning. This enum crosses the Dagster config boundary
+    and the Apify client, so the representation is part of the contract.
+    """
 
     POSTS = "posts"
     DETAILS = "details"
@@ -53,6 +61,85 @@ class ScrapeConfig(Config):
     results_limit: int = 12
     results_type: ResultsType = ResultsType.POSTS
     max_charge_usd: float | None = None
+    #: Absolute UTC date (YYYY-MM-DD). None means no date filter — a full
+    #: backfill, which is what a never-scraped profile needs.
+    only_posts_newer_than: str | None = None
+    #: Actor run memory. An Apify RUN option, not an actor input.
+    memory_mbytes: int | None = None
+
+
+class DetailsScrapeConfig(Config):
+    """Configuration for one profile's details scrape.
+
+    Carries the roster identity (`platform`/`handle`/`roster_updated_at`) so the
+    run can advance the sweep watermark on SUCCESS — the schedule must not
+    advance it at evaluation time, or a failed scrape would be skipped forever.
+    """
+
+    profile_url: str
+    results_limit: int = 1
+    max_charge_usd: float | None = None
+    platform: str = "instagram"
+    handle: str = ""
+    roster_updated_at: str = ""
+
+
+@asset(
+    name="bronze_ig_profile_details",
+    group_name="instagram",
+    description=(
+        "One profile's details scrape → bronze Parquet. Driven by the "
+        "details-sweep schedule, which reconciles the roster against what has "
+        "already been scraped; never triggered by an HTTP request."
+    ),
+)
+def bronze_ig_profile_details(
+    config: DetailsScrapeConfig,
+    apify: ApifyResource,
+    ops: SQLiteResource,
+    duckdb: DuckDBResource,
+) -> str:
+    """Run the details scrape for one profile, land it, and record completion.
+
+    Returns the dataset id. Raises when APIFY_API_TOKEN is absent: a scrape that
+    silently did nothing would leave the sweep believing it had covered the
+    profile, so this must fail loudly and be re-run.
+
+    The sweep watermark advances HERE, after the bytes are landed — the only
+    moment at which "this profile has been scraped" is true. A failure raises
+    before that point, so the profile stays due and the next tick retries it.
+    """
+    import os
+
+    token = apify.token or os.environ.get("APIFY_API_TOKEN", "")
+    if not token:
+        raise RuntimeError(
+            "bronze_ig_profile_details: no APIFY_API_TOKEN — refusing to record a "
+            "scrape that did not happen"
+        )
+
+    dataset_id = scrape_details_to_bronze(
+        config.profile_url,
+        token=token,
+        results_limit=config.results_limit,
+        max_charge_usd=config.max_charge_usd,
+    )
+    logger.info(
+        "details scrape for %s -> dataset %s", config.profile_url, dataset_id
+    )
+
+    if config.roster_updated_at:
+        from orchestration.defs.platform.details_sweep import advance_watermark
+
+        with duckdb.get_connection() as conn:
+            advance_watermark(conn, through=config.roster_updated_at)
+        logger.info(
+            "details sweep watermark advanced to %s (%s)",
+            config.roster_updated_at,
+            config.handle or config.profile_url,
+        )
+
+    return dataset_id
 
 
 # ── Local ad-hoc ingestion ─────────────────────────────────────────────────
@@ -82,6 +169,8 @@ def _write_meta(
     results_limit: int,
     results_type: str,
     estimated_cost_usd: float = 0.0,
+    only_posts_newer_than: str | None = None,
+    memory_mbytes: int | None = None,
 ) -> None:
     """Write a ``.meta`` JSON sidecar alongside the Parquet file."""
     meta = {
@@ -94,18 +183,25 @@ def _write_meta(
             "urls": urls,
             "results_limit": results_limit,
             "results_type": results_type,
+            # Both are recorded so the sidecar states the date boundary the run
+            # actually used and the memory it ran in — the two facts needed to
+            # explain why a run returned what it returned.
+            "only_posts_newer_than": only_posts_newer_than,
+            "memory_mbytes": memory_mbytes,
         },
-        "downloaded_at": datetime.now(timezone.utc).isoformat(),
+        "downloaded_at": datetime.now(UTC).isoformat(),
     }
     meta_path = parquet_path.with_suffix(".parquet.meta")
     meta_path.write_text(json.dumps(meta, indent=2))
 
 @asset(
-    name="ig_posts_raw",
+    name="bronze_ig_posts",
     group_name="instagram",
     description="Apify Instagram scrape → typed Parquet in bronze lake.",
 )
-def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource, ops: SQLiteResource) -> pl.DataFrame:
+def bronze_ig_posts(
+    config: ScrapeConfig, apify: ApifyResource, ops: SQLiteResource
+) -> pl.DataFrame:
     """Scrape Instagram profiles via Apify, store as typed Parquet.
 
     Media bytes are cached into ``media_cache`` at scrape time (ingestion),
@@ -125,8 +221,11 @@ def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource, ops: SQLiteResource
         results_limit=config.results_limit,
         results_type=config.results_type,
         max_charge_usd=config.max_charge_usd,
+        only_posts_newer_than=config.only_posts_newer_than,
+        memory_mbytes=config.memory_mbytes,
     )
-    dataset_id = poll_run(run.run_id, token=apify.token)
+    outcome = poll_run(run.run_id, token=apify.token)
+    dataset_id = outcome.dataset_id
 
     # 2. Idempotency check
     dest = bronze_path(dataset_id)
@@ -168,7 +267,9 @@ def ig_posts_raw(config: ScrapeConfig, apify: ApifyResource, ops: SQLiteResource
         config.urls,
         config.results_limit,
         config.results_type,
-        run.estimated_cost_usd,
+        outcome.usage_total_usd,
+        config.only_posts_newer_than,
+        config.memory_mbytes,
     )
 
     return df
@@ -199,11 +300,11 @@ def _local_post_media_pairs(post: dict, post_dir: Path) -> list[tuple[str, Path]
     return pairs
 
 @asset(
-    name="ig_posts_local_raw",
+    name="bronze_ig_posts_local",
     group_name="instagram",
     description="Local ad-hoc scrape dumps → bronze Parquet (write-once) + media seeding.",
 )
-def ig_posts_local_raw(ops: SQLiteResource) -> pl.DataFrame:
+def bronze_ig_posts_local(ops: SQLiteResource) -> pl.DataFrame:
     """Ingest local ad-hoc scrape dumps as a second bronze producer.
 
     Reads ``<LOCAL_INGEST_DIR>/<dataset_id>/<post_id>/post_metadata.json``
@@ -242,7 +343,7 @@ def ig_posts_local_raw(ops: SQLiteResource) -> pl.DataFrame:
                 logger.warning("Skipping %s — no post_metadata.json found", dataset_dir.name)
                 continue
 
-            # NDJSON roundtrip mirrors ig_posts_raw's proven read path for
+            # NDJSON roundtrip mirrors bronze_ig_posts's proven read path for
             # the same wire format. infer_schema_length=None scans ALL rows:
             # sparse fields (e.g. a caption-like column null for the first
             # N posts) otherwise infer as NULL and a later non-null row
@@ -297,6 +398,7 @@ def scrape_details_to_bronze(
     *,
     token: str,
     results_limit: int = 1,
+    max_charge_usd: float | None = None,
 ) -> str:
     """Run a details-type Apify scrape for one profile → bronze Parquet.
 
@@ -307,17 +409,16 @@ def scrape_details_to_bronze(
 
     import polars as pl
 
-    from ..common.apify import poll_run, stream_dataset, trigger_run
-    from ..common.lake import BRONZE_LAKE, bronze_path
-
     run = trigger_run(
         "apify~instagram-scraper",
         [profile_url],
         token=token,
         results_limit=results_limit,
         results_type="details",
+        max_charge_usd=max_charge_usd,
     )
-    dataset_id = poll_run(run.run_id, token=token)
+    outcome = poll_run(run.run_id, token=token)
+    dataset_id = outcome.dataset_id
 
     dest = bronze_path(dataset_id)
     if dest.exists():

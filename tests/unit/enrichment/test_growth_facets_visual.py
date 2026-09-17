@@ -2,7 +2,10 @@
 
 import json
 
-from orchestration.defs.ig_enriched.slv.visual import parse_universal_response
+from orchestration.defs.ig_enriched.slv.prompts import (
+    build_growth_facets_prompt,
+    compute_facets_prompt_hash,
+)
 from orchestration.defs.ig_enriched.slv.schemas import (
     GROWTH_FACETS_JSON_SCHEMA,
     RESERVED_GOLD_KEYS,
@@ -10,10 +13,7 @@ from orchestration.defs.ig_enriched.slv.schemas import (
     validate_growth_facets,
     validate_visual_facets,
 )
-from orchestration.defs.ig_enriched.slv.prompts import (
-    build_growth_facets_prompt,
-    compute_facets_prompt_hash,
-)
+from orchestration.defs.ig_enriched.slv.visual import parse_universal_response
 
 GOOD_FACETS = {
     "face_present": True,

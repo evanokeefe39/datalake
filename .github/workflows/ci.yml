@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
       - run: uv sync --dev
       - run: uv run ruff check services/ packages/ tests/ scripts/ migrations/
       - run: uv run pytest tests/ -v
@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
       - run: uv sync
       - name: Validate Dagster definitions
         run: uv run dagster definitions validate

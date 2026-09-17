@@ -32,7 +32,7 @@ import argparse
 import logging
 import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -93,7 +93,7 @@ def migrate(duckdb_path: Path, backup: bool = True) -> None:
         db.close()
 
     # ── 3. Reset watermarks ────────────────────────────────────────────
-    reset_ts = datetime(1970, 1, 2, tzinfo=timezone.utc)
+    reset_ts = datetime(1970, 1, 2, tzinfo=UTC)
     db = duckdb.connect(str(duckdb_path))
     try:
         db.execute("DELETE FROM watermarks")

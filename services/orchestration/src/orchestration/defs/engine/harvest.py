@@ -3,7 +3,7 @@ report the harvested partition, mint retries (ADR-0011/0012/0013/0014).
 
 This module is the TARGET harvest stage of the Dagster-native loop::
 
-    drain (ig_posts_gen_batches) → submit → harvest
+    submit (discovers + materializes its own placeholder) → harvest
 
 Harvest owns two ADR-0014 dynamics:
 
@@ -40,12 +40,13 @@ from dagster import (
     AssetKey,
     AssetMaterialization,
     DynamicPartitionsDefinition,
+    Nothing,
+    Out,
     job,
     op,
 )
 
 from orchestration.defs.engine import landing, partitions
-from orchestration.defs.engine.landing import WORKLOAD_CONTENT_CLASSIFICATION
 from orchestration.defs.engine.partitions import (
     HARVESTED_ASSET_NAME,
     MAX_ROUNDS,
@@ -55,9 +56,9 @@ from orchestration.defs.engine.partitions import (
 )
 from orchestration.defs.engine.provider import ProviderAdapter
 from orchestration.defs.ig_enriched.slv.prompts import (
-    CURRENT_PROMPT_HASH,
     IG_GOLD_SCHEMA_VERSION,
 )
+from orchestration.defs.ig_enriched.slv.workloads import WORKLOAD_BY_NAME
 
 logger = logging.getLogger("enrichment.harvest")
 
@@ -67,14 +68,26 @@ logger = logging.getLogger("enrichment.harvest")
 _MAX_HANDLES_PER_RUN = 25
 
 #: Join key is PLATFORM, never ``domain`` (the ADR-0011 duplicate-name rule).
-#: One platform per workload; an unmapped workload fails loudly rather than
-#: landing rows with a guessed platform.
+#: Derived from the workload registry, so a newly registered workload is
+#: landable without editing this module — and an unregistered one still fails
+#: loudly rather than landing a row with a guessed platform. Today every
+#: workload is Instagram; the map exists so a second platform is a registry
+#: entry, not a harvest change.
 _PLATFORM_BY_WORKLOAD: dict[str, str] = {
-    WORKLOAD_CONTENT_CLASSIFICATION: "instagram",
+    name: "instagram" for name in WORKLOAD_BY_NAME
 }
 
 _SUBMITTED_KEY = AssetKey(SUBMITTED_ASSET_NAME)
 _HARVESTED_KEY = AssetKey(HARVESTED_ASSET_NAME)
+#: The bronze landing this harvest writes. `bronze_enrichment_raw` is a Parquet
+#: dataset (not a materializable asset), but an EVENT for it is what lets a
+#: `deps=`-declared consumer un-gate: an `eager()` condition on a spec-declared
+#: key fires once a materialization is recorded for it, measured with
+#: `dg.evaluate_automation_conditions` (a spec-declared key with no producer DOES
+#: un-gate its downstream once an event lands). Before this, only
+#: `enrichment_harvested` was reported, so nothing downstream of bronze ever woke
+#: — bronze landed, silver sat still, and the chain stopped there (ADR-0018).
+_BRONZE_KEY = AssetKey(["bronze_enrichment_raw"])
 
 _SUBMITTED_DYN: DynamicPartitionsDefinition = partitions.SUBMITTED_PARTITIONS
 _HARVESTED_DYN: DynamicPartitionsDefinition = partitions.HARVESTED_PARTITIONS
@@ -92,6 +105,14 @@ def report_harvested(
     dynamic partitions, then report runless materializations on the SAME
     injected instance the in-flight guard reads. Re-running with the same
     keys is idempotent (a set membership, not a counter).
+
+    Also reports ONE runless materialization for ``bronze_enrichment_raw``,
+    because this is the path that actually writes bronze bytes: every call
+    here follows ``land_result`` calls that appended verbatim rows, and the
+    guard above (``if not keys: return``) means a harvest that landed nothing
+    reports nothing. That discipline is the point — a bronze event emitted on
+    a path that did not write would make the graph lie, and downstream
+    ``eager()`` conditions would fire on a no-op.
     """
     if not keys:
         return
@@ -100,6 +121,15 @@ def report_harvested(
         instance.report_runless_asset_event(
             AssetMaterialization(asset_key=_HARVESTED_KEY, partition=key)
         )
+    # The bronze landing event: un-gates the `deps=`-declared consumers of
+    # `bronze_enrichment_raw` (silver). Not partitioned — the dataset is one
+    # append-only Parquet file, so the event is about the file, not a key.
+    instance.report_runless_asset_event(
+        AssetMaterialization(
+            asset_key=_BRONZE_KEY,
+            metadata={"landed_partitions": int(len(keys))},
+        )
+    )
     logger.info("Harvested %d partition(s): %s", len(keys), sorted(keys))
 
 
@@ -218,14 +248,25 @@ def land_result(
             f"(partition key {result.custom_key!r}) — refusing to land with "
             "a guessed platform (join key is platform, never domain)"
         )
+    # Provenance comes from the WORKLOAD, never from this module: a facet
+    # response stamped with the classification prompt's hash would poison the
+    # bronze→silver replay (ADR-0011). A workload absent from the registry is
+    # unknown, and landing with guessed provenance is the defect this refuses.
+    workload = WORKLOAD_BY_NAME.get(parsed.workload)
+    if workload is None:
+        raise RuntimeError(
+            f"workload {parsed.workload!r} (partition key "
+            f"{result.custom_key!r}) is not registered — refusing to land "
+            "with guessed provenance"
+        )
     landing.land_response(
         post_id=parsed.post_id,
         platform=platform,
         workload=parsed.workload,
         provider=result.provider,
         model=result.model,
-        prompt_hash=CURRENT_PROMPT_HASH,
-        schema_version=IG_GOLD_SCHEMA_VERSION,
+        prompt_hash=workload.prompt_hash,
+        schema_version=workload.schema_version or IG_GOLD_SCHEMA_VERSION,
         run_id=run_id,
         response_text=result.response_text or "",
         ok=bool(result.ok),
@@ -304,9 +345,15 @@ def harvest_pending(
 # ── Dagster op + job ────────────────────────────────────────────────────────
 
 
-@op(tags={"adr": "0014", "seam": "enrichment-api"})
-def harvest_enrichment_op(context) -> dict:
-    """One bounded harvest pass over the seam (short, bounded)."""
+@op(tags={"adr": "0014", "seam": "enrichment-api"}, out=Out(Nothing))
+def harvest_enrichment_op(context) -> None:
+    """One bounded harvest pass over the seam (short, bounded).
+
+    ``out=Nothing`` for the same reason as the submit op: this op reports, and
+    its orchestration effects are instance state plus bronze landings. Returning
+    a dict would route it through ``PolarsIOManager``, which cannot resolve an
+    asset key for a bare op and fails the run at execution time.
+    """
     from orchestration.defs.engine import service_backed
     from orchestration.defs.engine.provider import build_adapter
 
@@ -324,7 +371,6 @@ def harvest_enrichment_op(context) -> dict:
         result["handles_polled"],
         result["handles_polled"] + result["handles_pending"],
     )
-    return result
 
 
 @job(name="enrichment_harvest")

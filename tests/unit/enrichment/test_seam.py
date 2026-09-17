@@ -1,7 +1,6 @@
 """Unit tests for the provider-neutral inference seam (no network, no service)."""
 
 import pytest
-
 from orchestration.defs.engine.provider import (
     CANONICAL_STATES,
     COMPLETED,
@@ -104,39 +103,6 @@ def test_terminal_states_are_completed_and_failed_only() -> None:
 def test_unknown_adapter_raises_clear_error() -> None:
     with pytest.raises(KeyError, match="unknown adapter 'nope'"):
         build_adapter("nope")
-
-
-def test_run_lifecycle_drives_submit_poll_retrieve() -> None:
-    adapter = _FakeAdapter(
-        [PENDING, PROCESSING, COMPLETED],
-        list(_RESULTS),
-    )
-    observed, results = run_lifecycle(adapter, _ITEMS)
-    assert observed == [PENDING, PROCESSING, COMPLETED]
-    assert adapter.submitted == _ITEMS
-    assert adapter.retrieved_handle == "handle-1"
-    assert results == _RESULTS
-    assert results[0].response_text == '{"topic": "devtools"}'
-
-
-def test_run_lifecycle_fails_immediately() -> None:
-    adapter = _FakeAdapter([FAILED], list(_RESULTS))
-    observed, _ = run_lifecycle(adapter, _ITEMS)
-    assert observed == [FAILED]
-
-
-def test_run_lifecycle_respects_max_polls() -> None:
-    adapter = _FakeAdapter([PROCESSING] * 100)
-    with pytest.raises(TimeoutError, match="2 polls"):
-        run_lifecycle(adapter, _ITEMS, max_polls=2)
-    # no result retrieval after a timeout
-    assert adapter.retrieved_handle is None
-
-
-def test_run_lifecycle_rejects_non_canonical_state() -> None:
-    adapter = _FakeAdapter(["weird"])
-    with pytest.raises(AssertionError, match="non-canonical state"):
-        run_lifecycle(adapter, _ITEMS)
 
 
 def test_register_adapter_and_build() -> None:

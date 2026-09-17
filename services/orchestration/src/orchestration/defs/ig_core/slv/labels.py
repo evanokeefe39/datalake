@@ -23,11 +23,10 @@ snapshot, never a day7 judgment.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import polars as pl
 from dagster import asset
-from opsdb.roster import enabled_profiles
 
 from orchestration.defs.ig_core.slv.posts import ensure_state_tables as _ensure_state_tables
 from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
@@ -130,7 +129,7 @@ def run_label_pass(
 
     conn.execute(_DDL)
     core_handles = {h.lower().lstrip("@") for h in (core_handles or set())}
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     now = now.replace(tzinfo=None) if now.tzinfo else now  # silver is naive UTC
 
     posts, likes, _ = _load_inputs(conn)
@@ -142,7 +141,7 @@ def run_label_pass(
     for p in posts:
         key = (p["owner_id"] or "").lower()
         by_creator.setdefault(key, []).append(p)
-    _min_aware = datetime.min.replace(tzinfo=timezone.utc)  # aware-epoch fallback for the sort key
+    _min_aware = datetime.min.replace(tzinfo=UTC)  # aware-epoch fallback for the sort key
     for plist in by_creator.values():
         plist.sort(key=lambda p: p["ts"] or p["processed_on"] or _min_aware)
 
@@ -359,7 +358,7 @@ def _quantile(values: list, q: float) -> float:
         "Tukey-fence standout labels + triage decisions per post "
         "(daily; self-versioned via LABEL_VERSION)."
     ),
-    deps=["ig_posts_slv"],
+    deps=["silver_ig_posts"],
 )
 def ig_post_labels(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
     """Stamp ``ig_post_labels`` for every silver post (plan §4 rule table).
@@ -370,12 +369,14 @@ def ig_post_labels(duckdb: DuckDBResource, ops: SQLiteResource) -> pl.DataFrame:
     immutable. Idempotent — re-running with no new data is a no-op.
     """
     _ensure_state_tables(duckdb)
-    core_handles = {
-        (p["handle"] or "").lower().lstrip("@")
-        for p in enabled_profiles(ops)
-        if p["platform"] == "instagram" and p["tier"] == "tier1"
-    }
+    from orchestration.defs.ig_core.slv.roster import enabled_profiles
+
     with duckdb.get_connection() as conn:
+        core_handles = {
+            (p["handle"] or "").lower().lstrip("@")
+            for p in enabled_profiles(conn)
+            if p["tier"] == "tier1"
+        }
         stats = run_label_pass(conn, core_handles=core_handles)
         labels = pl.from_arrow(
             conn.execute("SELECT * FROM ig_post_labels").arrow().read_all()

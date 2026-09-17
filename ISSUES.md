@@ -227,6 +227,321 @@ and the schema drift detector catches table mismatches.
 - [ ] State readiness test updated and passing
 
 ## Active
+### 38. Compose acceptance (V5/V6) — EXECUTED 2026-09-16, both passed
+
+**Status:** RESOLVED. Docker Desktop was started and the acceptance was run for real against
+the containers, not simulated.
+
+**V5 — the platform comes up. All criteria met.**
+
+- `docker compose build` built all three images; `up -d` brought up orchestration, jobs and
+  dashboard.
+- `jobs` `/health` → 200 `{"status":"ok","model":"qwen/qwen3.7-flash","version":"0.1.0"}`;
+  the container is `healthy` per its healthcheck.
+- Dagster webserver → 200; all six daemons running (`SensorDaemon` among them), and the log
+  shows `Checking for new runs for sensor: enrichment_harvest_sensor` on its 30 s interval.
+- Sensor policy confirmed against the instance (GraphQL, i.e. what the UI shows):
+  `enrichment_harvest_sensor` **RUNNING**, `enrichment_submit_sensor` **STOPPED**.
+- Negative control PASSED: with `jobs` stopped, `ServiceBackedAdapter().require_health()`
+  raised `ProviderError: inference service http://jobs:8462 is DOWN (/health: [Errno -2] Name
+  or service not known); refusing to submit` — a loud failure, never a quiet nothing-to-do.
+- `DAGSTER_HOME` correctly resolves to `/data/dagster_home` (the compose `environment:`
+  override beats `.env`'s Windows path), which is ISSUES #36 (`.env` `DAGSTER_HOME` beats a shell export) defeated in the container.
+
+**V6 — one real enrichment cycle. Passed, destination-verified.**
+
+Run against live as the owner directed, with `data/backups/v6-pre/` snapshotted first.
+
+|Assertion|Result|
+|---|---|
+|submit|`2 submitted, 0 failed, 2 candidate(s) of 21 discovered`; real service job handle|
+|media reached the model|items carried **14 and 16 images**; both `completed` with 3–4 KB of output|
+|harvest|sensor fired **autonomously**, ran `enrichment_harvest` → `RUN_SUCCESS`|
+|bronze destination|9,576 → **9,580** rows, new rows `provider='service_backed'`|
+|silver destination|`silver_visual_annotations` 0 → **2**; `silver_visual_summaries` 0 → **2**|
+|failures recorded, not dropped|2 pre-mount items quarantined with `reason_code='provider_error'`|
+
+**Two container-only defects found by actually running it** (neither visible to any test):
+
+1. **A stale host dev server squatted port 3002.** An earlier `uvicorn` on
+   `127.0.0.1:3002` held the port, so the dashboard container started *unpublished*
+   (`3002/tcp` with no host mapping) and every `curl localhost:3002` hit the stale process,
+   which served an older `server.py` without the SPA mount. This is why `/` 404'd while
+   `/api/roster` 200'd. Killed the process; `up -d --force-recreate dashboard` bound the
+   port. **Lesson:** a container that starts without its declared port mapping is silent —
+   check `docker ps` for `0.0.0.0:N->N/tcp`, not just `Up`.
+2. **The launchpad configs in `data/smoke/*.json` are host-relative.** `submit-live.json`
+   says `database: "data/smoke/state.duckdb"`, which resolves against the container WORKDIR
+   `/app` and fails `Cannot open file "/app/data/smoke/state.duckdb"`. Added
+   `data/smoke/submit-container.json` with absolute `/data/...` paths. The smoke configs are
+   dev artifacts (gitignored) so this is documented rather than "fixed" in-repo.
+
+**A third finding — the smoke slice does not isolate the bronze landing.** The smoke config
+swaps only the `duckdb` and `ops` resources; `harvest.py` and `silver_rt.py` call
+`land_response`/`read_responses` with `root=None`, which defaults to the LIVE lake root. So
+a smoke-configured run still appends to live bronze. Recorded rather than papered over: the
+bronze landing is replaceable by locked decision, so a live run is recoverable, but the
+isolation the smoke slice appears to offer is not there. Threading a root through harvest +
+silver is the fix if isolation is wanted.
+
+**Port note:** Dagster publishes host **7642** → container 3000 (compose default), chosen so it
+does not collide with the dev-server ports (3000/3001/8000/8080) that this machine's other
+stacks occupy. Override with `DAGSTER_HOST_PORT`.
+
+**Follow-on observed (now ADR-0018):** the harvest landed bronze while
+`silver_visual_annotations` sat at 0 — the lineage was correct but nothing acted on it.
+The chain stopped at bronze until silver was materialized by hand. The owner's decision —
+auto-materialize the replay path, while the submit edge stays a **determinism boundary** so
+`silver_*` remains a pure replay of bronze (cost sits on the API credential as
+defense-in-depth) — settles the design; see
+`docs/architecture/adr/0018-pipeline-automation-and-the-cost-boundary.md`. The
+auto-materialization implementation is separate, open work.
+
+### 37. `media_cache` rows are written in the writer's path vocabulary
+
+**Status:** RESOLVED for the container path (ADR-0017); the mixed-runtime caveat remains.
+
+**Symptom.** 8,425 of 8,431 items in the live job store carry media paths, all
+Windows-absolute (`C:\Users\evano\repos\datalake\data\media\posts\<sha>.jpg`). Into a
+Linux container those are unopenable, so every item would fail `_missing_images` even
+though the bytes are mounted at `/data/media/posts/`.
+
+**Root cause.** The stored path is whatever the FETCHING process had, and
+`opsdb.media_cache.cached_local_path` tested it with `os.path.exists` before any
+translation — so the cache read as empty rather than misconfigured.
+
+**Fix.** `stored_local_path` (no filesystem check) + `engine.media.local_media_path`
+(translate via `platform.paths.runtime_path`, then test). Both containers mount
+`./data` at `/data`, so one vocabulary works at the wire.
+
+**Remaining caveat (accepted, not a defect):** a row written FROM a container holds
+`/data/media/...` and will not resolve on the host without the reverse mapping. Compose is
+the runtime of record; a host run after a container run needs a re-seed.
+
+### 36. `.env` `DAGSTER_HOME` beats a shell export for the `dagster` CLI
+
+**Status:** OPEN (unchanged) — the Compose orchestration service works around it by setting
+`DAGSTER_HOME=/data/dagster_home` in `environment:`, which overrides `env_file`. The trap
+remains for host CLI runs.
+
+### 35. Enrichment harvest could not land anything (`KNOWN_PROVIDERS` drift)
+
+**Status:** RESOLVED — found by the first real paid run through the seam.
+
+**Symptom.** `enrichment_harvest` failed at the landing step:
+
+```
+ValueError: refusing to land provider 'service_backed' into the LIVE default lake
+root: not in KNOWN_PROVIDERS ['gemini', 'none', 'qwen'] — pass an explicit tmp/test root
+```
+
+Submit and poll both succeeded and the provider call returned 200; only landing failed.
+No row could reach bronze from any live adapter.
+
+**Root cause.** `landing.py`'s `KNOWN_PROVIDERS` allowlist was written when providers were
+named after the model vendor (`gemini`, `qwen`). The Gemini retirement left
+`ServiceBackedAdapter` as the only registered adapter, and it names the **seam**
+(`service_backed`, `service_backed.py:46`). The allowlist was never updated — the
+docstring already said "a new real provider is ADDED here explicitly, alongside its
+producer", and that step was simply missed when the vendor was retired.
+
+**Why every gate missed it.** `dagster definitions validate` checks graph structure only.
+The suite never lands with `root=None` (the production path), so no test could observe it.
+243 green tests and a valid graph, and the paid path was still terminal. This is the
+repo's verification-plane lesson in its purest form: it took one real run to see it.
+
+**Fix.** `service_backed` added to `KNOWN_PROVIDERS` (`qwen` kept for rows already landed
+under that name); the docstring now states the value is the adapter's registered name,
+not the vendor. New test `test_every_registered_adapter_may_land_in_the_live_root` pins
+the allowlist to `provider.ADAPTER_REGISTRY`, so the next rename fails in CI instead of
+in production. Commit `e1c38b0`.
+
+**Not changed, deliberately:** the `root=None` guard itself is correct — it is what stops
+`provider='fake'` fixtures reaching the live lake.
+
+---
+
+### 39. Smoke E2E wrote to the live lake and the live Dagster instance
+
+**Status:** RESOLVED (state restored) — recorded because a future session will see
+cleared instance history and a backup trail, and would otherwise assume corruption.
+
+**Symptom.** `enrichment_submit` / `enrichment_harvest` run against the smoke slice wrote
+2 rows into the LIVE `data/lake/bronze/bronze_enrichment_raw.parquet` and materialized
+runs and partitions into the LIVE Dagster instance. Nothing errored; the runs reported
+success.
+
+**Root cause — three independent mechanisms, all of which must be overridden.** This is
+the part worth reading twice:
+
+1. **Lake roots are import-time module constants** in `platform/paths.py`
+   (`IG_DATA_DIR` / `IG_BRONZE_DIR` / `IG_SILVER_DIR`). Setting them **does** work — but
+   the smoke config JSON overrode only the two DB resources, so bronze landed live.
+2. **`PolarsIOManager(lake_root="data/lake")` is a hardcoded literal** at
+   `definitions.py:42` that **survives every environment variable**. Asset outputs routed
+   through the io manager ignore the `IG_*` exports entirely.
+3. **`DAGSTER_HOME` does not work as a shell export for the `dagster` CLI.** The CLI reads
+   `.env` and ignores the export — verified directly: `dagster instance info` reports the
+   `.env` home while `DagsterInstance.get()` in a Python process honours the export. So
+   every `dagster job execute` wrote its run records and partition materializations to the
+   **live** instance while the lake stayed correctly on smoke.
+
+**Sequence.** The first E2E contaminated live bronze and the live instance; that was
+remediated. Awaiting a second E2E that was *believed* isolated, mechanism 3 was still
+unknown — so it repeated the instance contamination. The lake isolation did hold on the
+second attempt (proven by live bronze's size+mtime being byte-identical across the run,
+while smoke bronze went 228 → 230).
+
+**Consequence.** `data/smoke/dagster_home` is **empty (0 runs / 0 partitions)** — the
+smoke instance was never actually used. Do not read that as evidence of successful
+isolation; it is the opposite.
+
+**Fix / remediation.** (a) The 2 contaminated rows were excised from live bronze by
+`run_id`, restoring it to exactly **9,576 rows, provider `gemini` only**. (b) The live
+instance history was cleared twice, restoring **0 runs / 0 partitions**. (c) The gap
+plan's smoke recipe now carries a pre-run anchor assertion (assert every resolved root is
+under `data/smoke`) and a post-run size+mtime check on the live bronze parquet — a row
+count can match while bytes change.
+
+**Backups** (all verified present before each wipe):
+- `data/backups/contaminated-by-smoke-e2e-20260915T205450Z/` — 12 files (bronze parquet + history)
+- `data/backups/smoke-instance-partitions-20260915T211054Z/` — 6 files (history)
+- `data/backups/dagster-history.pre-legacy-key-wipe-20260915T164612Z/` — 25 files (the earlier legacy-key wipe)
+
+**Which data is irreplaceable — the distinction that made this remediation safe.**
+`bronze_enrichment_raw` is model output: reproducible from media + prompt, so excising
+rows costs money, not information. `data/media/posts/` and the Apify bronze are **not**
+reproducible (scraped bytes behind ~4–5 day CDN URLs; as-observed history). The same
+excision applied to those would have been permanent data loss.
+
+**STILL LIVE — not fixed, and this is the landmine for the next E2E.** The state is
+remediated; the **trap is not**. Mechanism 3 above still holds: exporting `DAGSTER_HOME`
+does nothing for the `dagster` CLI, so anyone who runs the smoke recipe as originally
+written will contaminate the live instance again. The plan's recipe now says so and adds
+assertions, but the underlying `.env`-beats-the-export behaviour is unfixed and needs
+either a `--env-file`-style override or a documented "edit `.env`, run, restore"
+procedure. Treat any future smoke run's instance state as UNVERIFIED until measured.
+
+---
+
+### 40. Retry-budget guard: was unreachable, now over-broad (2026-09-15)
+
+**Status:** the unreachable half is FIXED; the over-broad half is **OPEN**.
+
+**Symptom (fixed).** `_guard_round` in `engine/submit.py` was supposed to refuse a
+re-submission once a post's retry budget was exhausted. It tested
+`state.next_round >= MAX_ROUNDS and state.suppressed` — but the caller `continue`s past
+suppressed posts *before* reaching the guard, so `suppressed` was always `False` and the
+raise could never fire. A partition stuck at the ceiling was therefore re-submitted
+forever, silently, at cost.
+
+**Fix.** The guard now keys on the round alone. Regression test
+`test_guard_raises_when_retry_budget_is_exhausted` in
+`tests/unit/enrichment/test_partitions_retry.py`, verified discriminating (it fails on
+the old condition). Landed in `3b4b410`.
+
+**Open — the fix is now over-broad.** Keyed on `next_round` alone, a post that has
+reached the ceiling raises on **any** future eligibility. That includes the legitimate
+case: a post whose earlier rounds failed under an OLD prompt hash, which under ADR-0011
+/ADR-0016 is supposed to be *re-enrichable* when the prompt changes. Today it raises
+instead of being re-submitted.
+
+**Required fix.** Scope the budget to the **current prompt hash** — the retry budget is
+per (post, workload, prompt_hash), not per post for all time. `compute_round` already
+has the key material; the guard needs the prompt hash passed in and compared, so a
+prompt change resets the budget while a genuine retry loop still terminates.
+
+**Why it matters.** This is the difference between "a retry loop cannot burn money
+forever" and "a stale-prompt post can never be refreshed" — the exact failure mode
+US-L5 exists to prevent. It is currently masked because no prompt has changed since the
+guard landed.
+
+---
+
+### Dagster event log reset — repo-reorganization branches 1-3 (2026-09-15)
+
+**Status:** RESOLVED (instance state) — recorded because it is destructive and
+a future session will see an empty run history.
+
+**Symptom.** The plan's gate 8 (the facet dry run) failed on the live instance:
+
+```
+RuntimeError: unparseable in-flight partition key '0e0bfcb3009b42c3':
+  partition key must be '<workload>\x00r<N>\x00<post_id>'
+```
+
+**Root cause.** The pre-refactor layout wrote sha256-digest partition keys into
+`data/dagster_home`. Eight such keys remained in the event log, and
+`in_flight_partitions` derives from `get_materialized_partitions` — the EVENT
+log, not the partition definitions — so `_in_flight_by_post` raised on every
+submit run. `SqliteEventLogStorage` supports neither partition-scoped wipe
+(`wipe_asset_partitions` → `NotImplementedError`) nor asset-wide
+(`wipe_assets` → `False`), so the events could not be purged selectively;
+deleting the 8 partition *definitions* alone would have left the events behind
+and the guard still raising.
+
+**Fix.** Cleared `data/dagster_home/history/` entirely. All 8 keys were verified
+to name no workload, have zero harvested counterparts, and be unharvestable —
+no real completed work was affected. Backup (verified 25 files / 9.42 MB) at
+`data/backups/dagster-history.pre-legacy-key-wipe-20260915T164612Z/`.
+
+**Consequence:** the live instance has NO run history before 2026-09-15. Prior
+run records exist only in that backup.
+
+**Not fixed (deliberate):** `_in_flight_by_post` still RAISES on an unparseable
+key. That is the strict grammar guard ADR-0014 D1 specifies, and it is correct
+once the instance matches the grammar. A future migration introducing a third
+key grammar should reconcile via `migrations/` rather than loosening it.
+
+### Enrichment ops reported through the I/O manager (found by gate 8)
+
+**Status:** RESOLVED (2026-09-15).
+
+`submit_enrichment_op` and `harvest_enrichment_op` returned a report dict.
+Neither job declares an asset, so Dagster routed the value through the
+job-level `PolarsIOManager`, which resolved an asset key for an op that has none
+and failed the run at execution time. `definitions validate` passed on this and
+always would — the graph is structurally sound. Both now declare
+`out=Out(Nothing)`.
+
+### The test suite does not finish clean
+
+**Status:** OPEN — deferred by the owner 2026-09-15 ("focus on finishing the
+scaffold first").
+
+`uv run pytest tests/` is not a gate for the reorganization. State at the end of
+branch 3: 235 enrichment tests pass, and the wider tree collects without errors
+but has not been fully re-executed since the module split (instagram / serving /
+operational were relinted, not rerun). The enrichment directory is the replanned
+one and is green.
+
+**Measured 2026-09-16 on the reorg stack** (`refactor/facets-native` @ `b1922a6`), from
+a CI run against the branch tip — the first execution of the full suite against the
+post-reorg tree. Ruff passes; the suite fails in five named classes (~40 tests):
+
+1. **`ModuleNotFoundError: orchestration.defs.ig_core.slv.creators`** — 10 failures, and
+   NOT a test artifact: `ig_core/slv/profiles.py` imported `enabled_profiles` from a
+   module the move never created (the roster lives in `opsdb.roster`). `ig_profiles_slv`
+   would have raised the next time it ran. FIXED (2026-09-16); an AST sweep of all 175
+   modules confirmed it was the tree's only unresolved relative import.
+2. **Tests monkeypatching relocated symbols** (`posts.bronze_path`,
+   `posts.ig_post_labels`) — 8 failures. The move re-homed those names; the tests still
+   patch them on `posts`.
+3. **`test_submit_sensor.py` hardcodes `data/smoke/state.duckdb`** — a gitignored local
+   artifact, so 5 failures that can never pass in CI. Every other data-dependent test
+   uses a `skipif` guard (`test_smoke_slice.py`); this one is the outlier.
+4. **Serving baseline resolves every asset from `serving.views`** — 6 errors. The reorg
+   split serving into five modules (`dims`/`metrics`/`marts`/`views`/`checks`), so
+   `getattr(serving, "dim_date")` no longer resolves.
+5. **Bronze→silver integration + silver unit tests produce zero rows** — 9 failures
+   (`assert 0 == 1`). Cause not established.
+
+**Intermediate tips are red in a different way:** slice 1 at `51aee30` has 143 lint
+errors (73 `F821 undefined-name`) and slice 2 at `3b4b410` has 130 (72 `F821`) — the
+suite re-target is a slice-3 commit, so slices 1 and 2 are not independently runnable.
+Merging the stack in order would put two red states on `main`.
+
+---
 
 ### Retired tables kept coming back (retirement was not durable)
 
@@ -297,7 +612,7 @@ issue, not code yet.
 
 #### What's needed
 - **Follower-count time series** (`profile_observations` table + scheduled
-  profile re-scrape) — the #1 gap; unblocks Q5 and most of Q11.
+  profile re-scrape) — the top-priority gap; unblocks Q5 and most of Q11.
 - **Wayback CDX smoke test** — confirm/deny Wayback as the free past-backfill
   source for follower history (sparse coverage + UI drift are the risks).
 - **Domain / sub-domain taxonomy** — consistent creator-level labels derived from per-post
@@ -1233,9 +1548,10 @@ matter, can delete safely" — applied by analogy):** retire it fully. Remove th
 **Acceptance falsifier:** after the change, nothing in `src/` executes DDL or
 DML for `media_metadata`, and a fresh ops.sqlite never grows the table.
 
-**Same defect class as #33** (`gold_analyses`/`gold_growth_facets` recreated by
+**Same defect class as the "Retired tables kept coming back (retirement was not durable)" entry (2026-09-15)** (`gold_analyses`/`gold_growth_facets` recreated by
 `ensure_gold_analyses` and `_GOLD_FACETS_DDL`): W9 dropped tables whose producers
-survived. See #34 — the "starve, don't drop" control (C4) was not satisfied
+survived. The "starve, don't drop" control (**C4**, `remediation-plan.md:513`) was
+not satisfied
 before the drop.
 
 ### 33. Full `pytest tests/` run does not finish clean — cause UNVERIFIED
@@ -1282,7 +1598,7 @@ mistaken for a green gate.
 ### 34. W9 must reconcile the 4 `facets_batch_jobs` rows BEFORE the drop
 
 **Found 2026-09-15** reviewing `scripts/retire_queue_tables.py` against the plan
-(`remediation-plan.md:473-478`).
+(`remediation-plan.md:485`).
 
 **The gap.** The plan requires the 4 `facets_batch_jobs` rows be reconciled into
 the service's job store *before* the drop. The script archives the table to Parquet
@@ -1351,3 +1667,109 @@ Resolved by `tasks/plans/state-readiness-impl.md`. Schema contract catalog
 (`tests/operational/expected_schema.py`) with 6 tables + 1 view, 8 state
 readiness tests, absent-DB handling. Drift detection proven against missing
 column, type mismatch, and missing table scenarios.
+
+---
+
+## E-DISCOVERY follow-ons (2026-09-17)
+
+Filed from the E-DISCOVERY epic work (`tasks/epics/creator-discovery/`). All
+three are carried by the owner-approved next branch
+(`feat/us-disc-7-ingestion-upgrade`) — none is deferred: **#41** (SDK migration)
+ships as US-DISC-8, **#43** (the date filter) as US-DISC-7. **#42** is resolved
+as NOT a truncation bug (the item endpoint is uncapped; the 1,000 cap is on the
+datasets *listing* endpoint) — its residual is a memory concern to fold into #41.
+
+### 41. Replace the hand-rolled Apify client with the official `apify-client` SDK — SCHEDULED (US-DISC-8, 2026-09-17)
+
+**Status:** Scheduled on the `feat/us-disc-7-ingestion-upgrade` branch as **US-DISC-8** (`tasks/epics/creator-discovery/user-stories/US-DISC-8-apify-sdk-migration.md`); US-DISC-6 is retained only as the original statement of intent.
+
+`defs/integration/apify_client.py` is a hand-rolled client (~150 lines: auth,
+tenacity retry, three functions) while the official `apify-client` (v3.2.0) is
+**not a dependency**. Verified by installing and inspecting the SDK:
+
+| Capability | Hand-rolled | Official SDK |
+|---|---|---|
+| Trigger / poll | ✅ | ✅ `actor.call()` |
+| Retries | ✅ tenacity | ✅ built in |
+| `maxTotalChargeUsd` | ✅ (as a **query** param) | ✅ `call(max_total_charge_usd=Decimal)` |
+| Dataset fetch | ❌ single blocking GET, **fully buffered in memory**, no pagination | ✅ `dataset.iterate_items()` / `stream_items()` |
+| **Actor input schema** | ❌ **none** | ✅ `actor.get()` |
+| **Input validation before spending** | ❌ | ✅ `actor.validate_input()` |
+| Maintained by | us | Apify |
+
+**This caused a real defect.** The absent schema access is why
+`onlyPostsNewerThan` (the actor's date filter, see #43) went unnoticed: our
+wrapper could not reveal it, and it was found only by querying the API
+directly. A client exposing the input schema makes the next such gap
+discoverable.
+
+**Name collision (fix regardless):** the module occupies the exact import name
+of the PyPI package (`apify_client`), so adding the official client creates an
+import shadow or a confusing two-name space. Rename to something like
+`apify_transport.py` / `apify_runs.py` even if the swap is deferred.
+
+**Migration scope is NOT a thin import change — FOUR contracts must move:**
+
+1. **Call shape.** `scrape.py:28` imports three *functions*
+   (`trigger_run`, `poll_run`, `stream_dataset`), while the SDK is OO
+   (`ApifyClient(token).actor(id).call()`, `.dataset(id).iterate_items()`).
+   It is a rewrite of call shapes, not an import swap.
+2. **Return contract.** `RunInfo` and `stream_dataset(...) -> int` (item count)
+   must be preserved or every caller updated.
+3. **Patch target.** `tests/unit/instagram/test_core_refresh.py:42` patches
+   `orchestration.defs.integration.apify_client._post` **by module path**. If the
+   module is renamed or removed, that patch must move with it — a patch on a
+   recreated shim would silently stop intercepting.
+4. **Idempotency + streaming must survive.** `bronze_path(dataset_id)` plus the
+   exists-check give write-once idempotency keyed on dataset_id; `iterate_items()`
+   yields in memory, so the swap must preserve the write-to-Parquet behaviour,
+   not just the HTTP calls.
+
+**Do not lose:** `stream_dataset` deliberately uses `format=json` (a JSON
+**array**) to *"avoid Apify's NDJSON newline bug"*. That workaround encodes
+hard-won knowledge; re-verify it against the current SDK or retain it
+explicitly, with evidence either way.
+
+### 42. `stream_dataset` buffers the whole dataset in memory — NOT a truncation bug
+
+**Status:** RESOLVED as not-a-truncation (verified 2026-09-17). Residual: a memory
+concern at large item counts.
+
+**Originally filed as** "latent silent truncation" on the theory that
+`/datasets/{id}/items` caps its response at 1,000 elements. **That theory is
+wrong, and the cap belongs to a different endpoint:**
+
+- **`GET /v2/datasets/:id/items`** — what `stream_dataset` calls. Docs:
+  *"No limit exists to how many items can be returned in one response"*;
+  `limit` — *"By default there is no limit."*
+- **`GET /v2/datasets`** — the dataset *listing*. *"will not return more than
+  1000 array elements"*; `limit` default **and maximum** `1000`.
+
+The 1,000 cap is on listing datasets, not retrieving items. **Empirically
+confirmed:** the largest live API dataset (`OENbim5qyFy5UFalA`, 912 stored rows)
+returned **912** items from `/items?format=json` with no limit param — matching
+the stored count exactly. (Datasets above 1,000 could not be tested — three
+others returned HTTP errors, likely server-side retention expiry — but the
+item-level docs are explicit, so no cap is expected.)
+
+**So: no data loss.** `stream_dataset` is not truncating.
+
+**The real residual (low severity, not a defect):** despite its name,
+`stream_dataset` does **not** stream. It does a single blocking GET, then
+`json.loads(resp.text)` on the whole response, then writes lines. So peak memory
+is proportional to dataset size — fine at ~1,000 items, but a 10,000-item
+scrape would buffer the entire payload. `iterate_items()` in the official SDK
+addresses this; fold the fix into #41 if the SDK swap happens.
+
+**One caveat to keep if `clean=true` is ever added:** the docs note `clean`
+skips empty items and hidden fields, so the response "might contain less items
+than the `limit` value". We currently pass only `format=json`, so this does not
+apply today.
+
+### 43. Incremental refresh via `onlyPostsNewerThan` (US-DISC-5 → US-DISC-7)
+
+Not yet an issue — recorded here so it is not lost. The actor exposes a date
+filter the client does not send; using it makes the weekly refresh genuinely
+incremental (1 result for a once-weekly creator vs 7). Carries an explicit
+precondition: a creator posting less often than the window is never re-observed
+and their metrics freeze silently — mitigate by overlapping the window.

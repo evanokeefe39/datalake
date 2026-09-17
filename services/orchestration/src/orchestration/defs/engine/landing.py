@@ -54,12 +54,24 @@ WORKLOADS: frozenset[str] = frozenset(
     }
 )
 
-KNOWN_PROVIDERS: frozenset[str] = frozenset({"gemini", "qwen", "none"})
+KNOWN_PROVIDERS: frozenset[str] = frozenset({"service_backed", "qwen", "none"})
 """Providers that may land into the LIVE default lake root. Any other value
 (`fake`, a typo, an experimental adapter) is refused with root=None — test
 fixtures leaking provider='fake' rows into the real bronze lake is exactly
-the defect this guard makes structurally impossible. A new real provider is
-ADDED here explicitly, alongside its producer."""
+the defect this guard makes structurally impossible.
+
+A provider value is the ADAPTER's registered name (`ProviderAdapter.name`),
+which since the Gemini retirement names the SEAM, not the vendor: the qwen
+service reaches the lake as ``service_backed``, not ``qwen``. ``qwen`` is kept
+only for rows already landed under that name.
+
+A new real provider is added here explicitly, alongside its producer. This
+list drifting from the adapter registry is not hypothetical: `service_backed`
+was absent for the whole life of the post-retirement adapter, so every harvest
+was refused at landing while submit, poll and the entire test suite stayed
+green. `test_landing.py`'s
+``test_every_registered_adapter_may_land_in_the_live_root`` now pins the two
+together so the next rename fails in CI instead of in production."""
 
 # ── Natural key ────────────────────────────────────────────────────────────
 

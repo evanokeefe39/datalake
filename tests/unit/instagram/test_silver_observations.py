@@ -18,13 +18,13 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
+from orchestration.defs.ig_core.slv.posts import silver_ig_posts
 
-from orchestration.defs.ig_core.slv.posts import ig_posts_slv
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 
@@ -35,9 +35,9 @@ def _write_meta(path, downloaded_at: str) -> None:
 
 
 def _run(tmp_path, ops, duckdb):
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        return ig_posts_slv(context)
+        return silver_ig_posts(context)
 
 
 def _obs(duckdb):
@@ -78,10 +78,10 @@ def test_observation_appended_per_post_with_meta_provenance(tmp_path, ops):
     obs = _obs(duckdb)
     assert len(obs) == 2
     by_id = {r[0]: r for r in obs}
-    assert by_id["1"][1] == datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
+    assert by_id["1"][1] == datetime(2026, 1, 15, 10, 0, tzinfo=UTC)
     assert by_id["1"][2] == 10  # likes, raw
     assert by_id["1"][6] == "ds_001"
-    assert by_id["2"][1] == datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
+    assert by_id["2"][1] == datetime(2026, 1, 15, 10, 0, tzinfo=UTC)
 
 
 def test_observed_at_falls_back_to_file_mtime(tmp_path, ops):
@@ -95,7 +95,7 @@ def test_observed_at_falls_back_to_file_mtime(tmp_path, ops):
     _run(tmp_path, ops, duckdb)
 
     (obs,) = _obs(duckdb)
-    assert obs[1] == datetime.fromtimestamp(stamp, tz=timezone.utc)
+    assert obs[1] == datetime.fromtimestamp(stamp, tz=UTC)
 
 
 def test_sentinels_kept_raw(tmp_path, ops):

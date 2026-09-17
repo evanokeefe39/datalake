@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -74,7 +74,7 @@ def collect_observations(bronze_dir: Path = BRONZE_DIR) -> list[tuple]:
             continue
 
         observed_at = _read_downloaded_at(meta_path) or datetime.fromtimestamp(
-            fp.stat().st_mtime, tz=timezone.utc
+            fp.stat().st_mtime, tz=UTC
         )
         obs = _profile_observations(df, entity_type, fp.stem, observed_at)
         if obs is None:

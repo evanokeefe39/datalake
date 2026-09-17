@@ -1,0 +1,24 @@
+[project]
+name = "dashboard"
+version = "0.1.0"
+description = "Read-only creator/posts analytics API plus the Vite frontend that consumes it."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "duckdb",
+    "pydantic",
+    "opsdb",
+    "orchestration",
+]
+
+[tool.uv.sources]
+opsdb = { workspace = true }
+orchestration = { workspace = true }
+
+[tool.uv]
+# `server.py` is a script, not an importable distribution: the dashboard is
+# served by running it, and the tests load it by path. Nothing installs it, so
+# there is no package to build.
+package = false

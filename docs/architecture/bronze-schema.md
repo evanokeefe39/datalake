@@ -2,12 +2,13 @@
 
 Bronze is a **producer-agnostic** Parquet lake in `data/lake/bronze/`. Any
 producer conforming to the contract below feeds the same silver pipeline;
-silver is source-agnostic. Two producers currently write here:
+silver is source-agnostic. Three producers currently write here:
 
 | Producer | Source | File naming | `source_dataset` |
 |---|---|---|---|
-| `ig_posts_raw` | Apify [Instagram Scraper](https://apify.com/apify/instagram-scraper) actor | `<dataset_id>.parquet` | Apify dataset id |
-| `ig_posts_local_raw` | Local disk (scrape-ig-saved-list) | `local_<dataset_id>.parquet` | `local_<dataset_id>` |
+| `bronze_ig_posts` | Apify [Instagram Scraper](https://apify.com/apify/instagram-scraper) actor | `<dataset_id>.parquet` | Apify dataset id |
+| `bronze_ig_posts_local` | Local disk (scrape-ig-saved-list) | `local_<dataset_id>.parquet` | `local_<dataset_id>` |
+| `bronze_enrichment_raw` | External model responses (the enrichment harvest) | `bronze_enrichment_raw.parquet` | n/a — keyed by `run_id` |
 
 ## Contract (producer-agnostic)
 
@@ -18,6 +19,49 @@ Every bronze dataset is one Parquet file plus a JSON sidecar
 config, downloaded_at). Producers write Parquet directly with Polars —
 bronze never touches DuckDB and never uses the I/O manager.
 
+### Scrape run memory
+
+Apify actor runs bill **GB-seconds**, so memory multiplies wall-clock spend.
+The `core_refresh` schedule requests `SCRAPE_RUN_MEMORY_MB`
+(`defs/platform/core_refresh.py`), currently **256 MB** — the smallest
+allocation Apify offers, and deliberately below the actor's own
+`defaultRunOptions.memory_mbytes` (1024).
+
+**Scope:** only `core_refresh` sets this. The launchpad path (`bronze_ig_posts`),
+`scrape_details_to_bronze` and the local ingest leave `memory_mbytes=None`, which
+means the actor's own default (1024) applies to those runs.
+
+**Memory is a RUN option, not an actor input.** The actor's input properties are
+exactly `addParentData`, `directUrls`, `onlyPostsNewerThan`, `resultsLimit`,
+`resultsType`, `search`, `searchLimit`, `searchType` — there is no
+`memoryMbytes` input. Passing it inside `run_input` is silently ignored. The SDK
+takes it as `start(memory_mbytes=...)`.
+
+**Confirming what a run actually used.** Apify does not write run options to the
+run log, so the granted memory is not visible there. Read it off the run record:
+
+```python
+ApifyClient(token).run(<run_id>).get().options.memory_mbytes   # what was GRANTED
+```
+
+The bronze `.parquet.meta` sidecar's `input.memory_mbytes` records what we
+**requested**; the run record is the only source for what was **granted**.
+
+**Monitoring for OOM.** 256 MB is verified on a SINGLE live run (2026-09-17:
+SUCCEEDED, `options.memory_mbytes` granted 256, 1 item, `usage_total_usd`
+$0.0023) — one run proves it does not crash, not that it is the right size, and
+it is untested at roster scale or on 10-URL chunks. It is also **not
+established as a cost win**: billing is GB-seconds (`mem x duration`), so a
+slower run at lower memory can cost more than a faster one at higher memory. The
+paired comparison has not been run. Two signals mean "raise it":
+
+1. A run with status `FAILED` whose `status_message` mentions memory.
+2. A bronze file whose `item_count` is below the requested `results_limit`
+   without the date filter explaining it (a truncated scrape).
+
+Raise `SCRAPE_RUN_MEMORY_MB` rather than debugging the actor — the allocation,
+not the source, is the variable under our control.
+
 ### Meta sidecar requirements
 
 The `.meta` sidecar MUST carry `input.results_type` — one of `"posts"`,
@@ -26,9 +70,14 @@ falling back to schema-sniffing only for legacy files without it. A file
 with a wrong or missing `results_type` routes to the wrong (or no) silver
 table.
 
+The sidecar SHOULD also carry `input.only_posts_newer_than` and
+`input.memory_mbytes` so a landed file states the date boundary and allocation
+the run actually used — the two facts needed to explain why a run returned what
+it returned. Both are `null` for producers that do not set them.
+
 ### Watermark + write-once discovery
 
-`ig_posts_slv` globs **all** `*.parquet` in `data/lake/bronze/` on each run
+`silver_ig_posts` globs **all** `*.parquet` in `data/lake/bronze/` on each run
 and processes files with `mtime > watermarks['silver_ig']`. Producers
 therefore MUST be **write-once**: never rewrite an existing Parquet file —
 an mtime bump re-triggers full silver processing of that file. New data =
@@ -124,9 +173,9 @@ Silver does not project these.
 
 Silver does not project this.
 
-## Producer 1: ig_posts_raw (Apify)
+## Producer 1: bronze_ig_posts (Apify)
 
-The `ig_posts_raw` asset scrapes Instagram via Apify's [Instagram Scraper](https://apify.com/apify/instagram-scraper) actor. The raw output is NDJSON; the asset writes it as typed Parquet to `data/lake/bronze/`.
+The `bronze_ig_posts` asset scrapes Instagram via Apify's [Instagram Scraper](https://apify.com/apify/instagram-scraper) actor. The raw output is NDJSON; the asset writes it as typed Parquet to `data/lake/bronze/`.
 
 ### Post scrapes vs profile scrapes
 
@@ -137,7 +186,7 @@ The same Apify actor is used for both, but the input URL determines the output s
 | Post scrape | `https://www.instagram.com/p/CODE/` | Present | Present |
 | Profile scrape | `https://www.instagram.com/username/` | **null** | Present (but in `username` column) |
 
-In profile-scraped rows, the author's handle appears in the `username` column (not `ownerUsername`). Silver handles this with a COALESCE fallback in ``ig_posts_slv``:
+In profile-scraped rows, the author's handle appears in the `username` column (not `ownerUsername`). Silver handles this with a COALESCE fallback in ``silver_ig_posts``:
 
 ```python
 owner_username = COALESCE("ownerUsername", "username")
@@ -166,7 +215,7 @@ Each file has a ``.parquet.meta`` JSON sidecar with full lineage:
 }
 ```
 
-The `ig_posts_slv` asset reads all `.parquet` files in `data/lake/bronze/` on each run, using a watermark to skip already-processed runs.
+The `silver_ig_posts` asset reads all `.parquet` files in `data/lake/bronze/` on each run, using a watermark to skip already-processed runs.
 
 ### Column names dropped by silver
 
@@ -185,7 +234,7 @@ Polars List and Struct types cannot be inserted directly into DuckDB VARCHAR col
 2. Packs remaining metadata fields (`display_url`, `video_url`, `image_urls`, `product_type`) into a `meta_data` JSON string
 3. Discards deeply nested structs (`latestComments`, `childPosts`, `taggedUsers`, `coauthorProducers`, `musicInfo`)
 
-## Producer 2: ig_posts_local_raw (local disk)
+## Producer 2: bronze_ig_posts_local (local disk)
 
 Second bronze producer (ISSUES.md #16; origin #14): ingests Instagram posts
 already collected ad hoc on local disk, so the ~9,465 saved-list posts flow
@@ -213,7 +262,7 @@ script. Full behavioral contracts in `tasks/plans/ig-local-ingestion.md`.
   hoc (already ingested, not continuously scraped). `creators.py` accepts
   -1; `enabled_profiles` treats it as don't-schedule.
 
-## Producer 3: bronze_enrichment_raw (external model responses) — TARGET, not built
+## Producer 3: bronze_enrichment_raw (external model responses)
 
 The third bronze producer: the **landing zone for ALL external model
 responses**, whatever the workload. Recorded in
@@ -221,23 +270,23 @@ responses**, whatever the workload. Recorded in
 ingested source ([ADR-0001](adr/0001-enrichment-as-ingested-source.md)), so its
 verbatim landing is bronze, exactly like a scrape.
 
-**Status: NOT IMPLEMENTED.** Today no enrichment response is landed — both the
-Gemini path (`harvest.apply_retrieved`, `analysis.py`) and the qwen path
-(`facets_batch.harvest_facets_batches`) parse the response in flight and discard
-it. This section documents the contract the producer must satisfy; it is not a
-description of current behaviour.
+**Status: IMPLEMENTED (2026-09-15).** Live and landing — verified 2026-09-17 at
+9,580 rows in `data/lake/bronze/bronze_enrichment_raw.parquet`. The harvest step
+of the enrichment seam lands the verbatim response body after
+poll-to-terminal and retrieve: one general pattern for every workload, not one
+per API.
 
 - **Storage:** Parquet, immutable, append-only. No transformation is applied —
   this is as-observed capture.
-- **Source:** the harvest step of the enrichment seam, which lands the verbatim
-  response body after poll-to-terminal and retrieve. One general pattern for
-  every workload, not one per API.
+- **Source:** the harvest step of the enrichment seam (see
+  [enrichment.md](pipelines/enrichment.md), the canonical v3 spec).
 - **Idempotency key:** `(post_id, platform, workload, prompt_hash, run_id)`.
 - **`workload`:** `qwen-vision` | `whisper` | `text-LLM`. Provider is metadata,
   never part of a table name.
-- **Columns:** `post_id`, `platform`, `workload`, `provider`, `model`,
-  `prompt_hash`, `schema_version`, `run_id`, `analysed_at`, `input_modality`,
-  `sampling_params_json`, `response_text` (verbatim), `request_echo_json`.
+- **Columns (live, 16):** `post_id`, `platform`, `workload`, `prompt_hash`,
+  `run_id`, `provider`, `model`, `schema_version`, `landing_at`, `analysed_at`,
+  `ok`, `error_message`, `response_text` (verbatim), `request_echo_json`,
+  `input_modality`, `sampling_params_json`.
 - **Consumer:** the silver conform layer derives the six `silver_*` tables from
   this table **deterministically, with zero API calls**.
 

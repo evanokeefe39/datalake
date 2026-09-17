@@ -19,7 +19,7 @@ Verified negative: the server code contains **no reference** to the enrichment p
 The server has two media endpoints, and they are distinct from the scrape-time media-byte cache (see [ADR-0003](../adr/0003-no-api-in-transform-layer.md)):
 
 - `/api/media/thumbnail/{shortcode}` — fetches post thumbnail bytes from Instagram's public media endpoint **on first request**, then serves from disk. This is a request-time byte cache for a read-optimized surface (CDN URLs expire in ~4–5 days); it is *not* the scrape-time `media_cache` that backs enrichment, which downloads bytes at ingestion into `data/media/posts/` (AGENTS.md explicitly separates the two).
-- `/api/media/avatar/{username}` — serves avatars populated at pipeline time by `ig_profiles_slv`, falling back to a DiceBear identicon redirect.
+- `/api/media/avatar/{username}` — serves avatars populated at pipeline time by `silver_ig_profiles`, falling back to a DiceBear identicon redirect.
 
 Both are the one place the server talks to the outside world (Instagram CDN) at request time; it performs no enrichment or external API calls otherwise.
 

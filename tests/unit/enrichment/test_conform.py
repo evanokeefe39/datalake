@@ -16,10 +16,15 @@ import json
 from pathlib import Path
 
 import duckdb
+import orchestration.defs.engine.silver_rt as conform_mod
 import polars as pl
 import pytest
-
-import orchestration.defs.engine.silver_rt as conform
+from orchestration.defs.engine.landing import (
+    WORKLOAD_CONTENT_CLASSIFICATION,
+    WORKLOAD_GROWTH_FACETS_TEXT,
+    WORKLOAD_GROWTH_FACETS_VISUAL,
+    land_response,
+)
 from orchestration.defs.engine.silver_rt import (
     DERIVATION_VERSION,
     SILVER_AUDIO_TRANSCRIPTS,
@@ -32,14 +37,19 @@ from orchestration.defs.engine.silver_rt import (
     TABLE_SCHEMAS,
     conform,
 )
+from orchestration.defs.ig_enriched.slv.quarantine import (  # noqa: E402
+    REASON_COMPLETENESS,
+    REASON_CROSS_FIELD,
+    REASON_ENUM_VIOLATION,
+    REASON_LENGTH_VIOLATION,
+    REASON_MISSING_REQUIRED,
+    REASON_PARSE_ERROR,
+    REASON_PROVIDER_ERROR,
+    REASON_TYPE_VIOLATION,
+    REASON_UNKNOWN_FIELD,
+)
 from orchestration.defs.ig_enriched.slv.schemas import (
     GROWTH_FACETS_SCHEMA_VERSION,
-)
-from orchestration.defs.engine.landing import (
-    WORKLOAD_CONTENT_CLASSIFICATION,
-    WORKLOAD_GROWTH_FACETS_TEXT,
-    WORKLOAD_GROWTH_FACETS_VISUAL,
-    land_response,
 )
 
 NOW = __import__("datetime").datetime(2026, 9, 10, 12, 0, 0)
@@ -321,7 +331,7 @@ def test_invalid_json_quarantined_not_silently_null(bronze_root, silver_root):
     assert result.counts["conformed"] == 0
 
     q = _row(result.quarantine)
-    assert q["reason_code"] == conform_mod.REASON_PARSE_ERROR
+    assert q["reason_code"] == REASON_PARSE_ERROR
     assert "invalid JSON" in q["reason_detail"]
     # Quarantine retains provenance for triage.
     assert q["derivation_version"] == DERIVATION_VERSION
@@ -342,37 +352,37 @@ def test_each_violation_class_gets_a_distinguishable_reason(bronze_root, silver_
             "bad-enum",
             WORKLOAD_GROWTH_FACETS_TEXT,
             text_payload(hook_type="yelling"),
-            conform_mod.REASON_ENUM_VIOLATION,
+            REASON_ENUM_VIOLATION,
         ),
         (
             "missing-required",
             WORKLOAD_GROWTH_FACETS_TEXT,
             {k: v for k, v in text_payload().items() if k != "evidence"},
-            conform_mod.REASON_MISSING_REQUIRED,
+            REASON_MISSING_REQUIRED,
         ),
         (
             "length",
             WORKLOAD_GROWTH_FACETS_VISUAL,
             {**visual_payload(), "content_summary": "x" * 4001},
-            conform_mod.REASON_LENGTH_VIOLATION,
+            REASON_LENGTH_VIOLATION,
         ),
         (
             "bad-type",
             WORKLOAD_GROWTH_FACETS_VISUAL,
             visual_payload(face_present="yes"),
-            conform_mod.REASON_TYPE_VIOLATION,
+            REASON_TYPE_VIOLATION,
         ),
         (
             "unknown-field",
             WORKLOAD_GROWTH_FACETS_TEXT,
             text_payload(surprise_field=1),
-            conform_mod.REASON_UNKNOWN_FIELD,
+            REASON_UNKNOWN_FIELD,
         ),
         (
             "incomplete",
             WORKLOAD_GROWTH_FACETS_VISUAL,
             {"visual_facets": visual_payload()["visual_facets"]},  # no content_summary
-            conform_mod.REASON_COMPLETENESS,
+            REASON_COMPLETENESS,
         ),
     ]
     for post_id, workload, payload, expected in cases:
@@ -425,7 +435,7 @@ def test_provider_failure_lands_in_quarantine_as_provider_error(
     )
     result = _run(bronze_root, silver_root)
     q = _row(result.quarantine)
-    assert q["reason_code"] == conform_mod.REASON_PROVIDER_ERROR
+    assert q["reason_code"] == REASON_PROVIDER_ERROR
     assert "no output body" in q["reason_detail"]
 
 
@@ -437,7 +447,7 @@ def test_carousel_count_mismatch_fires(bronze_root, silver_root):
     result = _run(bronze_root, silver_root, n_media_by_post={"car1": 3})
     assert result.counts["quarantined"] == 1
     q = _row(result.quarantine)
-    assert q["reason_code"] == conform_mod.REASON_CROSS_FIELD
+    assert q["reason_code"] == REASON_CROSS_FIELD
     assert "carousel of 3" in q["reason_detail"]
     assert conform_mod.read_table(SILVER_VISUAL_SUMMARIES, silver_root).height == 0
 
@@ -449,7 +459,7 @@ def test_carousel_index_misalignment_fires_without_external_count(bronze_root, s
     result = _run(bronze_root, silver_root)  # no n_media map — index rule fires
     assert result.counts["quarantined"] == 1
     q = _row(result.quarantine)
-    assert q["reason_code"] == conform_mod.REASON_CROSS_FIELD
+    assert q["reason_code"] == REASON_CROSS_FIELD
     assert "indices" in q["reason_detail"]
 
 

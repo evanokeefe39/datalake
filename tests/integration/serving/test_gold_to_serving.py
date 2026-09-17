@@ -12,14 +12,24 @@ Per test-hardening plan Phase 2:
 
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
-
 from orchestration.defs.platform.resources import SQLiteResource
 from orchestration.defs.serving.dims import dim_date, profile_dimension
 from orchestration.defs.serving.views import v_post_detail
+
 from tests.fixtures.silver_factories import seed_silver_posts
 
 
 def _run_profile_dimension(duckdb, ops):
+    """`dim_profile` reads the PUBLISHED roster, so the table must exist.
+
+    The creator link comes from `silver_ig_roster` (the dashboard owns the
+    roster; the pipeline reads its published copy), which is why this is not an
+    ops.sqlite fixture any more.
+    """
+    from orchestration.defs.platform.schemas import duckdb_ddl
+
+    with duckdb.get_connection() as conn:
+        conn.execute(duckdb_ddl("silver_ig_roster"))
     profile_dimension(build_asset_context(resources={"duckdb": duckdb, "ops": ops}))
 
 

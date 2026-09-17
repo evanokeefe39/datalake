@@ -216,7 +216,7 @@ def resolve_post_media(post: dict, ops: SQLiteResource,
     Two sibling experiments still import the name (``facet_menu_experiment``,
     ``facet_summary_spike``) so the module stays importable; calling it fails
     loudly and says why. To run a media experiment again, port it to the live
-    byte cache (``media_cache.cached_local_path``) — do not restore the Gemini
+    byte cache (``media_cache.stored_local_path``) — do not restore the Gemini
     upload path.
     """
     raise SystemExit(
@@ -224,7 +224,7 @@ def resolve_post_media(post: dict, ops: SQLiteResource,
         "media_cache.lookup_or_upload_all (Gemini File-API), which was deleted "
         "with the media_metadata table. There is no media resolver here any "
         "more — a silent empty result would make this experiment look like it "
-        "ran. Port it to media_cache.cached_local_path instead. "
+        "ran. Port it to media_cache.stored_local_path instead. "
         "See ISSUES.md #32/#34."
     )
 

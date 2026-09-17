@@ -1,6 +1,6 @@
 """Blocking data-quality gates for the enrichment conform seam (ADR-0012, W8).
 
-Three gates, all attached to ``silver_enrichment_conform`` as BLOCKING asset
+Three gates, all attached to ``silver_enrichment`` as BLOCKING asset
 checks (``blocking=True``: a failed check blocks downstream materialization
 instead of decorating a log line):
 
@@ -63,11 +63,27 @@ from dagster import AssetCheckResult, OpDefinition, asset_check
 
 from orchestration.defs.engine import landing
 from orchestration.defs.engine import silver_rt as conform
-from orchestration.defs.engine.silver_rt import silver_enrichment
+from orchestration.defs.engine.silver_asset import silver_enrichment
 from orchestration.defs.ig_core.slv.labels import LABEL_VERSION
 from orchestration.defs.ig_enriched.slv.prompts import CURRENT_PROMPT_HASH
 from orchestration.defs.platform import paths as lake
 from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
+
+# The producer is a `@multi_asset` with seven outputs, so it has no single `.key`.
+# Checks target a SPECIFIC output via `keys_by_output_name` — the whole-publish
+# gates (silent-loss, freshness, seam purity) anchor on the quarantine output,
+# which is written by the same `conform()` call and is the surface that proves a
+# publish ran and stayed healthy; the two classification gates target the table
+# they actually read.
+_QUARANTINE_KEY = silver_enrichment.keys_by_output_name[conform.SILVER_QUARANTINE]
+_CLASSIFICATION_KEY = silver_enrichment.keys_by_output_name[conform.SILVER_CONTENT_CLASSIFICATION]
+#: Whole-publish gates (silent-loss, freshness) assert over ALL six tables, so
+#: their blocking reach is the point: a failure must be an ancestor of every
+#: mart. The six are siblings in the graph (no output gates another), so the
+#: gate anchors on a key the marts DO depend on. Anchoring on the quarantine
+#: output instead left the gate guarding nothing — quarantine is a parent of
+#: `v_quarantine_triage` only, and no mart depends on it.
+_BLOCKING_GATE_KEY = _CLASSIFICATION_KEY
 
 # ── Workload → silver tables (the anti-join's conformed counterpart) ───────
 
@@ -179,7 +195,7 @@ def quarantine_growth(conn, quarantined: int) -> tuple[bool, dict]:
 # ── Asset checks (wired via ENRICHMENT_DQ_CHECKS → definitions.py) ─────────
 
 
-@asset_check(asset=silver_enrichment.key, blocking=True)
+@asset_check(asset=_BLOCKING_GATE_KEY, blocking=True)
 def check_no_silent_loss(duckdb: DuckDBResource) -> AssetCheckResult:
     """BLOCKING ADR-0012 anti-join: landed(bronze) \\ conformed(silver).
 
@@ -232,7 +248,7 @@ def check_no_silent_loss(duckdb: DuckDBResource) -> AssetCheckResult:
     return AssetCheckResult(passed=True, metadata=metadata)
 
 
-@asset_check(asset=silver_enrichment.key)
+@asset_check(asset=_QUARANTINE_KEY)
 def check_quarantine_growth(duckdb: DuckDBResource) -> AssetCheckResult:
     """Fire when the quarantine snapshot grows against the last baseline.
 
@@ -264,7 +280,7 @@ def check_quarantine_growth(duckdb: DuckDBResource) -> AssetCheckResult:
     return AssetCheckResult(passed=True, metadata=meta)
 
 
-@asset_check(asset=silver_enrichment.key)
+@asset_check(asset=_BLOCKING_GATE_KEY)
 def check_silver_snapshot_freshness(duckdb: DuckDBResource) -> AssetCheckResult:
     """Freshness/volume expectation: silver snapshots cover the bronze file.
 
@@ -294,7 +310,7 @@ def check_silver_snapshot_freshness(duckdb: DuckDBResource) -> AssetCheckResult:
             metadata=metadata,
             description=(
                 f"Stale/missing silver snapshots vs bronze: {stale} — "
-                "re-run silver_enrichment_conform to republish."
+                "re-run silver_enrichment to republish."
             ),
         )
     return AssetCheckResult(passed=True, metadata=metadata)
@@ -311,7 +327,7 @@ ENRICHMENT_DQ_CHECKS = [
 # ── Asset checks (merged from the retired enrichment/assets.py) ─────────────
 
 
-@asset_check(asset="silver_enrichment")
+@asset_check(asset=_CLASSIFICATION_KEY)
 def check_approved_classification_coverage(
     duckdb: DuckDBResource,
 ) -> AssetCheckResult:
@@ -352,14 +368,14 @@ def check_approved_classification_coverage(
             metadata=metadata,
             description=(
                 f"{approved_unenriched} triage-approved posts are unenriched — "
-                "run ig_posts_gen_batches to drain the admission gate."
+                "the submit stage will pick them up when the sensor ticks."
             ),
         )
 
     return AssetCheckResult(passed=True, metadata=metadata)
 
 
-@asset_check(asset="silver_enrichment")
+@asset_check(asset=_CLASSIFICATION_KEY)
 def check_prompt_currency(duckdb: DuckDBResource, ops: SQLiteResource) -> AssetCheckResult:
     """Detect rows where prompt_hash is stale (prompt or model changed).
 
@@ -392,7 +408,7 @@ def check_prompt_currency(duckdb: DuckDBResource, ops: SQLiteResource) -> AssetC
     )
 
 
-@asset_check(asset="silver_enrichment")
+@asset_check(asset=_QUARANTINE_KEY)
 def check_enrichment_seam_purity() -> AssetCheckResult:
     """ADR-0008 seam guard: silver onward stays hermetic.
 

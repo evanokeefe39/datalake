@@ -1,0 +1,109 @@
+# Local platform: orchestration (Dagster) + jobs (inference service).
+#
+# WHY BOTH MOUNT ./data AT /data
+#
+# Persisted media paths were written by whichever process fetched the bytes —
+# today Windows-absolute (`C:\...\data\media\posts\<hash>.jpg`). The
+# orchestration container translates those through the host↔container prefix
+# map (IG_HOST_PATH_PREFIX → IG_CONTAINER_PATH_PREFIX) and hands the jobs
+# container a POSIX path under /data. Both services therefore see the SAME
+# bytes at the SAME path, and no second translation is needed at the wire.
+#
+# DATALAKE_HOST_DATA_DIR is REQUIRED, not defaulted: a wrong or missing value
+# must fail at `compose up` rather than silently send paths nothing can open.
+#
+# NEVER run `docker compose down -v`: the `jobs` service keeps its job store on
+# the /jobs-data volume, and `-v` deletes it.
+
+services:
+  jobs:
+    build:
+      context: .
+      dockerfile: services/jobs/Dockerfile
+    env_file:
+      - .env # OPENROUTER_API_KEY — main.py exits 2 without it
+    environment:
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-qwen/qwen3.7-flash}
+    volumes:
+      - ./data/jobs:/jobs-data # service-private job store, survives restarts
+      - ./data/media:/data/media:ro # read-only: paths identical to what the adapter sends
+      # The dev/smoke slice keeps its OWN media root (data/smoke/media), so a
+      # smoke-slice run sends /data/smoke/media/... paths. Without this mount the
+      # service correctly reports every item's images as missing — which is the
+      # preflight working, but it blocks a smoke E2E. Read-only for the same
+      # reason as above: these bytes are the sole copy.
+      - ./data/smoke/media:/data/smoke/media:ro
+    ports:
+      - "8462:8462"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8462/health')"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  orchestration:
+    # Dev-grade on purpose: `dagster dev` runs the webserver AND the daemon, so
+    # sensors tick. A webserver/daemon split is a production concern.
+    build:
+      context: .
+      dockerfile: services/orchestration/Dockerfile
+    env_file:
+      - .env
+    environment:
+      # `environment` overrides `env_file`, which matters here: .env pins
+      # DAGSTER_HOME to a Windows path the container cannot use.
+      DAGSTER_HOME: /data/dagster_home
+      IG_DATA_DIR: /data
+      IG_DB_PATH: /data/state.duckdb
+      OPS_DB_PATH: /data/ops.sqlite
+      # 127.0.0.1 inside this container is this container, not the jobs service.
+      JOBS_SERVICE_URL: http://jobs:8462
+      # The roster is read from the dashboard API, never from its database.
+      DASHBOARD_URL: http://dashboard:3002
+      # The host↔container path map. The host prefix MUST be the absolute host
+      # path of this checkout's data/ (the same tree mounted at /data).
+      IG_HOST_PATH_PREFIX: ${DATALAKE_HOST_DATA_DIR:?set DATALAKE_HOST_DATA_DIR to the host data dir}
+      IG_CONTAINER_PATH_PREFIX: /data
+      IG_LOCAL_INGEST_DIR: /data/ingest
+    volumes:
+      - ./data:/data
+    ports:
+      # 7642 is deliberately NOT 3000/3001/8000/8080 — those are grabbed by dev
+      # tools and other stacks constantly (Dagster's own default 3000 collides
+      # with half the JS ecosystem). Override with DAGSTER_HOST_PORT.
+      - "${DAGSTER_HOST_PORT:-7642}:3000"
+    depends_on:
+      # Wait for a READY dependency, not merely a started container: a bare list
+      # waits only for start, so orchestration could come up before `jobs` was
+      # answering. (After a reboot it exited 255; the exact cause was not
+      # captured, so this is stated as the correct wiring rather than as the
+      # diagnosed fix.) `dashboard` has no healthcheck, so started is the
+      # strongest condition it can express.
+      jobs:
+        condition: service_healthy
+      dashboard:
+        condition: service_started
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: services/dashboard/Dockerfile
+    env_file:
+      - .env
+    environment:
+      IG_DATA_DIR: /data
+      IG_DB_PATH: /data/state.duckdb
+      OPS_DB_PATH: /data/ops.sqlite
+    volumes:
+      # Writable: the dashboard owns the roster tables in ops.sqlite and writes
+      # the avatar/thumbnail byte caches it serves.
+      - ./data:/data
+    ports:
+      - "3002:3002"
+    restart: unless-stopped

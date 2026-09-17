@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import duckdb
 from orchestration.defs.ig_core.slv.labels import LABEL_VERSION, run_label_pass
@@ -76,7 +76,7 @@ def main() -> None:
         print(f"  Core (tier1) handles: {len(handles)}")
         stats = run_label_pass(
             db, core_handles=handles,
-            bootstrap=True, now=datetime.now(timezone.utc),
+            bootstrap=True, now=datetime.now(UTC),
         )
         after = db.execute("SELECT COUNT(*) FROM ig_post_labels").fetchone()[0]
         day7 = db.execute(

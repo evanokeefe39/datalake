@@ -9,26 +9,21 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
-
-import httpx
+import sys
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+import httpx
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
-from pydantic import BaseModel, Field
-
-from orchestration.defs.platform.paths import (
-    AVATAR_DIR,
-    THUMBNAIL_DIR,
-    avatar_path,
-    thumbnail_path,
-)
+from fastapi.staticfiles import StaticFiles
+from opsdb.media_cache import record_media_cache_row
 from opsdb.roster import (
     add_profile,
+    all_profiles,
     batch_add_profiles,
     create_creator,
     edit_depth,
@@ -38,23 +33,37 @@ from opsdb.roster import (
     remove_profile,
     rename_creator,
 )
-from opsdb.schema import sqlite_ddl
-from orchestration.defs.ig_core.bnz.scrape import scrape_details_to_bronze
-from orchestration.defs.platform.resources import SQLiteResource
+from opsdb.schema import ConnectionFactory, connection_factory
+from opsdb.schema import connect as opsdb_connect
+from pydantic import BaseModel, Field
+
+# `server.py` is run as a script (and loaded by path in tests), so the sibling
+# `paths` module is imported by its own directory rather than as a package
+# relative — there is no package for it to be relative to.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from paths import (  # noqa: E402
+    AVATAR_DIR,
+    DB_PATH,
+    OPS_PATH,
+    THUMBNAIL_DIR,
+    avatar_path,
+    thumbnail_path,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dashboard-api")
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "state.duckdb"
-OPS_PATH = Path(__file__).resolve().parent.parent / "data" / "ops.sqlite"
-
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Create media dirs + cache table at startup, not import time."""
+    """Create the media dirs the dashboard serves at startup, not import time.
+
+    The ``media_cache`` table is NOT created here: it belongs to the pipeline's
+    opsdb contract (`opsdb.media_cache`), which creates it on first write. The
+    dashboard is a writer to that table, not its owner.
+    """
     AVATAR_DIR.mkdir(parents=True, exist_ok=True)
     THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
-    _ensure_media_cache_table()
     yield
 
 
@@ -67,6 +76,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# The built SPA, when there is one. Mounted LAST (after every /api route in this
+# module runs, since the mount is registered at the end of the file) so the
+# catch-all never shadows an API path. A dev run with no `npm run build` simply
+# serves the API alone — the Vite dev server handles the UI on its own port.
+_DIST_DIR = Path(__file__).resolve().parent / "dist"
+
 
 def _connect() -> duckdb.DuckDBPyConnection:
     if not DB_PATH.exists():
@@ -75,9 +90,8 @@ def _connect() -> duckdb.DuckDBPyConnection:
 
 
 def _ops_connect() -> sqlite3.Connection:
-    con = sqlite3.connect(str(OPS_PATH))
-    con.row_factory = sqlite3.Row
-    return con
+    """Open ops.sqlite via the shared contract (WAL, foreign keys, busy timeout)."""
+    return opsdb_connect(str(OPS_PATH))
 
 
 # ── Media Cache ─────────────────────────────────────────────────
@@ -86,18 +100,8 @@ def _ops_connect() -> sqlite3.Connection:
 # *bytes* to disk — never the URLs. Two endpoints:
 #   - thumbnails: fetched from Instagram's public /media/ endpoint on first
 #     request, then served from disk (byte-cache, tracked in ops.sqlite).
-#   - avatars: populated at pipeline time by ig_profiles_slv; served from
+#   - avatars: populated at pipeline time by silver_ig_profiles; served from
 #     disk, or a DiceBear identicon redirect when absent.
-
-
-def _ensure_media_cache_table() -> None:
-    """Idempotent schema creation for the dashboard media cache."""
-    con = _ops_connect()
-    try:
-        con.execute(sqlite_ddl("media_cache"))
-        con.commit()
-    finally:
-        con.close()
 
 
 def _cache_media_row(
@@ -106,25 +110,20 @@ def _cache_media_row(
     content_type: str,
     source_url: str,
 ) -> None:
-    """Record a cached media file in ops.sqlite."""
-    con = _ops_connect()
-    try:
-        con.execute(
-            "INSERT OR REPLACE INTO media_cache "
-            "(cache_key, local_path, content_type, size_bytes, fetched_at, source_url) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            [
-                cache_key,
-                str(local_path),
-                content_type,
-                local_path.stat().st_size,
-                datetime.now(timezone.utc).isoformat(),
-                source_url,
-            ],
-        )
-        con.commit()
-    finally:
-        con.close()
+    """Record a cached media file in ops.sqlite.
+
+    Delegates to the shared opsdb contract: the dashboard is one of several
+    writers of this table, and a third hand-rolled INSERT is how a column
+    addition becomes a silent partial write.
+    """
+    record_media_cache_row(
+        _ops_resource(),
+        cache_key,
+        str(local_path),
+        content_type,
+        local_path.stat().st_size,
+        source_url,
+    )
 
 
 _MEDIA_CLIENT: httpx.AsyncClient | None = None
@@ -163,7 +162,12 @@ async def _fetch_thumbnail_bytes(shortcode: str) -> tuple[bytes, str] | None:
         return None
     content_type = resp.headers.get("Content-Type", "")
     if resp.status_code != 200 or not content_type.startswith("image/"):
-        logger.warning("Thumbnail %s returned status %s type %s", shortcode, resp.status_code, content_type)
+        logger.warning(
+            "Thumbnail %s returned status %s type %s",
+            shortcode,
+            resp.status_code,
+            content_type,
+        )
         return None
     body = resp.content
     if not body:
@@ -184,7 +188,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
 def avatar(username: str):
     """Serve a profile picture from disk, or redirect to a DiceBear identicon.
 
-    Avatars are populated at pipeline time (ig_profiles_slv), never fetched
+    Avatars are populated at pipeline time (silver_ig_profiles), never fetched
     from Instagram here — CDN URLs expire and can't be refreshed at runtime.
     """
     local = avatar_path(username)
@@ -777,22 +781,13 @@ class DepthIn(BaseModel):
     results_limit: int = Field(1, ge=1)
 
 
-def _ops_resource() -> SQLiteResource:
-    """SQLiteResource bound to the dashboard's ops database."""
-    return SQLiteResource(database=str(OPS_PATH))
+def _ops_resource() -> ConnectionFactory:
+    """A `ConnectionFactory` bound to the dashboard's ops database.
 
-
-def _run_details_scrape(profile_url: str) -> None:
-    """Background: details scrape → bronze (never raises into the request)."""
-    token = os.environ.get("APIFY_API_TOKEN", "")
-    if not token:
-        logger.warning("Skipping details scrape for %s — no APIFY_API_TOKEN", profile_url)
-        return
-    try:
-        dataset_id = scrape_details_to_bronze(profile_url, token=token)
-        logger.info("Details scrape for %s → dataset %s", profile_url, dataset_id)
-    except Exception as exc:  # noqa: BLE001 — background task must not crash
-        logger.error("Details scrape failed for %s: %s", profile_url, exc)
+    Built by opsdb, not by a Dagster resource: the dashboard reads the roster it
+    owns and must not depend on the orchestration layer to do it.
+    """
+    return connection_factory(str(OPS_PATH))
 
 
 def _extract_handle(value: str) -> str:
@@ -803,7 +798,7 @@ def _extract_handle(value: str) -> str:
     return h
 
 
-def _profiles_by_creator(ops: SQLiteResource) -> dict[int, list[dict]]:
+def _profiles_by_creator(ops: ConnectionFactory) -> dict[int, list[dict]]:
     """Map creator_id → list of {platform, handle}."""
     conn = ops.get_connection()
     try:
@@ -818,6 +813,42 @@ def _profiles_by_creator(ops: SQLiteResource) -> dict[int, list[dict]]:
             {"platform": r["platform"], "handle": r["handle"]}
         )
     return out
+
+
+@app.get("/api/roster")
+def roster():
+    """The creator roster as a datum — the pipeline's one source for it.
+
+    The dashboard OWNS `creators`/`profiles`; the pipeline reads them from here
+    and lands the list as a bronze source, rather than opening ops.sqlite across
+    the service boundary. `fetched_at` is the snapshot's provenance: the
+    pipeline writes it through as the bronze partition identity, so an unchanged
+    roster is recognisable without diffing rows.
+    """
+    profiles = all_profiles(_ops_resource())
+    creators: dict[int, dict] = {}
+    for p in profiles:
+        cid = p["creator_id"]
+        if cid is not None and cid not in creators:
+            creators[cid] = {"id": cid, "name": p["creator_name"]}
+    return {
+        "fetched_at": datetime.now(UTC).isoformat(),
+        "creators": list(creators.values()),
+        "profiles": [
+            {
+                "platform": p["platform"],
+                "handle": p["handle"],
+                "profile_url": p["profile_url"],
+                "results_type": p["results_type"],
+                "results_limit": p["results_limit"],
+                "enabled": bool(p["enabled"]),
+                "tier": p["tier"],
+                "creator_id": p["creator_id"],
+                "updated_at": p["updated_at"],
+            }
+            for p in profiles
+        ],
+    }
 
 
 @app.get("/api/creators")
@@ -1142,9 +1173,15 @@ def delete_creator(creator_id: int):
 
 
 @app.post("/api/creators/{creator_id}/profiles", status_code=201)
-def add_creator_profile(
-    creator_id: int, payload: ProfileIn, background: BackgroundTasks
-):
+def add_creator_profile(creator_id: int, payload: ProfileIn):
+    """Register a profile. The ROSTER ROW is the scrape intent.
+
+    This endpoint no longer triggers a details scrape. The pipeline reconciles
+    the roster against what it has already scraped (`results_type='details'` and
+    `updated_at > watermark`) and scrapes what is new — so adding a profile here
+    is a registration, not a paid side effect of an HTTP request, and a failed
+    scrape is retried by the sweep rather than lost with the request.
+    """
     if get_creator(_ops_resource(), creator_id) is None:
         raise HTTPException(status_code=404, detail="Creator not found")
     profile = add_profile(
@@ -1157,8 +1194,6 @@ def add_creator_profile(
         enabled=payload.enabled,
         tier=payload.tier,
     )
-    if payload.enabled and payload.platform == "instagram":
-        background.add_task(_run_details_scrape, profile["profile_url"])
     return profile
 
 
@@ -1196,6 +1231,26 @@ def update_profile_depth(platform: str, handle: str, payload: DepthIn):
 def delete_profile(platform: str, handle: str):
     remove_profile(_ops_resource(), platform=platform, handle=handle)
     return {"platform": platform, "handle": handle, "status": "deleted"}
+
+
+if _DIST_DIR.is_dir():
+    # Static assets under /assets (Vite's output) and any other real file.
+    app.mount("/assets", StaticFiles(directory=str(_DIST_DIR / "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa_fallback(full_path: str):
+        """Serve index.html for client-side routes.
+
+        Registered after every API route, and it refuses anything under /api so
+        a typo'd endpoint stays a JSON 404 instead of silently returning HTML —
+        a fetch() consumer would parse that as an empty success.
+        """
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        candidate = _DIST_DIR / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_DIST_DIR / "index.html")
 
 
 if __name__ == "__main__":

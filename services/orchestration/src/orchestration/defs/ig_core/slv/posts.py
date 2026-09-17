@@ -7,7 +7,7 @@ assets import it from here.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
@@ -44,7 +44,7 @@ def _write_meta(
             "results_limit": results_limit,
             "results_type": results_type,
         },
-        "downloaded_at": datetime.now(timezone.utc).isoformat(),
+        "downloaded_at": datetime.now(UTC).isoformat(),
     }
     meta_path = parquet_path.with_suffix(".parquet.meta")
     meta_path.write_text(json.dumps(meta, indent=2))
@@ -101,7 +101,7 @@ def _read_downloaded_at(meta_path: Path | None) -> datetime | None:
             return None
         dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except (json.JSONDecodeError, ValueError, OSError):
         return None
@@ -175,16 +175,16 @@ def _derive_media(df: pl.DataFrame) -> pl.DataFrame:
 
 
 @asset(
-    name="ig_posts_slv",
+    name="silver_ig_posts",
     group_name="instagram",
     description="Dedup bronze posts → silver Parquet + DuckDB state.",
-    deps=["ig_posts_raw", "ig_posts_local_raw"],
+    deps=["bronze_ig_posts", "bronze_ig_posts_local"],
 )
-def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
+def silver_ig_posts(duckdb: DuckDBResource) -> pl.DataFrame:
     """Read unprocessed bronze files, dedup via DuckDB DISTINCT ON, persist.
 
     PURE TRANSFORM — no network I/O and no media caching. Producers
-    (``ig_posts_raw``, ``ig_posts_local_raw``) cache media bytes at ingestion
+    (``bronze_ig_posts``, ``bronze_ig_posts_local``) cache media bytes at ingestion
     while CDN URLs are fresh. Idempotent: re-running with no new bronze files
     is a no-op (returns the existing silver DataFrame).
     """
@@ -207,7 +207,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     if row and row[0] is not None:
         dt = row[0]
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         watermark_ts = dt.timestamp()
     else:
         watermark_ts = 0.0
@@ -330,7 +330,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
         # stamped before the union and dropped after dedup so it never
         # becomes a silver_ig_posts column.
         scraped_at = _read_downloaded_at(meta_path) or datetime.fromtimestamp(
-            mtime, tz=timezone.utc
+            mtime, tz=UTC
         )
         df = df.with_columns(pl.lit(scraped_at).alias("scraped_at"))
 
@@ -414,7 +414,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
     deduped = deduped.drop("scraped_at")
 
     # Only stamp processed_on on genuinely new posts (existing keep their value)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     deduped = deduped.with_columns(
         pl.when(pl.col("processed_on").is_null())
         .then(pl.lit(now_iso))
@@ -434,7 +434,7 @@ def ig_posts_slv(duckdb: DuckDBResource) -> pl.DataFrame:
             conn.execute(
                 "INSERT OR REPLACE INTO watermarks (name, timestamp) "
                 "VALUES ('silver_ig', ?)",
-                [datetime.fromtimestamp(max_mtime, tz=timezone.utc).replace(tzinfo=None)],
+                [datetime.fromtimestamp(max_mtime, tz=UTC).replace(tzinfo=None)],
             )
 
     return deduped
@@ -449,6 +449,7 @@ def ensure_state_tables(db: DuckDBResource) -> None:
             "silver_ig_profile_observations",
             "watermarks",
             "silver_ig_profiles",
+            "silver_ig_roster",
             "silver_ig_comments",
         ):
             conn.execute(duckdb_ddl(name))

@@ -7,7 +7,6 @@ retired queue's ``MAX_ATTEMPTS``.
 """
 
 import pytest
-
 from orchestration.defs.engine.partitions import (
     HARVESTED_ASSET_NAME,
     MAX_ROUNDS,
@@ -131,3 +130,61 @@ def test_other_workloads_and_posts_do_not_interfere():
     inst = FakeInstance()
     inst.materialize(SUBMITTED_ASSET_NAME, {"other\x00r0\x00P1", f"{WORKLOAD}\x00r0\x00OTHER"})
     assert post_partition_state(inst, WORKLOAD, "P1").suppressed is False
+
+
+# ── The submit-side retry guard ─────────────────────────────────────────────
+
+
+def _drained_to_ceiling(inst: FakeInstance, post_id: str) -> None:
+    """Give a post MAX_ROUNDS harvested rounds and nothing in flight.
+
+    This is the state a post reaches when every attempt so far has been
+    harvested and the next round would exceed the budget. ``suppressed`` is
+    False here — nothing is in flight — which is exactly why the guard must
+    key on the round alone.
+    """
+    for round_no in range(MAX_ROUNDS):
+        key = f"{WORKLOAD}\x00r{round_no}\x00{post_id}"
+        inst.materialize(SUBMITTED_ASSET_NAME, {key})
+        inst.materialize(HARVESTED_ASSET_NAME, {key})
+
+
+def test_guard_raises_when_retry_budget_is_exhausted():
+    """GIVEN a post whose harvested rounds have reached MAX_ROUNDS
+    WHEN submit's retry guard runs
+    THEN it raises — an exhausted partition is never re-submitted.
+
+    Regression: gating this on ``suppressed`` as well made the raise
+    unreachable (the caller skips in-flight posts first), so a partition
+    stuck at the ceiling was silently re-submitted forever.
+    """
+    from orchestration.defs.engine.partitions import partition_key
+    from orchestration.defs.engine.submit import _guard_round
+
+    inst = FakeInstance()
+    _drained_to_ceiling(inst, "P1")
+    state = post_partition_state(inst, WORKLOAD, "P1")
+    assert state.next_round == MAX_ROUNDS
+    assert state.suppressed is False  # nothing in flight — the trap
+
+    with pytest.raises(RuntimeError, match="retry budget is exhausted"):
+        _guard_round(
+            inst, WORKLOAD, "P1", partition_key(WORKLOAD, MAX_ROUNDS, ["P1"])
+        )
+
+
+def test_guard_allows_a_post_with_budget_left():
+    """GIVEN a post one round short of the ceiling
+    WHEN the guard runs
+    THEN it does not raise — the budget is not yet spent.
+    """
+    from orchestration.defs.engine.partitions import partition_key
+    from orchestration.defs.engine.submit import _guard_round
+
+    inst = FakeInstance()
+    for round_no in range(MAX_ROUNDS - 1):
+        key = f"{WORKLOAD}\x00r{round_no}\x00P1"
+        inst.materialize(SUBMITTED_ASSET_NAME, {key})
+        inst.materialize(HARVESTED_ASSET_NAME, {key})
+
+    _guard_round(inst, WORKLOAD, "P1", partition_key(WORKLOAD, MAX_ROUNDS - 1, ["P1"]))

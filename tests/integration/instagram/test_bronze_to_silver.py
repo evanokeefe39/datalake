@@ -1,7 +1,7 @@
 """Integration tests: bronze Parquet files → silver DuckDB state.
 
-Tests the cross-asset boundary between ``ig_posts_raw`` (bronze output) and
-``ig_posts_slv`` (silver reader). Uses real DuckDB persistence and real Parquet
+Tests the cross-asset boundary between ``bronze_ig_posts`` (bronze output) and
+``silver_ig_posts`` (silver reader). Uses real DuckDB persistence and real Parquet
 I/O — the only patch is ``BRONZE_LAKE`` pointing at ``tmp_path`` so we control
 which files the silver asset discovers.
 
@@ -17,8 +17,8 @@ from unittest.mock import patch
 import polars as pl
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
+from orchestration.defs.ig_core.slv.posts import silver_ig_posts
 
-from orchestration.defs.ig_core.slv.posts import ig_posts_slv
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Test: full schema round-trip ──────────────────────────────────────────
@@ -43,9 +43,9 @@ def test_full_schema_round_trip(tmp_path, ops):
     write_ig_bronze(tmp_path / "ds_001.parquet", [row])
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     assert len(result) == 1
     row = result.row(0, named=True)
@@ -88,9 +88,9 @@ def test_corrupt_file_skipped(tmp_path, ops, caplog):
 
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     # Only the valid post landed in silver
     assert len(result) == 1
@@ -121,9 +121,9 @@ def test_extra_bronze_columns_dropped(tmp_path, ops):
 
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     assert len(result) == 1
     # Extra columns must not appear in output
@@ -167,9 +167,9 @@ def test_silver_rows_leq_bronze_rows(tmp_path, ops):
 
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     assert len(result) <= total_bronze
     # 6 bronze rows with 2 duplicates → 4 unique post_ids expected

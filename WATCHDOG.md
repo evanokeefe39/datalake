@@ -29,7 +29,7 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
 ## Media byte cache (the expiry-race fix)
 
 - Instagram CDN URLs die in ~4-5 days. Media **bytes** are cached at scrape time
-  in `ig_posts_slv` (via `cache_media_bytes` → `media_cache` table → local file
+  in `silver_ig_posts` (via `cache_media_bytes` → `media_cache` table → local file
   under `data/media/posts/`). The worker's `lookup_or_upload_all` uploads from
   the **local cache** and falls back to the live CDN **only** on a cache miss.
 - Do not make `lookup_or_upload_all` download from the CDN as its primary path —
@@ -85,6 +85,21 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
 - `tests/unit/enrichment/test_media_cache.py` mocks `google.genai.Client`; keep
   the File API upload path exercised there so the CDN-vs-cache branch stays
   covered.
+- **Patch the module that BINDS the name, not the module it came from.** The
+  asset modules do `from platform.paths import BRONZE_LAKE, bronze_path`, so
+  those names live in *their* namespace: `patch("...platform.paths.BRONZE_LAKE")`
+  never reaches them and the asset reads the REAL lake (~9.5k rows) while the
+  test asserts against its fixture. This produced 30 failing tests whose numbers
+  were real lake data, and — worse — tests that passed while proving nothing.
+  The same applies to `patch("...platform.paths.bronze_path")`.
+  Retarget to the consumer: `...slv.posts.BRONZE_LAKE`,
+  `...slv.profiles.BRONZE_LAKE`, `...bnz.scrape.BRONZE_LAKE`, and a bare
+  `patch.object(mod, "bronze_path", …)` when only the function is imported.
+  When a test asserts a row count that looks like corpus size, this is why.
+- **A mock must satisfy the live signature.** `tests/unit/jobs` fakes the seam
+  adapters; when an adapter method changes (or a Protocol gains one — the
+  `_missing_images` / `health` class), the fake must move with it or the suite
+  validates a shape production no longer has.
 
 ## Second bronze producers (local/ad-hoc ingestion)
 
@@ -316,3 +331,35 @@ wrong side of a boundary**. Concretely, check:
   `image_summaries` indices ([1..8] vs the schema's [0..7]). Relax the validator, fix the
   prompt, or leave for ADR-0014 D4 triage — do NOT silently relax the validator; this is
   adjacent to §9's "parser all-or-nothing" open decision.
+
+## Platform runtime and the roster boundary (added 2026-09-16, ADR-0017)
+
+- **Two writers on one SQLite file is the defect, not the duplication.** The dashboard
+  owns `creators`/`profiles`/`creator_merges` and serves them at `GET /api/roster`; the
+  pipeline lands that response as `ig_roster_raw` → publishes `silver_ig_roster` → and
+  reads the roster FROM DUCKDB. A change that "just reads ops.sqlite from the pipeline"
+  reintroduces the coupling this removed, even if it goes through an `opsdb` helper.
+  `media_cache` is the one shared table, and it is pipeline-OWNED with a single shared
+  INSERT (`opsdb.media_cache.record_media_cache_row`, which ensures the table exists).
+- **The details-sweep watermark advances in the ASSET, never in the schedule.**
+  `bronze_ig_profile_details` calls `advance_watermark` after the bytes land. Advancing at
+  schedule-evaluation would mark emitted-but-unexecuted runs as covered, so one Apify
+  error would retire that profile permanently. If a change moves that call into
+  `details_sweep_run_requests`, it has reintroduced silent loss of paid intent.
+- **Media paths are stored in the WRITER's vocabulary.** `media_cache.local_path` holds
+  Windows-absolute paths (8,425 of 8,431 live items). `stored_local_path` returns the path
+  WITHOUT a filesystem check; `engine.media.local_media_path` translates it through
+  `platform.paths.runtime_path` and only then tests existence. Testing the stored path
+  first is what made the cache read as empty in a container. A container-written row
+  (`/data/media/...`) will not resolve on the host — Compose is the runtime of record.
+- **`IG_DATA_DIR` must be resolved BEFORE the `.git` marker walk.** `paths._repo_root()`
+  raises when no ancestor carries `.git`, which is every `.dockerignore`d container. The
+  env check first is what lets the package import there; removing it re-breaks every
+  container while the host suite stays green.
+- **Never `docker compose down -v`.** `jobs` keeps its job store on the `/jobs-data`
+  volume. Also: one `jobs` replica only — its store uses an in-process `RLock`, so a
+  second replica is a store change, not a Compose change.
+- **`/health` non-200 means UNUSABLE.** Submit, harvest, the sensor and
+  `require_health()` all gate on `status_code == 200`; a degraded service must return 503
+  rather than 200 with a sad payload, or the platform reports a dead worker as ready and
+  submissions queue forever.

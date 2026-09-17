@@ -1,5 +1,21 @@
 # Design — Medallion Lakehouse with Async Enrichment
 
+> **SUPERSEDED — retained for history, not the as-built design.** This document
+> describes the **pre-reorg** world: `defs/{common,enrichment,instagram,serving}`,
+> the `gold_analyses` / `gold_growth_facets` gold mirrors, and the
+> `batch_jobs`/`batch_items`/`dead_letter` queue in `ops.sqlite`. All three were
+> retired (ADR-0011 layered model, ADR-0012 Dagster-native orchestration, ADR-0015
+> repository layout) and **the layout, lineage and table names below no longer
+> exist.**
+>
+> Read instead: [`README.md`](README.md) (index + current-vs-target),
+> [`pipelines/enrichment.md`](pipelines/enrichment.md) (the live layered model), and
+> [`pipelines/core.md`](pipelines/core.md) (the live scrape → silver → labels chain).
+>
+> Kept because it documents how the system was shaped and why the reorg was needed —
+> the same role `enrichment-design-v1-superseded.md` plays for the v1 spec. Do not
+> update it to match the current system; that would destroy the record.
+
 > **Entry point:** [`README.md`](README.md) — the architecture index, including
 > the single current-vs-target table. Start there if you are new.
 >

@@ -1,4 +1,4 @@
-"""Tests for the ``ig_posts_slv`` silver asset.
+"""Tests for the ``silver_ig_posts`` silver asset.
 
 Gap-fills per test-hardening plan:
 - Dedup correctness, latest-dataset-wins, row count ≤ bronze, type coercion,
@@ -14,8 +14,8 @@ from unittest.mock import patch
 import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
+from orchestration.defs.ig_core.slv.posts import silver_ig_posts
 
-from orchestration.defs.ig_core.slv.posts import ig_posts_slv
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Parametrized dedup scenarios ───────────────────────────────────────────
@@ -74,9 +74,9 @@ def test_no_bronze_files(tmp_path, ops):
     """Edge case: zero bronze files → returns empty DataFrame."""
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     assert result.is_empty()
 
@@ -86,9 +86,9 @@ def test_empty_bronze_file(tmp_path, ops):
     write_ig_bronze(tmp_path / "ds_empty.parquet", [])
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     assert result.is_empty()
 
@@ -99,9 +99,9 @@ def test_dedup(tmp_path, ops, bronze_rows, expected_ids):
     write_ig_bronze(tmp_path / "ds_001.parquet", bronze_rows)
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     assert set(result["post_id"].to_list()) == set(expected_ids)
     # Row count invariant: silver ≤ bronze
@@ -114,9 +114,9 @@ def test_dedup_edge_cases(tmp_path, ops, bronze_rows, expected_ids):
     write_ig_bronze(tmp_path / "ds_001.parquet", bronze_rows)
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     assert set(result["post_id"].to_list()) == set(expected_ids)
 
@@ -135,9 +135,9 @@ def test_dedup_across_datasets(tmp_path, ops):
     write_ig_bronze(tmp_path / "ds_002.parquet", ds2)
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     assert len(result) == 1
     assert result["caption"][0] == "New caption"
@@ -150,13 +150,13 @@ def test_idempotent_no_new_files(tmp_path, ops):
     write_ig_bronze(tmp_path / "ds_001.parquet", rows)
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        r1 = ig_posts_slv(context)
+        r1 = silver_ig_posts(context)
         assert len(r1) == 1
 
         # Second run — no new bronze files
-        r2 = ig_posts_slv(context)
+        r2 = silver_ig_posts(context)
         assert len(r2) == 1
 
 
@@ -168,9 +168,9 @@ def test_incremental_new_file(tmp_path, ops):
     )
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        r1 = ig_posts_slv(context)
+        r1 = silver_ig_posts(context)
         assert len(r1) == 1
 
     # Add a second file
@@ -178,9 +178,9 @@ def test_incremental_new_file(tmp_path, ops):
         tmp_path / "ds_002.parquet",
         [make_ig_bronze_row("2", "def", "Second", "user2")],
     )
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        r2 = ig_posts_slv(context)
+        r2 = silver_ig_posts(context)
 
     assert len(r2) == 2
     assert set(r2["post_id"].to_list()) == {"1", "2"}
@@ -201,18 +201,18 @@ def test_processed_on_stable_across_rescrape(tmp_path, ops):
                 "SELECT processed_on FROM silver_ig_posts WHERE post_id = '1'"
             ).fetchone()[0]
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        ig_posts_slv(context)
+        silver_ig_posts(context)
     first = processed_on()
 
     # A new dataset re-scrapes the same post. Sleep so its mtime exceeds the
     # watermark, guaranteeing the second run picks it up.
     time.sleep(0.05)
     write_ig_bronze(tmp_path / "ds_002.parquet", [row])
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        ig_posts_slv(context)
+        silver_ig_posts(context)
 
     assert processed_on() == first
 
@@ -225,9 +225,9 @@ def test_silver_watermark_advances(tmp_path, ops):
     )
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        ig_posts_slv(context)
+        silver_ig_posts(context)
 
     with duckdb.get_connection() as conn:
         wm = conn.execute(
@@ -245,9 +245,9 @@ def test_hashtags_serialized_to_json(tmp_path, ops):
     write_ig_bronze(tmp_path / "ds_001.parquet", rows)
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     db_val = result["hashtags"][0]
     assert json.loads(db_val) == ["ai", "startup", "marketing"]
@@ -261,9 +261,9 @@ def test_columns_renamed_and_derived(tmp_path, ops):
     write_ig_bronze(tmp_path / "ds_001.parquet", rows)
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     row = result.row(0, named=True)
     assert row["post_id"] == "1"
@@ -283,9 +283,9 @@ def test_silver_ig_posts_upserted(tmp_path, ops):
     write_ig_bronze(tmp_path / "ds_001.parquet", rows)
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        ig_posts_slv(context)
+        silver_ig_posts(context)
 
 def test_media_files_wired_and_cached(tmp_path, ops):
     """A video post's URL flows into media_files at silver time.
@@ -300,9 +300,9 @@ def test_media_files_wired_and_cached(tmp_path, ops):
     write_ig_bronze(tmp_path / "ds_001.parquet", [row])
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
-        result = ig_posts_slv(context)
+        result = silver_ig_posts(context)
 
     assert result["media_files"][0] == json.dumps(["https://cdn.example.com/v.mp4"])
     assert result["media_count"][0] == 1

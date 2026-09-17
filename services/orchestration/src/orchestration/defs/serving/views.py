@@ -441,7 +441,7 @@ def v_creator_underperformer_rate(duckdb: DuckDBResource) -> None:
     ),
     deps=[
         AssetKey(["v_post_detail"]),
-        AssetKey(["ig_profiles_slv"]),
+        AssetKey(["silver_ig_profiles"]),
     ],
 )
 def v_post_follower_context(duckdb: DuckDBResource) -> None:
@@ -612,7 +612,7 @@ def v_recent_hot_posts(duckdb: DuckDBResource) -> None:
         "quarantined row joined to its offending bronze excerpt and post "
         "context."
     ),
-    deps=[AssetKey(["silver_enrichment_conform"])],
+    deps=[AssetKey(["silver_enrichment_quarantine"])],
 )
 def v_quarantine_triage(duckdb: DuckDBResource) -> None:
     """Create the quarantine triage view.

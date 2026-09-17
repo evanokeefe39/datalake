@@ -24,7 +24,7 @@ here: this module touches only the database.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .schema import ConnectionFactory, sqlite_ddl
 
@@ -44,7 +44,7 @@ DEFAULT_DEPTH = 1
 
 def _now_iso() -> str:
     """Current UTC timestamp as ISO 8601 string."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _default_profile_url(platform: str, handle: str) -> str:
@@ -357,6 +357,39 @@ def enabled_profiles(ops: ConnectionFactory, *, include_ad_hoc: bool = False) ->
             params.append(AD_HOC_LIMIT)
         sql += " ORDER BY handle"
         rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def all_profiles(ops: ConnectionFactory) -> list[dict]:
+    """Every profile with its creator columns, including disabled and ad-hoc.
+
+    The ROSTER as a datum: unlike :func:`enabled_profiles` (which answers "what
+    should the pipeline scrape?"), this is the whole registry the owner
+    maintains. It is what the dashboard serves over ``GET /api/roster`` and what
+    the pipeline lands as a bronze source, so both sides read the same list.
+    """
+    ensure_schema(ops)
+    conn = ops.get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT c.id AS creator_id,
+                   c.name AS creator_name,
+                   p.platform,
+                   p.handle,
+                   p.profile_url,
+                   p.results_type,
+                   p.results_limit,
+                   p.enabled,
+                   p.tier,
+                   p.updated_at
+            FROM profiles p
+            JOIN creators c ON c.id = p.creator_id
+            ORDER BY p.handle
+            """
+        ).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()

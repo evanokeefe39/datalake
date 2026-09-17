@@ -46,10 +46,10 @@ Dagster CLI, which records what it does.
 ```bash
 # the medallion path end to end
 uv run dagster asset materialize -m orchestration.definitions \
-  --select ig_posts_slv+v_post_detail+dim_profile+dim_date
+  --select silver_ig_posts+v_post_detail+dim_profile+dim_date
 
 # one asset
-uv run dagster asset materialize -m orchestration.definitions --select ig_posts_slv
+uv run dagster asset materialize -m orchestration.definitions --select silver_ig_posts
 ```
 
 `-m orchestration.definitions` is required: the code location is that module, not
@@ -64,7 +64,7 @@ that submits paid work is an operator decision, not a deployment side effect.
 | Driver | Interval | What it does |
 |---|---|---|
 | `enrichment_harvest_sensor` | 30 s | Re-derives the in-flight set; requests a harvest run for terminal partitions |
-| `enrichment_submit_sensor` | 300 s | Discovers eligible posts across workloads; requests a submit run only when the pending set is non-empty |
+| `enrichment_submit_sensor` | 300 s | Discovers eligible posts across every workload; requests a submit run only when the pending set is non-empty |
 | `daily_medallion` | schedule | Scrape → silver → labels → serving |
 | `core_refresh` | schedule | Serving refresh |
 
@@ -170,6 +170,37 @@ print(duckdb.connect('data/state.duckdb', read_only=True)
 
 **A quarantine row is never a silent loss.** If the anti-join count and the
 quarantine count disagree, that is a defect — see ISSUES.
+
+## Workloads
+
+Everything enrichment does is a **workload**: a declared pass with its own
+eligibility query, item builder, cost estimate, prompt identity and job options.
+The registry is `orchestration.defs.ig_enriched.slv.workloads.WORKLOADS`, and
+`engine/submit.py` iterates it without knowing what any of them mean.
+
+| Workload | Silver table | Media | Job options |
+|---|---|---|---|
+| `content-classification` | `silver_content_classification` | yes | — |
+| `growth-facets-visual` | `silver_visual_annotations` | yes | `mode=visual`, `max_tokens=4096` |
+| `growth-facets-text` | `silver_text_annotations` | no | `mode=text`, `max_tokens=1024` |
+
+Restrict a run to one workload (a typo raises; it never runs empty):
+
+```
+SubmitConfig(workload="growth-facets-visual")
+```
+
+Adding a workload means adding a `Workload` to the registry — its
+`silver_table` is what makes it visible to `check_no_silent_loss`, and its
+`prompt_hash`/`schema_version` are what the harvest stage stamps on every
+bronze landing. The engine names no provider and no payload.
+
+### Projecting cost without spending
+
+`SubmitConfig(dry_run=True)` runs discovery, the guard and item building, and
+projects tokens and dollars with the same arithmetic a real run uses — writing
+nothing to the instance. A dry run therefore does not change what the next real
+run sees.
 
 ## Retry rounds
 

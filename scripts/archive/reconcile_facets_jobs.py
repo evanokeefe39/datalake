@@ -21,7 +21,7 @@ import sqlite3
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 OPS_DB = Path("data/ops.sqlite")
@@ -61,7 +61,7 @@ class ServiceJob:
 
 
 def _iso(epoch: float) -> str:
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat(timespec="seconds")
+    return datetime.fromtimestamp(epoch, tz=UTC).isoformat(timespec="seconds")
 
 
 def open_readonly(path: Path) -> sqlite3.Connection:

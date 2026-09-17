@@ -44,7 +44,6 @@ _DEFAULT_QWEN_MODEL = "qwen/qwen3.7-flash"
 #: The name callers pass to `build_adapter`. It is the SEAM's name for this
 #: adapter, not the provider's: the service behind it may change.
 PROVIDER_NAME = "service_backed"
-_DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
 
 
 # ─────────────────────────────────────────────────────── shared HTTP transport

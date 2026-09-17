@@ -48,7 +48,7 @@ import argparse
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import httpx
 
@@ -349,7 +349,7 @@ def main() -> int:
         rows.append(row)
 
     # 4) report (grouped by documented curation group; nothing dropped)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    ts = datetime.now(UTC).strftime("%Y%m%d_%H%M")
     out = args.out or f"analysis/output/discovery_{ts}.md"
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     if args.max_followers is not None:

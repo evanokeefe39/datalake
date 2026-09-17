@@ -10,7 +10,6 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-
 from orchestration.defs.engine.media import (
     is_video_path,
     media_urls_to_local_paths,
@@ -28,7 +27,7 @@ def media_files(tmp_path):
 
 def _patch_cache(mapping):
     return patch(
-        "orchestration.defs.engine.media.cached_local_path",
+        "orchestration.defs.engine.media.local_media_path",
         side_effect=lambda ops, url: mapping.get(url),
     )
 

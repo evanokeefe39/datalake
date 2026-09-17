@@ -2,12 +2,12 @@
 id: US-REORG-1
 epic: E-REORG
 persona: P1
-status: Open
+status: Done
 ---
 # US-REORG-1 — The repository is a uv workspace and every module lives where its role says
 
 - **Epic:** E-REORG
-- **Status:** Open
+- **Status:** Done — branch `refactor/workspace-tree`
 - **Branch:** `refactor/workspace-tree`
 - **Relates to:** E-ENRICH-ENGINE (the code being moved), ADR-0015 (the decision),
   ADR-0009 (the retired provider removed here)

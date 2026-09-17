@@ -11,14 +11,14 @@ silent — no row is rewritten here).
 from __future__ import annotations
 
 import pytest
-
 from orchestration.defs.ig_enriched.slv.prompts import (
     IG_GOLD_PROMPT,
     IG_GOLD_SCHEMA_VERSION,
     compute_prompt_hash,
     legacy_prompt_hash,
+    prompt_identity,
+    prompt_identity_v1,
 )
-from orchestration.defs.ig_enriched.slv.prompts import prompt_identity, prompt_identity_v1
 
 _MODELS = ("gemini-3.5-flash-lite", "qwen/qwen3.7-flash")
 _PROVIDERS = ("gemini", "qwen-batch")

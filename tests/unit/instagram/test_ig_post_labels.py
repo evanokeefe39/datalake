@@ -7,15 +7,14 @@ control determinism, and the floor-filler top-up.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
-
+from orchestration.defs.ig_core.slv.labels import LABEL_VERSION, run_label_pass
 from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
 from orchestration.defs.platform.schemas import duckdb_ddl
-from orchestration.defs.ig_core.slv.labels import LABEL_VERSION, run_label_pass
 
-NOW = datetime(2026, 8, 31, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 31, tzinfo=UTC)
 
 
 @pytest.fixture()
@@ -34,12 +33,36 @@ def ops(tmp_path):
 
 
 def _core_ops(ops, handle="alice"):
-    """Register a tier1 enabled profile so the handle counts as core."""
+    """Register a tier1 enabled profile so the handle counts as core.
+
+    Returns the ops resource with the registry row written. The label pass reads
+    the PUBLISHED roster, so a test that needs a handle treated as core must
+    also publish it — see `_publish_core`.
+    """
     from opsdb.roster import add_profile, create_creator
 
     creator = create_creator(ops, "Alice")
     add_profile(ops, creator_id=creator["id"], platform="instagram", handle=handle)
     return ops
+
+
+def _publish_core(db, handle="alice"):
+    """Publish one tier1 enabled profile into ``silver_ig_roster``.
+
+    This is what makes a handle count as core now: the label pass reads the
+    published roster (the dashboard owns the original registry).
+    """
+    with db.get_connection() as conn:
+        conn.execute(duckdb_ddl("silver_ig_roster"))
+        conn.execute(
+            """INSERT OR REPLACE INTO silver_ig_roster
+               (platform, handle, profile_url, results_type, results_limit,
+                enabled, tier, creator_id, creator_name, updated_at,
+                source_fetched_at, processed_on)
+               VALUES ('instagram', ?, ?, 'posts', 12, TRUE, 'tier1', 1, ?, NULL,
+                       '2026-01-01T00:00:00+00:00', NULL)""",
+            [handle, f"https://www.instagram.com/{handle}/", handle],
+        )
 
 
 def _post(conn, post_id, owner_id, likes, ts, caption="Caption", username=None):
@@ -230,8 +253,8 @@ def test_floor_filler_requires_standout(conn):
 
 
 def test_label_pass_asset_and_schedule(tmp_path, ops):
+    from orchestration.defs.ig_core.slv.labels import ig_post_labels
     from orchestration.defs.platform.schedules import daily_medallion
-    from orchestration.defs.ig_core.slv.posts import ig_post_labels
 
     _core_ops(ops, "alice")
     db = DuckDBResource(database=str(tmp_path / "state.duckdb"))
@@ -243,6 +266,7 @@ def test_label_pass_asset_and_schedule(tmp_path, ops):
         _post(conn, "px", "alice", 1000, NOW - timedelta(days=10),
               username="alice")
 
+    _publish_core(db, "alice")
     ig_post_labels(duckdb=db, ops=ops)
 
     with db.get_connection() as conn:

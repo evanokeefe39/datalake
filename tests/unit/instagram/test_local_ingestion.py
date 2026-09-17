@@ -1,4 +1,4 @@
-"""Tests for the local ad-hoc bronze producer (``ig_posts_local_raw``).
+"""Tests for the local ad-hoc bronze producer (``bronze_ig_posts_local``).
 
 Covers the second bronze producer contract: write-once Parquet + ``.meta``
 sidecar (``results_type="posts"``), media-cache seeding from local bytes
@@ -17,11 +17,6 @@ import polars as pl
 import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
-
-from orchestration.defs.engine.media import seed_media_from_file, url_hash
-from orchestration.defs.ig_core.bnz.scrape import ig_posts_local_raw
-from orchestration.defs.ig_core.slv.posts import ig_posts_slv
-from orchestration.defs.ig_core.bnz.scrape import LOCAL_INGEST_DIR
 from opsdb.roster import (
     AD_HOC_LIMIT,
     add_profile,
@@ -30,9 +25,13 @@ from opsdb.roster import (
     enabled_profiles,
     is_ad_hoc,
 )
+from orchestration.defs.engine.media import seed_media_from_file, url_hash
+from orchestration.defs.ig_core.bnz.scrape import LOCAL_INGEST_DIR, bronze_ig_posts_local
+from orchestration.defs.ig_core.slv.posts import silver_ig_posts
+
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
-ig_assets = importlib.import_module("orchestration.defs.ig_core.slv.posts")
+ig_assets = importlib.import_module("orchestration.defs.ig_core.bnz.scrape")
 media_cache_mod = importlib.import_module("orchestration.defs.engine.media")
 
 # ── Fixtures / helpers ──────────────────────────────────────────────────────
@@ -107,7 +106,7 @@ def local_env(tmp_path, monkeypatch):
 
 
 def _run_local(ops):
-    return ig_posts_local_raw(build_asset_context(resources={"ops": ops}))
+    return bronze_ig_posts_local(build_asset_context(resources={"ops": ops}))
 
 
 # ── Bronze materialization ──────────────────────────────────────────────────
@@ -115,7 +114,7 @@ def _run_local(ops):
 
 def test_local_producer_materializes_datasets(local_env, ops):
     """GIVEN two local datasets
-    WHEN ig_posts_local_raw runs
+    WHEN bronze_ig_posts_local runs
     THEN one local_<id>.parquet + .meta each, results_type='posts', all rows.
     """
     _make_dataset(
@@ -153,7 +152,7 @@ def test_local_producer_materializes_datasets(local_env, ops):
 
 def test_rerun_is_write_once_noop(local_env, ops):
     """GIVEN bronze files already written
-    WHEN ig_posts_local_raw runs again
+    WHEN bronze_ig_posts_local runs again
     THEN parquet AND meta bytes are untouched (silver mtime watermark safety).
     """
     _make_dataset(local_env.ingest, "aaa", [_post("p1", "sc1", video="https://cdn.example.com/v1.mp4")])
@@ -175,7 +174,7 @@ def test_rerun_is_write_once_noop(local_env, ops):
 
 def test_media_seeded_from_local_bytes(local_env, ops):
     """GIVEN posts with video + carousel images
-    WHEN ig_posts_local_raw runs
+    WHEN bronze_ig_posts_local runs
     THEN media_cache rows keyed by sha256(url) point at copied local bytes.
     """
     video_url = "https://cdn.example.com/v1.mp4"
@@ -215,7 +214,7 @@ def test_media_seeded_from_local_bytes(local_env, ops):
 
 def test_video_post_display_url_not_seeded(local_env, ops):
     """GIVEN a video post (videoUrl + displayUrl, no images list)
-    WHEN ig_posts_local_raw runs
+    WHEN bronze_ig_posts_local runs
     THEN only video.mp4 is seeded — the displayUrl (poster frame) is NOT
     mapped to a non-existent media_00.jpg (regression: real video posts
     carried displayUrl and logged spurious 'source missing' for media_00.jpg).
@@ -248,7 +247,7 @@ def test_video_post_display_url_not_seeded(local_env, ops):
 
 def test_media_seeding_idempotent_across_reruns(local_env, ops):
     """GIVEN a new dataset reusing an already-seeded media URL
-    WHEN ig_posts_local_raw runs again
+    WHEN bronze_ig_posts_local runs again
     THEN the media_cache row is neither duplicated nor rewritten.
     """
     video_url = "https://cdn.example.com/v1.mp4"
@@ -286,7 +285,7 @@ def test_media_seeding_idempotent_across_reruns(local_env, ops):
 
 def test_no_media_posts_skip_cleanly(local_env, ops):
     """GIVEN posts without any media fields (the 52 no-media posts)
-    WHEN ig_posts_local_raw runs
+    WHEN bronze_ig_posts_local runs
     THEN they land in bronze and seeding neither errors nor writes rows for them.
     """
     post = _post("p1", "sc1")
@@ -364,7 +363,7 @@ def test_enabled_profiles_excludes_ad_hoc(ops):
 
 def test_missing_ingest_dir_returns_empty(local_env, monkeypatch):
     """GIVEN the configured ingest dir absent
-    WHEN ig_posts_local_raw runs
+    WHEN bronze_ig_posts_local runs
     THEN it degrades to an empty DataFrame (no error).
     """
     monkeypatch.setattr(ig_assets, "LOCAL_INGEST_DIR", local_env.ingest / "nope")
@@ -380,7 +379,7 @@ class _DummyOps:
 
 def test_silver_dedup_prefers_newer_scrape_across_producers(tmp_path, ops):
     """GIVEN the same post in an Apify bronze file and a local_ bronze file
-    WHEN ig_posts_slv dedups
+    WHEN silver_ig_posts dedups
     THEN the NEWER scrape wins regardless of producer (source_dataset reflects it).
     """
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
@@ -395,9 +394,12 @@ def test_silver_dedup_prefers_newer_scrape_across_producers(tmp_path, ops):
         json.dumps({"downloaded_at": "2026-06-01T00:00:00+00:00"}), encoding="utf-8"
     )
 
-    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+    # `posts` does `from platform.paths import BRONZE_LAKE`, so the name is bound
+    # in posts' OWN namespace: patching platform.paths leaves the module reading
+    # the real lake (the failure here was 10,038 live rows vs the 2 fixtures).
+    with patch("orchestration.defs.ig_core.slv.posts.BRONZE_LAKE", tmp_path):
         with patch("orchestration.defs.engine.media.cache_media_bytes", lambda *a, **k: None):
-            result = ig_posts_slv(
+            result = silver_ig_posts(
                 build_asset_context(resources={"duckdb": duckdb, "ops": ops})
             )
 
