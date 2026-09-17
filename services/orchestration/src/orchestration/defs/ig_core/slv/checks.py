@@ -404,6 +404,12 @@ def _ig_observation_freshness(context) -> AssetCheckResult:
     freshness that did not happen — re-observing existing posts produces no new
     rows at all, and a run that fetched nothing would look identical to one
     that fetched everything.
+
+    ``_OBSERVATION_FRESHNESS_DAYS`` is interpolated, not bound, and that is
+    deliberate: DuckDB rejects a placeholder inside ``INTERVAL``
+    (``INTERVAL ? DAY`` → "syntax error at or near ?", in both VALUES and WHERE
+    positions), so parameterising it is not an option. The value is a module
+    constant, never user input, so there is no injection surface.
     """
     duckdb = context.resources.duckdb
     with duckdb.get_connection() as conn:

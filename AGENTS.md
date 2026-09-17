@@ -140,7 +140,9 @@ Never-scraped profiles get a full backfill (no date boundary); they are never dr
 
 Memory is a RUN option, not an actor input — `memoryMbytes` is absent from the Instagram
 scraper actor's `input.properties`, so it must go to `start(memory_mbytes=...)`, never
-into `run_input`. `SCRAPE_RUN_MEMORY_MB` in `core_refresh.py` pins it.
+into `run_input`. `SCRAPE_RUN_MEMORY_MB` in `core_refresh.py` pins it for the scheduled
+core-refresh path only; the launchpad (`bronze_ig_posts`), `scrape_details_to_bronze` and
+local ingest leave `memory_mbytes=None` and take the actor's own default (1024).
 
 Apify does NOT echo run options in logs — confirm what a run actually used:
 
@@ -175,8 +177,9 @@ Done bar: green suite AND materialized destination AND one observed run through 
 - One test per behavioral contract, one per edge case.
 - **Before writing any asset that reads from disk, read ONE real input file and display
   its schema.** Do not model against test data (Phase 2 false start, 2026-06-30).
-- Full suite is the final gate, not the inner loop: measured ~200s (779 tests, 2026-09-17)
-  but it exceeds a 600s timeout under load, so use scoped runs while working.
+- Full suite is the final gate, not the inner loop: measured 197s, 407s and ~200s on
+  three runs over 2026-09-17 (779-782 tests). Those are the only timings recorded; use
+  scoped runs while working and budget a few minutes for the full pass.
 
 ## Env vars (essentials)
 

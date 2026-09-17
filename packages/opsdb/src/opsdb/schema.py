@@ -125,7 +125,8 @@ class Table:
 #   scrape-time cached local bytes instead. Archived at
 #   data/lake/archive/media_metadata/.
 #
-#   "prompt_registry" — RETIRED 2026-09-15. Provenance now rides on the
+#   "prompt_registry" — RETIRED 2026-09-17 (deferred from the W9 pass, which
+#   covered the other tables). Provenance now rides on the
 #   bronze/silver rows (ADR-0011), so the hash of the current prompt needs no
 #   table; `check_prompt_currency` compares claims against the prompt module's
 #   `CURRENT_PROMPT_HASH` alone. Archived at
