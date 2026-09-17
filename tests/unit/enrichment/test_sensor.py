@@ -324,7 +324,9 @@ class TestDefaultStatusPolicy:
 
     def test_schedules_ship_stopped(self) -> None:
         from dagster import DefaultScheduleStatus
-        from orchestration.defs.platform.schedules import core_refresh, daily_medallion
+        from orchestration.defs.platform.core_refresh import core_refresh
+        from orchestration.defs.platform.details_sweep import details_sweep
+        from orchestration.defs.platform.schedules import daily_medallion
 
-        for sched in (daily_medallion, core_refresh):
+        for sched in (daily_medallion, core_refresh, details_sweep):
             assert sched.default_status == DefaultScheduleStatus.STOPPED, sched.name
