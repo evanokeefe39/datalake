@@ -220,7 +220,7 @@ the service is what makes the synchronous OpenRouter/qwen provider async) and
 `media_metadata`, `creators`, `profiles`, `creator_merges`, `prompt_registry`.
 Retry becomes a new partition key; failures surface via the anti-join
 `landed(bronze) ∖ conformed(silver)` plus a BLOCKING asset check — the blocking
-check is IMPLEMENTED (`defs/enrichment/checks.py::check_no_silent_loss`). The
+check is IMPLEMENTED (``orchestration.defs.engine/`checks.py::check_no_silent_loss`). The
 queue-table DROP itself is still pending human approval (see `scripts/retire_queue_tables.py`).
 
 **Current vs target, in one line:** today `gold_analyses` + `gold_growth_facets`
@@ -228,17 +228,31 @@ queue-table DROP itself is still pending human approval (see `scripts/retire_que
 tables + four marts + Dagster-native orchestration. An agent reading this file
 must not assume the gold-mirror model is the destination.
 
-**SQLite for operational state, DuckDB for analytical state:**
-- `ops.sqlite` — batch coordination, media cache, dead_letter (OLTP: point lookups, frequent updates). Target (ADR-0012): queue tables retired, only `media_cache`, `media_metadata`, `creators`, `profiles`, `creator_merges`, `prompt_registry` remain.
-- `state.duckdb` — silver tables, gold_analyses, watermarks, serving dims/views (OLAP: scans, aggregations)
+**A uv workspace, with role-based structure inside the code location (ADR-0015):**
 
-**Domain-based structure, not layer-based:**
+```
+datalake/                          # workspace root — the command home for dg/dagster/pytest/ruff
+├── packages/opsdb/                # ops.sqlite contract (dashboard writes, pipeline reads)
+├── packages/storage/              # byte storage (R2 under storage-migration)
+├── services/orchestration/        # the Dagster code location
+├── services/jobs/                 # the inference service (moved in by services-extraction)
+└── services/dashboard/            # FastAPI + vite
 
-src/datalake/defs/
-├── common/          # PolarsIOManager, ApifyResource, GeminiResource, SQLiteResource, lake.py, schedules.py
-├── enrichment/      # batch.py, assets.py, prompts.py
-├── instagram/       # ig_posts_raw, ig_posts_slv, ig_posts_gen_batches, config
-└── serving/         # dim_profile, dim_date, v_post_detail + 13 downstream views (incl. 5 canonical metric views)
+services/orchestration/src/orchestration/defs/
+├── ig_core/{bnz,slv,gld}/         # Instagram: scrape → silver → labels
+├── ig_enriched/{bnz,slv,gld}/     # Instagram enrichment PAYLOADS (prompts, schemas, mappings)
+├── engine/                        # cross-domain enrichment machinery — never duplicated per domain
+├── serving/{dims,metrics,marts,views,checks}.py
+├── integration/                   # external API clients (transport only)
+├── platform/                      # resources, paths, DuckDB catalog, schedules
+└── {youtube,tiktok}_{core,enriched}/   # skeletons
+```
+
+Module names describe a **role**, never a provider. `engine/` holds submit, harvest,
+partitions, the seam, the landing writer, the media cache and the silver runtime;
+a domain package holds only its payloads. Every `__init__.py` is a docstring and
+nothing else (enforced by `tests/operational/test_thin_init_files.py`), so importing
+one module never drags in its siblings' dependencies.
 
 **Storage split:**
 - **Parquet lake** — bulk data, lock-free parallel writes
@@ -367,7 +381,7 @@ The panel reviewed the watermark + dead_letter refactor (2026-07-01) and confirm
 
 ## Schema catalog and drift detection
 
-`src/datalake/defs/common/schemas.py` is the canonical schema definition for both databases.
+``orchestration.defs.platform.schemas` (DuckDB) + `opsdb.schema` (SQLite)` is the canonical schema definition for both databases.
 `tests/operational/expected_schema.py` re-exports it for backward compatibility.
 Any table the pipeline reads or writes must be listed here. The readiness test
 (`test_state_compatibility.py`) asserts the catalog matches the running databases.
@@ -403,7 +417,6 @@ tables, `bronze_enrichment_raw`, four gold marts appear, and `batch_jobs`/
 
 | Script | Purpose |
 |---|---|
-| `scripts/run_pipeline.py` | Thin entry point → delegates to ``python -m datalake.cli``. Subcommands: ``run`` (pipeline), ``batches`` (inspect/reset), ``watermarks`` (inspect/reset). |
 | `migrations/migrate_schema_drift.py` | Apply schema migrations: rename tables, move data between DBs, drop vestigial tables. Idempotent. |
 | `migrations/migrate_to_v2.py` | One-shot migration from Phase 1-4 schema to v2 domain-scoped tables. |
 | `migrations/migrate_from_ig_pipeline.py` | Import bronze Parquet from legacy ig-pipeline repo. |
@@ -414,20 +427,20 @@ tables, `bronze_enrichment_raw`, four gold marts appear, and `batch_jobs`/
 | `scripts/conform_silver.py` | Publish + register the six v3 silver tables from `bronze_enrichment_raw` — the live silver publisher (zero API calls; deterministic replay). |
 | `scripts/make_smoke_slice.py` | Deterministic dev/smoke slice builder for the verification plane. |
 | `scripts/reconcile_facets_jobs.py` | Reconcile `facets_batch_jobs` against the qwen service job store. Superseded by the reconciliation step built into `retire_queue_tables.py --apply`. |
-| `scripts/retire_queue_tables.py` | W9 retirement: reconcile handles → archive+verify (export count == live count, same run) → per-table drop → KEEP-set assertion. Modes: `--plan` / `--rehearse` / `--apply --i-have-approval [--accept-open-handles]`. |
+| `scripts/archive/retire_queue_tables.py` | W9 retirement (executed 2026-09-15): reconcile handles → archive+verify → per-table drop → KEEP-set assertion. Archived — see `scripts/archive/README.md`. |
+| `migrations/migrate_drop_prompt_registry.py` | Archive then retire `prompt_registry` (provenance now rides on the bronze/silver rows). `--plan` / `--apply`. |
 ## Stale analysis update
 
-When the enrichment prompt or model changes, existing `gold_analyses` rows have stale `prompt_hash`.
-`check_prompt_currency` detects these. To re-process:
+When the prompt or output schema changes, existing `silver_content_classification`
+rows carry a stale `prompt_hash`, and `check_prompt_currency` fails while any
+exist. `CURRENT_PROMPT_HASH` lives in
+`orchestration.defs.ig_enriched.slv.prompts`.
 
-```
-uv run python scripts/run_pipeline.py --update-stale-analyses
-```
-
-This queries `gold_analyses WHERE prompt_hash IS NULL OR prompt_hash != CURRENT_PROMPT_HASH`,
-batches them directly (bypassing the watermark + NOT EXISTS guard), and the
-Dagster enrichment jobs (submit → harvest) pick them up and UPSERT fresh
-analyses with the current prompt.
+Re-processing is a **replay, not a re-bill**: bronze holds every provider response
+verbatim, so bumping `DERIVATION_VERSION` in `engine/silver_rt.py` and
+re-materializing `silver_enrichment` republishes silver deterministically with
+zero API calls. Only a genuinely new prompt needs new provider calls, and those go
+out through the submit sensor.
 
 ## DAGSTER_HOME
 
@@ -462,7 +475,7 @@ Without it, CLI runs go to a different temp directory and aren't visible in the 
   enrichment removed 2026-09-08).
 
 - **Lifecycle:** gen_batches → media_upload → submit → harvest; the shared
-  enrichment logic lives in `defs/enrichment/analysis.py`.
+  enrichment logic lives in ``orchestration.defs.engine/`analysis.py`.
 - **Retry:** exponential backoff with jitter, `MAX_ATTEMPTS=5`, terminal failures → `dead_letter`
 
 > **Driver sensor (2026-09-15):** `enrichment_harvest_sensor` (interval, ADR-0012 D2) is
@@ -531,7 +544,7 @@ distinguish subtypes:
 | ``insufficient_quota`` | Daily RPD spent — out of requests for the day. | **Stop retrying.** Wait until 08:00 UTC. Switch projects or upgrade tier. |
 
 The ``_is_quota_exhausted()`` and ``_is_rate_limited()`` helpers in the
-``defs/enrichment/analysis.py`` module inspect ``google.genai.errors.APIError`` attributes
+```orchestration.defs.engine/`analysis.py`` module inspect ``google.genai.errors.APIError`` attributes
 (``code``, ``message``, ``details``) to distinguish subtypes. If the SDK
 error isn't parseable it falls back to substring matching on quota-related keywords.
 
@@ -680,12 +693,20 @@ Set in `.env`:
 | Variable | Default | Used by |
 |----------|---------|---------|
 | `APIFY_API_TOKEN` | — | `ApifyResource` |
-| `GEMINI_API_KEY` | — | `GeminiResource` |
-| `IG_DATA_DIR` | `data` | `lake.py` root path |
+| `IG_DATA_DIR` | `data` | `platform/paths.py` root path |
 | `IG_BRONZE_DIR` | `data/lake/bronze` | Bronze asset |
 | `IG_SILVER_DIR` | `data/lake/silver` | Silver asset |
 | `IG_GOLD_DIR` | `data/lake/gold` | Gold asset |
 | `IG_DB_PATH` | `data/state.duckdb` | DuckDB resource |
+| `OPS_DB_PATH` | `data/ops.sqlite` | `SQLiteResource` |
+| `JOBS_SERVICE_URL` | `http://127.0.0.1:8462` | the inference-service client |
+| `IG_LOCAL_INGEST_DIR` | a local checkout path | local ad-hoc ingest root |
+
+`GEMINI_API_KEY` / `GEMINI_TIER` may still be present in `.env`; nothing reads
+them since the Gemini path retired (ADR-0015). `platform/paths.py` calls
+`load_dotenv()` as its first statement — the one sanctioned import-time side
+effect, because it reads the environment into module constants and runs before
+any other loader would.
 
 ## Test conventions
 
@@ -723,7 +744,7 @@ Set in `.env`:
 | 2026-09-10 | Enrichment layered model (ADR-0011) — bronze verbatim → six `silver_*` → four gold marts, keyed `(post_id, platform)` | Deterministic remap from `bronze_enrichment_raw` means schema/mapping changes are replays, not re-bills. LIVE 2026-09-15. Spec: `docs/architecture/pipelines/enrichment.md` (v3) |
 | 2026-09-10 | Dagster-native orchestration (ADR-0012) | Retires the `ops.sqlite` queue (`batch_jobs`/`batch_items`/`dead_letter`/`facets_batch_jobs`); retains media/identity/prompt tables. Queue DROP EXECUTED 2026-09-15 (archived first) |
 | 2026-09-10 | Inference seam (ADR-0008/0009): three verbs + `submit`/`poll-to-terminal`/`retrieve`, `ProviderAdapter` swap | One seam serves both the qwen-batch-service (async wrapper over a synchronous provider) and Gemini's native batch. Proven in the enrichment spike; not yet wired in |
-| 2026-09-10 | The seam keeps **no ledger** (ADR-0013) — the service owns its job store, Dagster polls it; Dagster state is instance-native | ADR-0007 Amd 1 / ADR-0010 dec 5 specified a shared `external_jobs` table; the spike's S5 negative assertion tested for it by name and found it unnecessary. Reconciles ADR-0012 with the seam. LIVE 2026-09-15 (no ledger exists; the service owns its job store) |
+| 2026-09-15 | Repository layout (ADR-0015): a uv workspace (`services/`, `packages/`), `datalake`→`orchestration`, role-based modules, providers named only in the adapter layer | The layout no longer matched what the code did; a retired provider was still selectable by config; two entry points fought over orchestration state. `src/` is gone, the Gemini path is deleted, `__init__.py` files are docstrings-only |
 
 ## Verification plane — defense in depth (2026-09-15, BINDING)
 
@@ -785,7 +806,7 @@ against claims:
   business columns. A schema/mapping change is a replay, not a re-bill.
 - **Sentinel defect fixed.** Two sibling producers defined `MODEL_LEGACY_NULL`
   differently, so 8 live rows carried the ADR-REJECTED literal. Now a single
-  definition in `defs/common/schemas.py` imported by both; the 8 rows read
+  definition in ``orchestration.defs.platform.schemas`` imported by both; the 8 rows read
   `unrecorded-legacy-null`.
 - **DQ gates exist and FIRE.** `check_no_silent_loss` (blocking anti-join),
   `check_quarantine_growth`, `check_silver_snapshot_freshness`, plus

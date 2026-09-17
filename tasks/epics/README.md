@@ -61,6 +61,7 @@ cost-lever, or consumer of that engine, not a disjoint feature.
 | [`serving-analytics`](serving-analytics/epic.md) | E-SERVING-ANALYTICS | dims/views/metrics, creator analytics, observations, **four gold marts (owner's three questions, US-ESA-1)**, live-classification migration (US-ESA-2) | Active | dlc-worker | E-ENRICH-*, E-IDENTITY | `tasks/plans/phase-4`, `metrics-centralization`, `creator-*`, `follower-observations-*` |
 | [`identity`](identity/epic.md) | E-IDENTITY | creators/profiles/merges + dim_profile creator linkage + UI | Active | dlc-worker / sdlc-worker | E-INGEST | `tasks/plans/creators-and-profiles`, `profile-management`, `curated-creator-consolidation` |
 | [`dashboard`](dashboard/epic.md) | E-DASHBOARD | Product UI: tables, filters, thin server, creators page | Active | sdlc-worker | E-SERVING-ANALYTICS | `tasks/plans/dashboard-tables-filtering`, `creators-ui-redesign` |
+| [`repo-reorganization`](repo-reorganization/epic.md) | E-REORG | uv workspace boundaries (`services/`, `packages/`), role-based modules, the CLI and Gemini-path retirements | Active | sdlc-worker | E-ENRICH-ENGINE | `tasks/plans/repo-reorganization`, ADR-0015, ADR-0016, US-REORG-1/2/3 |
 
 ## Spine dependency map
 

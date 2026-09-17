@@ -31,8 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
-
-from datalake.defs.common.schemas import sqlite_ddl
+from orchestration.defs.platform.schemas import sqlite_ddl
 
 logger = logging.getLogger("migrate_creators_profiles")
 

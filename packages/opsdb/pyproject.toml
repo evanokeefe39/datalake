@@ -1,0 +1,13 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "opsdb"
+version = "0.1.0"
+description = "ops.sqlite application-database contract: catalog, roster, merges, media cache"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/opsdb"]

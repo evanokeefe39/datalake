@@ -12,18 +12,20 @@ from unittest.mock import patch
 
 from dagster import build_asset_context, build_schedule_context
 
-from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.common.schedules import daily_medallion
-from datalake.defs.common.schemas import duckdb_ddl
-from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
-from datalake.defs.serving.assets import profile_dimension, v_post_detail
+from orchestration.defs.platform.resources import SQLiteResource
+from orchestration.defs.platform.schedules import daily_medallion
+from orchestration.defs.platform.schemas import duckdb_ddl
+from orchestration.defs.ig_core.slv.posts import ig_posts_slv
+from orchestration.defs.ig_enriched.slv.workloads import ig_posts_gen_batches
+from orchestration.defs.serving.dims import profile_dimension
+from orchestration.defs.serving.views import v_post_detail
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
 def _run_silver(duckdb, ops, bronze_dir):
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", bronze_dir):
         ctx = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         return ig_posts_slv(ctx)
 
@@ -31,7 +33,7 @@ def _run_silver(duckdb, ops, bronze_dir):
 def _run_enqueue(duckdb, ops_db):
     from dagster import DagsterInstance, build_asset_context
 
-    from datalake.defs.instagram.config import GoldConfig
+    from orchestration.defs.ig_core.bnz.scrape import GoldConfig
 
     instance = DagsterInstance.ephemeral()
     return ig_posts_gen_batches(
@@ -115,7 +117,7 @@ def test_ad_hoc_run_sequence(tmp_path):
     assert len(result) == 1
 
     # Step 2b: Label pass — approve p1 for enrichment.
-    from datalake.defs.instagram.labels import run_label_pass
+    from orchestration.defs.ig_core.slv.labels import run_label_pass
 
     with duckdb_res.get_connection() as conn:
         run_label_pass(conn, core_handles={"test"}, bootstrap=True)

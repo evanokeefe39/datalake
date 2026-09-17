@@ -21,15 +21,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from datalake.defs.common.lake import (
+from orchestration.defs.platform.paths import (
     AVATAR_DIR,
     THUMBNAIL_DIR,
     avatar_path,
     thumbnail_path,
 )
-from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.common.schemas import sqlite_ddl
-from datalake.defs.instagram.creators import (
+from opsdb.roster import (
     add_profile,
     batch_add_profiles,
     create_creator,
@@ -39,8 +37,10 @@ from datalake.defs.instagram.creators import (
     remove_creator,
     remove_profile,
     rename_creator,
-    scrape_details_to_bronze,
 )
+from opsdb.schema import sqlite_ddl
+from orchestration.defs.ig_core.bnz.scrape import scrape_details_to_bronze
+from orchestration.defs.platform.resources import SQLiteResource
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dashboard-api")

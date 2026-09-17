@@ -18,27 +18,30 @@ import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.common.schemas import (
+from orchestration.defs.platform.schemas import (
     DUCKDB_TABLES,
     DUCKDB_VIEWS,
     duckdb_ddl,
 )
 
-serving_assets = importlib.import_module("datalake.defs.serving.assets")
+serving_assets = importlib.import_module("orchestration.defs.serving.views")
+marts = importlib.import_module("orchestration.defs.serving.marts")
+metrics = importlib.import_module("orchestration.defs.serving.metrics")
+views = importlib.import_module("orchestration.defs.serving.views")
 
 _MART_FNS = [
-    serving_assets.gold_post_enrichment,
-    serving_assets.gold_creator_performance,
-    serving_assets.gold_content_shape_performance,
-    serving_assets.gold_top_posts,
+    marts.gold_post_enrichment,
+    marts.gold_creator_performance,
+    marts.gold_content_shape_performance,
+    marts.gold_top_posts,
 ]
 
 _CANON_FNS = [
-    serving_assets.v_engagement_outliers,
-    serving_assets.v_post_baselines,
-    serving_assets.v_post_metrics,
-    serving_assets.v_post_follower_context,
-    serving_assets.v_creator_profile,
+    views.v_engagement_outliers,
+    metrics.v_post_baselines,
+    metrics.v_post_metrics,
+    views.v_post_follower_context,
+    metrics.v_creator_profile,
 ]
 
 
@@ -730,7 +733,7 @@ class TestPlatformGrain:
         """`platform` is part of the grain: identical facet values for the
         same (domain, topic, tier) on different platforms are separate
         cells, never merged."""
-        _run(multi_platform_db, _CANON_FNS + [serving_assets.gold_content_shape_performance])
+        _run(multi_platform_db, _CANON_FNS + [marts.gold_content_shape_performance])
         with multi_platform_db.get_connection() as con:
             rows = con.execute(
                 """
@@ -746,7 +749,7 @@ class TestPlatformGrain:
         assert len(rows) == 2  # a platform-less grain would collapse to 1
 
     def test_full_grain_is_unique(self, multi_platform_db):
-        _run(multi_platform_db, _CANON_FNS + [serving_assets.gold_content_shape_performance])
+        _run(multi_platform_db, _CANON_FNS + [marts.gold_content_shape_performance])
         with multi_platform_db.get_connection() as con:
             dupes = con.execute(
                 """

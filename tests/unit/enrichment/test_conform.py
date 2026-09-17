@@ -19,8 +19,8 @@ import duckdb
 import polars as pl
 import pytest
 
-from datalake.defs.enrichment import conform as conform_mod
-from datalake.defs.enrichment.conform import (
+import orchestration.defs.engine.silver_rt as conform
+from orchestration.defs.engine.silver_rt import (
     DERIVATION_VERSION,
     SILVER_AUDIO_TRANSCRIPTS,
     SILVER_QUARANTINE,
@@ -32,10 +32,10 @@ from datalake.defs.enrichment.conform import (
     TABLE_SCHEMAS,
     conform,
 )
-from datalake.defs.enrichment.growth_facets_schema import (
+from orchestration.defs.ig_enriched.slv.schemas import (
     GROWTH_FACETS_SCHEMA_VERSION,
 )
-from datalake.defs.enrichment.landing import (
+from orchestration.defs.engine.landing import (
     WORKLOAD_CONTENT_CLASSIFICATION,
     WORKLOAD_GROWTH_FACETS_TEXT,
     WORKLOAD_GROWTH_FACETS_VISUAL,

@@ -17,15 +17,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
 from pathlib import Path
 
 import polars as pl
-
-# ── Allow import of datalake path helpers ─────────────────────────────────
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from datalake.defs.common.lake import bronze_path  # noqa: E402
+from orchestration.defs.platform.paths import bronze_path
 
 # ── Old ig_pipeline path (adjust to your checkout) ───────────────────────
 _OLD_DATA_DIR = Path.home() / "repos" / "ig-pipeline" / "data"

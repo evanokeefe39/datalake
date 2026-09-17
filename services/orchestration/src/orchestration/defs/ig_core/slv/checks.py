@@ -1,0 +1,395 @@
+"""Runtime asset checks for Instagram-layer data quality.
+
+Each ``@asset_check`` runs after its target asset materializes, verifying
+a specific data-quality invariant. Checks that fail raise warnings
+(severity = WARN) so the pipeline still produces downstream data.
+
+Per test-hardening plan Phase 4:
+
+- Bronze checks
+- Silver dedup / row-bounding checks
+- Gold enrichment validity checks
+"""
+
+import json
+import os
+from pathlib import Path
+
+import polars as pl
+from dagster import AssetCheckResult, AssetCheckSeverity, asset_check
+
+from orchestration.defs.platform.paths import BRONZE_LAKE
+
+# ── Valid admiralty codes per gold prompt taxonomy ─────────────────────────
+# The prompt accepts A1 (authoritative) through C2 (entertainment), so every
+# combination A1–A6, B1–B6, C1–C2 is valid.
+_VALID_ADMIRALTY: set[str] = {
+    f"{letter}{num}"
+    for letter in "ABC"
+    for num in "123456"
+} - {"C3", "C4", "C5", "C6"}
+
+_EXPECTED_SCHEMA_VERSION = 3
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+
+def _latest_bronze_path() -> Path | None:
+    """Return the most-recently-written bronze Parquet file, or *None*."""
+    files = sorted(BRONZE_LAKE.glob("*.parquet"), key=os.path.getmtime, reverse=True)
+    return files[0] if files else None
+
+
+def _read_bronze_df() -> pl.DataFrame | None:
+    """Read the latest bronze Parquet; *None* if nothing has been written."""
+    path = _latest_bronze_path()
+    if path is None:
+        return None
+    try:
+        return pl.read_parquet(path)
+    except Exception:
+        return None
+
+
+# ── Bronze checks ──────────────────────────────────────────────────────────
+
+
+@asset_check(
+    asset="ig_posts_raw",
+    name="ig_posts_raw_has_rows",
+    description="Bronze row count > 0.",
+)
+def _ig_posts_raw_has_rows() -> AssetCheckResult:
+    df = _read_bronze_df()
+    if df is None or df.is_empty():
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description="No non-empty bronze Parquet found.",
+        )
+    return AssetCheckResult(
+        passed=True,
+        metadata={"row_count": len(df)},
+    )
+
+
+@asset_check(
+    asset="ig_posts_raw",
+    name="ig_posts_raw_has_meta",
+    description=".meta sidecar exists and is valid JSON.",
+)
+def _ig_posts_raw_has_meta() -> AssetCheckResult:
+    path = _latest_bronze_path()
+    if path is None:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description="No bronze Parquet file to check.",
+        )
+    meta_path = path.with_suffix(".parquet.meta")
+    if not meta_path.exists():
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=f"Missing .meta sidecar: {meta_path.name}",
+        )
+    try:
+        meta = json.loads(meta_path.read_text())
+    except json.JSONDecodeError as exc:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=f"Invalid JSON in .meta: {exc}",
+        )
+    required = {"run_id", "actor", "item_count", "downloaded_at", "dataset_id", "input"}
+    missing = required - set(meta)
+    if missing:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=f"Missing .meta fields: {', '.join(sorted(missing))}",
+        )
+    return AssetCheckResult(passed=True, metadata={"fields": list(meta.keys())})
+
+
+@asset_check(
+    asset="ig_posts_raw",
+    name="ig_posts_raw_run_id_not_null",
+    description="No null post IDs in bronze Parquet rows.",
+)
+def _ig_posts_raw_run_id_not_null() -> AssetCheckResult:
+    """Verify every row has a non-null ``id`` (post identifier).
+
+    Null row IDs in bronze would cascade into downstream join failures.
+    """
+    df = _read_bronze_df()
+    if df is None:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description="No bronze Parquet to check.",
+        )
+    if "id" not in df.columns:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description="Bronze Parquet missing 'id' column.",
+        )
+    null_count = df["id"].null_count()
+    if null_count > 0:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=f"{null_count} row(s) with null 'id'.",
+        )
+    return AssetCheckResult(passed=True, metadata={"total_rows": len(df)})
+
+
+# ── Silver checks ──────────────────────────────────────────────────────────
+
+
+@asset_check(
+    asset="ig_posts_slv",
+    name="ig_posts_slv_no_duplicates",
+    required_resource_keys={"duckdb"},
+    description="DISTINCT post_id count = total row count (no duplicates).",
+)
+def _ig_posts_slv_no_duplicates(context) -> AssetCheckResult:
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM silver_ig_posts"
+        ).fetchone()[0] or 0
+        distinct = conn.execute(
+            "SELECT COUNT(DISTINCT post_id) FROM silver_ig_posts"
+        ).fetchone()[0] or 0
+    if total != distinct:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=f"{total} rows, {distinct} distinct post_ids — duplicates found.",
+            metadata={"total_rows": total, "distinct_post_ids": distinct},
+        )
+    return AssetCheckResult(
+        passed=True,
+        metadata={"total_rows": total, "distinct_post_ids": distinct},
+    )
+
+
+@asset_check(
+    asset="ig_posts_slv",
+    name="ig_posts_slv_row_count_bounded",
+    required_resource_keys={"duckdb"},
+    description="Silver rows ≤ bronze rows (dedup guarantee).",
+)
+def _ig_posts_slv_row_count_bounded(context) -> AssetCheckResult:
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        silver_count = conn.execute(
+            "SELECT COUNT(*) FROM silver_ig_posts"
+        ).fetchone()[0] or 0
+    bronze_count: int = 0
+    for path in BRONZE_LAKE.glob("*.parquet"):
+        try:
+            df = pl.read_parquet(path)
+            bronze_count += len(df)
+        except Exception:
+            pass
+    if silver_count > bronze_count:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=(
+                f"Silver ({silver_count}) > bronze ({bronze_count}) "
+                f"— unexpected row expansion."
+            ),
+            metadata={"silver_rows": silver_count, "bronze_rows": bronze_count},
+        )
+    return AssetCheckResult(
+        passed=True,
+        metadata={"silver_rows": silver_count, "bronze_rows": bronze_count},
+    )
+
+
+@asset_check(
+    asset="ig_posts_slv",
+    name="ig_posts_slv_owner_not_null",
+    required_resource_keys={"duckdb"},
+    description="Fail if any owner_username is null — every post must have an owner.",
+)
+def _ig_posts_slv_owner_not_null(context) -> AssetCheckResult:
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM silver_ig_posts").fetchone()[0]
+        null_count = conn.execute(
+            "SELECT COUNT(*) FROM silver_ig_posts WHERE owner_username IS NULL"
+        ).fetchone()[0]
+    null_pct = (null_count / total * 100) if total > 0 else 0
+    if null_pct > 0:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=f"{null_count}/{total} rows ({null_pct:.1f}%) have null owner_username. "
+                         "Profile-scraped rows should fall back to the username column.",
+            metadata={"total_rows": total, "null_count": null_count, "null_pct": null_pct},
+        )
+    return AssetCheckResult(
+        passed=True,
+        metadata={"total_rows": total, "null_count": null_count, "null_pct": null_pct},
+    )
+
+
+# ── Classification checks (the gold_analyses retirement, W9) ───────────────
+#
+# ``gold_analyses`` was retired (ADR-0011): the classification surface is now
+# ``silver_content_classification``, published by the enrichment conform.
+# The JSON-shape check (``ig_posts_gld_valid_json``) was retired rather than
+# replaced: its purpose (result_json parseable; educational/actionable
+# objects carry a summary) is enforced deterministically by conform's typed
+# columns — a conformed row implies the payload parsed.
+
+
+@asset_check(
+    asset="silver_enrichment_conform",
+    name="ig_classification_valid_admiralty",
+    required_resource_keys={"duckdb"},
+    description="Admiralty codes in known set (instagram platform rows).",
+)
+def _ig_classification_valid_admiralty(context) -> AssetCheckResult:
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT post_id, admiralty FROM silver_content_classification "
+            "WHERE platform = 'instagram'"
+        ).fetchall()
+    invalid: list[str] = []
+    null_codes = 0
+    for post_id, admiralty in rows:
+        if admiralty is None:
+            null_codes += 1
+        elif admiralty not in _VALID_ADMIRALTY:
+            invalid.append(f"{post_id}: {admiralty!r}")
+    if invalid:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=f"Invalid admiralty codes: {', '.join(invalid[:5])}",
+            metadata={
+                "total_checked": len(rows),
+                "invalid_count": len(invalid),
+                "null_admiralty": null_codes,
+            },
+        )
+    return AssetCheckResult(
+        passed=True,
+        metadata={
+            "total_checked": len(rows),
+            "null_admiralty": null_codes,
+        },
+    )
+
+
+# ── Label checks (Epic 3, US-L7) ──────────────────────────────────────────
+@asset_check(
+    asset="ig_post_labels",
+    name="ig_labels_current_version",
+    required_resource_keys={"duckdb"},
+    description="No labels computed under an older LABEL_VERSION.",
+)
+def _ig_labels_current_version(context) -> AssetCheckResult:
+    from orchestration.defs.ig_core.slv.labels import LABEL_VERSION
+
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        stale = conn.execute(
+            "SELECT COUNT(*) FROM ig_post_labels WHERE label_version != ?",
+            [LABEL_VERSION],
+        ).fetchone()[0]
+    if stale > 0:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=(
+                f"{stale} labels stamped under an old label_version — "
+                "re-run the ig_post_labels pass to re-judge."
+            ),
+            metadata={"stale_rows": stale, "current_version": LABEL_VERSION},
+        )
+    return AssetCheckResult(
+        passed=True,
+        metadata={"stale_rows": 0, "current_version": LABEL_VERSION},
+    )
+
+
+@asset_check(
+    asset="ig_post_labels",
+    name="ig_labels_coverage",
+    required_resource_keys={"duckdb"},
+    description="Silver posts older than 24h all carry a label.",
+)
+def _ig_labels_coverage(context) -> AssetCheckResult:
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        unlabeled = conn.execute("""
+            SELECT COUNT(*) FROM silver_ig_posts sp
+            WHERE sp.processed_on < now() - INTERVAL 24 HOUR
+              AND NOT EXISTS (
+                  SELECT 1 FROM ig_post_labels l WHERE l.post_id = sp.post_id
+              )
+        """).fetchone()[0]
+    if unlabeled > 0:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=(
+                f"{unlabeled} silver posts older than 24h have no label — "
+                "run the ig_post_labels pass."
+            ),
+            metadata={"unlabeled": unlabeled},
+        )
+    return AssetCheckResult(passed=True, metadata={"unlabeled": 0})
+
+
+@asset_check(
+    asset="ig_posts_slv",
+    name="ig_observations_parity",
+    required_resource_keys={"duckdb"},
+    description="Observations exist for every distinct silver post_id.",
+)
+def _ig_observations_parity(context) -> AssetCheckResult:
+    duckdb = context.resources.duckdb
+    with duckdb.get_connection() as conn:
+        posts = conn.execute("SELECT COUNT(*) FROM silver_ig_posts").fetchone()[0]
+        obs_posts = conn.execute(
+            "SELECT COUNT(DISTINCT post_id) FROM silver_ig_post_observations"
+        ).fetchone()[0]
+    missing = posts - obs_posts
+    if missing > 0:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.WARN,
+            description=(
+                f"{missing} silver posts have no observation row — "
+                "re-run migrate_backfill_observations.py."
+            ),
+            metadata={"silver_posts": posts, "observed_posts": obs_posts},
+        )
+    return AssetCheckResult(
+        passed=True,
+        metadata={"silver_posts": posts, "observed_posts": obs_posts},
+    )
+
+
+ig_checks = [
+    _ig_posts_raw_has_rows,
+    _ig_posts_raw_has_meta,
+    _ig_posts_raw_run_id_not_null,
+    _ig_posts_slv_no_duplicates,
+    _ig_posts_slv_row_count_bounded,
+    _ig_posts_slv_owner_not_null,
+    _ig_classification_valid_admiralty,
+    _ig_labels_current_version,
+    _ig_labels_coverage,
+    _ig_observations_parity,
+]

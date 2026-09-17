@@ -29,14 +29,15 @@ from pathlib import Path
 
 import duckdb
 import polars as pl
-
-from datalake.defs.common.schemas import duckdb_ddl
-from datalake.defs.instagram.assets import (
-    _PROFILE_OBS_COLUMNS,
+from orchestration.defs.ig_core.slv.posts import (
     _classify_bronze,
-    _profile_observations,
     _read_downloaded_at,
 )
+from orchestration.defs.ig_core.slv.profiles import (
+    _PROFILE_OBS_COLUMNS,
+    _profile_observations,
+)
+from orchestration.defs.platform.schemas import duckdb_ddl
 
 BRONZE_DIR = Path("data/lake/bronze")
 DB_PATH = "data/state.duckdb"

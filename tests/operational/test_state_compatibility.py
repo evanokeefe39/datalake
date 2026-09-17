@@ -52,6 +52,10 @@ _STALE_SQLITE_TABLES: dict[str, str] = {
         "Replace with 'creators' + 'profiles'. "
         "Run migrations/migrate_creators_profiles.py"
     ),
+    "prompt_registry": (
+        "DROPPED — provenance now lives on the bronze/silver rows (ADR-0011); "
+        "archived to data/lake/archive/prompt_registry/"
+    ),
 }
 
 # ── Tables that exist in the DB but are not in the catalog ───────────────

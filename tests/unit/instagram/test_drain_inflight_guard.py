@@ -25,24 +25,20 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from dagster import AssetKey, AssetMaterialization, build_asset_context
 
-from datalake.defs.common.resources import DuckDBResource, SQLiteResource
-from datalake.defs.common.schemas import duckdb_ddl
-from datalake.defs.enrichment import classification
-from datalake.defs.enrichment.partitions import (
+from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
+from orchestration.defs.platform.schemas import duckdb_ddl
+import orchestration.defs.ig_enriched.slv.classification as classification
+from orchestration.defs.engine.partitions import (
     HARVESTED_ASSET_NAME,
     SUBMITTED_ASSET_NAME,
     in_flight_partitions,
     partition_key,
 )
-from datalake.defs.instagram import assets as ig_assets
-from datalake.defs.instagram.assets import (
-    DRAIN_WORKLOAD,
-    drain_in_flight_keys,
-    drain_suppressed_post_ids,
-    ig_posts_gen_batches,
-)
-from datalake.defs.instagram.config import GoldConfig
-from datalake.defs.instagram.labels import LABEL_VERSION
+from orchestration.defs.ig_core.slv import posts as ig_assets
+from orchestration.defs.ig_enriched.slv.workloads import drain_in_flight_keys, drain_suppressed_post_ids, ig_posts_gen_batches
+from orchestration.defs.ig_enriched.slv.workloads import DRAIN_WORKLOAD
+from orchestration.defs.ig_enriched.slv.workloads import GoldConfig
+from orchestration.defs.ig_core.slv.labels import LABEL_VERSION
 
 NOW = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
@@ -228,7 +224,7 @@ def test_two_consecutive_runs_enqueue_no_post_twice(drain, conn):
 
 
 def test_one_post_done_others_in_flight_still_no_double_submit(drain, conn):
-    from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
+    from orchestration.defs.ig_enriched.slv.prompts import CURRENT_PROMPT_HASH
 
     for pid in ("p1", "p2", "p3"):
         _post(conn, pid)
@@ -373,7 +369,7 @@ def test_candidate_filters_still_honoured(drain, conn):
 
 
 def test_post_ids_bypass_bypasses_all_guards(drain, conn):
-    from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
+    from orchestration.defs.ig_enriched.slv.prompts import CURRENT_PROMPT_HASH
 
     _post(conn, "p1")
     _label(conn, "p1")
@@ -402,7 +398,7 @@ def test_skip_message_names_in_flight_work(drain, conn, caplog):
     fake = FakeInstance()
     fake.submit(["p1", "p2"])
 
-    with caplog.at_level("WARNING", logger="datalake.defs.instagram.assets"):
+    with caplog.at_level("WARNING", logger="orchestration.defs.ig_core.slv.posts"):
         result = drain(instance=fake)
 
     assert _enqueued(result) == 0
@@ -415,7 +411,7 @@ def test_skip_message_names_in_flight_work(drain, conn, caplog):
 
 
 def test_empty_corpus_says_nothing_to_do(drain, conn, caplog):
-    with caplog.at_level("INFO", logger="datalake.defs.instagram.assets"):
+    with caplog.at_level("INFO", logger="orchestration.defs.ig_core.slv.posts"):
         result = drain(instance=FakeInstance())
     assert _enqueued(result) == 0
     assert any("nothing to do" in r.getMessage() for r in caplog.records)
@@ -457,7 +453,7 @@ def test_suppression_uses_in_flight_partitions_keys(drain, conn):
 
 
 def test_completion_guard_reads_silver_classification(drain, conn):
-    from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
+    from orchestration.defs.ig_enriched.slv.prompts import CURRENT_PROMPT_HASH
 
     _post(conn, "p_done")
     _label(conn, "p_done")

@@ -24,7 +24,7 @@ from unittest.mock import patch
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.instagram.assets import ig_posts_slv
+from orchestration.defs.ig_core.slv.posts import ig_posts_slv
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 
@@ -35,7 +35,7 @@ def _write_meta(path, downloaded_at: str) -> None:
 
 
 def _run(tmp_path, ops, duckdb):
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         return ig_posts_slv(context)
 

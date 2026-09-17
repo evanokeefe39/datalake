@@ -2,15 +2,15 @@
 
 import json
 
-from datalake.defs.enrichment.facets import parse_universal_response
-from datalake.defs.enrichment.growth_facets_schema import (
+from orchestration.defs.ig_enriched.slv.visual import parse_universal_response
+from orchestration.defs.ig_enriched.slv.schemas import (
     GROWTH_FACETS_JSON_SCHEMA,
     RESERVED_GOLD_KEYS,
     VISUAL_FACET_FIELDS,
     validate_growth_facets,
     validate_visual_facets,
 )
-from datalake.defs.enrichment.prompts import (
+from orchestration.defs.ig_enriched.slv.prompts import (
     build_growth_facets_prompt,
     compute_facets_prompt_hash,
 )

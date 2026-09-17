@@ -24,15 +24,15 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from datalake.defs.common.schemas import MODEL_LEGACY_NULL
-from datalake.defs.enrichment import classification
-from datalake.defs.enrichment import conform as conform_mod
-from datalake.defs.enrichment.conform import (
+from orchestration.defs.platform.schemas import MODEL_LEGACY_NULL
+import orchestration.defs.ig_enriched.slv.classification as classification
+import orchestration.defs.engine.silver_rt as conform
+from orchestration.defs.engine.silver_rt import (
     SILVER_CONTENT_CLASSIFICATION,
     TABLE_SCHEMAS,
     conform,
 )
-from datalake.defs.enrichment.landing import (
+from orchestration.defs.engine.landing import (
     WORKLOAD_CONTENT_CLASSIFICATION,
     land_response,
 )

@@ -1,6 +1,6 @@
 # Growth facets schema (V3) — canonical lock (US-EFAC-1)
 
-**Canonical module:** `src/datalake/defs/enrichment/growth_facets_schema.py`
+**Canonical module:** ``orchestration.defs.engine/`growth_facets_schema.py`
 **Validator:** `validate_growth_facets(obj) -> list[str]` (empty list = valid)
 **Version constant:** `GROWTH_FACETS_SCHEMA_VERSION = "3"` (AC6: fold into the
 owning pass's `prompt_hash` so facet JSON written under an older schema is
@@ -127,7 +127,7 @@ product intent:
   JSON carries `GROWTH_FACETS_SCHEMA_VERSION`. SETTLED (2026-09-09; layer and
   naming updated 2026-09-10 for ADR-0011): the fix is structural — the legacy
   single-table store (`gold_growth_facets`, where the text pass overwrote the
-  visual pass's hash, `defs/enrichment/facets_batch.py:250-256`) is replaced by
+  visual pass's hash, ``orchestration.defs.engine/`facets_batch.py:250-256`) is replaced by
   the four-table split (`silver_visual_annotations` /
   `silver_visual_summaries` / `silver_text_annotations` /
   `silver_text_summaries`), each row carrying its own full provenance metadata

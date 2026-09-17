@@ -14,8 +14,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from datalake.defs.enrichment import adapters, facets_batch, seam
-from datalake.defs.enrichment.seam import (
+import orchestration.defs.engine.facets_batch as facets_batch
+import orchestration.defs.engine.provider as seam
+import orchestration.defs.engine.service_backed as adapters
+from orchestration.defs.engine.provider import (
     RETRYABLE,
     TERMINAL,
     UNKNOWN,
@@ -41,7 +43,7 @@ ITEMS = [
 
 
 def gb():
-    return importlib.import_module("datalake.defs.enrichment.gemini_batch")
+    return importlib.import_module("orchestration.defs.engine.service_backed")
 
 
 class FakeResponse:

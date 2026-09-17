@@ -6,8 +6,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from datalake.defs.enrichment import adapters, seam
-from datalake.defs.enrichment.seam import (
+import orchestration.defs.engine.service_backed as adapters
+from orchestration.defs.engine import provider as seam
+from orchestration.defs.engine.provider import (
     COMPLETED,
     FAILED,
     PENDING,
@@ -159,7 +160,7 @@ def gemini_jobs(monkeypatch):
     """Monkeypatch the repo's REAL Gemini verbs on the gemini_batch module —
     the adapter must reuse them, so the fakes sit exactly where production
     code paths sit."""
-    from datalake.defs.enrichment import gemini_batch
+    import orchestration.defs.engine.service_backed as gemini_batch
 
     state = {"submitted": None, "polled": [], "retrieved": []}
 
@@ -238,7 +239,7 @@ def test_direct_batch_normalize_unknown_state_raises(gemini_jobs):
 
 
 def test_direct_batch_health_is_tier_gate(monkeypatch):
-    from datalake.defs.instagram.config import GeminiTier, GeminiTierConfig
+    from orchestration.defs.ig_core.bnz.scrape import GeminiTier, GeminiTierConfig
 
     a = adapters.DirectBatchAdapter()
     monkeypatch.setattr(GeminiTierConfig, "detect", lambda: GeminiTierConfig(GeminiTier.FREE))
@@ -248,7 +249,7 @@ def test_direct_batch_health_is_tier_gate(monkeypatch):
 
 
 def test_direct_batch_detect_provider(monkeypatch):
-    from datalake.defs.instagram.config import GeminiTier, GeminiTierConfig
+    from orchestration.defs.ig_core.bnz.scrape import GeminiTier, GeminiTierConfig
 
     monkeypatch.setattr(GeminiTierConfig, "detect", lambda: GeminiTierConfig(GeminiTier.TIER_2))
     assert adapters.detect_provider() == "direct_batch"

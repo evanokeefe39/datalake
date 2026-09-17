@@ -50,14 +50,14 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Mapping
 
 import duckdb
 import polars as pl
-
-from datalake.defs.enrichment import classification, landing
+from orchestration.defs.engine import landing
+from orchestration.defs.ig_enriched.slv import classification
 
 MIGRATION_RUN_ID = "legacy-gold-classification-backfill"
 """Deterministic migration run id (ADR-0014 D5 provenance). Constant so the

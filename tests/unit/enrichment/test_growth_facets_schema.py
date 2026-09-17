@@ -1,7 +1,7 @@
 """US-EFAC-1: V3 growth-facet schema lock — validator unit tests.
 
 Proves the canonical JSON-Schema module
-(``datalake.defs.enrichment.growth_facets_schema``):
+(``orchestration.defs.ig_enriched.slv.schemas``):
 
 - a fully valid assembled payload passes;
 - reserved gold keys (``domain`` / ``format`` / a ``*_json`` key) are
@@ -14,7 +14,7 @@ Proves the canonical JSON-Schema module
 
 from __future__ import annotations
 
-from datalake.defs.enrichment.growth_facets_schema import (
+from orchestration.defs.ig_enriched.slv.schemas import (
     BRAND_SAFETY_FLAGS,
     GROWTH_FACETS_JSON_SCHEMA,
     GROWTH_FACETS_SCHEMA_VERSION,
@@ -192,6 +192,6 @@ class TestSchemaShape:
 
 class TestHermetic:
     def test_seam_violations_empty(self):
-        from datalake.defs.enrichment.media_upload import seam_violations
+        from orchestration.defs.ig_enriched.slv.checks import seam_violations
 
         assert seam_violations() == []

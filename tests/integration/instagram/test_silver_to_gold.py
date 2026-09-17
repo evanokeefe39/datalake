@@ -8,15 +8,16 @@ from __future__ import annotations
 
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
+from orchestration.defs.platform.resources import SQLiteResource
+from orchestration.defs.ig_core.slv.posts import ig_posts_slv
+from orchestration.defs.ig_enriched.slv.workloads import ig_posts_gen_batches
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 
 def _run_silver(duckdb, ops, bronze_dir):
     from unittest.mock import patch
 
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", bronze_dir):
         from dagster import build_asset_context
 
         ctx = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
@@ -26,7 +27,7 @@ def _run_silver(duckdb, ops, bronze_dir):
 def _run_enqueue(duckdb, ops):
     from dagster import DagsterInstance, build_asset_context
 
-    from datalake.defs.instagram.config import GoldConfig
+    from orchestration.defs.ig_core.bnz.scrape import GoldConfig
 
     instance = DagsterInstance.ephemeral()
     return ig_posts_gen_batches(
@@ -53,7 +54,7 @@ def test_enqueue_reads_silver_output(tmp_path):
     result = _run_silver(duckdb, ops, bronze_dir)
     from datetime import datetime, timezone
 
-    from datalake.defs.instagram.labels import LABEL_VERSION
+    from orchestration.defs.ig_core.slv.labels import LABEL_VERSION
 
     # Label pass (labels-driven admission): approve p1 for enrichment
     now = datetime.now(timezone.utc)
@@ -89,8 +90,8 @@ def test_enqueue_skips_already_completed(tmp_path):
     """
     from datetime import datetime, timezone
 
-    from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
-    from datalake.defs.instagram.labels import LABEL_VERSION
+    from orchestration.defs.ig_enriched.slv.prompts import CURRENT_PROMPT_HASH
+    from orchestration.defs.ig_core.slv.labels import LABEL_VERSION
 
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
@@ -98,7 +99,7 @@ def test_enqueue_skips_already_completed(tmp_path):
     # Seed silver
     now = datetime.now(timezone.utc)
     with duckdb.get_connection() as conn:
-        from datalake.defs.enrichment.classification import CLASSIFICATION_DDL
+        from orchestration.defs.ig_enriched.slv.classification import CLASSIFICATION_DDL
 
         conn.execute(CLASSIFICATION_DDL)
         conn.execute("""

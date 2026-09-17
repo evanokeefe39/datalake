@@ -38,12 +38,15 @@ Part of the [architecture documentation](../README.md).
 | [0011](0011-enrichment-layered-model.md) | **The v3 layer model**: bronze verbatim → six `silver_*` conform tables → four gold marts; key `platform` not `domain` | Accepted (**not yet implemented**) | 2026-09-10 |
 | [0012](0012-dagster-native-orchestration.md) | Orchestration state is Dagster-native; retire the `ops.sqlite` queue | Accepted (**not yet implemented**) | 2026-09-10 |
 | [0013](0013-seam-keeps-no-ledger.md) | The seam keeps **no ledger** — the service owns its job store (Dagster polls it), Dagster owns orchestration state | Accepted (**not yet implemented**) | 2026-09-10 |
-| [0014](0014-orchestration-dynamics.md) | The orchestration **dynamics**: the harvested driver, the retry driver, the quarantine disposition, and a partition key whose round survives derivation | Proposed (**not yet implemented**) | 2026-09-14 |
+| [0014](0014-orchestration-dynamics.md) | The orchestration **dynamics**: the harvested driver, the retry driver, the quarantine disposition, and a partition key whose round survives derivation | Accepted — D1's writer amended by [0016](0016-discovery-and-guard-share-one-derivation.md) | 2026-09-14 |
+| [0015](0015-repository-layout.md) | **The repository layout**: a uv workspace (`services/`, `packages/`), module names that describe a role and never a provider, and the eight conventions the tree encodes | Accepted | 2026-09-15 |
+| [0016](0016-discovery-and-guard-share-one-derivation.md) | Discovery and the double-submit guard read **one** in-flight derivation; the submit stage materializes its own placeholder | Accepted | 2026-09-15 |
 
-These are the current target and are **not built yet** — read them alongside
-[`../README.md`](../README.md)'s current-vs-target table. ADR-0013 reconciles
-ADR-0012 with the seam by removing the one orchestration-shaped table it had
-left unspecified.
+ADR-0011, 0012 and 0013 **landed 2026-09-15** (W0–W9): the layered model is live,
+the `ops.sqlite` queue is retired, and no ledger exists. ADR-0013 reconciled
+ADR-0012 with the seam by removing the one orchestration-shaped table it had left
+unspecified. ADR-0014's dynamics are live except D1's writer, which ADR-0016
+amends. Read [`../README.md`](../README.md) for the as-built shape.
 
 ## Template
 

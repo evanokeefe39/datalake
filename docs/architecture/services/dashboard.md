@@ -6,7 +6,7 @@ The dashboard is a FastAPI HTTP server (`dashboard/server.py`, run on port 3002)
 
 ## The architectural rule: thin projector
 
-Metrics are computed in exactly one place — the canonical serving views in `src/datalake/defs/serving/assets.py`. The server is a **thin projector**: it may `SELECT` from views and add `WHERE`/`ORDER BY`/`LIMIT`, then shape rows to JSON. It must never contain `AVG`, `SUM`, `GROUP BY`, or window functions. This is ratified in [ADR-0005: thin-projector serving](../adr/0005-thin-projector-serving.md) and enforced by the grep guard `tests/unit/dashboard/test_no_aggregation_in_server.py`, which fails if aggregation expressions (or the deleted Python fan-out helpers) reappear in `server.py`. Point-in-time semantics for those metrics are specified in ADR-0006.
+Metrics are computed in exactly one place — the canonical serving views in ``orchestration.defs.serving/{dims,metrics,marts,views}.py``. The server is a **thin projector**: it may `SELECT` from views and add `WHERE`/`ORDER BY`/`LIMIT`, then shape rows to JSON. It must never contain `AVG`, `SUM`, `GROUP BY`, or window functions. This is ratified in [ADR-0005: thin-projector serving](../adr/0005-thin-projector-serving.md) and enforced by the grep guard `tests/unit/dashboard/test_no_aggregation_in_server.py`, which fails if aggregation expressions (or the deleted Python fan-out helpers) reappear in `server.py`. Point-in-time semantics for those metrics are specified in ADR-0006.
 
 ## What it reads (and must never read)
 
@@ -25,8 +25,8 @@ Both are the one place the server talks to the outside world (Instagram CDN) at 
 
 ## Where to change it
 
-- **New or changed metric** → `src/datalake/defs/serving/assets.py` (add/change a view), then project it in `server.py`. Never compute the metric in the server.
+- **New or changed metric** → ``orchestration.defs.serving/{dims,metrics,marts,views}.py`` (add/change a view), then project it in `server.py`. Never compute the metric in the server.
 - **Endpoint/shape changes** → `dashboard/server.py`; unit tests live in `tests/unit/dashboard/`.
-- **Registry (creators/profiles) behavior** → `src/datalake/defs/instagram/creators.py`.
+- **Registry (creators/profiles) behavior** → ``opsdb.roster``.
 
 Note: a view-shape change is a server change — endpoints are tied to view shapes by design (ADR-0005, consequences). The dashboard's `/api/overview` and weekly-summary aggregations already moved into `v_overview` and `v_standout_calendar`; do not let them drift back into Python.

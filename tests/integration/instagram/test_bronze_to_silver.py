@@ -18,7 +18,7 @@ import polars as pl
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.instagram.assets import ig_posts_slv
+from orchestration.defs.ig_core.slv.posts import ig_posts_slv
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 # ── Test: full schema round-trip ──────────────────────────────────────────
@@ -43,7 +43,7 @@ def test_full_schema_round_trip(tmp_path, ops):
     write_ig_bronze(tmp_path / "ds_001.parquet", [row])
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
@@ -88,7 +88,7 @@ def test_corrupt_file_skipped(tmp_path, ops, caplog):
 
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
@@ -121,7 +121,7 @@ def test_extra_bronze_columns_dropped(tmp_path, ops):
 
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 
@@ -167,7 +167,7 @@ def test_silver_rows_leq_bronze_rows(tmp_path, ops):
 
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
 
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
         context = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         result = ig_posts_slv(context)
 

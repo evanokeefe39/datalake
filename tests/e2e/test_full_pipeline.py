@@ -10,14 +10,16 @@ from unittest.mock import patch
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
-from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
+from orchestration.defs.platform.resources import SQLiteResource
+from orchestration.defs.ig_core.slv.posts import ig_posts_slv
+from orchestration.defs.ig_enriched.slv.workloads import ig_posts_gen_batches
+from orchestration.defs.serving.dims import dim_date, profile_dimension
+from orchestration.defs.serving.views import v_post_detail
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
 
 def _run_silver(duckdb, ops, bronze_dir):
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", bronze_dir):
         ctx = build_asset_context(resources={"duckdb": duckdb, "ops": ops})
         return ig_posts_slv(ctx)
 
@@ -35,7 +37,7 @@ def _seed_labels(duckdb, post_ids):
     """Seed ig_post_labels with approved enrich_decisions for the given posts."""
     from datetime import datetime, timezone
 
-    from datalake.defs.instagram.labels import LABEL_VERSION
+    from orchestration.defs.ig_core.slv.labels import LABEL_VERSION
 
     with duckdb.get_connection() as conn:
         conn.execute("""
@@ -79,7 +81,7 @@ def test_full_pipeline_happy_path(tmp_path):
 
     # Setup serving schema — v_post_detail reads silver_content_classification
     # (the gold_analyses retirement, W9)
-    from datalake.defs.common.schemas import duckdb_ddl
+    from orchestration.defs.platform.schemas import duckdb_ddl
 
     with duckdb.get_connection() as conn:
         conn.execute(duckdb_ddl("silver_content_classification"))
@@ -129,7 +131,7 @@ def test_empty_gold_does_not_block_serving(tmp_path):
 
     # Setup serving schema — silver_content_classification replaces the
     # retired gold_analyses (W9); empty table → NULL gold columns.
-    from datalake.defs.common.schemas import duckdb_ddl
+    from orchestration.defs.platform.schemas import duckdb_ddl
 
     with duckdb.get_connection() as conn:
         conn.execute(duckdb_ddl("silver_content_classification"))

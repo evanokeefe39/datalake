@@ -26,13 +26,13 @@ from dagster import (
     build_sensor_context,
 )
 
-from datalake.defs.enrichment import seam
-from datalake.defs.enrichment.harvest import discover_handles
-from datalake.defs.enrichment.partitions import (
+import orchestration.defs.engine.provider as seam
+from orchestration.defs.engine.harvest import discover_handles
+from orchestration.defs.engine.partitions import (
     SUBMITTED_ASSET_NAME,
     partition_key,
 )
-from datalake.defs.enrichment.sensor import enrichment_harvest_sensor
+from orchestration.defs.engine.sensor import enrichment_harvest_sensor
 
 WORKLOAD = "content_classification"
 
@@ -87,7 +87,7 @@ def fake_adapter(monkeypatch: pytest.MonkeyPatch):
     def factory(**kwargs):
         return holder["adapter"]
 
-    adapters_mod = importlib.import_module("datalake.defs.enrichment.adapters")
+    adapters_mod = importlib.import_module("orchestration.defs.engine.service_backed")
     seam.register_adapter("fake_sensor_probe", factory)
     monkeypatch.setattr(adapters_mod, "detect_provider", lambda: "fake_sensor_probe")
 
@@ -262,7 +262,7 @@ class TestSharedDerivation:
         partitions.in_flight_partitions, never a second copy."""
         import inspect
 
-        from datalake.defs.enrichment import sensor as sensor_mod
+        import orchestration.defs.engine.sensor as sensor_mod
 
         src = inspect.getsource(sensor_mod.enrichment_harvest_sensor)
         assert "in_flight_partitions(instance)" in src
@@ -272,7 +272,7 @@ class TestSharedDerivation:
         harvest run's responsibilities — the sensor only triggers."""
         import inspect
 
-        from datalake.defs.enrichment import sensor as sensor_mod
+        import orchestration.defs.engine.sensor as sensor_mod
 
         src = inspect.getsource(sensor_mod)
         for forbidden in (

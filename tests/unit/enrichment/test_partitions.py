@@ -18,7 +18,7 @@ from dagster import (
     DynamicPartitionsDefinition,
 )
 
-from datalake.defs.enrichment.partitions import (
+from orchestration.defs.engine.partitions import (
     HARVESTED_ASSET_NAME,
     HARVESTED_PARTITIONS,
     SUBMITTED_ASSET_NAME,

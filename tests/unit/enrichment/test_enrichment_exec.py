@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from datalake.defs.common.resources import DuckDBResource, SQLiteResource
-from datalake.defs.enrichment import gemini_batch
-from datalake.defs.enrichment.batch import _ensure_schema
-from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH, IG_GOLD_PROMPT
-from datalake.defs.enrichment.registry import (
+from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
+import orchestration.defs.engine.service_backed as gemini_batch
+from orchestration.defs.engine.batch import _ensure_schema
+from orchestration.defs.ig_enriched.slv.prompts import CURRENT_PROMPT_HASH, IG_GOLD_PROMPT
+from orchestration.defs.ig_enriched.slv.prompts import (
     is_current_prompt_registered,
     register_current_prompt,
     register_prompt,
@@ -108,7 +108,7 @@ class TestChunking:
 class TestSubmitTierGate:
     def test_submit_refuses_free_tier(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GEMINI_TIER", "free")
-        from datalake.defs.common.resources import GeminiResource
+        from orchestration.defs.platform.resources import GeminiResource
 
         gemini = GeminiResource(api_key="fake")
         with pytest.raises(RuntimeError, match="Tier 1"):
@@ -119,7 +119,7 @@ class TestSubmitTierGate:
 
     def test_submit_refuses_empty_requests(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GEMINI_TIER", "tier1")
-        from datalake.defs.common.resources import GeminiResource
+        from orchestration.defs.platform.resources import GeminiResource
 
         gemini = GeminiResource(api_key="fake")
         with pytest.raises(ValueError):
@@ -148,7 +148,7 @@ class TestJobState:
 
     def test_retrieve_returns_inline_results_on_terminal(self, monkeypatch):
         monkeypatch.setenv("GEMINI_TIER", "tier1")
-        from datalake.defs.common.resources import GeminiResource
+        from orchestration.defs.platform.resources import GeminiResource
 
         class FakeState:
             def __init__(self, v):
@@ -174,7 +174,7 @@ class TestJobState:
 
     def test_retrieve_raises_on_non_terminal(self, monkeypatch):
         monkeypatch.setenv("GEMINI_TIER", "tier1")
-        from datalake.defs.common.resources import GeminiResource
+        from orchestration.defs.platform.resources import GeminiResource
 
         class FakeJob:
             state = None
@@ -189,7 +189,7 @@ class TestBatchMultimodal:
     """Media wiring in the gemini-batch path: token accounting + file Parts."""
 
     def test_media_input_tokens_counts_images_and_video(self):
-        from datalake.defs.enrichment.gemini_batch import _media_input_tokens
+        from orchestration.defs.engine.service_backed import _media_input_tokens
 
         assert _media_input_tokens(None) == 0
         assert _media_input_tokens([]) == 0
@@ -205,7 +205,7 @@ class TestBatchMultimodal:
         assert _media_input_tokens([{"mime_type": "video/mp4"}]) == 60 * 98
 
     def test_request_estimate_tokens_includes_media(self):
-        from datalake.defs.enrichment.gemini_batch import request_estimate_tokens
+        from orchestration.defs.engine.service_backed import request_estimate_tokens
 
         text_only = request_estimate_tokens({"prompt": "a" * 40})
         with_media = request_estimate_tokens(

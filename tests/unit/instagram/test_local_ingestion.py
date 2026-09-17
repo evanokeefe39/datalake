@@ -18,10 +18,11 @@ import pytest
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.enrichment.media_cache import seed_media_from_file, url_hash
-from datalake.defs.instagram.assets import ig_posts_local_raw, ig_posts_slv
-from datalake.defs.instagram.config import LOCAL_INGEST_DIR
-from datalake.defs.instagram.creators import (
+from orchestration.defs.engine.media import seed_media_from_file, url_hash
+from orchestration.defs.ig_core.bnz.scrape import ig_posts_local_raw
+from orchestration.defs.ig_core.slv.posts import ig_posts_slv
+from orchestration.defs.ig_core.bnz.scrape import LOCAL_INGEST_DIR
+from opsdb.roster import (
     AD_HOC_LIMIT,
     add_profile,
     create_creator,
@@ -31,8 +32,8 @@ from datalake.defs.instagram.creators import (
 )
 from tests.fixtures.ig_bronze_factories import make_ig_bronze_row, write_ig_bronze
 
-ig_assets = importlib.import_module("datalake.defs.instagram.assets")
-media_cache_mod = importlib.import_module("datalake.defs.enrichment.media_cache")
+ig_assets = importlib.import_module("orchestration.defs.ig_core.slv.posts")
+media_cache_mod = importlib.import_module("orchestration.defs.engine.media")
 
 # ── Fixtures / helpers ──────────────────────────────────────────────────────
 
@@ -94,7 +95,7 @@ def local_env(tmp_path, monkeypatch):
     bronze.mkdir()
     ingest.mkdir()
     media.mkdir(parents=True)
-    # NOTE: datalake.defs.__init__ re-exports shadow the submodule attributes,
+    # NOTE: orchestration.defs.__init__ re-exports shadow the submodule attributes,
     # so string-based monkeypatch paths fail — patch module objects directly.
     monkeypatch.setattr(ig_assets, "BRONZE_LAKE", bronze)
     monkeypatch.setattr(
@@ -394,8 +395,8 @@ def test_silver_dedup_prefers_newer_scrape_across_producers(tmp_path, ops):
         json.dumps({"downloaded_at": "2026-06-01T00:00:00+00:00"}), encoding="utf-8"
     )
 
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        with patch("datalake.defs.instagram.assets.cache_media_bytes", lambda *a, **k: None):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.engine.media.cache_media_bytes", lambda *a, **k: None):
             result = ig_posts_slv(
                 build_asset_context(resources={"duckdb": duckdb, "ops": ops})
             )

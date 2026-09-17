@@ -15,18 +15,19 @@ a fake seam adapter — the acceptance contract is behavioral:
 import pytest
 from dagster import AssetKey, AssetMaterialization, DagsterInstance
 
-from datalake.defs.common.resources import DuckDBResource, SQLiteResource
-from datalake.defs.enrichment import harvest, submit
-from datalake.defs.enrichment.landing import WORKLOAD_CONTENT_CLASSIFICATION, read_responses
-from datalake.defs.enrichment.partitions import (
+from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
+import orchestration.defs.engine.harvest as harvest
+import orchestration.defs.engine.submit as submit
+from orchestration.defs.engine.landing import WORKLOAD_CONTENT_CLASSIFICATION, read_responses
+from orchestration.defs.engine.partitions import (
     MAX_ROUNDS,
     account,
     failure_set,
     in_flight_partitions,
     post_partition_state,
 )
-from datalake.defs.enrichment.seam import DEFAULT_JOBSPEC, Result
-from datalake.defs.instagram import assets as ig_assets
+from orchestration.defs.engine.provider import DEFAULT_JOBSPEC, Result
+from orchestration.defs.ig_core.slv import posts as ig_assets
 
 WORKLOAD = WORKLOAD_CONTENT_CLASSIFICATION
 SUBMITTED = AssetKey("enrichment_submitted")
@@ -220,7 +221,7 @@ def test_accounting_identity_holds_over_corpus(instance, tmp_path):
 
 @pytest.fixture()
 def dbs(tmp_path):
-    from datalake.defs.common.schemas import duckdb_ddl, sqlite_ddl
+    from opsdb.schema import sqlite_ddl
 
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
     duckdb = DuckDBResource(database=str(tmp_path / "state.duckdb"))
@@ -311,7 +312,7 @@ def test_non_terminal_handle_is_skipped_not_polled_forever(instance):
 def test_no_queue_read_anywhere_on_target_path():
     import inspect
 
-    from datalake.defs.enrichment import batch as batch_mod
+    import orchestration.defs.engine.provider as batch_mod
 
     for mod in (submit, harvest, ig_assets):
         src = inspect.getsource(mod)

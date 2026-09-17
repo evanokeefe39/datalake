@@ -86,7 +86,7 @@ Three storage backends, each chosen for its access pattern:
 ## Domain-based structure
 
 ```
-src/datalake/defs/
+`orchestration.defs/`
 ├── common/          # PolarsIOManager, ApifyResource, GeminiResource, SQLiteResource, lake.py, schedules.py
 ├── enrichment/      # batch.py (batch coordination), assets.py (gold_analyses AssetSpec + checks), prompts.py
 ├── instagram/       # ig_posts_raw, ig_posts_slv, ig_posts_gen_batches, config

@@ -30,6 +30,6 @@ live operational tooling) so the ops surface stays uncluttered. Importable as
 ## Notes
 
 - Never hand-write `CREATE TABLE` in a migration: add specs to
-  `src/datalake/defs/common/schemas.py` and use `duckdb_ddl()` / `sqlite_ddl()`.
+  ``orchestration.defs.platform.schemas` (DuckDB) + `opsdb.schema` (SQLite)` and use `duckdb_ddl()` / `sqlite_ddl()`.
 - ADR-0012 retires `batch_jobs` / `batch_items` / `dead_letter` /
   `facets_batch_jobs`; no migration here may recreate them.

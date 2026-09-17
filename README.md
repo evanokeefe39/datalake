@@ -42,7 +42,7 @@ another provider (or Gemini batch) is a config change. Today the repo runs two
 independent lifecycles instead; convergence is `tasks/plans/inference-service-seam.md`.
 
 ```
-src/datalake/defs/
+`orchestration.defs/`
 ├── common/       # Resources, schedules, path helpers, lake paths
 ├── enrichment/   # batch, analysis, prompts (Dagster-native enrichment jobs)
 ├── instagram/    # ig_posts_raw, ig_posts_slv, ig_posts_gen_batches, config

@@ -15,18 +15,16 @@ from datetime import datetime, timezone
 
 from dagster import AssetKey, AssetMaterialization, build_asset_context
 
-from datalake.defs.common.resources import DuckDBResource, SQLiteResource
-from datalake.defs.enrichment import classification as classification_mod
-from datalake.defs.enrichment.partitions import (
+from orchestration.defs.platform.resources import DuckDBResource, SQLiteResource
+import orchestration.defs.ig_enriched.slv.classification as classification
+from orchestration.defs.engine.partitions import (
     HARVESTED_ASSET_NAME,
     SUBMITTED_ASSET_NAME,
     partition_key,
 )
-from datalake.defs.instagram import assets as ig_assets_mod
-from datalake.defs.instagram.assets import (
-    DRAIN_WORKLOAD,
-    ig_posts_gen_batches,
-)
+from orchestration.defs.ig_core.slv import posts as ig_assets_mod
+from orchestration.defs.ig_enriched.slv.workloads import ig_posts_gen_batches
+from orchestration.defs.ig_enriched.slv.workloads import DRAIN_WORKLOAD
 
 
 def _run_drain(instance, *args, **kwargs):
@@ -197,7 +195,7 @@ def _seed_labels(db, rows):
     """Seed ig_post_labels with (post_id, decision, method, version) tuples."""
     from datetime import timezone as _tz
 
-    from datalake.defs.instagram.labels import LABEL_VERSION
+    from orchestration.defs.ig_core.slv.labels import LABEL_VERSION
 
     with db.get_connection() as conn:
         for post_id, decision, method, version in rows:
@@ -252,7 +250,7 @@ def _run_enqueue(tmp_path, config=None):
     no longer consults GeminiTierConfig (ADR-0009/0012 retirement) — the
     submit stage owns the execution mode and the provider readiness gate.
     """
-    from datalake.defs.instagram.config import GoldConfig
+    from orchestration.defs.ig_core.bnz.scrape import GoldConfig
 
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
@@ -286,7 +284,7 @@ def test_enqueue_surfaces_seam_mode_whole_corpus(tmp_path):
     WHEN ig_posts_gen_batches runs
     THEN the drain still surfaces ``seam`` mode.
     """
-    from datalake.defs.instagram.config import GoldConfig
+    from orchestration.defs.ig_core.bnz.scrape import GoldConfig
 
     _result, _instance, mode = _run_enqueue(
         tmp_path, config=GoldConfig(whole_corpus=True)
@@ -312,7 +310,7 @@ def test_enqueue_tolerates_prefer_interactive_opt_out(tmp_path):
     interactive opt-out is inert at the drain; execution mode is decided by
     the submit stage through the seam.
     """
-    from datalake.defs.instagram.config import GoldConfig
+    from orchestration.defs.ig_core.bnz.scrape import GoldConfig
 
     _result, _instance, mode = _run_enqueue(
         tmp_path, config=GoldConfig(prefer_interactive=True)
@@ -327,7 +325,7 @@ def test_enqueue_skips_current_prompt_enriched(tmp_path):
     WHEN ig_posts_gen_batches runs
     THEN that post is not re-batched (only stale-prompt rows re-enqueue, US-L5).
     """
-    from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
+    from orchestration.defs.ig_enriched.slv.prompts import CURRENT_PROMPT_HASH
 
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)
@@ -435,8 +433,8 @@ def test_enqueue_post_ids_bypasses_guards(tmp_path):
     WHEN ig_posts_gen_batches runs with post_ids
     THEN the requested posts are batched regardless (explicit bypass).
     """
-    from datalake.defs.enrichment.prompts import CURRENT_PROMPT_HASH
-    from datalake.defs.instagram.config import GoldConfig
+    from orchestration.defs.ig_enriched.slv.prompts import CURRENT_PROMPT_HASH
+    from orchestration.defs.ig_core.bnz.scrape import GoldConfig
 
     db = _make_duckdb(tmp_path)
     ops = _make_ops_db(tmp_path)

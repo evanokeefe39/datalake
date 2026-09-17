@@ -13,9 +13,11 @@ import pytest
 from dagster import DagsterInstance, build_asset_context
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.instagram.assets import ig_posts_gen_batches, ig_posts_slv
-from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
+from orchestration.defs.platform.resources import SQLiteResource
+from orchestration.defs.ig_core.slv.posts import ig_posts_slv
+from orchestration.defs.ig_enriched.slv.workloads import ig_posts_gen_batches
+from orchestration.defs.serving.dims import dim_date, profile_dimension
+from orchestration.defs.serving.views import v_post_detail
 
 SAMPLE_PARQUET = Path(__file__).resolve().parent.parent / "data" / "bronze_sample.parquet"
 
@@ -42,7 +44,7 @@ def test_silver_deduplication_preserves_all_posts(db, ops_db, bronze_dir):
     WHEN silver runs
     THEN all posts appear in silver with expected columns.
     """
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", bronze_dir):
         ctx = build_asset_context(resources={"duckdb": db, "ops": ops_db})
         result = ig_posts_slv(ctx)
 
@@ -59,20 +61,20 @@ def test_enqueue_enqueues_silver_posts(db, ops_db, bronze_dir):
     """
     # Setup state table for the enqueue NOT EXISTS guard (classification
     # replaces the retired gold_analyses, W9)
-    from datalake.defs.common.schemas import duckdb_ddl
+    from orchestration.defs.platform.schemas import duckdb_ddl
 
     with db.get_connection() as conn:
         conn.execute(duckdb_ddl("silver_content_classification"))
 
     # Run silver
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", bronze_dir):
         ctx = build_asset_context(resources={"duckdb": db, "ops": ops_db})
         ig_posts_slv(ctx)
 
     # Label pass (labels-driven admission): approve every silver post
     from datetime import datetime, timezone
 
-    from datalake.defs.instagram.labels import LABEL_VERSION
+    from orchestration.defs.ig_core.slv.labels import LABEL_VERSION
 
     now = datetime.now(timezone.utc)
     with db.get_connection() as conn:
@@ -117,12 +119,12 @@ def test_serving_runs_on_empty_classification(db, ops_db, bronze_dir):
     THEN views are created successfully.
     """
     # Setup serving schema
-    from datalake.defs.common.schemas import duckdb_ddl
+    from orchestration.defs.platform.schemas import duckdb_ddl
 
     with db.get_connection() as conn:
         conn.execute(duckdb_ddl("silver_content_classification"))
 
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", bronze_dir):
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", bronze_dir):
         ctx = build_asset_context(resources={"duckdb": db, "ops": ops_db})
         ig_posts_slv(ctx)
 

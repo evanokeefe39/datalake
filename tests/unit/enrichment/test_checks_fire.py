@@ -19,16 +19,16 @@ import polars as pl
 import pytest
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.common import lake
-from datalake.defs.enrichment import checks as checks_mod
-from datalake.defs.enrichment import conform as conform_mod
-from datalake.defs.enrichment import landing as landing_mod
-from datalake.defs.enrichment.checks import (
+from orchestration.defs.platform import paths as lake
+import orchestration.defs.ig_enriched.slv.checks as checks
+import orchestration.defs.engine.silver_rt as conform
+import orchestration.defs.engine.landing as landing
+from orchestration.defs.ig_enriched.slv.checks import (
     anti_join_losses,
     quarantine_growth,
     stale_snapshot_files,
 )
-from datalake.defs.enrichment.conform import SILVER_QUARANTINE
+from orchestration.defs.engine.silver_rt import SILVER_QUARANTINE
 
 # Import the module under test for the payload builders (mirror the
 # validated shapes; keeps this file free of duplicated fixtures).
@@ -259,7 +259,7 @@ def test_freshness_check_end_to_end(roots):
 
 
 def test_v_quarantine_triage_joins_bronze_and_post_context(roots):
-    from datalake.defs.serving.assets import v_quarantine_triage as view_asset
+    from orchestration.defs.serving.views import v_quarantine_triage as view_asset
 
     bronze, silver = roots
     # One quarantined row (provider failure) under a post with context.

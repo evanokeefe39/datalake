@@ -13,8 +13,9 @@ Per test-hardening plan Phase 2:
 from dagster import build_asset_context
 from dagster_duckdb import DuckDBResource
 
-from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.serving.assets import dim_date, profile_dimension, v_post_detail
+from orchestration.defs.platform.resources import SQLiteResource
+from orchestration.defs.serving.dims import dim_date, profile_dimension
+from orchestration.defs.serving.views import v_post_detail
 from tests.fixtures.silver_factories import seed_silver_posts
 
 
@@ -24,7 +25,7 @@ def _run_profile_dimension(duckdb, ops):
 
 def _run_v_post_detail(duckdb):
     with duckdb.get_connection() as conn:
-        from datalake.defs.common.schemas import duckdb_ddl
+        from orchestration.defs.platform.schemas import duckdb_ddl
 
         conn.execute(duckdb_ddl("silver_content_classification"))
     ctx = build_asset_context(resources={"duckdb": duckdb})

@@ -48,14 +48,13 @@ from datetime import date
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT))
 
 import duckdb  # noqa: E402
 import polars as pl  # noqa: E402
-
-from datalake.defs.common.schemas import DUCKDB_TABLES, duckdb_ddl, sqlite_ddl_for  # noqa: E402
-from datalake.defs.enrichment import conform  # noqa: E402
+from opsdb.schema import sqlite_ddl_for  # noqa: E402
+from orchestration.defs.engine import silver_rt as conform  # noqa: E402
+from orchestration.defs.platform.schemas import DUCKDB_TABLES, duckdb_ddl  # noqa: E402
 
 LIVE_STATE_DB = REPO_ROOT / "data" / "state.duckdb"
 LIVE_OPS_DB = REPO_ROOT / "data" / "ops.sqlite"
@@ -71,7 +70,6 @@ OPS_TABLES = (
     "creators",
     "profiles",
     "creator_merges",
-    "prompt_registry",
 )
 
 DUCKDB_TABLE_NAMES = tuple(DUCKDB_TABLES.keys())
@@ -229,7 +227,7 @@ def build_slice(out: Path, creators: int, posts: int, seed: int) -> dict:
         smoke.execute(f"ATTACH '{LIVE_STATE_DB.as_posix()}' AS live (READ_ONLY)")
 
         def copy_subset(table: str, where: str, params: list) -> int:
-            n = smoke.execute(
+            smoke.execute(
                 f"INSERT INTO {table} SELECT * FROM live.{table} WHERE {where}", params
             ).fetchone()
             return 0
@@ -239,9 +237,15 @@ def build_slice(out: Path, creators: int, posts: int, seed: int) -> dict:
 
         copy_subset("silver_ig_posts", "post_id IN (SELECT unnest(?))", [post_ids])
         copy_subset("ig_post_labels", "post_id IN (SELECT unnest(?))", [post_ids])
-        copy_subset("silver_ig_post_observations", "post_id IN (SELECT unnest(?))", [post_ids])
+        copy_subset(
+            "silver_ig_post_observations", "post_id IN (SELECT unnest(?))", [post_ids]
+        )
         copy_subset("silver_ig_profiles", "owner_username IN (SELECT unnest(?))", [owners])
-        copy_subset("silver_ig_profile_observations", "owner_username IN (SELECT unnest(?))", [owners])
+        copy_subset(
+            "silver_ig_profile_observations",
+            "owner_username IN (SELECT unnest(?))",
+            [owners],
+        )
         copy_subset("dim_profile", "owner_username IN (SELECT unnest(?))", [owners])
         smoke.execute(
             "INSERT INTO watermarks (name, timestamp) SELECT name, timestamp FROM live.watermarks"
@@ -273,7 +277,8 @@ def build_slice(out: Path, creators: int, posts: int, seed: int) -> dict:
         # ── Bronze: NEW parquet files for selected posts' source datasets ──
         src_map = dict(
             state_ro.execute(
-                "SELECT post_id, source_dataset FROM silver_ig_posts WHERE post_id IN (SELECT unnest(?))",
+                "SELECT post_id, source_dataset FROM silver_ig_posts "
+                "WHERE post_id IN (SELECT unnest(?))",
                 [post_ids],
             ).fetchall()
         )
@@ -301,7 +306,8 @@ def build_slice(out: Path, creators: int, posts: int, seed: int) -> dict:
         n_media_by_post = {
             r[0]: (r[1] or 0)
             for r in state_ro.execute(
-                "SELECT post_id, media_count FROM silver_ig_posts WHERE post_id IN (SELECT unnest(?))",
+                "SELECT post_id, media_count FROM silver_ig_posts "
+                "WHERE post_id IN (SELECT unnest(?))",
                 [post_ids],
             ).fetchall()
         }
@@ -417,8 +423,10 @@ pipeline write to the live roots from this directory.
 ## Provenance
 
 - Built: {date.today().isoformat()}
-- Command: `uv run python scripts/make_smoke_slice.py --posts {posts} --creators {creators} --out {out.as_posix()} --seed {seed}`
-- Seed: `{seed}` (re-running with the same seed and unchanged live data reproduces the same selection)
+- Command: `uv run python scripts/make_smoke_slice.py --posts {posts} \
+  --creators {creators} --out {out.as_posix()} --seed {seed}`
+- Seed: `{seed}` (re-running with the same seed and unchanged live data
+  reproduces the same selection)
 - Selection: top {creators} creators by post count in `silver_ig_posts`; a
   seeded stratified sample of {posts} posts ({media_posts} media-bearing — only posts whose
   media URLs FULLY resolve in the scrape-time byte cache — plus text-only
@@ -507,9 +515,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"creators:        {len(res['selection']['owners'])} {res['selection']['owners']}")
     print(f"posts:           {len(res['selection']['posts'])}")
     print(f"label mix:       {res['label_mix']}")
-    print(f"media posts:     {res['media_posts']} (bytes copied: {res['media_files_copied']} files)")
+    print(
+        f"media posts:     {res['media_posts']} "
+        f"(bytes copied: {res['media_files_copied']} files)"
+    )
     print(f"bronze files:    {res['bronze_files']}")
-    print(f"conform:         conformed={res['conformed']} quarantined={res['quarantined']}")
+    print(
+        f"conform:         conformed={res['conformed']} "
+        f"quarantined={res['quarantined']}"
+    )
     print("per-table rows:")
     for t, c in sorted(res["rows"].items()):
         print(f"  {t:38s} {c}")

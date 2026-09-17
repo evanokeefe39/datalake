@@ -13,9 +13,9 @@ import polars as pl
 import pytest
 from dagster import build_asset_context
 
-from datalake.defs.common.resources import SQLiteResource
-from datalake.defs.instagram.assets import ig_posts_raw
-from datalake.defs.instagram.config import ScrapeConfig
+from orchestration.defs.platform.resources import SQLiteResource
+from orchestration.defs.ig_core.bnz.scrape import ig_posts_raw
+from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig
 
 
 def _ops_resource(tmp_path: object) -> SQLiteResource:
@@ -58,11 +58,11 @@ def mock_apify_success():
         return len(lines)
 
     with (
-        patch("datalake.defs.instagram.assets.trigger_run",
+        patch("orchestration.defs.ig_core.bnz.scrape.trigger_run",
               return_value=_FakeRunInfo("run_1", "ds_1")),
-        patch("datalake.defs.instagram.assets.poll_run",
+        patch("orchestration.defs.ig_core.bnz.scrape.poll_run",
               return_value="ds_1"),
-        patch("datalake.defs.instagram.assets.stream_dataset",
+        patch("orchestration.defs.ig_core.bnz.scrape.stream_dataset",
               side_effect=_mock_stream),
     ):
         yield
@@ -71,9 +71,9 @@ def mock_apify_success():
 def mock_apify_failed():
     """Mock poll to return FAILED status."""
     with (
-        patch("datalake.defs.instagram.assets.trigger_run",
+        patch("orchestration.defs.ig_core.bnz.scrape.trigger_run",
               return_value=_FakeRunInfo("run_fail", "ds_fail")),
-        patch("datalake.defs.instagram.assets.poll_run",
+        patch("orchestration.defs.ig_core.bnz.scrape.poll_run",
               side_effect=RuntimeError("Run FAILED: actor crashed")),
     ):
         yield
@@ -83,9 +83,9 @@ def mock_apify_failed():
 def mock_apify_timeout():
     """Mock poll to raise timeout."""
     with (
-        patch("datalake.defs.instagram.assets.trigger_run",
+        patch("orchestration.defs.ig_core.bnz.scrape.trigger_run",
               return_value=_FakeRunInfo("run_timeout", "ds_timeout")),
-        patch("datalake.defs.instagram.assets.poll_run",
+        patch("orchestration.defs.ig_core.bnz.scrape.poll_run",
               side_effect=RuntimeError("Run timed out after 600s")),
     ):
         yield
@@ -100,11 +100,11 @@ def mock_apify_empty():
         return 0
 
     with (
-        patch("datalake.defs.instagram.assets.trigger_run",
+        patch("orchestration.defs.ig_core.bnz.scrape.trigger_run",
               return_value=_FakeRunInfo("run_empty", "ds_empty")),
-        patch("datalake.defs.instagram.assets.poll_run",
+        patch("orchestration.defs.ig_core.bnz.scrape.poll_run",
               return_value="ds_empty"),
-        patch("datalake.defs.instagram.assets.stream_dataset",
+        patch("orchestration.defs.ig_core.bnz.scrape.stream_dataset",
               side_effect=_mock_empty),
     ):
         yield
@@ -119,8 +119,8 @@ def test_successful_scrape(mock_apify_success, tmp_path):
     THEN Parquet written with correct rows AND .meta sidecar exists
     AND asset returns pl.DataFrame
     """
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        with patch("datalake.defs.instagram.assets.bronze_path") as mbp:
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.platform.paths.bronze_path") as mbp:
             dest = tmp_path / "ds_1.parquet"
             mbp.return_value = dest
 
@@ -156,8 +156,8 @@ def test_idempotent_rerun(mock_apify_success, tmp_path):
     WHEN ig_posts_raw runs again
     THEN it returns existing data (no re-download)
     """
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        with patch("datalake.defs.instagram.assets.bronze_path") as mbp:
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.platform.paths.bronze_path") as mbp:
             dest = tmp_path / "ds_1.parquet"
             mbp.return_value = dest
 
@@ -184,8 +184,8 @@ def test_empty_dataset(mock_apify_empty, tmp_path):
     WHEN ig_posts_raw executes
     THEN Parquet with 0 rows (not an error)
     """
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        with patch("datalake.defs.instagram.assets.bronze_path") as mbp:
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.platform.paths.bronze_path") as mbp:
             dest = tmp_path / "ds_empty.parquet"
             mbp.return_value = dest
 
@@ -210,8 +210,8 @@ def test_apify_failure_raises(mock_apify_failed, tmp_path):
     WHEN ig_posts_raw polls
     THEN RuntimeError with failure message
     """
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        with patch("datalake.defs.instagram.assets.bronze_path") as mbp:
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.platform.paths.bronze_path") as mbp:
             mbp.return_value = tmp_path / "ds_fail.parquet"
 
             context = build_asset_context()
@@ -232,8 +232,8 @@ def test_apify_timeout_raises(mock_apify_timeout, tmp_path):
     WHEN ig_posts_raw polls
     THEN RuntimeError indicating timeout
     """
-    with patch("datalake.defs.instagram.assets.BRONZE_LAKE", tmp_path):
-        with patch("datalake.defs.instagram.assets.bronze_path") as mbp:
+    with patch("orchestration.defs.platform.paths.BRONZE_LAKE", tmp_path):
+        with patch("orchestration.defs.platform.paths.bronze_path") as mbp:
             mbp.return_value = tmp_path / "ds_timeout.parquet"
 
             context = build_asset_context()

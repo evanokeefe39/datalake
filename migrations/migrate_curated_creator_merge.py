@@ -45,8 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
-
-from datalake.defs.common.schemas import sqlite_ddl_for
+from orchestration.defs.platform.schemas import sqlite_ddl_for
 
 logger = logging.getLogger("migrate_curated_creator_merge")
 
@@ -138,7 +137,8 @@ def merge(
             # 2. Ledger row (upsert: re-merge after an undo refreshes it).
             con.execute(
                 "INSERT INTO creator_merges "
-                "  (merged_creator_id, merged_creator_name, surviving_creator_id, handle, merged_at, reversed_at) "
+                "  (merged_creator_id, merged_creator_name, surviving_creator_id, "
+                "   handle, merged_at, reversed_at) "
                 "VALUES (?, ?, ?, ?, ?, NULL) "
                 "ON CONFLICT(merged_creator_id) DO UPDATE SET "
                 "  merged_creator_name = excluded.merged_creator_name, "
