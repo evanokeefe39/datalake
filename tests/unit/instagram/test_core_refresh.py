@@ -322,6 +322,37 @@ def test_same_depth_profiles_share_one_run_carrying_both_urls(roster_db):
     assert cfg["max_charge_usd"] == 2 * CORE_REFRESH_CHARGE_CAP_USD
 
 
+def test_null_results_type_does_not_crash_the_planner(roster_db):
+    """A NULL `results_type` must not take the whole tick down.
+
+    `results_type` is a nullable VARCHAR in the roster schema and the selection
+    applies no COALESCE, so NULL reaches the planner. Sorting a tuple holding
+    None raises TypeError, which would abort `core_refresh_run_requests` and
+    emit no runs at all — a silent-style outage where the schedule looks
+    healthy and does nothing.
+    """
+    _publish(roster_db, "null_type", results_type=None, results_limit=7)
+    _publish(roster_db, "posts_type", results_type="posts", results_limit=7)
+
+    runs = run_requests(roster_db)
+    assert isinstance(runs, list)
+    # Normalised to the actor's own default rather than dropped or fatal.
+    types = {
+        r.run_config["ops"]["bronze_ig_posts"]["config"]["results_type"]
+        for r in runs
+    }
+    assert types == {"posts"}
+    urls = {
+        u
+        for r in runs
+        for u in r.run_config["ops"]["bronze_ig_posts"]["config"]["urls"]
+    }
+    assert urls == {
+        "https://www.instagram.com/null_type/",
+        "https://www.instagram.com/posts_type/",
+    }
+
+
 def test_same_depth_different_results_type_never_share_a_run(roster_db):
     """`resultsType` is one input field per run, like `resultsLimit`.
 

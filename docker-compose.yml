@@ -53,6 +53,11 @@ services:
     build:
       context: .
       dockerfile: services/orchestration/Dockerfile
+    # Without this the container cannot auto-recover: Docker's default is `no`,
+    # so a reboot — or any failure — leaves it `Exited` while `jobs` and
+    # `dashboard` come back. That asymmetry is the observed symptom (2026-09-17:
+    # orchestration Exited (255) for hours while the other two were `Up`).
+    restart: unless-stopped
     env_file:
       - .env
     environment:
@@ -81,10 +86,15 @@ services:
     depends_on:
       # Wait for a READY dependency, not merely a started container: a bare list
       # waits only for start, so orchestration could come up before `jobs` was
-      # answering. (After a reboot it exited 255; the exact cause was not
-      # captured, so this is stated as the correct wiring rather than as the
-      # diagnosed fix.) `dashboard` has no healthcheck, so started is the
-      # strongest condition it can express.
+      # answering.
+      #
+      # DIAGNOSED 2026-09-17: the recurring `Exited (255)` was NOT a dependency
+      # race. It was `${DATALAKE_HOST_DATA_DIR:?...}` failing to interpolate
+      # because the variable was absent from the live `.env` (present in
+      # `.env.example`, never copied across). Compose refuses to start the
+      # service, and because there was also no `restart:` policy it stayed down
+      # instead of retrying. Both are now fixed; this ordering is still correct
+      # wiring, but it was never the cause.
       jobs:
         condition: service_healthy
       dashboard:
