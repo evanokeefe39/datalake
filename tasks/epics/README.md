@@ -62,6 +62,7 @@ cost-lever, or consumer of that engine, not a disjoint feature.
 | [`identity`](identity/epic.md) | E-IDENTITY | creators/profiles/merges + dim_profile creator linkage + UI | Active | dlc-worker / sdlc-worker | E-INGEST | `tasks/plans/creators-and-profiles`, `profile-management`, `curated-creator-consolidation` |
 | [`dashboard`](dashboard/epic.md) | E-DASHBOARD | Product UI: tables, filters, thin server, creators page | Active | sdlc-worker | E-SERVING-ANALYTICS | `tasks/plans/dashboard-tables-filtering`, `creators-ui-redesign` |
 | [`repo-reorganization`](repo-reorganization/epic.md) | E-REORG | uv workspace boundaries (`services/`, `packages/`), role-based modules, the CLI and Gemini-path retirements | Active | sdlc-worker | E-ENRICH-ENGINE | `tasks/plans/repo-reorganization`, ADR-0015, ADR-0016, US-REORG-1/2/3 |
+| [`creator-discovery`](creator-discovery/epic.md) | E-DISCOVERY | **NEW** cost-governed creator discovery & tiering: audience-band discovery across niches, `suggested_core` (warehouse) vs core allocation (ops depth), owner-allocated via script (admin view deferred), reported monthly Apify cost | Open (intent + design complete 2026-09-17) | dlc-worker / sdlc-worker | E-IDENTITY, E-ENRICH-LABELS, E-SERVING-ANALYTICS | `tasks/plans/post-performance-observations-investigation.md` (cost model), ADR-0017 (roster boundary), US-DISC-1..8, `cross-check-2026-09-17.md` |
 
 ## Spine dependency map
 
