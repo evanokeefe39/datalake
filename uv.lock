@@ -71,6 +71,22 @@ wheels = [
 ]
 
 [[package]]
+name = "apify-client"
+version = "3.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama" },
+    { name = "impit" },
+    { name = "more-itertools" },
+    { name = "pydantic", extra = ["email"] },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f8/0d/9c1a453d18717546e91a4905d0f33170e5bdf52c513058457c79f37c7a68/apify_client-3.2.0.tar.gz", hash = "sha256:af770f26f26bb3d438f3974206c4242c7bb1274a264fae32027e1d1aea2d59ce", size = 142936, upload-time = "2026-09-03T07:52:24.781Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/88/7d/6caf5a68cb12afe876ebb2fdf8627905cb80d54947c40cf7a20992f6a31b/apify_client-3.2.0-py3-none-any.whl", hash = "sha256:f516ffa55eff3e32d78af266b5ec31096ada04d1c1021f65c8d22c5359851079", size = 158677, upload-time = "2026-09-03T07:52:23.35Z" },
+]
+
+[[package]]
 name = "backoff"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -397,6 +413,15 @@ dev = [
 ]
 
 [[package]]
+name = "dnspython"
+version = "2.8.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/8b/57666417c0f90f08bcafa776861060426765fdb422eb10212086fb811d26/dnspython-2.8.0.tar.gz", hash = "sha256:181d3c6996452cb1189c4046c61599b84a5a86e099562ffde77d26984ff26d0f", size = 368251, upload-time = "2025-09-07T18:58:00.022Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ba/5a/18ad964b0086c6e62e2e7500f7edc89e3faa45033c71c1893d34eed2b2de/dnspython-2.8.0-py3-none-any.whl", hash = "sha256:01d9bbc4a2d76bf0db7c1f729812ded6d912bd318d3b1cf81d30c0f845dbf3af", size = 331094, upload-time = "2025-09-07T18:57:58.071Z" },
+]
+
+[[package]]
 name = "docstring-parser"
 version = "0.18.0"
 source = { registry = "https://pypi.org/simple" }
@@ -432,6 +457,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b0/f4/d5d633dd7c5138d8f7c434e6ac2553c831b7fb658494efa8d0bc73df8623/duckdb-1.5.4-cp314-cp314-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4d2307a76d199077b0055b354e90e857479461a0d875437535dd4833172c8b6d", size = 21487202, upload-time = "2026-06-17T10:48:45.407Z" },
     { url = "https://files.pythonhosted.org/packages/c0/26/5be13bbd5c3421dccfc1ad4ca9da4b97c5a3ddd73f66542092f3167ec52c/duckdb-1.5.4-cp314-cp314-win_amd64.whl", hash = "sha256:6dcbb81a1276bc48deb4d562bce4f8895e4fc6348750a096e30052345c6d6552", size = 13666989, upload-time = "2026-06-17T10:48:47.764Z" },
     { url = "https://files.pythonhosted.org/packages/dc/82/4d52f3f9f9703a226b26b80bdae3f6905aeefe5221bf1815fc93ff02ca25/duckdb-1.5.4-cp314-cp314-win_arm64.whl", hash = "sha256:0f8722346024e5d9f02b58bf7b0491a629f97fdc8a04a10e432940f471ee387a", size = 14449863, upload-time = "2026-06-17T10:48:50.18Z" },
+]
+
+[[package]]
+name = "email-validator"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dnspython" },
+    { name = "idna" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f5/22/900cb125c76b7aaa450ce02fd727f452243f2e91a61af068b40adba60ea9/email_validator-2.3.0.tar.gz", hash = "sha256:9fc05c37f2f6cf439ff414f8fc46d917929974a82244c20eb10231ba60c54426", size = 51238, upload-time = "2025-08-26T13:09:06.831Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/de/15/545e2b6cf2e3be84bc1ed85613edd75b8aea69807a71c26f4ca6a9258e82/email_validator-2.3.0-py3-none-any.whl", hash = "sha256:80f13f623413e6b197ae73bb10bf4eb0908faf509ad8362c5edeb0be7fd450b4", size = 35604, upload-time = "2025-08-26T13:09:05.858Z" },
 ]
 
 [[package]]
@@ -729,6 +767,41 @@ wheels = [
 ]
 
 [[package]]
+name = "impit"
+version = "0.14.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f1/b4/00520b4c8c73530570ffea65db27e1e6bf283b484bc7b7081f35069959a3/impit-0.14.1.tar.gz", hash = "sha256:85e771493ba9ce2131dcaf3b0ec7da6da8bd8aa5f6de1d71d400c93ba17a640b", size = 169279, upload-time = "2026-09-07T13:32:51.365Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/73/d4/e803ef089183e616ebbadc12aa4a0d072b288457d739deff1e4762a3443f/impit-0.14.1-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:2d1c662c5fd1b08886fddd9319049832597ec9242ba76db535b0e5e66625b744", size = 5065104, upload-time = "2026-09-07T13:31:51.091Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/5d/41b5e520f7f8f7ef938b0d995250f953d93a80bb8606a9f098f28258d122/impit-0.14.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:1617d3d32e820e043359deb82533db231243e609d878f55777a0521321d60e1b", size = 4820445, upload-time = "2026-09-07T13:31:53.137Z" },
+    { url = "https://files.pythonhosted.org/packages/26/16/14d6cd3fd3ccbbe3738ec5e534a8d5d30425cdb28d2094e886357ea90826/impit-0.14.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6ebe3815a31187e611626efff4e9f83fa8e006a9587bd547c7e6097605524332", size = 5170706, upload-time = "2026-09-07T13:31:55.137Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/67/cd3af43dcab7746e97162937984c8e6978041b6064dfba44e9e11e03938c/impit-0.14.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:47573e2d682d2118aefe5977578eb295f37c835be2f928be428a3fe2a8dad2b5", size = 4875935, upload-time = "2026-09-07T13:31:57.121Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/4a/92dfa8140cd34cc76ba690e784ad955cfd1310b0a16550c396ba039301d8/impit-0.14.1-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:1a9b24bb33346f411676d5ff1d94a2218a8287af14ae38109babd741b3373c46", size = 5067456, upload-time = "2026-09-07T13:31:59.332Z" },
+    { url = "https://files.pythonhosted.org/packages/07/a3/ecd1eaca95c9c7ac65115241fb8219c7996a5b64905f57532f4d0bab61b0/impit-0.14.1-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:15b4f9dec8fb4ea320a2e05c1c8f4bac0df9934d56822f6e7e4eca0d299578ff", size = 5394200, upload-time = "2026-09-07T13:32:01.366Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/b0/e145637487aec3651a026fc774ec601dc32edb838bf9947f5b757a018ae5/impit-0.14.1-cp312-cp312-win_amd64.whl", hash = "sha256:1d8f712a41435f4df081cd497f139f533b946d5e682f478bff20783263c47cf1", size = 4981920, upload-time = "2026-09-07T13:32:03.412Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/18/61c845b0a2ac954b9e5b338e98b7071ec175a5188a8c279657c489f72540/impit-0.14.1-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:e00d3e7d864833aa0e08be3b5f2e24c1e17cf9a33d1d759750dc73d00c8d043e", size = 5067723, upload-time = "2026-09-07T13:32:05.314Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/15/f991c4be8eaec4f591a1e01d1e55aae9ff3bfcc5ba3b7c1e9a1ac8a77f93/impit-0.14.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:fc81c0955483aed93de5271af6221ab4a7422cf6846126b009acbf5c77719759", size = 4822932, upload-time = "2026-09-07T13:32:07.314Z" },
+    { url = "https://files.pythonhosted.org/packages/49/68/3791786f619595f9344fce70b9de05d15fdfe478af4f53ac411c225f2a97/impit-0.14.1-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:271d98cf74b37b8e02bd671ad94f8c35e69d41516889bb9c31dbffedaf60ad5d", size = 5172753, upload-time = "2026-09-07T13:32:09.276Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/8d/43a4d3e80d5be2321e4f91b67383c75ca80281a6e92b085e39aa179ff010/impit-0.14.1-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:bf34084b89e1cdbeec97f1aa2c0d516e8005e1cc4d9385f3ebbd9e0003eb2286", size = 4876644, upload-time = "2026-09-07T13:32:11.469Z" },
+    { url = "https://files.pythonhosted.org/packages/83/e8/e0c092b15016dc36c1bff4bb6e8df80c53507ffa7efe5d5c63a0a05041f2/impit-0.14.1-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:7291acb17f0c76b7435bff152b6121351684f3c6c00a99522ac1c1a5133c4e29", size = 5068283, upload-time = "2026-09-07T13:32:13.722Z" },
+    { url = "https://files.pythonhosted.org/packages/37/4a/9627b69c62ae8c2a0785da2ddda5490057cac9aaad0d9e39b4d54aea2687/impit-0.14.1-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:dcced6e67f14a7bf5e5ce541613d709cebd42ea2bd751c5c5e1be353e8b8cc97", size = 5395811, upload-time = "2026-09-07T13:32:16.364Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/b1/ad9bf6ea62807fbfb83af5c61d14ca6d1a3967049700baa24e97182255d9/impit-0.14.1-cp313-cp313-win_amd64.whl", hash = "sha256:abfa8781ba6157cfb1370ca6f46001edc3ec9c724a83938612ec47cb5b6ef5b1", size = 4983814, upload-time = "2026-09-07T13:32:18.704Z" },
+    { url = "https://files.pythonhosted.org/packages/72/b9/1dc14430dc4d7ee047a8f0cec330f51abd9bb7a5a24e2c7e98148997a514/impit-0.14.1-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:e06aa60f2ef033ba578c4d7deafb63eea05348c54b174db1a6a239bcad4980ff", size = 5065330, upload-time = "2026-09-07T13:32:21.145Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/00/639955ff47f939fc96e7db8468366bb9227dcb931c710b45589bbe84e224/impit-0.14.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:d69e2df785a22b6104f1ed180dc08ec170f80b297d3bcc9d08bf535469d293b9", size = 4821288, upload-time = "2026-09-07T13:32:23.444Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/d8/599f1729df28b8b750135ecae545b97161af27c2c753fa2ecb3c0e11aad7/impit-0.14.1-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d9afb9b03a0eafafc4402a4d0c4c433243cef97bfd0b829c8a32250e452869f8", size = 5171926, upload-time = "2026-09-07T13:32:25.715Z" },
+    { url = "https://files.pythonhosted.org/packages/56/23/08aacee6278fa75d7c2ae433b604a35b42365b8808fe24d8897a16887a21/impit-0.14.1-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:062d2d70fc48f6c9d43d9504c90886d770f5aa9e550584a05a016011e5c69dae", size = 4876006, upload-time = "2026-09-07T13:32:28.381Z" },
+    { url = "https://files.pythonhosted.org/packages/43/e1/5a3da172d67af7e05e7a32c48131b4e6a213fb22a5829f6e9afe2c782cf5/impit-0.14.1-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:c3c8215eaaa44322e2d16e177b165692dd512189d15d177cf5c13b31993bba4c", size = 5067035, upload-time = "2026-09-07T13:32:30.961Z" },
+    { url = "https://files.pythonhosted.org/packages/69/b3/e4a4329dc97b086e75b82872b852fc6eadc3ab6426f55dedd1ae497007da/impit-0.14.1-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:231264bb4efe2ef602c5c29c2157645e39ed8296228d5b738e7f35899e4069a0", size = 5395307, upload-time = "2026-09-07T13:32:33.286Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/73/b5adc028b0504d08a3189a0bf01af5fe6d26a5077e2470026f896dfc8b03/impit-0.14.1-cp314-cp314-win_amd64.whl", hash = "sha256:465a12029040094f0184d1ad1a86da3c9236bed65b469a260da474da859b5097", size = 4978878, upload-time = "2026-09-07T13:32:35.874Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/91/175e8f5d5e2b9f3e4ef3ff684c9dab8664652b8970add464d23286454f7d/impit-0.14.1-cp314-cp314t-macosx_10_12_x86_64.whl", hash = "sha256:ba26021fdbf956f9d95c934659079f9ea30468e03dd9cc7bc901402d8e8a9604", size = 5059500, upload-time = "2026-09-07T13:32:38.178Z" },
+    { url = "https://files.pythonhosted.org/packages/a9/20/f9a6200ddd5983df396383848f9f9d40cf25c1b434df8c050dfe45a75aef/impit-0.14.1-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:2910cf6eecf24e12c12737a8f0eaa2bcc140ffc50debbee5c61354ea67ea639c", size = 4816020, upload-time = "2026-09-07T13:32:40.406Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/d3/a6f1252ff1acbd05df58f94dad16df8a2bb73aef6f74bf2b8878a00117df/impit-0.14.1-cp314-cp314t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:35176b654271179afd0089b9cafdcffde5ca43d629214ec0c874f81a2e9cdf8b", size = 5166767, upload-time = "2026-09-07T13:32:42.647Z" },
+    { url = "https://files.pythonhosted.org/packages/41/0e/72c83b45782d961ab2b640b51da916b43f4020dec0f0e78728ff5c292477/impit-0.14.1-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:a6e577fbc99386611dc7bb7a8f33d741d142fc2932a09302e764ca537fb45b4f", size = 4871327, upload-time = "2026-09-07T13:32:44.993Z" },
+    { url = "https://files.pythonhosted.org/packages/42/53/d97338cc3ef82ca443adad7a1abd89d57b64b0354125176a95068fff6661/impit-0.14.1-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:2f9d0d5295e4affb5806c2b5b57fee073b3fc6a7013b760d4dcf468d62a10d9a", size = 5061636, upload-time = "2026-09-07T13:32:47.298Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/6d/bd2400eea1c291580bd12b0853e5662a18939dc366d45e6bd85307eccc8a/impit-0.14.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:ad300e9c8006702f6db762d91a767c51fc8ca93e1e4a825ae96f1b14aec13ca1", size = 5390100, upload-time = "2026-09-07T13:32:49.684Z" },
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -880,6 +953,15 @@ wheels = [
 ]
 
 [[package]]
+name = "more-itertools"
+version = "11.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/de/1d/f4da6f02cdffe04d6362210b807146a26044c88d839208aec273bb0d9184/more_itertools-11.1.0.tar.gz", hash = "sha256:48e8f4d9e7e5878571ecf6f2b4e57634f93cd474cc8cfbd2376f2d11b396e30d", size = 145772, upload-time = "2026-05-22T14:14:29.909Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e8/3d/1087453384dbde46a8c7f9356eead2c58be8a7bf156bca40243377c85715/more_itertools-11.1.0-py3-none-any.whl", hash = "sha256:4b65538ae22f6fed0ce4874efd317463a7489796a0939fa66824dd542125a192", size = 72226, upload-time = "2026-05-22T14:14:28.824Z" },
+]
+
+[[package]]
 name = "multidict"
 version = "6.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -988,6 +1070,7 @@ name = "orchestration"
 version = "0.1.0"
 source = { editable = "services/orchestration" }
 dependencies = [
+    { name = "apify-client" },
     { name = "dagster" },
     { name = "dagster-duckdb" },
     { name = "dagster-webserver" },
@@ -1003,6 +1086,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "apify-client", specifier = ">=3.2.0" },
     { name = "dagster", specifier = ">=1.9" },
     { name = "dagster-duckdb", specifier = ">=0.29" },
     { name = "dagster-webserver", specifier = ">=1.9" },
@@ -1259,6 +1343,11 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/18/a5/b60d21ac674192f8ab0ba4e9fd860690f9b4a6e51ca5df118733b487d8d6/pydantic-2.13.4.tar.gz", hash = "sha256:c40756b57adaa8b1efeeced5c196f3f3b7c435f90e84ea7f443901bec8099ef6", size = 844775, upload-time = "2026-05-06T13:43:05.343Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fd/7b/122376b1fd3c62c1ed9dc80c931ace4844b3c55407b6fb2d199377c9736f/pydantic-2.13.4-py3-none-any.whl", hash = "sha256:45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba", size = 472262, upload-time = "2026-05-06T13:43:02.641Z" },
+]
+
+[package.optional-dependencies]
+email = [
+    { name = "email-validator" },
 ]
 
 [[package]]

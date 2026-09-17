@@ -25,7 +25,7 @@ from orchestration.defs.engine.media import cache_media_bytes, seed_media_from_f
 from orchestration.defs.ig_core.slv.posts import (
     _derive_media,
 )
-from orchestration.defs.integration.apify_client import poll_run, stream_dataset, trigger_run
+from orchestration.defs.integration.apify_runs import poll_run, stream_dataset, trigger_run
 from orchestration.defs.platform.paths import BRONZE_LAKE, bronze_path
 from orchestration.defs.platform.resources import (
     ApifyResource,
@@ -210,7 +210,8 @@ def bronze_ig_posts(
         results_type=config.results_type,
         max_charge_usd=config.max_charge_usd,
     )
-    dataset_id = poll_run(run.run_id, token=apify.token)
+    outcome = poll_run(run.run_id, token=apify.token)
+    dataset_id = outcome.dataset_id
 
     # 2. Idempotency check
     dest = bronze_path(dataset_id)
@@ -252,7 +253,7 @@ def bronze_ig_posts(
         config.urls,
         config.results_limit,
         config.results_type,
-        run.estimated_cost_usd,
+        outcome.usage_total_usd,
     )
 
     return df
@@ -400,7 +401,8 @@ def scrape_details_to_bronze(
         results_type="details",
         max_charge_usd=max_charge_usd,
     )
-    dataset_id = poll_run(run.run_id, token=token)
+    outcome = poll_run(run.run_id, token=token)
+    dataset_id = outcome.dataset_id
 
     dest = bronze_path(dataset_id)
     if dest.exists():

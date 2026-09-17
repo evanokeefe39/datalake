@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "orchestration"
 version = "0.1.0"
 description = "Dagster orchestration for the datalake medallion lakehouse"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "dagster>=1.9",
     "dagster-duckdb>=0.29",
@@ -19,6 +19,7 @@ dependencies = [
     "tenacity",
     "pyarrow>=24.0.0",
     "opsdb",
+    "apify-client>=3.2.0",
 ]
 
 [tool.hatch.build.targets.wheel]

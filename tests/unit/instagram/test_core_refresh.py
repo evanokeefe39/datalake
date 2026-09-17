@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -9,7 +10,7 @@ from dagster import DefaultScheduleStatus, build_asset_context
 from dagster_duckdb import DuckDBResource
 from opsdb.roster import ensure_schema
 from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig, bronze_ig_posts
-from orchestration.defs.integration.apify_client import trigger_run
+from orchestration.defs.integration.apify_runs import RunOutcome, trigger_run
 from orchestration.defs.platform.resources import SQLiteResource
 from orchestration.defs.platform.schedules import (
     CORE_REFRESH_CHARGE_CAP_USD,
@@ -30,19 +31,63 @@ class _FakeRunInfo:
         self.estimated_cost_usd = 0.0
 
 
+class _FakeRun:
+    """Stand-in for the SDK's ``Run`` model."""
+
+    def __init__(self, run_id, default_dataset_id, usage_total_usd=0.0):
+        self.id = run_id
+        self.default_dataset_id = default_dataset_id
+        self.status = "SUCCEEDED"
+        self.status_message = None
+        self.usage_total_usd = usage_total_usd
+
+
+class _FakeActorClient:
+    """Records every ``start()`` call; returns a finished-looking run."""
+
+    def __init__(self, recorder):
+        self._recorder = recorder
+
+    def start(self, **kwargs):
+        self._recorder.append(kwargs)
+        return _FakeRun("run_1", "ds_1", usage_total_usd=0.0023)
+
+
+class _FakeApifyClient:
+    def __init__(self, recorder):
+        self._recorder = recorder
+
+    def actor(self, actor_id):
+        self._recorder.append({"actor": actor_id})
+        return _FakeActorClient(self._recorder)
+
+
 class _FakeApifyResource:
     def __init__(self, token: str = "tok"):
         self.token = token
 
 
 @pytest.fixture
-def fake_post():
-    """Patch apify._post; yields the call recorder."""
+def fake_client():
+    """Patch ``apify_runs._client``; yields the call recorder.
+
+    The recorder is a list of the kwargs passed to ``actor().start()`` — the
+    payload and run options the SDK would have sent — interleaved with
+    ``{"actor": <id>}`` entries recording which actor was addressed.
+    """
+    recorder: list[dict] = []
     with patch(
-        "orchestration.defs.integration.apify_client._post",
-        return_value={"id": "run_1", "defaultDatasetId": "ds_1", "stats": {}},
-    ) as post:
-        yield post
+        "orchestration.defs.integration.apify_runs._client",
+        return_value=_FakeApifyClient(recorder),
+    ):
+        yield recorder
+
+
+def _start_kwargs(recorder) -> dict:
+    """The ``start()`` kwargs from a recorder (skips the actor-id entries)."""
+    starts = [entry for entry in recorder if "actor" not in entry]
+    assert len(starts) == 1, f"expected one start() call, got {len(starts)}"
+    return starts[0]
 
 
 @pytest.fixture
@@ -125,7 +170,8 @@ def _invoke_bronze(tmp_path, config) -> None:
     with (
         patch("orchestration.defs.ig_core.bnz.scrape.trigger_run",
               return_value=_FakeRunInfo()) as trigger,
-        patch("orchestration.defs.ig_core.bnz.scrape.poll_run", return_value="ds_fwd"),
+        patch("orchestration.defs.ig_core.bnz.scrape.poll_run",
+              return_value=RunOutcome(dataset_id="ds_fwd")),
         patch("orchestration.defs.ig_core.bnz.scrape.BRONZE_LAKE", tmp_path),
         patch("orchestration.defs.ig_core.bnz.scrape.stream_dataset", return_value=0),
     ):
@@ -146,20 +192,18 @@ def test_scrape_config_default_charge_cap_none():
     assert cfg.max_charge_usd is None
 
 
-def test_trigger_run_passes_charge_cap_as_query_param(fake_post):
+def test_trigger_run_passes_charge_cap_as_run_option(fake_client):
     trigger_run("apify~instagram-scraper", ["https://instagram.com/x"],
                 token="tok", max_charge_usd=0.5)
-    kwargs = fake_post.call_args.kwargs
-    assert kwargs["maxTotalChargeUsd"] == 0.5
+    assert _start_kwargs(fake_client)["max_total_charge_usd"] == Decimal("0.5")
 
 
-def test_trigger_run_omits_charge_cap_when_none(fake_post):
+def test_trigger_run_omits_charge_cap_when_none(fake_client):
     trigger_run("apify~instagram-scraper", ["https://instagram.com/x"], token="tok")
-    kwargs = fake_post.call_args.kwargs
-    assert "maxTotalChargeUsd" not in kwargs
+    assert _start_kwargs(fake_client)["max_total_charge_usd"] is None
 
 
-def test_trigger_run_body_unchanged_by_charge_cap(fake_post):
+def test_trigger_run_body_unchanged_by_charge_cap(fake_client):
     body = {
         "directUrls": ["https://instagram.com/x"],
         "resultsType": "posts",
@@ -168,8 +212,8 @@ def test_trigger_run_body_unchanged_by_charge_cap(fake_post):
     }
     trigger_run("apify~instagram-scraper", ["https://instagram.com/x"],
                 token="tok", max_charge_usd=0.5)
-    assert fake_post.call_args.kwargs["body"] == body
-    assert fake_post.call_args.args[0] == "acts/apify~instagram-scraper/runs"
+    assert _start_kwargs(fake_client)["run_input"] == body
+    assert {"actor": "apify~instagram-scraper"} in fake_client
 
 
 # ── US-C1: bronze_ig_posts forwards the cap ───────────────────────────────────
