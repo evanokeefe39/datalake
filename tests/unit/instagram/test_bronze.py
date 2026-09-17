@@ -13,6 +13,7 @@ import polars as pl
 import pytest
 from dagster import build_asset_context
 from orchestration.defs.ig_core.bnz.scrape import ScrapeConfig, bronze_ig_posts
+from orchestration.defs.integration.apify_runs import RunOutcome
 from orchestration.defs.platform.resources import SQLiteResource
 
 
@@ -59,7 +60,7 @@ def mock_apify_success():
         patch("orchestration.defs.ig_core.bnz.scrape.trigger_run",
               return_value=_FakeRunInfo("run_1", "ds_1")),
         patch("orchestration.defs.ig_core.bnz.scrape.poll_run",
-              return_value="ds_1"),
+              return_value=RunOutcome(dataset_id="ds_1")),
         patch("orchestration.defs.ig_core.bnz.scrape.stream_dataset",
               side_effect=_mock_stream),
     ):
@@ -101,7 +102,7 @@ def mock_apify_empty():
         patch("orchestration.defs.ig_core.bnz.scrape.trigger_run",
               return_value=_FakeRunInfo("run_empty", "ds_empty")),
         patch("orchestration.defs.ig_core.bnz.scrape.poll_run",
-              return_value="ds_empty"),
+              return_value=RunOutcome(dataset_id="ds_empty")),
         patch("orchestration.defs.ig_core.bnz.scrape.stream_dataset",
               side_effect=_mock_empty),
     ):

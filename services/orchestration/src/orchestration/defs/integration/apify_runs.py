@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
@@ -108,6 +109,37 @@ def trigger_run(
     )
 
 
+#: How long to keep re-reading a finished run for its billable cost.
+#: Apify finalizes ``usageTotalUsd`` a few seconds AFTER the status turns
+#: terminal — measured 2026-09-17: it read 0.0 at finish and 0.0023 by +4s.
+#: Without this, the .meta sidecar records $0.00 for every run.
+_COST_SETTLE_SECS = 30
+_COST_SETTLE_POLL_SECS = 2
+
+
+def _settled_cost(client, run_id: str, finished) -> float:
+    """The run's billable cost, re-read until Apify publishes it.
+
+    Returns whatever is available when the window closes: a run that genuinely
+    cost nothing (a total charge cap that stopped it immediately, say) is
+    indistinguishable from one that has not settled, and blocking forever on
+    that ambiguity would be worse than recording zero.
+    """
+    cost = finished.usage_total_usd or 0.0
+    deadline = time.monotonic() + _COST_SETTLE_SECS
+    while cost == 0.0 and time.monotonic() < deadline:
+        time.sleep(_COST_SETTLE_POLL_SECS)
+        refreshed = client.run(run_id).get()
+        cost = (refreshed.usage_total_usd or 0.0) if refreshed is not None else 0.0
+    if cost == 0.0:
+        log.warning(
+            "Run %s reported no billable usage after %ds — recording 0.0",
+            run_id,
+            _COST_SETTLE_SECS,
+        )
+    return cost
+
+
 def poll_run(
     run_id: str, *, token: str, poll_secs: int = 5, timeout: int = 600
 ) -> RunOutcome:
@@ -118,10 +150,9 @@ def poll_run(
     ``poll_secs`` is retained for callers that still pass it; the SDK's
     ``wait_for_finish`` does the waiting, so it is unused here.
     """
-    finished = (
-        _client(token)
-        .run(run_id)
-        .wait_for_finish(wait_duration=timedelta(seconds=timeout))
+    client = _client(token)
+    finished = client.run(run_id).wait_for_finish(
+        wait_duration=timedelta(seconds=timeout)
     )
     if finished is None:
         raise RuntimeError(f"Run {run_id} not found")
@@ -129,7 +160,7 @@ def poll_run(
         log.info("Run %s succeeded, dataset %s", run_id, finished.default_dataset_id)
         return RunOutcome(
             dataset_id=finished.default_dataset_id,
-            usage_total_usd=finished.usage_total_usd or 0.0,
+            usage_total_usd=_settled_cost(client, run_id, finished),
         )
     if finished.status in _FAILED_STATUSES:
         raise RuntimeError(
