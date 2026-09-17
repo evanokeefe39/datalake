@@ -612,7 +612,7 @@ issue, not code yet.
 
 #### What's needed
 - **Follower-count time series** (`profile_observations` table + scheduled
-  profile re-scrape) — the #1 gap; unblocks Q5 and most of Q11.
+  profile re-scrape) — the top-priority gap; unblocks Q5 and most of Q11.
 - **Wayback CDX smoke test** — confirm/deny Wayback as the free past-backfill
   source for follower history (sparse coverage + UI drift are the risks).
 - **Domain / sub-domain taxonomy** — consistent creator-level labels derived from per-post
@@ -1548,9 +1548,10 @@ matter, can delete safely" — applied by analogy):** retire it fully. Remove th
 **Acceptance falsifier:** after the change, nothing in `src/` executes DDL or
 DML for `media_metadata`, and a fresh ops.sqlite never grows the table.
 
-**Same defect class as #33** (`gold_analyses`/`gold_growth_facets` recreated by
+**Same defect class as the "Retired tables kept coming back (retirement was not durable)" entry (2026-09-15)** (`gold_analyses`/`gold_growth_facets` recreated by
 `ensure_gold_analyses` and `_GOLD_FACETS_DDL`): W9 dropped tables whose producers
-survived. See #34 — the "starve, don't drop" control (C4) was not satisfied
+survived. The "starve, don't drop" control (**C4**, `remediation-plan.md:513`) was
+not satisfied
 before the drop.
 
 ### 33. Full `pytest tests/` run does not finish clean — cause UNVERIFIED
@@ -1597,7 +1598,7 @@ mistaken for a green gate.
 ### 34. W9 must reconcile the 4 `facets_batch_jobs` rows BEFORE the drop
 
 **Found 2026-09-15** reviewing `scripts/retire_queue_tables.py` against the plan
-(`remediation-plan.md:473-478`).
+(`remediation-plan.md:485`).
 
 **The gap.** The plan requires the 4 `facets_batch_jobs` rows be reconciled into
 the service's job store *before* the drop. The script archives the table to Parquet
@@ -1666,3 +1667,109 @@ Resolved by `tasks/plans/state-readiness-impl.md`. Schema contract catalog
 (`tests/operational/expected_schema.py`) with 6 tables + 1 view, 8 state
 readiness tests, absent-DB handling. Drift detection proven against missing
 column, type mismatch, and missing table scenarios.
+
+---
+
+## E-DISCOVERY follow-ons (2026-09-17)
+
+Filed from the E-DISCOVERY epic work (`tasks/epics/creator-discovery/`). All
+three are carried by the owner-approved next branch
+(`feat/us-disc-7-ingestion-upgrade`) — none is deferred: **#41** (SDK migration)
+ships as US-DISC-8, **#43** (the date filter) as US-DISC-7. **#42** is resolved
+as NOT a truncation bug (the item endpoint is uncapped; the 1,000 cap is on the
+datasets *listing* endpoint) — its residual is a memory concern to fold into #41.
+
+### 41. Replace the hand-rolled Apify client with the official `apify-client` SDK — SCHEDULED (US-DISC-8, 2026-09-17)
+
+**Status:** Scheduled on the `feat/us-disc-7-ingestion-upgrade` branch as **US-DISC-8** (`tasks/epics/creator-discovery/user-stories/US-DISC-8-apify-sdk-migration.md`); US-DISC-6 is retained only as the original statement of intent.
+
+`defs/integration/apify_client.py` is a hand-rolled client (~150 lines: auth,
+tenacity retry, three functions) while the official `apify-client` (v3.2.0) is
+**not a dependency**. Verified by installing and inspecting the SDK:
+
+| Capability | Hand-rolled | Official SDK |
+|---|---|---|
+| Trigger / poll | ✅ | ✅ `actor.call()` |
+| Retries | ✅ tenacity | ✅ built in |
+| `maxTotalChargeUsd` | ✅ (as a **query** param) | ✅ `call(max_total_charge_usd=Decimal)` |
+| Dataset fetch | ❌ single blocking GET, **fully buffered in memory**, no pagination | ✅ `dataset.iterate_items()` / `stream_items()` |
+| **Actor input schema** | ❌ **none** | ✅ `actor.get()` |
+| **Input validation before spending** | ❌ | ✅ `actor.validate_input()` |
+| Maintained by | us | Apify |
+
+**This caused a real defect.** The absent schema access is why
+`onlyPostsNewerThan` (the actor's date filter, see #43) went unnoticed: our
+wrapper could not reveal it, and it was found only by querying the API
+directly. A client exposing the input schema makes the next such gap
+discoverable.
+
+**Name collision (fix regardless):** the module occupies the exact import name
+of the PyPI package (`apify_client`), so adding the official client creates an
+import shadow or a confusing two-name space. Rename to something like
+`apify_transport.py` / `apify_runs.py` even if the swap is deferred.
+
+**Migration scope is NOT a thin import change — FOUR contracts must move:**
+
+1. **Call shape.** `scrape.py:28` imports three *functions*
+   (`trigger_run`, `poll_run`, `stream_dataset`), while the SDK is OO
+   (`ApifyClient(token).actor(id).call()`, `.dataset(id).iterate_items()`).
+   It is a rewrite of call shapes, not an import swap.
+2. **Return contract.** `RunInfo` and `stream_dataset(...) -> int` (item count)
+   must be preserved or every caller updated.
+3. **Patch target.** `tests/unit/instagram/test_core_refresh.py:42` patches
+   `orchestration.defs.integration.apify_client._post` **by module path**. If the
+   module is renamed or removed, that patch must move with it — a patch on a
+   recreated shim would silently stop intercepting.
+4. **Idempotency + streaming must survive.** `bronze_path(dataset_id)` plus the
+   exists-check give write-once idempotency keyed on dataset_id; `iterate_items()`
+   yields in memory, so the swap must preserve the write-to-Parquet behaviour,
+   not just the HTTP calls.
+
+**Do not lose:** `stream_dataset` deliberately uses `format=json` (a JSON
+**array**) to *"avoid Apify's NDJSON newline bug"*. That workaround encodes
+hard-won knowledge; re-verify it against the current SDK or retain it
+explicitly, with evidence either way.
+
+### 42. `stream_dataset` buffers the whole dataset in memory — NOT a truncation bug
+
+**Status:** RESOLVED as not-a-truncation (verified 2026-09-17). Residual: a memory
+concern at large item counts.
+
+**Originally filed as** "latent silent truncation" on the theory that
+`/datasets/{id}/items` caps its response at 1,000 elements. **That theory is
+wrong, and the cap belongs to a different endpoint:**
+
+- **`GET /v2/datasets/:id/items`** — what `stream_dataset` calls. Docs:
+  *"No limit exists to how many items can be returned in one response"*;
+  `limit` — *"By default there is no limit."*
+- **`GET /v2/datasets`** — the dataset *listing*. *"will not return more than
+  1000 array elements"*; `limit` default **and maximum** `1000`.
+
+The 1,000 cap is on listing datasets, not retrieving items. **Empirically
+confirmed:** the largest live API dataset (`OENbim5qyFy5UFalA`, 912 stored rows)
+returned **912** items from `/items?format=json` with no limit param — matching
+the stored count exactly. (Datasets above 1,000 could not be tested — three
+others returned HTTP errors, likely server-side retention expiry — but the
+item-level docs are explicit, so no cap is expected.)
+
+**So: no data loss.** `stream_dataset` is not truncating.
+
+**The real residual (low severity, not a defect):** despite its name,
+`stream_dataset` does **not** stream. It does a single blocking GET, then
+`json.loads(resp.text)` on the whole response, then writes lines. So peak memory
+is proportional to dataset size — fine at ~1,000 items, but a 10,000-item
+scrape would buffer the entire payload. `iterate_items()` in the official SDK
+addresses this; fold the fix into #41 if the SDK swap happens.
+
+**One caveat to keep if `clean=true` is ever added:** the docs note `clean`
+skips empty items and hidden fields, so the response "might contain less items
+than the `limit` value". We currently pass only `format=json`, so this does not
+apply today.
+
+### 43. Incremental refresh via `onlyPostsNewerThan` (US-DISC-5 → US-DISC-7)
+
+Not yet an issue — recorded here so it is not lost. The actor exposes a date
+filter the client does not send; using it makes the weekly refresh genuinely
+incremental (1 result for a once-weekly creator vs 7). Carries an explicit
+precondition: a creator posting less often than the window is never re-observed
+and their metrics freeze silently — mitigate by overlapping the window.
