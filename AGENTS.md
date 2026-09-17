@@ -83,11 +83,9 @@ older docs. Check the owning file:
 | What invariants must hold? | `WATCHDOG.md` |
 | What work is open? | `ISSUES.md` |
 
-Live state (verified 2026-09-17): `data/ops.sqlite` holds five tables —
-`creator_merges`, `creators`, `media_cache`, `profiles`, and `prompt_registry`, which is
-PRESENT BUT PENDING DROP: the readiness catalog already declares it dropped per ADR-0011
-(`migrations/migrate_drop_prompt_registry.py` performs it), and `test_no_stale_table_names`
-fails until that migration runs. Schedules:
+Live state (verified 2026-09-17): `data/ops.sqlite` holds exactly four tables —
+`creator_merges`, `creators`, `media_cache`, `profiles`. (`prompt_registry` was retired the
+same day; provenance now rides on the bronze/silver rows per ADR-0011.) Schedules:
 `daily_medallion`, `core_refresh`, `details_sweep`. Sensors:
 `enrichment_submit_sensor`, `enrichment_harvest_sensor`. There is no batch queue, no
 Gemini job, and no `gold_analyses`/`gold_growth_facets` — all dropped 2026-09-15.
