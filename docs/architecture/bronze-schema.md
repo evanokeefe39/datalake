@@ -18,6 +18,42 @@ Every bronze dataset is one Parquet file plus a JSON sidecar
 config, downloaded_at). Producers write Parquet directly with Polars —
 bronze never touches DuckDB and never uses the I/O manager.
 
+### Scrape run memory
+
+Apify actor runs bill **GB-seconds**, so memory multiplies wall-clock spend.
+Every IG scrape run requests `SCRAPE_RUN_MEMORY_MB`
+(`defs/platform/core_refresh.py`), currently **256 MB** — the smallest
+allocation Apify offers, and deliberately below the actor's own
+`defaultRunOptions.memory_mbytes` (1024) to keep compute cost down.
+
+**Memory is a RUN option, not an actor input.** The actor's input properties are
+exactly `addParentData`, `directUrls`, `onlyPostsNewerThan`, `resultsLimit`,
+`resultsType`, `search`, `searchLimit`, `searchType` — there is no
+`memoryMbytes` input. Passing it inside `run_input` is silently ignored. The SDK
+takes it as `start(memory_mbytes=...)`.
+
+**Confirming what a run actually used.** Apify does not write run options to the
+run log, so the granted memory is not visible there. Read it off the run record:
+
+```python
+ApifyClient(token).run(<run_id>).get().options.memory_mbytes   # what was GRANTED
+```
+
+The bronze `.parquet.meta` sidecar's `input.memory_mbytes` records what we
+**requested**; the run record is the only source for what was **granted**.
+
+**Monitoring for OOM.** 256 MB is verified working for a single-profile scrape
+(2026-09-17: run SUCCEEDED, `options.memory_mbytes` granted 256, 10/10 requested
+items returned, $0.0115) but has NOT been load-tested across a full roster or a
+10-URL batch. Two signals mean "raise it":
+
+1. A run with status `FAILED` whose `status_message` mentions memory.
+2. A bronze file whose `item_count` is below the requested `results_limit`
+   without the date filter explaining it (a truncated scrape).
+
+Raise `SCRAPE_RUN_MEMORY_MB` rather than debugging the actor — the allocation,
+not the source, is the variable under our control.
+
 ### Meta sidecar requirements
 
 The `.meta` sidecar MUST carry `input.results_type` — one of `"posts"`,
@@ -25,6 +61,11 @@ The `.meta` sidecar MUST carry `input.results_type` — one of `"posts"`,
 falling back to schema-sniffing only for legacy files without it. A file
 with a wrong or missing `results_type` routes to the wrong (or no) silver
 table.
+
+The sidecar SHOULD also carry `input.only_posts_newer_than` and
+`input.memory_mbytes` so a landed file states the date boundary and allocation
+the run actually used — the two facts needed to explain why a run returned what
+it returned. Both are `null` for producers that do not set them.
 
 ### Watermark + write-once discovery
 
@@ -213,7 +254,7 @@ script. Full behavioral contracts in `tasks/plans/ig-local-ingestion.md`.
   hoc (already ingested, not continuously scraped). `creators.py` accepts
   -1; `enabled_profiles` treats it as don't-schedule.
 
-## Producer 3: bronze_enrichment_raw (external model responses) — TARGET, not built
+## Producer 3: bronze_enrichment_raw (external model responses)
 
 The third bronze producer: the **landing zone for ALL external model
 responses**, whatever the workload. Recorded in
@@ -221,23 +262,23 @@ responses**, whatever the workload. Recorded in
 ingested source ([ADR-0001](adr/0001-enrichment-as-ingested-source.md)), so its
 verbatim landing is bronze, exactly like a scrape.
 
-**Status: NOT IMPLEMENTED.** Today no enrichment response is landed — both the
-Gemini path (`harvest.apply_retrieved`, `analysis.py`) and the qwen path
-(`facets_batch.harvest_facets_batches`) parse the response in flight and discard
-it. This section documents the contract the producer must satisfy; it is not a
-description of current behaviour.
+**Status: IMPLEMENTED (2026-09-15).** Live and landing — verified 2026-09-17 at
+9,580 rows in `data/lake/bronze/bronze_enrichment_raw.parquet`. The harvest step
+of the enrichment seam lands the verbatim response body after
+poll-to-terminal and retrieve: one general pattern for every workload, not one
+per API.
 
 - **Storage:** Parquet, immutable, append-only. No transformation is applied —
   this is as-observed capture.
-- **Source:** the harvest step of the enrichment seam, which lands the verbatim
-  response body after poll-to-terminal and retrieve. One general pattern for
-  every workload, not one per API.
+- **Source:** the harvest step of the enrichment seam (see
+  [enrichment.md](pipelines/enrichment.md), the canonical v3 spec).
 - **Idempotency key:** `(post_id, platform, workload, prompt_hash, run_id)`.
 - **`workload`:** `qwen-vision` | `whisper` | `text-LLM`. Provider is metadata,
   never part of a table name.
-- **Columns:** `post_id`, `platform`, `workload`, `provider`, `model`,
-  `prompt_hash`, `schema_version`, `run_id`, `analysed_at`, `input_modality`,
-  `sampling_params_json`, `response_text` (verbatim), `request_echo_json`.
+- **Columns (live, 16):** `post_id`, `platform`, `workload`, `prompt_hash`,
+  `run_id`, `provider`, `model`, `schema_version`, `landing_at`, `analysed_at`,
+  `ok`, `error_message`, `response_text` (verbatim), `request_echo_json`,
+  `input_modality`, `sampling_params_json`.
 - **Consumer:** the silver conform layer derives the six `silver_*` tables from
   this table **deterministically, with zero API calls**.
 

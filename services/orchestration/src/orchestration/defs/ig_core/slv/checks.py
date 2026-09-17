@@ -408,12 +408,11 @@ def _ig_observation_freshness(context) -> AssetCheckResult:
     duckdb = context.resources.duckdb
     with duckdb.get_connection() as conn:
         fresh = conn.execute(
-            """
+            f"""
             SELECT COUNT(DISTINCT source_dataset)
             FROM silver_ig_post_observations
-            WHERE observed_at >= now() - INTERVAL (?) DAY
-            """,
-            [_OBSERVATION_FRESHNESS_DAYS],
+            WHERE observed_at >= now() - INTERVAL {_OBSERVATION_FRESHNESS_DAYS} DAY
+            """
         ).fetchone()[0]
         newest = conn.execute(
             "SELECT MAX(observed_at) FROM silver_ig_post_observations"

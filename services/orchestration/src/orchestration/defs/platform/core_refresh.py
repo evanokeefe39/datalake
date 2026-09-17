@@ -67,12 +67,26 @@ MAX_PROFILES_PER_SCRAPE_RUN = 10
 ACCOUNT_MAX_CONCURRENT_RUNS = 32
 ACCOUNT_MAX_MEMORY_MB = 65_536  # 64 GB combined across concurrent runs
 
-#: Memory per scrape run, pinned by measurement (US-DISC-7 AC 13): 1024 MB and
-#: 4096 MB were compared on GB-seconds (`mem_gb * duration_s`). 1 CU = 1 GB-hour,
-#: so a larger allocation is only worth it if it cuts wall-clock by more than
-#: 75%; a mere halving costs 2x more. Measured 2026-09-17 on one live profile at
-#: results_limit=12 — see tasks/lessons.md.
-SCRAPE_RUN_MEMORY_MB = 1024
+#: Memory per scrape run, in MB.
+#:
+#: 256 is the smallest allocation Apify offers, chosen to minimise compute cost
+#: (billing is GB-seconds, so memory multiplies wall-clock spend). The actor's
+#: own ``defaultRunOptions.memory_mbytes`` is 1024, so this is deliberately
+#: BELOW the platform default: if runs start failing on OOM, raise this rather
+#: than debugging the actor.
+#:
+#: **NOT YET MEASURED** — the 1024-vs-4096 GB-seconds comparison (US-DISC-7
+#: AC 13) has not been run, and 256 has not been load-tested. Watch the first
+#: scheduled cycles for runs failing with a memory error (a FAILED status whose
+#: status_message mentions memory) and for bronze files landing with item_count
+#: below the requested results_limit. See AGENTS.md § Scrape run memory.
+#:
+#: Note: Apify does NOT log run options, so the granted memory is not visible in
+#: the run log. To confirm what a run actually used:
+#:     ApifyClient(token).run(<run_id>).get().options.memory_mbytes
+#: A bronze sidecar's ``input.memory_mbytes`` records what we REQUESTED; the run
+#: record is the only source for what was GRANTED.
+SCRAPE_RUN_MEMORY_MB = 256
 
 
 @dataclass(frozen=True)
