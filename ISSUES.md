@@ -1344,6 +1344,34 @@ exactly: 790 posts, 556 / 204 / 30 by age tier, 487 zero-cached + 303 partial,
   `videoUrl` and `images`, so `_derive_media`'s "video wins" precedence is not
   the cause.
 
+**CORRECTION to work item 1's premise (2026-09-18).** The description above says
+a cache miss "triggers a live CDN download fallback in `media_cache.py`
+(`_upload_one` / `_try_inline_payload` / `lookup_or_upload_all`); those URLs are
+~always expired → HTTP 403 → dead-letters after 5 wasted retries". **Those
+symbols no longer exist** — they were the retired Gemini File-API path, removed
+per ADR-0009. Media resolution is cache-only now. The current behaviour is
+simpler and worse: a miss simply returns None, with no fallback, no accounting,
+and (until the fix below) a retry that could never succeed. The 403 is real; it
+happens at **scrape** time, not at enrich time.
+
+**FIXED 2026-09-18** (commit `2bbecb8`, ISSUES #25 work items 1 + 2, the retry
+half of 3):
+
+|Was|Now|
+|---|---|
+|`cache_media_bytes` made ONE attempt|3 attempts, exponential backoff. Verified live against an expired URL: `HTTP 403` ×3 over 4.4s, then a loud ERROR.|
+|The scrape loop discarded every result; the function self-described as "best-effort … falls back to the CDN" (a rationale that died with the Gemini path)|`cache_media_urls` returns a `MediaCacheReport` (attempted/cached/failed + the failed URLs); the scrape logs it at ERROR when anything failed and lands it in the `.meta` sidecar under `media_cache`.|
+|`seed_media_from_file`'s None was discarded too (the local_* branch)|Same accounting added to the local-ingest seeding pass.|
+|A media miss raised `retryable=True` ("the media may arrive later")|`retryable=False`. It cannot arrive: the only writers of a cache row are the two scrape/ingest-time functions, and `core_refresh` re-fetches only posts newer than the profile watermark.|
+
+**Still open:** the dead-letter queue is deliberately DEFERRED (user,
+2026-09-18) — the landed `ok=False` row plus the anti-join check is the current
+substitute. Also open: the underlying **ingestion coverage question** — why a
+URL that was reachable at scrape time fails to download at all. The retry now
+makes a transient failure survivable and a permanent one visible, but the 0-4d
+bucket (204 posts, exact-30 whole-profile clusters) still says some runs lose
+media wholesale, and that cause is not yet identified.
+
 ### 26. Sentinel literal diverged across sibling silver producers — 8 live rows carry the REJECTED value
 
 **Found 2026-09-15** by the W10 conformance panel (DataArchitect lens), then
