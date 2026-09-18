@@ -103,6 +103,18 @@ RECOVERY_CHARGE_CAP_USD = 0.05
 MAX_CONSECUTIVE_FAILURES = 25
 
 
+#: Posts per actor run. The actor takes a LIST of direct URLs, so one run recovers
+#: this many posts instead of one. Each run carries its own startup, polling and
+#: scheduling overhead, and the measured ~8s/post was dominated by that overhead
+#: rather than by transferring the media — so batching is the main lever on the
+#: pass's wall clock.
+#:
+#: Sized well under the actor's practical limits: a batch that is too large risks
+#: the whole chunk failing together, and the per-post cost is unchanged either way
+#: (the actor bills per result, not per run).
+POSTS_PER_RECOVERY_RUN = 20
+
+
 @dataclass
 class RecoveryReport:
     """Outcome of a recovery pass.
@@ -228,6 +240,28 @@ def _first_item(ndjson_path: Path) -> dict:
     raise ValueError(f"no JSON item in {ndjson_path.name}")
 
 
+def _all_items(ndjson_path: Path) -> list[dict]:
+    """Parse EVERY item from a streamed NDJSON file.
+
+    Same separator rule as :func:`_first_item` (``"\\n"`` only — see there for why
+    ``splitlines`` corrupts a real caption), but a batched run returns many items
+    and each must reach its own post.
+
+    A malformed line is skipped rather than aborting the batch: one bad item must
+    not discard the media recovered for every other post in the chunk.
+    """
+    text = ndjson_path.read_text(encoding="utf-8")
+    items: list[dict] = []
+    for line in text.split("\n"):
+        if not line.strip():
+            continue
+        try:
+            items.append(json.loads(line))
+        except ValueError:
+            logger.warning("media recovery: skipping unparseable NDJSON line")
+    return items
+
+
 def _fresh_media_for_post(item: dict) -> list[str]:
     """The post's media URLs in the SAME ORDER the scrape recorded them.
 
@@ -273,16 +307,15 @@ def _own_media(child: dict) -> list[str]:
     return [display] if display else []
 
 
-def recover_one(
+def _cache_item(
     ops: SQLiteResource,
-    apify: ApifyResource,
     *,
     post_id: str,
-    permalink: str,
     stored: list[str],
+    item: dict,
     media_dir: Path | None = None,
 ) -> tuple[int, str | None]:
-    """Fetch one post by permalink and cache its media under the STORED url hashes.
+    """Cache one post's media from an already-fetched Apify item.
 
     Returns ``(files_cached, error)`` — error is None on success.
 
@@ -293,43 +326,14 @@ def recover_one(
 
     The pairing rule: ``childPosts[i]`` corresponds to ``stored[i]`` (verified on a
     7-URL carousel, 1:1 in order). A count mismatch aborts the post rather than
-    guessing. Cached bytes are keyed by the STORED url's hash, because that is what
+    guessing. Cached bytes are keyed by the STORED url's key, because that is what
     ``media_urls_to_local_paths`` — and therefore enrichment — resolves.
     """
-    run = trigger_run(
-        RECOVERY_ACTOR,
-        [permalink],
-        token=apify.token,
-        results_limit=1,
-        results_type="posts",
-        max_charge_usd=RECOVERY_CHARGE_CAP_USD,
-    )
-    # settle_cost=False: this fan-out runs ONE run per post and never records the
-    # billable cost, so waiting up to 30s for Apify to publish it would be pure
-    # dead time — and at one run per post it dominates the pass.
-    outcome = poll_run(
-        run.run_id, token=apify.token, timeout=600, settle_cost=False
-    )
-
-    tmp = tempfile.NamedTemporaryFile(
-        prefix=f"_recover_{post_id}_", suffix=".ndjson", delete=False
-    )
-    tmp_path = Path(tmp.name)
-    tmp.close()
-    try:
-        count = stream_dataset(outcome.dataset_id, tmp_path, token=apify.token)
-        if count == 0:
-            return 0, "Apify returned no item for the permalink"
-        item = _first_item(tmp_path)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
-
     fresh = _fresh_media_for_post(item)
     if not fresh:
         # A permanent verdict, recorded so the scan stops re-selecting this post.
         # Without it the standing mechanism re-pays for a deleted/private post on
-        # every future run — measured at roughly a third of pilot candidates.
+        # every future run.
         record_exhausted(ops, post_id, UNRECOVERABLE_NO_MEDIA)
         return 0, "Apify item carried no media URLs"
 
@@ -354,6 +358,179 @@ def recover_one(
     if cached == 0:
         return 0, "fetched media but cached none of the stored URLs"
     return cached, None
+
+
+def _shortcode(permalink: str) -> str:
+    """The post's shortcode — Instagram's per-post identifier in the permalink.
+
+    Used to attribute a batched fetch's items back to the post that asked for
+    them: a multi-URL run returns items in no guaranteed order, so matching by
+    position would silently cache one post's media under another's keys.
+    """
+    return permalink.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _item_shortcode(item: dict) -> str:
+    """The shortcode of a fetched item, from its own field or its permalink.
+
+    ``shortCode`` is the dedicated field (verified on a real 2-URL batch: both
+    items carried it and it matched the requested permalink). The URL is the
+    fallback, and the two agree — preferring the field means a permalink shape
+    change cannot silently break attribution, which would drop every item as
+    "no item returned" and read as mass failure.
+    """
+    code = item.get("shortCode")
+    if isinstance(code, str) and code:
+        return code
+    return _shortcode(str(item.get("url") or ""))
+
+
+def recover_batch(
+    ops: SQLiteResource,
+    apify: ApifyResource,
+    *,
+    candidates: list[dict],
+    media_dir: Path | None = None,
+    per_run: int = POSTS_PER_RECOVERY_RUN,
+) -> tuple[int, int, list[str]]:
+    """Recover many posts with FAR fewer actor runs. Returns (recovered, cached, failed_permalinks).
+
+    ONE run takes a LIST of direct URLs, so N posts cost one actor run rather than
+    N. That matters: each run carries its own startup, polling and scheduling
+    overhead, and the per-post cost measured at ~8s was dominated by that overhead,
+    not by the media transfer.
+
+    Items come back in no guaranteed order, so each is attributed to its post by
+    SHORTCODE (parsed from the item's ``url``). A post whose item never arrives is a
+    failure for that post only — a batch never loses the others.
+
+    Reliability: a single dead permalink inside a batch does not fail the batch.
+    (Measured: a run over a a mixed list returns items for the resolvable ones.)
+    """
+    recovered = cached_total = 0
+    failed: list[str] = []
+    consecutive_failed_runs = 0
+
+    for start in range(0, len(candidates), per_run):
+        chunk = candidates[start : start + per_run]
+        by_code = {_shortcode(c["url"]): c for c in chunk}
+
+        run = trigger_run(
+            RECOVERY_ACTOR,
+            [c["url"] for c in chunk],
+            token=apify.token,
+            results_limit=len(chunk),
+            results_type="posts",
+            # Scale the cap with the number of posts: the per-post cap would
+            # otherwise stop a multi-post run early and silently truncate it.
+            max_charge_usd=RECOVERY_CHARGE_CAP_USD * len(chunk),
+        )
+        outcome = poll_run(run.run_id, token=apify.token, timeout=1800, settle_cost=False)
+
+        tmp = tempfile.NamedTemporaryFile(prefix="_recover_batch_", suffix=".ndjson", delete=False)
+        tmp_path = Path(tmp.name)
+        tmp.close()
+        try:
+            count = stream_dataset(outcome.dataset_id, tmp_path, token=apify.token)
+            items = _all_items(tmp_path) if count else []
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+        seen: set[str] = set()
+        chunk_recovered = 0
+        for item in items:
+            code = _item_shortcode(item)
+            cand = by_code.get(code)
+            if cand is None:
+                continue
+            seen.add(code)
+            n, err = _cache_item(
+                ops,
+                post_id=cand["post_id"],
+                stored=cand["stored"],
+                item=item,
+                media_dir=media_dir,
+            )
+            if err is None:
+                recovered += 1
+                chunk_recovered += 1
+                cached_total += n
+            else:
+                failed.append(cand["url"])
+                logger.error("media recovery FAILED for %s: %s", cand["url"], err)
+
+        # A post in the chunk whose item never came back: one fetch failed, but
+        # the batch still delivered the rest. Recorded per post, not as a batch loss.
+        for code, cand in by_code.items():
+            if code not in seen:
+                failed.append(cand["url"])
+                logger.error(
+                    "media recovery: no item returned for %s (deleted/private, "
+                    "or filtered by Apify)",
+                    cand["url"],
+                )
+
+        # BREAKER — a whole chunk returning nothing means the fetch itself is
+        # broken (auth, quota, schema change), not that these particular posts are
+        # gone. Measured cost of continuing would be the entire remaining budget
+        # producing nothing, so stop loudly instead.
+        if chunk_recovered == 0:
+            consecutive_failed_runs += 1
+            if consecutive_failed_runs >= MAX_CONSECUTIVE_FAILURES:
+                logger.error(
+                    "media recovery: %d consecutive empty runs — stopping rather "
+                    "than spending the remaining budget on a broken fetch",
+                    consecutive_failed_runs,
+                )
+                break
+        else:
+            consecutive_failed_runs = 0
+    return recovered, cached_total, failed
+
+
+def recover_one(
+    ops: SQLiteResource,
+    apify: ApifyResource,
+    *,
+    post_id: str,
+    permalink: str,
+    stored: list[str],
+    media_dir: Path | None = None,
+) -> tuple[int, str | None]:
+    """Fetch ONE post by permalink and cache its media. Returns (files_cached, error).
+
+    Kept for a single-post probe or an explicit retry; the standing pass uses
+    :func:`recover_batch`, which costs one actor run per batch instead of one per
+    post.
+    """
+    run = trigger_run(
+        RECOVERY_ACTOR,
+        [permalink],
+        token=apify.token,
+        results_limit=1,
+        results_type="posts",
+        max_charge_usd=RECOVERY_CHARGE_CAP_USD,
+    )
+    outcome = poll_run(run.run_id, token=apify.token, timeout=600, settle_cost=False)
+
+    tmp = tempfile.NamedTemporaryFile(
+        prefix=f"_recover_{post_id}_", suffix=".ndjson", delete=False
+    )
+    tmp_path = Path(tmp.name)
+    tmp.close()
+    try:
+        count = stream_dataset(outcome.dataset_id, tmp_path, token=apify.token)
+        if count == 0:
+            return 0, "Apify returned no item for the permalink"
+        item = _first_item(tmp_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+    return _cache_item(
+        ops, post_id=post_id, stored=stored, item=item, media_dir=media_dir
+    )
 
 
 def _cache_under(
@@ -456,39 +633,22 @@ def bronze_ig_media_recovery(
         return pl.DataFrame()
 
     logger.info(
-        "media recovery: %d post(s) missing media, est. cost $%.2f at $0.0023/post",
+        "media recovery: %d post(s) missing media, est. cost $%.2f at $0.0023/post, "
+        "%d actor run(s) at %d URLs each",
         len(candidates),
         len(candidates) * 0.0023,
+        -(-len(candidates) // POSTS_PER_RECOVERY_RUN),
+        POSTS_PER_RECOVERY_RUN,
     )
 
-    consecutive = 0
-    for cand in candidates:
-        report.attempted += 1
-        cached, error = recover_one(
-            ops,
-            apify,
-            post_id=cand["post_id"],
-            permalink=cand["url"],
-            stored=cand["stored"],
-        )
-        if error is None:
-            report.recovered += 1
-            report.urls_cached += cached
-            consecutive = 0
-        else:
-            report.failed += 1
-            report.failed_permalinks.append(cand["url"])
-            consecutive += 1
-            logger.error(
-                "media recovery FAILED for %s: %s", cand["url"], error
-            )
-            if consecutive >= MAX_CONSECUTIVE_FAILURES:
-                logger.error(
-                    "media recovery: %d consecutive failures — stopping early "
-                    "rather than spending the remaining budget on a broken fetch",
-                    consecutive,
-                )
-                break
+    recovered, urls_cached, failed = recover_batch(
+        ops, apify, candidates=candidates
+    )
+    report.attempted = len(candidates)
+    report.recovered = recovered
+    report.urls_cached = urls_cached
+    report.failed = len(failed)
+    report.failed_permalinks = failed
 
     logger.info(report.summary())
     if report.failed_permalinks:

@@ -30,7 +30,10 @@ from opsdb.media_cache import (
     url_hash,
 )
 from orchestration.defs.ig_core.bnz.recover import (
+    _all_items,
     _fresh_media_for_post,
+    _item_shortcode,
+    _shortcode,
     recover_one,
 )
 
@@ -461,6 +464,59 @@ class TestNdjsonParsing:
 
 def _fake_item(children: list[dict]) -> dict:
     return _sidecar(children)
+
+
+class TestBatchAttribution:
+    """A batched run returns items in no guaranteed order, so each must be routed
+    to ITS post by shortcode. Positional pairing would cache one post's media under
+    another's keys — silently wrong, and nothing would re-fetch it.
+    """
+
+    def test_shortcode_read_from_the_dedicated_field(self):
+        """GIVEN an item carrying `shortCode`
+        WHEN its shortcode is read
+        THEN the field is used, not the URL.
+        """
+        assert _item_shortcode({"shortCode": "ABC123", "url": "https://x/p/ZZZ/"}) == "ABC123"
+
+    def test_shortcode_falls_back_to_the_permalink(self):
+        """GIVEN an item with no `shortCode` field
+        WHEN its shortcode is read
+        THEN it comes from the permalink, so attribution survives a schema change
+        that drops the field.
+        """
+        assert _item_shortcode({"url": "https://www.instagram.com/p/ABC123/"}) == "ABC123"
+
+    def test_shortcode_matches_the_permalink_shape_we_request(self):
+        """GIVEN the permalink we send and the URL Apify returns
+        WHEN both are reduced to a shortcode
+        THEN they agree.
+
+        Verified against a real 2-URL batch: every returned item carried `url` in
+        this exact form and `shortCode` matching it.
+        """
+        requested = "https://www.instagram.com/p/CBL8httj7aK/"
+        returned = "https://www.instagram.com/p/CBL8httj7aK/"
+        assert _shortcode(requested) == _shortcode(returned) == "CBL8httj7aK"
+
+    def test_all_items_skips_a_malformed_line_without_losing_the_rest(self, tmp_path):
+        """GIVEN an NDJSON file where one line is not valid JSON
+        WHEN every item is parsed
+        THEN the valid items survive.
+
+        One corrupt line must not discard the media recovered for every other post
+        in the batch.
+        """
+        p = tmp_path / "batch.ndjson"
+        p.write_text(
+            '{"shortCode": "A"}\n'
+            "this is not json\n"
+            '{"shortCode": "B"}\n',
+            encoding="utf-8",
+            newline="",
+        )
+        codes = [_item_shortcode(i) for i in _all_items(p)]
+        assert codes == ["A", "B"]
 
 
 def _write_item(dest, item: dict) -> None:
