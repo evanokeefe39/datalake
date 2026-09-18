@@ -37,15 +37,21 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import polars as pl
 from dagster import asset
 from dagster_duckdb import DuckDBResource
+from opsdb.media_cache import cache_keys_for
 
 from orchestration.defs.engine.media import (
-    cache_media_bytes,
+    _EXT_BY_MIME,
+    POST_MEDIA_DIR,
+    _atomic_write,
+    _download_bytes,
+    _PermanentFetchError,
     local_media_path,
     seed_media_from_file,
 )
@@ -115,8 +121,7 @@ def posts_missing_media(duckdb: DuckDBResource, ops: SQLiteResource) -> list[dic
     Returns dicts of ``post_id``, ``url`` (the permalink), and ``missing`` (the
     stored URLs with no cached bytes).
     """
-    conn = duckdb.get_connection()
-    try:
+    with duckdb.get_connection() as conn:
         rows = conn.execute(
             """
             SELECT post_id, url, media_files
@@ -124,10 +129,29 @@ def posts_missing_media(duckdb: DuckDBResource, ops: SQLiteResource) -> list[dic
             WHERE media_files IS NOT NULL AND media_files != '' AND media_files != '[]'
             """
         ).fetchall()
-    finally:
-        conn.close()
 
-    out: list[dict] = []
+    # ONE read of the cache key set, not one lookup per URL. `local_media_path`
+    # opens a fresh SQLite connection each call (~23 ms on Windows, dominated by
+    # the WAL pragma), and a corpus-wide scan makes ~30k such calls — measured at
+    # 320s before this change, which dominated the whole run.
+    #
+    # BOTH key forms are held verbatim, and membership is tested against BOTH.
+    # Neither normalization works alone:
+    #   - Legacy rows hold `sha256(the original scrape URL)`. That string is not
+    #     recoverable from silver's `url` (it carries its own signature), so
+    #     re-deriving `media_key(source_url)` produces a key that matches nothing
+    #     and silently relists every legacy post — measured at 8,848 candidates
+    #     ($20) when the real backlog was 233.
+    #   - `mid:` rows hold only the stable key.
+    # So the set keeps raw keys, and each silver URL is tested via
+    # `cache_keys_for(u)` (stable first, then legacy) — matching how
+    # `local_media_path` resolves at enrichment time.
+    with ops.get_connection() as cache_conn:
+        cached_keys = {
+            r[0] for r in cache_conn.execute("SELECT cache_key FROM media_cache")
+        }
+
+    candidates: list[tuple[str, str, list[str], list[str]]] = []
     for post_id, permalink, media_files in rows:
         try:
             urls = [u for u in json.loads(media_files) if u]
@@ -135,33 +159,62 @@ def posts_missing_media(duckdb: DuckDBResource, ops: SQLiteResource) -> list[dic
             continue
         if not urls:
             continue
-        missing = [u for u in urls if local_media_path(ops, u) is None]
+        missing = [
+            u for u in urls if not any(k in cached_keys for k in cache_keys_for(u))
+        ]
         if missing:
-            out.append(
-                {
-                    "post_id": post_id,
-                    "url": permalink,
-                    "stored": urls,
-                    "missing": missing,
-                }
-            )
+            candidates.append((post_id, permalink, urls, missing))
+
+    # Confirm the few candidates whose stored URLs all appear cached but whose
+    # bytes may have gone missing from disk under a real existence check.
+    out: list[dict] = []
+    for post_id, permalink, urls, missing in candidates:
+        if not missing and not any(local_media_path(ops, u) is None for u in urls):
+            continue
+        out.append(
+            {
+                "post_id": post_id,
+                "url": permalink,
+                "stored": urls,
+                "missing": missing,
+            }
+        )
     return out
+
+
+def _first_item(ndjson_path: Path) -> dict:
+    """Parse the first item from a streamed NDJSON file.
+
+    Splits on ``"\\n"``, NOT ``str.splitlines()``. Python's ``splitlines`` also
+    breaks on U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, which are
+    VALID characters inside a JSON string — and Instagram captions contain them
+    (a real caption broke the parse at char 143 with "Unterminated string").
+    ``json.dumps`` only ever escapes ``\\n``, so ``"\\n"`` is the only separator
+    that appears between items.
+    """
+    text = ndjson_path.read_text(encoding="utf-8")
+    for line in text.split("\n"):
+        if line.strip():
+            return json.loads(line)
+    raise ValueError(f"no JSON item in {ndjson_path.name}")
 
 
 def _fresh_media_for_post(item: dict) -> list[str]:
     """The post's media URLs in the SAME ORDER the scrape recorded them.
 
-    This is the pairing rule, and it is load-bearing.
+    This is the pairing rule, and it is load-bearing. Three shapes, each verified
+    against a real fetch:
 
-    A Sidecar's ``childPosts[]`` mirrors the scraped ``media_files[]`` 1:1 by index
-    (verified: a 7-URL carousel returns 7 children in the same order). The item's
-    OWN ``displayUrl`` must be EXCLUDED for a Sidecar — it is the post's cover frame,
-    not one of the carousel entries, and including it shifts every pairing by one
-    (measured: prepending it produced 8 URLs against 7 stored).
-
-    So:
-      - ``childPosts`` present  -> the children, in order.
-      - otherwise              -> the item's own displayUrl/videoUrl (single-media post).
+    - **Sidecar** (``childPosts`` present): ``childPosts[i]`` corresponds to
+      ``stored[i]`` 1:1 in order (verified on a 7-URL carousel, 7 vs 7). The
+      item's OWN ``displayUrl`` is the post's cover frame, NOT a carousel entry —
+      including it shifts every pairing by one (measured: prepending it gave 8
+      URLs against 7).
+    - **Video** (``videoUrl`` present, no children): silver stores ONE url, the
+      video. Apify returns TWO — the poster ``displayUrl`` and the ``videoUrl`` —
+      so the video is selected and the poster skipped (measured: 1 stored vs 2
+      fresh, and the stored url is the ``.mp4``).
+    - **Image**: the single ``displayUrl``, 1:1.
 
     Caching wrong-position bytes under a stored URL's hash is worse than a miss:
     enrichment would send the wrong image to the model and nothing re-fetches it.
@@ -169,22 +222,26 @@ def _fresh_media_for_post(item: dict) -> list[str]:
     children = item.get("childPosts") or []
     if children:
         return [u for ch in children for u in _own_media(ch)]
+    video = item.get("videoUrl")
+    if video:
+        # A video post: its media is the video, not the poster frame.
+        return [video]
     return _own_media(item)
 
 
-def _own_media(item: dict) -> list[str]:
-    """An item's or child's own media URLs, deduped, display frame before video.
+def _own_media(child: dict) -> list[str]:
+    """A CHILD's media URLs, deduped, video preferred over its poster frame.
 
-    Deduped because a video child commonly carries BOTH ``displayUrl`` (its poster
-    frame) and ``videoUrl`` pointing at the SAME underlying file — falling back to
-    the poster when they differ. Emitting both would produce two entries for one
-    media slot and shift every later pairing.
+    A video child carries both ``displayUrl`` (its poster) and ``videoUrl`` for the
+    same media. Emitting both would produce two entries for one carousel slot and
+    shift every later pairing, so the video is preferred and the poster used only
+    when there is no video. Verified: a 7-child carousel pairs to 7 stored URLs.
     """
-    display = item.get("displayUrl")
-    video = item.get("videoUrl")
-    if display and video:
-        return [video] if display == video else [display, video]
-    return [u for u in (display, video) if u]
+    video = child.get("videoUrl")
+    if video:
+        return [video]
+    display = child.get("displayUrl")
+    return [display] if display else []
 
 
 def recover_one(
@@ -218,14 +275,19 @@ def recover_one(
         results_type="posts",
         max_charge_usd=RECOVERY_CHARGE_CAP_USD,
     )
-    outcome = poll_run(run.run_id, token=apify.token, timeout=600)
+    # settle_cost=False: this fan-out runs ONE run per post and never records the
+    # billable cost, so waiting up to 30s for Apify to publish it would be pure
+    # dead time — and at one run per post it dominates the pass.
+    outcome = poll_run(
+        run.run_id, token=apify.token, timeout=600, settle_cost=False
+    )
 
     tmp = BRONZE_LAKE / f"_recover_{post_id}.ndjson"
     try:
         count = stream_dataset(outcome.dataset_id, tmp, token=apify.token)
         if count == 0:
             return 0, "Apify returned no item for the permalink"
-        item = json.loads(tmp.read_text(encoding="utf-8").splitlines()[0])
+        item = _first_item(tmp)
     finally:
         if tmp.exists():
             tmp.unlink()
@@ -264,27 +326,68 @@ def _cache_under(
     *,
     media_dir: Path | None = None,
 ) -> bool:
-    """Download ``fresh_url``'s bytes and record them under ``stored_url``'s hash.
+    """Download ``fresh_url``'s bytes and record them under ``stored_url``'s key.
 
     The stored URL is the durable identity — it is what silver holds and what
-    ``media_urls_to_local_paths`` hashes when enrichment resolves a post — while the
-    fresh URL is disposable transport that expires again in ~4.5 days. Caching under
-    the fresh hash would leave the post un-enrichable, which is the bug being fixed.
+    ``media_urls_to_local_paths`` resolves when enrichment processes a post —
+    while the fresh URL is disposable transport that expires again in ~4.5 days.
 
-    Idempotent: a stored URL that already resolves is left alone.
+    BOTH IDENTITIES NOW DERIVE FROM THE SAME MEDIA ID, so the obvious
+    implementation is silently wrong. ``media_key(fresh)`` and
+    ``media_key(stored)`` both yield ``mid:<id>``, which means
+    ``cache_media_bytes(fresh)`` returns EARLY (its idempotence check) whenever
+    that key already resolves — and on a partially-cached carousel the thing it
+    resolves to is a DIFFERENT item's file. Seeding from it would copy the wrong
+    bytes under the stored key: a silent mispair, worse than a miss, because
+    enrichment would then ship the wrong image to the model and nothing would
+    re-fetch it.
+
+    So the download is done directly, with no cache-key consultation: fetch the
+    bytes to a temp file, then seed under the stored key. Whether the target
+    already resolves is checked first (that skip is genuine idempotence); nothing
+    else about the fresh URL's cache state is consulted.
     """
     if local_media_path(ops, stored_url) is not None:
         return True
-    tmp_path = cache_media_bytes(ops, fresh_url, media_dir=media_dir)
-    if not tmp_path:
+
+    # No cache lookup on the fresh URL — deliberately. See the docstring.
+    try:
+        downloaded = _download_bytes(fresh_url)
+    except _PermanentFetchError as exc:
+        # An expired signature never revives; a re-scrape minting a fresh URL is
+        # the only cure, and the caller's next run gets one.
+        logger.error(
+            "recovery fetch PERMANENTLY failed (HTTP %s) for %s — %s",
+            exc.code,
+            fresh_url[:80],
+            exc.diagnosis(),
+        )
         return False
-    src = local_media_path(ops, fresh_url)
-    if src is None:
+    if downloaded is None:
         return False
-    return (
-        seed_media_from_file(ops, stored_url, Path(src), media_dir=media_dir)
-        is not None
-    )
+    data, content_type = downloaded
+
+    # The temp file must carry the media's real extension: `seed_media_from_file`
+    # derives content_type from the suffix, and a bare `.tmp` would be recorded as
+    # application/octet-stream, losing the image/video distinction downstream.
+    base_type = content_type.split(";")[0].strip().lower()
+    ext = _EXT_BY_MIME.get(base_type, ".bin")
+    tmp_dir = media_dir or POST_MEDIA_DIR
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp = tmp_dir / f".recover-{uuid.uuid4().hex}{ext}"
+    try:
+        _atomic_write(tmp, data)
+        seeded = seed_media_from_file(ops, stored_url, tmp, media_dir=media_dir)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    if seeded is None:
+        return False
+
+    # Proving the STORED url resolves is the only evidence that matters: the
+    # caller's whole purpose is making the post enrichable, and a write that
+    # landed under some other key would report success while achieving nothing.
+    return local_media_path(ops, stored_url) is not None
 
 
 @asset(

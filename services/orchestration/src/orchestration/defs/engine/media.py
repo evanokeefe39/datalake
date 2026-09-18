@@ -28,13 +28,24 @@ from pathlib import Path
 
 from opsdb.media_cache import (
     _ensure_media_cache_table,
+    media_key,
     record_media_cache_row,
     stored_local_path,
-    url_hash,
+    url_hash,  # noqa: F401 — re-exported: callers import it from this module
 )
 
 from orchestration.defs.platform.paths import POST_MEDIA_DIR, runtime_path
 from orchestration.defs.platform.resources import SQLiteResource
+
+
+def _safe_name(cache_key: str) -> str:
+    """A cache key rendered safe for use as a filename stem.
+
+    The stable key is ``mid:<id>`` and a colon is illegal on Windows, so it is
+    spelled ``mid-<id>`` on disk. The mapping is one-way and never parsed back —
+    the row's ``cache_key`` is the authority, and the filename is just storage.
+    """
+    return cache_key.replace(":", "-")
 
 logger = logging.getLogger("engine.media")
 
@@ -268,8 +279,10 @@ def cache_media_bytes(
                     content_type,
                 )
 
-            cache_key = url_hash(media_url)
-            dest = (media_dir or POST_MEDIA_DIR) / f"{cache_key}{ext}"
+            # STABLE key: the media id survives re-signing, so the row stays
+            # reachable after the CDN signature rotates (~4.5 days).
+            cache_key = media_key(media_url)
+            dest = (media_dir or POST_MEDIA_DIR) / f"{_safe_name(cache_key)}{ext}"
             _atomic_write(dest, data)
 
             record_media_cache_row(
@@ -386,10 +399,10 @@ def seed_media_from_file(
         logger.warning("seed: source missing for %s: %s", media_url[:80], src_path)
         return None
 
-    cache_key = url_hash(media_url)
+    cache_key = media_key(media_url)
     ext = src_path.suffix.lower()
     content_type = _CONTENT_TYPE_BY_EXT.get(ext, "application/octet-stream")
-    dest = (media_dir or POST_MEDIA_DIR) / f"{cache_key}{ext}"
+    dest = (media_dir or POST_MEDIA_DIR) / f"{_safe_name(cache_key)}{ext}"
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".tmp")
     shutil.copyfile(src_path, tmp)
