@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import time
 import urllib.error
 import urllib.request
@@ -111,7 +112,12 @@ def _signed_url_expiry(url: str) -> datetime | None:
         return None
 
 
-def local_media_path(ops: SQLiteResource, media_url: str) -> str | None:
+def local_media_path(
+    ops: SQLiteResource,
+    media_url: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> str | None:
     """Resolve a URL to a byte path THIS process can open, or None on a miss.
 
     The stored path is expressed in the vocabulary of whichever process fetched
@@ -120,11 +126,14 @@ def local_media_path(ops: SQLiteResource, media_url: str) -> str | None:
     Linux container even though the bytes are mounted right there. A stored path
     outside the map passes through unchanged (a host run, the common case).
 
+    `conn`, when given, is an already-open connection to reuse; opening one costs
+    ~23 ms, which dominates a batch caller that resolves thousands of URLs.
+
     Returns None when there is no row, or the translated path is absent on disk:
     a row whose file was deleted is a miss, so a caller re-fetches rather than
     opening a dead path.
     """
-    stored = stored_local_path(ops, media_url)
+    stored = stored_local_path(ops, media_url, conn=conn)
     if not stored:
         return None
     path = runtime_path(stored)
@@ -350,6 +359,7 @@ def seed_media_from_file(
     src_path: Path,
     *,
     media_dir: Path | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> str | None:
     """Seed ``media_cache`` from an existing local file — no download.
 
@@ -359,11 +369,17 @@ def seed_media_from_file(
     local-disk ingestion where the CDN URLs in the metadata are already
     stale/expiring and re-downloading is both wasteful and lossy.
 
+    `conn`, when given, is an already-open connection reused for the lookup and
+    the write. A batch caller MUST pass one: this function otherwise opens up to
+    three connections per URL (~23 ms each on Windows, dominated by the WAL
+    pragma), which is what made a 24,000-URL seed pass take hours rather than
+    minutes. The caller owns a supplied connection and it is left open.
+
     Idempotent: returns the cached path when the URL is already cached.
     Returns None when the source file is missing (caller decides severity).
     """
-    _ensure_media_cache_table(ops)
-    existing = local_media_path(ops, media_url)
+    _ensure_media_cache_table(ops, conn)
+    existing = local_media_path(ops, media_url, conn=conn)
     if existing:
         return existing
     if not src_path.exists():
@@ -380,7 +396,13 @@ def seed_media_from_file(
     os.replace(tmp, dest)
 
     record_media_cache_row(
-        ops, cache_key, str(dest), content_type, dest.stat().st_size, media_url
+        ops,
+        cache_key,
+        str(dest),
+        content_type,
+        dest.stat().st_size,
+        media_url,
+        conn=conn,
     )
 
     logger.info("seeded %s → %s", media_url[:80], dest.name)

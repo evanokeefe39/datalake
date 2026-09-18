@@ -328,28 +328,35 @@ _VIDEO_SUFFIXES = VIDEO_EXTENSIONS
 def _local_post_media_pairs(post: dict, post_dir: Path) -> list[tuple[str, Path]]:
     """Map a post's media URLs to the local files the scrape saved.
 
-    A SEED, so a wrong guess is not conservative — ``seed_media_from_file``
-    copies the bytes it is handed and keys the row by ``url_hash(media_url)``.
-    Pairing an image URL with a video file therefore caches VIDEO bytes under an
-    IMAGE URL's key: a valid-looking row that resolves, sends mismatched media to
-    the model, and is never re-fetched. That is worse than a miss, so the pairing
-    is type-aware rather than positional (measured: raw position mispairs 8.13%
-    of carousel entries — 538 of 6,615).
+    POSITIONAL, and that is the authoritative correspondence — not a guess.
+    Measured across the corpus: `len(post["images"])` equals the count of
+    ``media_<i>`` files on disk in **1,081 of 1,082** carousel posts. The scrape
+    writes exactly one ``media_<i>`` file per ``images[]`` entry, in index order,
+    so index i pairs with entry i.
 
-    The dumps were written by more than one producer and use several naming
-    conventions — measured across the corpus:
+    Do NOT "fix" this by classifying each URL as video/image and pairing within
+    type. That was tried (commit 388ec4d) and REVERTED. It is worse, because
+    Instagram CDN URLs frequently carry no file extension: a URL-type heuristic
+    then misclassifies them, re-orders the remaining entries, and DROPS the
+    unclassifiable one. For ``images[] = [no-ext, x.mp4, z.jpg]`` over
+    ``[media_00.mp4, media_01.mp4, media_02.jpg]`` it yielded two pairs, skipped
+    the first URL, and put ``media_02``'s bytes under the second URL's hash.
+    ``seed_media_from_file`` keys rows by ``url_hash(media_url)`` and copies
+    whatever bytes it is handed, so such a swap is a valid-looking row that
+    resolves and silently sends mismatched media to the model — worse than a
+    miss, because nothing re-fetches it. The "8.13% mismatch" that motivated that
+    attempt was the heuristic's own error rate, not the data's.
+
+    The pairing is convention-agnostic by reading the dir, not by guessing names.
+    Conventions the dumps use (measured across 25,676 media files):
 
         media_<i>.jpg   16,878   carousel images
         video.mp4        6,841   a post whose media is one video
         media_<i>.mp4    1,646   a video INSIDE a carousel
         image.jpg          311   a single-image post
 
-    Rather than enumerate conventions, resolve each URL against the files
-    actually present, MATCHING BY TYPE within each group:
-
     - ``videoUrl`` (no ``images``) → the post's video file.
-    - ``images[i]`` → the i-th file of that URL's type (image or video), so an
-      ``images[]`` entry that is really a video pairs with ``media_N.mp4``.
+    - ``images[i]`` → the i-th media file.
     - ``displayUrl`` (no ``images``) → the sole media file (poster/photo).
 
     A video post's ``displayUrl`` is deliberately NOT mapped: it is the poster
@@ -358,33 +365,21 @@ def _local_post_media_pairs(post: dict, post_dir: Path) -> list[tuple[str, Path]
     Posts without media yield an empty list (null-skip — never an error).
     """
     files = _post_media_files(post_dir)
-    images: list[Path] = [f for f in files if f.suffix.lower() not in _VIDEO_SUFFIXES]
-    videos: list[Path] = [f for f in files if f.suffix.lower() in _VIDEO_SUFFIXES]
 
     if post.get("videoUrl"):
-        # A video post. If the dump also carries an images[] list this is a
-        # mixed carousel — but the Apify wire format puts every carousel entry
-        # (including video children) in images[], so that case is handled by the
-        # images branch below. Here the post's media is the video file.
+        # A video post: its media is the video file. A mixed carousel carries
+        # its video children in images[] instead (the Apify wire format), so it
+        # is handled by the images branch below.
         if not files:
             return []
+        videos = [f for f in files if f.suffix.lower() in _VIDEO_SUFFIXES]
         return [(post["videoUrl"], videos[0] if videos else files[0])]
 
     if post.get("images"):
         pairs: list[tuple[str, Path]] = []
-        img_i = vid_i = 0
-        for url in post["images"]:
-            if not url:
-                continue
-            # Match the URL's type to the next file of that type: an images[]
-            # entry ending .mp4 is a video child, saved as media_N.mp4.
-            if _url_is_video(url):
-                if vid_i < len(videos):
-                    pairs.append((url, videos[vid_i]))
-                    vid_i += 1
-            elif img_i < len(images):
-                pairs.append((url, images[img_i]))
-                img_i += 1
+        for i, url in enumerate(post["images"]):
+            if url and i < len(files):
+                pairs.append((url, files[i]))
         return pairs
 
     if post.get("displayUrl"):
@@ -394,17 +389,6 @@ def _local_post_media_pairs(post: dict, post_dir: Path) -> list[tuple[str, Path]
         return [(post["displayUrl"], canonical if canonical.exists() else files[0])]
 
     return []
-
-
-def _url_is_video(url: str) -> bool:
-    """True when a media URL denotes a video rather than an image.
-
-    Instagram serves video from paths containing ``.mp4`` and (less often)
-    ``video`` in the path; images never do. Used to pair by TYPE so a carousel's
-    video child does not receive an image's bytes.
-    """
-    lowered = url.lower()
-    return ".mp4" in lowered or "/video" in lowered or lowered.endswith(".mov")
 
 
 def _post_media_files(post_dir: Path) -> list[Path]:
@@ -450,8 +434,15 @@ def bronze_ig_posts_local(ops: SQLiteResource) -> pl.DataFrame:
     Media seeding: a separate idempotent pass (sha256(url)-keyed cache rows)
     copies the already-downloaded media files into the scrape-time byte
     cache instead of re-downloading expiring CDN URLs. It runs over ALL
-    datasets every materialization so an interrupted run self-heals; posts
-    without media (or with missing local files) are skipped silently.
+    datasets on every materialization — including write-once ones, since it
+    never touches bronze — so an interrupted run self-heals.
+
+    Missing sources are NOT silent: every URL whose source file is absent is
+    counted and reported at ERROR with up to 10 sample URLs. On a first
+    (fresh-write) materialization the counts also land in the sidecar; on the
+    write-once path they go to the run log only, because the sidecar is
+    deliberately not rewritten for a file bronze never touched. Discarding that
+    signal is how a run that recovered nothing still looked green (ISSUES #25).
     """
     frames: list[pl.DataFrame] = []
     if not LOCAL_INGEST_DIR.exists():
@@ -481,16 +472,26 @@ def bronze_ig_posts_local(ops: SQLiteResource) -> pl.DataFrame:
         # missing, and discarding that return is how a run silently produces
         # media-less posts (the local-ingest branch of ISSUES.md #25 — the
         # local_* datasets carry most of the uncached rate).
+        #
+        # ONE connection for the whole dataset. `seed_media_from_file` otherwise
+        # opens up to three connections per URL (~23 ms each, dominated by the
+        # WAL pragma) — measured at ~102 ms/URL, which made a 24,000-URL seed
+        # pass take ~30 minutes. Holding one connection removes that term:
+        # 53.9 ms -> 0.4 ms per URL, and the full pass runs in ~38s.
         seed_attempted = seed_cached = 0
         seed_missing: list[str] = []
-        for post_file in sorted(dataset_dir.glob("*/post_metadata.json")):
-            row_meta = json.loads(post_file.read_text(encoding="utf-8"))
-            for url, src in _local_post_media_pairs(row_meta, post_file.parent):
-                seed_attempted += 1
-                if seed_media_from_file(ops, url, src):
-                    seed_cached += 1
-                else:
-                    seed_missing.append(url)
+        seed_conn = ops.get_connection()
+        try:
+            for post_file in sorted(dataset_dir.glob("*/post_metadata.json")):
+                row_meta = json.loads(post_file.read_text(encoding="utf-8"))
+                for url, src in _local_post_media_pairs(row_meta, post_file.parent):
+                    seed_attempted += 1
+                    if seed_media_from_file(ops, url, src, conn=seed_conn):
+                        seed_cached += 1
+                    else:
+                        seed_missing.append(url)
+        finally:
+            seed_conn.close()
 
         if seed_missing:
             logger.error(

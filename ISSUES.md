@@ -1287,12 +1287,18 @@ CDN URLs are ~always expired by enrich time → HTTP 403 → the whole post
 dead-letters after 5 wasted retries (all-or-nothing per post by design). The
 byte cache is otherwise healthy (26,657 post-media keys, files present).
 
-**Affected posts by age (silvered):** 0-4d=204 (suspicious — recent scrape should
-have been cached → ingestion seeding gap, not expiry), 5-14d=556 (expired-CDN
-set), 45d+=30 (predates the cache ~Aug 14). Whole-profile wipeouts (30/30 zero
-cached: collective_career_lab, andrewwarner, empowered.nyu, hasewingroom,
-theking_of_africa, kimbeauty_...) indicate per-scrape-run seeding failures, not
-random expiry. `girsta` 78/94 mostly partial carousels.
+**Affected posts by age (silvered):** 0-4d=204, 5-14d=556, 45d+=30.
+Whole-profile wipeouts (30/30 zero cached: collective_career_lab, andrewwarner,
+empowered.nyu, hasewingroom, theking_of_africa, kimbeauty_...) indicate
+per-scrape-run seeding failures, not random expiry. `girsta` 78/94 mostly
+partial carousels.
+
+> **CORRECTED 2026-09-18 — the per-tier cause labels that stood here were
+> wrong.** The split is by PRODUCER, and by whether the post's source exists on
+> disk, not by age: **0-4d is entirely Apify**, while **5-14d and 45d+ are
+> entirely `local_*`** — which never touch the CDN, their misses being
+> source/pairing gaps (see the corrected block at the bottom of this entry).
+> "5-14d = expired-CDN set" was wrong. Read the block below as authoritative.
 
 **Census + candidate CSVs (committed):** `analysis/output/rescrape_candidates_2026-09-08.csv`
 (790 posts: post_id/owner/permalink/shortcode/missing/severity/age, grouped by
@@ -1368,29 +1374,65 @@ half of 3):
 2026-09-18) — the landed `ok=False` row plus the anti-join check is the current
 substitute.
 
-**ANTIBOT RULED OUT — tested at scrape scale, not with one download
-(2026-09-18).** A single fetch proves nothing (ordinary browsing does that), so
-the load pattern was tested directly: a fresh profile scrape yielded **123 unique
-media URLs**, all fetched → **123/123 HTTP 200**. Then the same URLs were
-re-fetched with no delay → **861 consecutive requests, 861/861 HTTP 200**, zero
-403 / 429 / timeouts, before the 900s cap ended the test. That is ~7 profiles of
-media in one continuous burst from this machine with no proxy and no rate
-limiting. (The real cache loop is fully sequential — one URL at a time, no
-thread pool — so it is gentler still.) A 403 therefore means the URL expired, not
-that we were blocked: same status either way, which is why volume had to be
-measured separately. This removes the case for residential proxies — they would
-solve a problem that does not exist, and bandwidth-metered proxy download is
-expensive. Caveat: one machine, one network, ~15 minutes; it does not rule out a
-longer-window or datacenter-IP-specific limit, and the new fetch logging (status
-code + permanent/transient classification) is what would surface that.
+**COHORT SPLIT — MEASURED 2026-09-18 (this supersedes the tier labels above).**
+The 790 split by PRODUCER, and splitting the missing URLs by whether the post's
+source exists in the mounted local dumps gives the number the paid-vs-free
+decision actually rests on:
 
-**Still open:** the underlying **ingestion coverage question** — why a URL that
-was reachable at scrape time fails to download at all. The retry now makes a
-transient failure survivable and a permanent one visible, but the 0-4d bucket
-(204 posts, exact-30 whole-profile clusters) still says some runs lose media
-wholesale, and that cause is not yet identified. The leading hypothesis is the
-~4.5-day signed-URL window (`oe` parameter) colliding with scrape timing, not
-blocking.
+| Tier | Missing URLs | Source on disk (free) | No source (paid) |
+|---|---|---|---|
+| 0-4d | 546 | 0 | **546** |
+| 5-14d | 606 | 415 | 191 |
+| 45d+ | 19 | 5 | 14 |
+| **Total** | **1,171** | **420** | **751** |
+
+So 420 recover for free once seeding completes; **751 need a paid permalink
+re-fetch** (~$1.73 at the measured $0.0023/post). The earlier framing that only
+the 0-4d bucket was paid was wrong: 205 of the 5-14d/45d+ URLs have no local
+source either.
+
+**The `local_*` loss — FOUR defects, all silent (fixed 2026-09-18).**
+
+1. The seeding pass lived INSIDE the write-once `else`, so any dataset whose
+   bronze parquet already existed skipped it — i.e. every dataset on a re-run.
+   Pointing the source dir at the real data recovered nothing and logged no
+   error: a green run that did nothing.
+2. The URL→file mapping built `media_00.jpg` for a `displayUrl`-only post, but
+   some dumps name that file `image.jpg` (311 such files measured).
+3. Compose set `IG_LOCAL_INGEST_DIR=/data/ingest` but mounted only `./data`, so
+   the path did not exist in the container at all. The dumps are a sibling
+   checkout, now mounted read-only.
+4. The seeding loop opened a fresh SQLite connection per URL (~23 ms each,
+   ~102 ms/URL end-to-end). Holding one connection for the pass: **53.9 ms →
+   0.4 ms per URL, a 124x speedup**; the full 24,000-URL pass went from
+   20+ minutes to **38 seconds**.
+
+**PAIRING IS POSITIONAL — do not "improve" it.** A type-aware re-pairing was
+attempted and REVERTED: it classified each URL as video/image and paired within
+type, on the theory that positional pairing swapped bytes between slots.
+Measurement refuted the theory and indicted the fix. Across **1,082 real carousel
+posts, `len(images[])` equals the count of `media_<i>` files on disk in 1,081** —
+the scrape writes one file per entry, in order, so index IS the correspondence.
+Instagram CDN URLs frequently carry no extension, so the type heuristic
+misclassified them and then re-ordered and DROPPED entries: for
+`images[] = [no-ext, x.mp4, z.jpg]` over `[media_00.mp4, media_01.mp4,
+media_02.jpg]` it produced two pairs, skipped the first URL, and put
+`media_02`'s bytes under the second URL's hash. The "8.13% mismatch" that
+motivated the attempt was the heuristic's own error rate. Guards:
+`test_extensionless_url_pairs_by_index_not_by_guessed_type` (fails against
+type-pairing, passes against positional) and
+`test_mixed_carousel_pairs_by_index_not_by_type`.
+
+**ANTIBOT: OPEN, and expiry-alignment is the decisive test.** Of the 1,892
+missing URLs, **1,892 carry an expired `oe` and 0 were still signed** — but that
+is consistent with BOTH histories, because these URLs expired ~4.5 days after a
+scrape that is days/weeks old: a URL blocked at scrape time also reads as
+expired now. The test that would separate them is comparing each URL's `oe`
+against its post's `timestamp`; that has NOT been run. A burst from this host
+(861 sequential requests, all 200, cut off by a 900s cap 123 short of the
+intended 984) shows no throttling from here, but it is not the production egress
+and is not evidence of absence. The 546 Apify 0-4d URLs — recently scraped, no
+local source — are where a block would show, and their cause is unidentified.
 
 ### 26. Sentinel literal diverged across sibling silver producers — 8 live rows carry the REJECTED value
 

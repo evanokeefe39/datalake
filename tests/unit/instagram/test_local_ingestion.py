@@ -212,17 +212,73 @@ def test_media_seeded_from_local_bytes(local_env, ops):
         conn.close()
 
 
-def test_mixed_carousel_pairs_video_children_to_video_files(local_env, ops):
-    """GIVEN a Sidecar whose images[] mixes images and a video child
+def test_extensionless_url_pairs_by_index_not_by_guessed_type(local_env, ops):
+    """GIVEN a carousel whose first URL carries no file extension
     WHEN bronze_ig_posts_local runs
-    THEN each URL's bytes come from a file OF ITS OWN TYPE.
+    THEN it pairs BY INDEX, and every URL gets a file.
 
-    Regression: pairing by raw position cached VIDEO bytes under an IMAGE URL's
-    hash (measured: 8.13% of carousel entries mispaired). `seed_media_from_file`
-    keys the row by url_hash(media_url) and copies whatever bytes it is handed,
-    so a mispair is a valid-looking row that resolves and silently sends
-    mismatched media to the model — worse than a miss, because nothing
-    re-fetches it.
+    This is the discriminating case. Instagram CDN URLs frequently carry no
+    extension, so a URL-type heuristic cannot classify them; it then re-orders
+    the remaining entries and DROPS the unclassifiable one. Concretely, for
+    images[] = [no-ext, x.mp4, z.jpg] over files [media_00.mp4, media_01.mp4,
+    media_02.jpg], type-pairing yields only TWO pairs (media_02.jpg, media_00.mp4)
+    — the first URL is silently skipped and the second URL receives media_02's
+    bytes.
+
+    Position is authoritative: the scrape writes one media_<i> file per
+    images[] entry in order (measured: len(images[]) == count of media_<i> files
+    in 1,081 of 1,082 real carousels).
+    """
+    no_ext = "https://cdn.example.com/media"  # no extension — unclassifiable
+    vid1 = "https://cdn.example.com/x.mp4"
+    img2 = "https://cdn.example.com/z.jpg"
+    ds = local_env.ingest / "mix2"
+    pd = ds / "p_mix2"
+    pd.mkdir(parents=True)
+    (pd / "post_metadata.json").write_text(
+        json.dumps(
+            _post("p_mix2", "scx", images=[no_ext, vid1, img2], display=None)
+        ),
+        encoding="utf-8",
+    )
+    (pd / "media_00.mp4").write_bytes(b"bytes-00")
+    (pd / "media_01.mp4").write_bytes(b"bytes-01")
+    (pd / "media_02.jpg").write_bytes(b"bytes-02")
+
+    _run_local(ops)
+
+    conn = ops.get_connection()
+    try:
+        expected = [
+            (no_ext, b"bytes-00"),   # index 0 — must NOT be dropped
+            (vid1, b"bytes-01"),
+            (img2, b"bytes-02"),
+        ]
+        for url, content in expected:
+            row = conn.execute(
+                "SELECT local_path FROM media_cache WHERE cache_key = ?",
+                [url_hash(url)],
+            ).fetchone()
+            assert row is not None, f"{url} was dropped"
+            assert open(row["local_path"], "rb").read() == content, f"wrong bytes for {url}"
+    finally:
+        conn.close()
+
+
+def test_mixed_carousel_pairs_by_index_not_by_type(local_env, ops):
+    """GIVEN a Sidecar whose images[] mixes images and video children
+    WHEN bronze_ig_posts_local runs
+    THEN images[i] pairs with the i-th media file, BY INDEX.
+
+    The scrape writes one media_<i> file per images[] entry in order (measured:
+    len(images[]) == count of media_<i> files in 1,081 of 1,082 real carousels),
+    so index is the correspondence. Pairing by a URL-type heuristic instead
+    re-orders entries when the heuristic misreads a URL, swapping bytes between
+    slots — and a swap is worse than a miss, because seed_media_from_file keys
+    the row by url_hash(media_url) and nothing re-fetches it.
+
+    This test asserts the BYTES each URL receives, so a re-pairing swap fails
+    here rather than silently reaching the model.
     """
     img0 = "https://cdn.example.com/a.jpg"
     vid1 = "https://cdn.example.com/b.mp4"

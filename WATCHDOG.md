@@ -339,8 +339,16 @@ wrong side of a boundary**. Concretely, check:
   pipeline lands that response as `ig_roster_raw` → publishes `silver_ig_roster` → and
   reads the roster FROM DUCKDB. A change that "just reads ops.sqlite from the pipeline"
   reintroduces the coupling this removed, even if it goes through an `opsdb` helper.
-  `media_cache` is the one shared table, and it is pipeline-OWNED with a single shared
-  INSERT (`opsdb.media_cache.record_media_cache_row`, which ensures the table exists).
+  **`media_cache` is TWO tables wearing one name, and it is NOT simply
+  "pipeline-owned"** (corrected 2026-09-18 — the earlier line here was stale). It holds
+  two disjoint key classes: 64-hex `sha256(url)` rows written by the pipeline (~29k rows,
+  55 GB of post media for analysis) and `thumb:<shortcode>` rows written by the dashboard
+  (~1k rows, 25 MB of app thumbnails). Neither consumer ever reads the other's rows —
+  verified, zero ambiguous keys. The shared INSERT (`opsdb.media_cache.
+  record_media_cache_row`) masks the split; the module docstring names both writers while
+  this file did not. ADR-0019 proposes separating them (app state → Postgres owned solely
+  by the dashboard; post media → object storage keyed, not stored). Avatars are a THIRD
+  path: served by `avatar_path(username)`, never through `media_cache` at all.
 - **The details-sweep watermark advances in the ASSET, never in the schedule.**
   `bronze_ig_profile_details` calls `advance_watermark` after the bytes land. Advancing at
   schedule-evaluation would mark emitted-but-unexecuted runs as covered, so one Apify
