@@ -78,6 +78,13 @@ services:
       IG_LOCAL_INGEST_DIR: /data/ingest
     volumes:
       - ./data:/data
+      # The local ad-hoc scrape dumps (`<LOCAL_INGEST_DIR>/<dataset>/<post>/`).
+      # `IG_LOCAL_INGEST_DIR` above points at `/data/ingest`, but the dumps live
+      # in a SIBLING checkout — so this mount is what makes that path real.
+      # Without it the path does not exist, `seed_media_from_file` finds no
+      # source for any post, and the run reports success while recovering zero
+      # bytes. That silent gap is what left 586 posts uncached (ISSUES.md #25).
+      - "${DATALAKE_LOCAL_INGEST_DIR:-../scrape-ig-saved-list/data/ingest}:/data/ingest:ro"
     ports:
       # 7642 is deliberately NOT 3000/3001/8000/8080 — those are grabbed by dev
       # tools and other stacks constantly (Dagster's own default 3000 collides

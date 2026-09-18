@@ -212,6 +212,76 @@ def test_media_seeded_from_local_bytes(local_env, ops):
         conn.close()
 
 
+def test_single_image_seeds_when_the_dump_named_it_image_jpg(local_env, ops):
+    """GIVEN a displayUrl-only post whose file is ``image.jpg``, not ``media_00.jpg``
+    WHEN bronze_ig_posts_local runs
+    THEN it still seeds — the local dumps disagree on the filename.
+
+    Regression: the mapping hardcoded ``media_00.jpg``. Dumps written by the
+    other producer name the file ``image.jpg``, so the seed returned None and
+    the post stayed uncached forever while the run reported success. 586 of 790
+    uncached posts came from these datasets.
+    """
+    url = "https://cdn.example.com/only.jpg"
+    ds = local_env.ingest / "img"
+    pd = ds / "p_img"
+    pd.mkdir(parents=True)
+    (pd / "post_metadata.json").write_text(
+        json.dumps(_post("p_img", "sci", display=url)), encoding="utf-8"
+    )
+    (pd / "image.jpg").write_bytes(b"image-jpg-bytes")  # NOT media_00.jpg
+
+    _run_local(ops)
+
+    conn = ops.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT local_path FROM media_cache WHERE cache_key = ?", [url_hash(url)]
+        ).fetchone()
+        assert row is not None, "image.jpg convention was not seeded"
+        assert open(row["local_path"], "rb").read() == b"image-jpg-bytes"
+    finally:
+        conn.close()
+
+
+def test_seeding_runs_even_when_bronze_already_exists(local_env, ops):
+    """GIVEN a dataset whose bronze parquet already exists (write-once path)
+    WHEN bronze_ig_posts_local runs with new source bytes available
+    THEN the seeding pass still runs and caches them.
+
+    Regression: the seeding pass lived inside the write-once `else`, so it was
+    unreachable for any dataset whose parquet already existed — i.e. all of
+    them on a re-run. Pointing the source dir at the real dumps then recovered
+    NOTHING and logged no error: a green run that recovered zero bytes.
+    """
+    url = "https://cdn.example.com/late.jpg"
+    _make_dataset(local_env.ingest, "late", [_post("p_late", "scl", display=url)])
+
+    # First run as normal — this writes bronze + seeds the media.
+    _run_local(ops)
+
+    # Simulate the recovery case: bronze exists, cache row removed (as if the
+    # earlier seeding never happened because the source dir was unreadable).
+    conn = ops.get_connection()
+    try:
+        conn.execute("DELETE FROM media_cache WHERE cache_key = ?", [url_hash(url)])
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Second run takes the write-once branch — seeding must STILL execute.
+    _run_local(ops)
+
+    conn = ops.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT local_path FROM media_cache WHERE cache_key = ?", [url_hash(url)]
+        ).fetchone()
+        assert row is not None, "seeding was skipped on the write-once path"
+    finally:
+        conn.close()
+
+
 def test_video_post_display_url_not_seeded(local_env, ops):
     """GIVEN a video post (videoUrl + displayUrl, no images list)
     WHEN bronze_ig_posts_local runs

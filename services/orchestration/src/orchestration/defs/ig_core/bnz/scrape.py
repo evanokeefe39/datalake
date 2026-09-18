@@ -320,7 +320,9 @@ def _local_post_media_pairs(post: dict, post_dir: Path) -> list[tuple[str, Path]
 
     Position/type mapping of the scrape-ig-saved-list layout:
     ``videoUrl`` → ``video.mp4``; ``images[i]`` → ``media_{i:02d}.jpg``;
-    ``displayUrl`` → ``media_00.jpg`` when there is no images list.
+    ``displayUrl`` → the single-image file, named ``media_00.jpg`` in most
+    dumps and ``image.jpg`` in others (see ``_single_image_file``).
+
     Posts without media yield an empty list (null-skip — never an error).
 
     A video post (``videoUrl`` present, ``images`` empty) maps ONLY to its
@@ -337,8 +339,37 @@ def _local_post_media_pairs(post: dict, post_dir: Path) -> list[tuple[str, Path]
             if url:
                 pairs.append((url, post_dir / f"media_{i:02d}.jpg"))
     elif post.get("displayUrl"):
-        pairs.append((post["displayUrl"], post_dir / "media_00.jpg"))
+        pairs.append((post["displayUrl"], _single_image_file(post_dir)))
     return pairs
+
+
+def _single_image_file(post_dir: Path) -> Path:
+    """The single-image file in a post dir, whatever the dump named it.
+
+    The local dumps were written by more than one producer and they disagree on
+    the filename for a `displayUrl`-only post: most write ``media_00.jpg``,
+    some write ``image.jpg``. Hardcoding one name made the other convention
+    unrecoverable — `seed_media_from_file` returned None, the post stayed
+    uncached, and (before the accounting fix) the run looked successful.
+
+    Prefer ``media_00.jpg`` so the common case is path-identical to before;
+    fall back to any image actually present. Returns the canonical path when
+    nothing matches, so the caller's "source missing" log still names a
+    plausible expectation.
+    """
+    canonical = post_dir / "media_00.jpg"
+    if canonical.exists():
+        return canonical
+    for name in ("image.jpg", "media_00.jpeg", "media_00.png", "media_00.webp"):
+        candidate = post_dir / name
+        if candidate.exists():
+            return candidate
+    # Nothing matched — glob for any single image so a new convention still
+    # seeds rather than silently missing.
+    for candidate in sorted(post_dir.glob("*.jpg")) + sorted(post_dir.glob("*.jpeg")):
+        if candidate.name != "post_metadata.json":
+            return candidate
+    return canonical
 
 @asset(
     name="bronze_ig_posts_local",
@@ -373,9 +404,65 @@ def bronze_ig_posts_local(ops: SQLiteResource) -> pl.DataFrame:
     for dataset_dir in sorted(p for p in LOCAL_INGEST_DIR.iterdir() if p.is_dir()):
         dataset_id = f"local_{dataset_dir.name}"
         dest = bronze_path(dataset_id)
+
+        # Media seeding pass — runs for EVERY dataset, including write-once ones.
+        #
+        # This was previously inside the `else` (write-once) branch, which made
+        # it unreachable for any dataset whose bronze parquet already existed —
+        # i.e. all of them on a re-run. Pointing LOCAL_INGEST_DIR at the real
+        # source then recovered NOTHING and logged no error: the guard cleared,
+        # the asset returned a non-empty frame, and the run looked green. The
+        # seeding pass is a side-effect against the source dir and `media_cache`
+        # only — it does not touch bronze — so it must NOT be gated by whether
+        # bronze was already written.
+        #
+        # Idempotent per URL (`seed_media_from_file` is a keyed upsert) and
+        # self-healing on re-runs, so running it every time is safe and is what
+        # makes a mount fix actually recover bytes.
+        #
+        # ACCOUNTED: `seed_media_from_file` returns None when the source file is
+        # missing, and discarding that return is how a run silently produces
+        # media-less posts (the local-ingest branch of ISSUES.md #25 — the
+        # local_* datasets carry most of the uncached rate).
+        seed_attempted = seed_cached = 0
+        seed_missing: list[str] = []
+        for post_file in sorted(dataset_dir.glob("*/post_metadata.json")):
+            row_meta = json.loads(post_file.read_text(encoding="utf-8"))
+            for url, src in _local_post_media_pairs(row_meta, post_file.parent):
+                seed_attempted += 1
+                if seed_media_from_file(ops, url, src):
+                    seed_cached += 1
+                else:
+                    seed_missing.append(url)
+
+        if seed_missing:
+            logger.error(
+                "local ingest: %d/%d media URL(s) NOT seeded — their source"
+                " files are missing, so those posts cannot be enriched without"
+                " a re-scrape: %s",
+                len(seed_missing),
+                seed_attempted,
+                seed_missing[:10],
+            )
+        else:
+            logger.info(
+                "local ingest: media seeded %d/%d", seed_cached, seed_attempted
+            )
+
         if dest.exists():
             # Write-once: never touch an existing bronze file — silver's
-            # mtime watermark would re-ingest it with stale data.
+            # mtime watermark would re-ingest it with stale data. The seeding
+            # above has already run (it is deliberately NOT gated here), so a
+            # recovered dataset still gets its bytes; the counts go to the run
+            # log rather than a sidecar rewrite, which would rewrite an
+            # immutable artifact for a bookkeeping update it does not need.
+            if seed_cached:
+                logger.info(
+                    "local ingest: recovered media for %s — %d/%d seeded this run",
+                    dataset_id,
+                    seed_cached,
+                    seed_attempted,
+                )
             frames.append(pl.read_parquet(dest))
         else:
             post_files = sorted(dataset_dir.glob("*/post_metadata.json"))
@@ -408,42 +495,8 @@ def bronze_ig_posts_local(ops: SQLiteResource) -> pl.DataFrame:
                 }
             ) or [f"file://{dataset_dir.as_posix()}"]
 
-            # Media seeding pass — idempotent per URL, self-healing on re-runs.
-            # ACCOUNTED: `seed_media_from_file` returns None when the source file
-            # is missing, and discarding that return is how a run silently
-            # produces media-less posts (the local-ingest branch of ISSUES.md
-            # #25 — the local_* datasets carry most of the uncached rate).
-            #
-            # NOTE the ordering: this runs BEFORE `_write_meta` below, because
-            # the counts are written INTO that sidecar. Writing the sidecar first
-            # (as it was) recorded `media_cache: {attempted: 0, ...}` for every
-            # local dataset even when source files had vanished — the durable
-            # record contradicted the log line.
-            seed_attempted = seed_cached = 0
-            seed_missing: list[str] = []
-            for post_file in sorted(dataset_dir.glob("*/post_metadata.json")):
-                row_meta = json.loads(post_file.read_text(encoding="utf-8"))
-                for url, src in _local_post_media_pairs(row_meta, post_file.parent):
-                    seed_attempted += 1
-                    if seed_media_from_file(ops, url, src):
-                        seed_cached += 1
-                    else:
-                        seed_missing.append(url)
-
-            if seed_missing:
-                logger.error(
-                    "local ingest: %d/%d media URL(s) NOT seeded — their source"
-                    " files are missing, so those posts cannot be enriched without"
-                    " a re-scrape: %s",
-                    len(seed_missing),
-                    seed_attempted,
-                    seed_missing[:10],
-                )
-            else:
-                logger.info(
-                    "local ingest: media seeded %d/%d", seed_cached, seed_attempted
-                )
-
+            # Media seeding (counts computed above, before the write-once
+            # branch — see the note there for why it is NOT gated on dest).
             _write_meta(
                 dest,
                 run_id="local-adhoc",
