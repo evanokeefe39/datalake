@@ -48,6 +48,26 @@ that writes `media_cache` from inside the container is currently broken**, and t
 mode is `disk I/O error` raised from `PRAGMA`, which reads as a transient lock rather than
 a structural mismatch.
 
+### This reverses a decision ADR-0017 made deliberately
+
+ADR-0017 considered splitting `media_cache` and rejected it, in its own words:
+
+> *Split `media_cache` into its own database.* Raised while designing this. Rejected for now:
+> `opsdb` already carries the `media_cache` contract, and the dashboard writing to it is a
+> pipeline-owned table with one shared INSERT — the same shape as the roster table before this
+> change, but without a second *owner* to separate.
+
+That reasoning is sound and the rejection was correct **on the evidence available then**. It
+rests on one premise: that `media_cache` is *"a pipeline-owned table … without a second
+owner to separate."* **Measurement shows that premise is false.** The table has two owners
+already — 29,343 pipeline rows and 1,093 dashboard rows, disjoint consumers, zero ambiguous
+keys, differing 2,250x in size. The second owner was there to separate; it was hidden behind
+a shared INSERT and a shared key column.
+
+So this is not a re-litigation of a settled question: it is the same question with the
+missing evidence supplied. Had ADR-0017 measured the key space, it would have found the
+second owner it was looking for.
+
 ## Decision
 
 **Split by consumer, and give each half the storage shape its characteristics call for.**
@@ -67,9 +87,16 @@ opening the same file.
 ### 2. Analytical media bytes live in object storage, not in a database
 
 The pipeline's post media is not database content. 55.6 GB of carousels and video destined
-for model analysis belongs in object storage — the same R2/S3 surface the repo already uses
-for post content — with the database holding **keys and metadata only**. No row in any
+for model analysis belongs in object storage — **the same destination the enrichment worker
+already uploads to** — with the database holding **keys and metadata only**. No row in any
 database should carry a byte count that can reach 55 GB.
+
+**Caveat on "already uses":** the object-storage *transport* is not wired in this repo yet.
+`packages/storage` is a deliberate stub — its R2 branch raises rather than silently
+returning a local path, and ADR-0015 records it as unwired pending `storage-migration`. What
+exists is the contract (key resolution + transport seam), not a live R2 client. So MinIO is
+**new infrastructure**, not a local mirror of something running; the value is that it speaks
+the same API as R2, so the code is written once against the S3 interface.
 
 This is the larger correction, and it is independent of the Postgres move: moving 55 GB of
 image bytes from one database to another would preserve the mistake.
@@ -126,9 +153,12 @@ state.
 
 ### What it costs
 
-- **A storage migration**, with a backfill for ~30k rows of metadata and a byte relocation
-  for 55.6 GB of media. The relocation is the bulk of the work and is mechanical
-  (copy, verify by checksum, flip the key reference, retire the old path).
+- **A storage migration, but NOT a bulk byte relocation.** With `data/media/posts`
+  bind-mounted into MinIO in place, the 55.6 GB never moves: the migration is a metadata
+  backfill (~30k rows gaining an object key) plus wiring the transport. An actual byte copy
+  happens only for the eventual R2 upload, and can be done lazily per object read rather
+  than as a stop-the-world batch. This is materially cheaper than the relocation this
+  section originally assumed.
 - **`opsdb` is reimplemented.** The package is sqlite3-specific today: `PRAGMA` calls,
   `sqlite_ddl()`, `INSERT OR REPLACE` → `ON CONFLICT`, `?` → `%s` parameters, and the
   `ConnectionFactory` protocol. It becomes a Postgres client, and its DDL factory moves to
@@ -159,6 +189,39 @@ clock**: the paid path re-fetches by permalink and Apify returns a *fresh* `disp
 so stored-URL expiry does not apply to it. (The ~4.5-day signature window is why losses
 *recur on new scrapes*; it does not expire the existing backlog.) Order on merit.
 
+## Alternatives considered
+
+**Move `ops.sqlite` to a Docker named volume and keep SQLite.** Weighed first, and it does
+solve the immediate container failure — host and container stop sharing a file, so the
+sidecar ownership problem disappears. It was rejected because it fixes the symptom and
+keeps the cause: app state would still have two direct writers (`server.py` and the Dagster
+assets), still with no real concurrency control, and the ownership violation ADR-0017
+named would still be present. A volume makes the current shape work rather than correcting
+it.
+
+**Keep SQLite but make `PRAGMA journal_mode=WAL` conditional**, falling back to DELETE
+journal when the pragma raises. The smallest possible change, and it unblocks the container.
+Rejected for the same reason as above: it makes the shared table workable without
+separating its two owners, and it trades away WAL's concurrency for the app writer.
+
+**Route the pipeline's media writes through the dashboard API**, so all `ops.sqlite` access
+is API-mediated. Rejected — this inverts a documented boundary. `media_cache` is
+pipeline-owned for its sha256 class; the dashboard writing app thumbnails does not make the
+dashboard the pipeline's storage service. ADR-0017's roster-over-HTTP decision exists because
+the roster has a *single* natural owner (the dashboard); post media has the opposite owner,
+so API-mediating it would add a hop in the hot ingestion path for no ownership benefit.
+
+**Split `media_cache` by key prefix but keep both halves in SQLite.** This is ADR-0017's
+option completed — separate the tables without moving storage. Rejected because the two
+halves want *different storage*, not just different tables: 55.6 GB of analytical media is
+object-storage content whose size makes any SQL table the wrong home, and the app's thumbnails
+are better served by a CDN-backed cache than by a database row. Splitting the table without
+addressing that would leave the larger half still in a database.
+
+**Postgres for everything, including the media.** Rejected outright: it moves 55.6 GB of
+image bytes between databases and preserves the actual mistake. Byte blobs belong in object
+storage regardless of which SQL engine fronts the metadata.
+
 ## Open questions
 
 1. **Does the pipeline's media *metadata* need a database at all?** If media lives in object
@@ -170,5 +233,7 @@ so stored-URL expiry does not apply to it. (The ~4.5-day signature window is why
 3. **Does the dashboard's thumbnail cache survive the split, or does it become a CDN
    concern?** At 24.6 MB it is small, but it is a cache with a fetch-on-miss lifecycle —
    which is a job object storage does natively.
-4. **Migration cutover**: dual-write with a backfill, or a stop-the-world copy? The media
-   relocation makes the former more attractive, but it needs a reconciliation pass.
+4. **Migration cutover for app state**: dual-write with a backfill, or a stop-the-world
+   copy? This applies to the Postgres move only — the media side no longer has a bulk
+   relocation to sequence against (see §2), which removes the main reason dual-write looked
+   attractive here.
