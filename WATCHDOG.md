@@ -346,9 +346,12 @@ wrong side of a boundary**. Concretely, check:
   (~1k rows, 25 MB of app thumbnails). Neither consumer ever reads the other's rows —
   verified, zero ambiguous keys. The shared INSERT (`opsdb.media_cache.
   record_media_cache_row`) masks the split; the module docstring names both writers while
-  this file did not. ADR-0019 proposes separating them (app state → Postgres owned solely
-  by the dashboard; post media → object storage keyed, not stored). Avatars are a THIRD
-  path: served by `avatar_path(username)`, never through `media_cache` at all.
+  this file did not. ADR-0019 (PROPOSED, not yet built — this paragraph describes TODAY's
+  shape) proposes separating them: app state → Postgres owned solely by the dashboard; post
+  media → object storage keyed, not stored. Do not describe that boundary as current until
+  the epic lands. Avatars are a THIRD path with a split ownership: `silver_ig_profiles`
+  writes them at pipeline time, and the dashboard only SERVES them via
+  `avatar_path(username)` — they never pass through `media_cache` at all.
 - **The details-sweep watermark advances in the ASSET, never in the schedule.**
   `bronze_ig_profile_details` calls `advance_watermark` after the bytes land. Advancing at
   schedule-evaluation would mark emitted-but-unexecuted runs as covered, so one Apify
