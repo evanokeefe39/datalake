@@ -407,6 +407,43 @@ def bronze_ig_posts_local(ops: SQLiteResource) -> pl.DataFrame:
                     if row.get("ownerUsername")
                 }
             ) or [f"file://{dataset_dir.as_posix()}"]
+
+            # Media seeding pass — idempotent per URL, self-healing on re-runs.
+            # ACCOUNTED: `seed_media_from_file` returns None when the source file
+            # is missing, and discarding that return is how a run silently
+            # produces media-less posts (the local-ingest branch of ISSUES.md
+            # #25 — the local_* datasets carry most of the uncached rate).
+            #
+            # NOTE the ordering: this runs BEFORE `_write_meta` below, because
+            # the counts are written INTO that sidecar. Writing the sidecar first
+            # (as it was) recorded `media_cache: {attempted: 0, ...}` for every
+            # local dataset even when source files had vanished — the durable
+            # record contradicted the log line.
+            seed_attempted = seed_cached = 0
+            seed_missing: list[str] = []
+            for post_file in sorted(dataset_dir.glob("*/post_metadata.json")):
+                row_meta = json.loads(post_file.read_text(encoding="utf-8"))
+                for url, src in _local_post_media_pairs(row_meta, post_file.parent):
+                    seed_attempted += 1
+                    if seed_media_from_file(ops, url, src):
+                        seed_cached += 1
+                    else:
+                        seed_missing.append(url)
+
+            if seed_missing:
+                logger.error(
+                    "local ingest: %d/%d media URL(s) NOT seeded — their source"
+                    " files are missing, so those posts cannot be enriched without"
+                    " a re-scrape: %s",
+                    len(seed_missing),
+                    seed_attempted,
+                    seed_missing[:10],
+                )
+            else:
+                logger.info(
+                    "local ingest: media seeded %d/%d", seed_cached, seed_attempted
+                )
+
             _write_meta(
                 dest,
                 run_id="local-adhoc",
@@ -416,38 +453,12 @@ def bronze_ig_posts_local(ops: SQLiteResource) -> pl.DataFrame:
                 urls=profile_urls,
                 results_limit=AD_HOC_LIMIT,
                 results_type="posts",
+                media_attempted=seed_attempted,
+                media_cached=seed_cached,
+                media_failed=len(seed_missing),
             )
             logger.info("Ingested local dataset %s: %d posts", dataset_id, len(df))
             frames.append(df)
-
-        # Media seeding pass — idempotent per URL, self-healing on re-runs.
-        # ACCOUNTED: `seed_media_from_file` returns None when the source file is
-        # missing, and discarding that return is how a run silently produces
-        # media-less posts (the local-ingest branch of ISSUES.md #25 — the
-        # local_* datasets carry most of the uncached rate).
-        seed_attempted = seed_cached = 0
-        seed_missing: list[str] = []
-        for post_file in sorted(dataset_dir.glob("*/post_metadata.json")):
-            row = json.loads(post_file.read_text(encoding="utf-8"))
-            for url, src in _local_post_media_pairs(row, post_file.parent):
-                seed_attempted += 1
-                if seed_media_from_file(ops, url, src):
-                    seed_cached += 1
-                else:
-                    seed_missing.append(url)
-        if seed_missing:
-            logger.error(
-                "local ingest: %d/%d media URL(s) NOT seeded — their source"
-                " files are missing, so those posts cannot be enriched without a"
-                " re-scrape: %s",
-                len(seed_missing),
-                seed_attempted,
-                seed_missing[:10],
-            )
-        else:
-            logger.info(
-                "local ingest: media seeded %d/%d", seed_cached, seed_attempted
-            )
 
     if not frames:
         return pl.DataFrame()

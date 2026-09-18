@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 from orchestration.defs.engine.media import (
     MEDIA_CACHE_ATTEMPTS,
+    _PermanentFetchError,
     cache_media_bytes,
     cache_media_urls,
     local_media_path,
@@ -165,6 +166,50 @@ def test_cache_media_urls_reports_ok_when_nothing_fails(tmp_path):
     assert report.ok is True
     assert report.failed == 0
     assert report.summary() == "media cache: 1/1 cached"
+
+
+def test_cache_media_bytes_does_not_retry_a_4xx(tmp_path):
+    """An expired signed URL must not spend the retry budget.
+
+    Instagram's CDN returns 403 once the URL's `oe` expiry passes (~4.5 days)
+    and no retry revives it. The corpus has 556 such posts, so retrying them all
+    is pure wall-clock waste — measured 4.4s per dead URL at 3 attempts vs 0.6s
+    when the 4xx short-circuits.
+    """
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+
+    with patch(
+        "orchestration.defs.engine.media._download_bytes",
+        side_effect=_PermanentFetchError(403, "https://cdn.example.com/expired.jpg"),
+    ) as dl:
+        with patch("orchestration.defs.engine.media.time.sleep"):
+            path = cache_media_bytes(
+                ops, "https://cdn.example.com/expired.jpg", media_dir=tmp_path
+            )
+
+    assert path is None
+    assert dl.call_count == 1, "a 4xx must stop at attempt 1, not use all 3"
+
+
+def test_cache_media_bytes_retries_a_5xx(tmp_path):
+    """A 5xx is transient — it MUST still use the retry budget.
+
+    The permanent/transient split is the point: short-circuiting 4xx must not
+    accidentally stop retrying the failures that do clear.
+    """
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+
+    with patch(
+        "orchestration.defs.engine.media._download_bytes",
+        side_effect=[None, None, (b"bytes", "image/jpeg")],
+    ) as dl:
+        with patch("orchestration.defs.engine.media.time.sleep"):
+            path = cache_media_bytes(
+                ops, "https://cdn.example.com/flaky.jpg", media_dir=tmp_path
+            )
+
+    assert path is not None
+    assert dl.call_count == 3
 
 
 def test_local_media_path_returns_none_when_missing(tmp_path):
