@@ -1402,7 +1402,7 @@ run:
 | Recovered across the session (by subtraction) | 226 |
 | Permanently unrecoverable (verified deleted) | **2** |
 | Remaining, retryable (`restricted_page`) | **4** |
-| Spend | **not recorded** — the run used `settle_cost=False`, so `usageTotalUsd` was never read. At the measured $0.0023/post the ~230 posts fetched across pilots and passes is ~$0.53; treat that as an estimate, not a measurement. |
+| Spend | **$0.7153 measured**, from the Apify account's own run records: 160 runs started today, summed `usage_total_usd`. Includes ~$0.08 from a concurrent scrape path (4 runs at 08:00, before this session's recovery work began), so the recovery-attributable share is ~**$0.64**. |
 
 230 = 226 + 4, and the 232 start differs from 230 by the 2 permanently
 unrecoverable posts — but this middle row is DERIVED, not logged. See "What is
