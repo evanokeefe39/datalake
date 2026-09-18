@@ -1457,10 +1457,43 @@ actor run rather than one. Measured: 5 posts recovered in a single run in 24s
 matched the requested permalink) — positional pairing would cache one post's
 media under another's keys.
 
-**Verification.** Not "the run was green": spot-checked media resolves through
-`local_media_path` to a real file on disk (2.3 MB `.mp4` for a recovered post),
-confirmed from INSIDE the container against `/data`, because a container-written
-`media_cache.local_path` does not resolve from a host process.
+**Verification.** Not "the run was green" and not a pytest pass — a real end-to-end
+run through the inference seam, because cached bytes are only worth anything if
+enrichment can consume them:
+
+1. Picked a post recovered this session (`DDGtn2WvaGa`), resolved its media via
+   `local_media_path` → `/data/media/posts/mid-18467462167014075.jpg`, and confirmed
+   the file exists from INSIDE the jobs container (126 KB, valid JPEG `FFD8FFE0`).
+2. Submitted it to the live `jobs` service over HTTP (`POST /jobs`) and polled to
+   `state: completed`, `ok: true`.
+3. **The model described the image correctly**: "A promotional graphic for 'CUBED
+   TECH'... a hand holding a smartphone displaying the company's mobile
+   website... 'VISIT OUR NEW WEBSITE!' above a search bar graphic containing
+   'cubedtech.com.au'". That text is only producible if the actual recovered bytes
+   reached the model — the strongest available evidence that recovery succeeded.
+
+The video path was exercised too: a recovered `.mp4` resolves (2.3 MB,
+`ftypisom`), ffmpeg samples it into **8 valid JPEG frames**, and the request
+succeeds (`ok: true`). The model returned an empty result for that clip under an
+ad-hoc prompt, which is a model-response behaviour rather than a pipeline defect —
+the frames demonstrably reached the service.
+
+Two failure modes were surfaced by doing this instead of trusting the suite, and
+neither is a recovery defect:
+
+- The job service always sends `response_format: json_object`, and the provider
+  (Alibaba/Qwen) requires the literal word "json" in the prompt for that format, or
+  it 400s with `'messages' must contain the word 'json'`. A test prompt without it
+  fails every call. **Verified the real pipeline is unaffected**: `IG_GOLD_PROMPT`
+  (the prompt `workloads.py` actually sends) contains "json" — see
+  `prompts.py`, "Return ONLY valid JSON with these fields".
+- An ad-hoc prompt that asks for unstructured prose under a JSON response format
+  yields `[]` / `{}`. That is the format contract working, not a broken fetch.
+
+A container-written `media_cache.local_path` does NOT resolve from a host process
+(prefix translation needs `IG_HOST_PATH_PREFIX`, which compose sets for the
+container), so ALL of the above was checked from inside the containers against
+`/data`.
 
 **What is verified versus what is reconstructed.** Only two figures were read from
 the store after the work finished, and they are the ones to trust:
