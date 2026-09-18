@@ -212,6 +212,54 @@ def test_media_seeded_from_local_bytes(local_env, ops):
         conn.close()
 
 
+def test_mixed_carousel_pairs_video_children_to_video_files(local_env, ops):
+    """GIVEN a Sidecar whose images[] mixes images and a video child
+    WHEN bronze_ig_posts_local runs
+    THEN each URL's bytes come from a file OF ITS OWN TYPE.
+
+    Regression: pairing by raw position cached VIDEO bytes under an IMAGE URL's
+    hash (measured: 8.13% of carousel entries mispaired). `seed_media_from_file`
+    keys the row by url_hash(media_url) and copies whatever bytes it is handed,
+    so a mispair is a valid-looking row that resolves and silently sends
+    mismatched media to the model — worse than a miss, because nothing
+    re-fetches it.
+    """
+    img0 = "https://cdn.example.com/a.jpg"
+    vid1 = "https://cdn.example.com/b.mp4"
+    img2 = "https://cdn.example.com/c.jpg"
+    ds = local_env.ingest / "mix"
+    pd = ds / "p_mix"
+    pd.mkdir(parents=True)
+    (pd / "post_metadata.json").write_text(
+        json.dumps(_post("p_mix", "scm", images=[img0, vid1, img2], display=None)),
+        encoding="utf-8",
+    )
+    # On disk the video child is media_01.mp4, NOT media_01.jpg.
+    (pd / "media_00.jpg").write_bytes(b"bytes-00-image")
+    (pd / "media_01.mp4").write_bytes(b"bytes-01-video")
+    (pd / "media_02.jpg").write_bytes(b"bytes-02-image")
+
+    _run_local(ops)
+
+    conn = ops.get_connection()
+    try:
+        expected = [
+            (img0, b"bytes-00-image", "image/jpeg"),
+            (vid1, b"bytes-01-video", "video/mp4"),
+            (img2, b"bytes-02-image", "image/jpeg"),
+        ]
+        for url, content, ctype in expected:
+            row = conn.execute(
+                "SELECT local_path, content_type FROM media_cache WHERE cache_key = ?",
+                [url_hash(url)],
+            ).fetchone()
+            assert row is not None, f"{url} was not seeded"
+            assert row["content_type"] == ctype, f"{url} got {row['content_type']}"
+            assert open(row["local_path"], "rb").read() == content, f"wrong bytes for {url}"
+    finally:
+        conn.close()
+
+
 def test_single_image_seeds_when_the_dump_named_it_image_jpg(local_env, ops):
     """GIVEN a displayUrl-only post whose file is ``image.jpg``, not ``media_00.jpg``
     WHEN bronze_ig_posts_local runs

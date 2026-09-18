@@ -257,6 +257,37 @@ def test_signed_url_expiry_decodes_oe():
     assert _signed_url_expiry("https://x/a.jpg?oe=nothex") is None  # malformed
 
 
+def test_429_is_transient_and_takes_the_retry_path():
+    """429 is a rate limit, not a dead URL — it must NOT be permanent.
+
+    If 429 fell into the 4xx permanent branch it would spend zero retries, log
+    as "expired", and land as a permanent miss — erasing the one signal that
+    would tell us the CDN is throttling us. That is the open production-egress
+    question, so this distinction is load-bearing, not cosmetic.
+    """
+    import urllib.error
+
+    from orchestration.defs.engine.media import _download_bytes, _PermanentFetchError
+
+    err = urllib.error.HTTPError("https://cdn.example.com/a.jpg", 429, "Too Many", {}, None)
+    with patch("urllib.request.urlopen", side_effect=err):
+        # Must RETURN (retryable), not RAISE (permanent).
+        assert _download_bytes("https://cdn.example.com/a.jpg") is None
+
+    err408 = urllib.error.HTTPError("https://cdn.example.com/a.jpg", 408, "Timeout", {}, None)
+    with patch("urllib.request.urlopen", side_effect=err408):
+        assert _download_bytes("https://cdn.example.com/a.jpg") is None
+
+    # 403 with an expired oe stays permanent.
+    err403 = urllib.error.HTTPError("https://cdn.example.com/a.jpg", 403, "Forbidden", {}, None)
+    with patch("urllib.request.urlopen", side_effect=err403):
+        try:
+            _download_bytes("https://cdn.example.com/a.jpg?oe=40000000")
+            raise AssertionError("403 should be permanent")
+        except _PermanentFetchError as exc:
+            assert exc.code == 403
+
+
 def test_local_media_path_returns_none_when_missing(tmp_path):
     ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
     assert local_media_path(ops, "https://cdn.example.com/unknown.jpg") is None

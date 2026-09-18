@@ -22,6 +22,7 @@ from dagster import Config, asset
 from opsdb.roster import AD_HOC_LIMIT
 
 from orchestration.defs.engine.media import (
+    VIDEO_EXTENSIONS,
     cache_media_urls,
     seed_media_from_file,
 )
@@ -315,61 +316,117 @@ def bronze_ig_posts(
 
     return df
 
+#: Media extensions the local dumps write.
+_MEDIA_EXTS: tuple[str, ...] = (".jpg", ".jpeg", ".mp4", ".mov", ".webm", ".png", ".webp")
+
+#: Video extensions — reuses the canonical set from engine.media rather than
+#: minting a second definition (this repo has been bitten by two definitions of
+#: one value drifting apart).
+_VIDEO_SUFFIXES = VIDEO_EXTENSIONS
+
+
 def _local_post_media_pairs(post: dict, post_dir: Path) -> list[tuple[str, Path]]:
     """Map a post's media URLs to the local files the scrape saved.
 
-    Position/type mapping of the scrape-ig-saved-list layout:
-    ``videoUrl`` → ``video.mp4``; ``images[i]`` → ``media_{i:02d}.jpg``;
-    ``displayUrl`` → the single-image file, named ``media_00.jpg`` in most
-    dumps and ``image.jpg`` in others (see ``_single_image_file``).
+    A SEED, so a wrong guess is not conservative — ``seed_media_from_file``
+    copies the bytes it is handed and keys the row by ``url_hash(media_url)``.
+    Pairing an image URL with a video file therefore caches VIDEO bytes under an
+    IMAGE URL's key: a valid-looking row that resolves, sends mismatched media to
+    the model, and is never re-fetched. That is worse than a miss, so the pairing
+    is type-aware rather than positional (measured: raw position mispairs 8.13%
+    of carousel entries — 538 of 6,615).
+
+    The dumps were written by more than one producer and use several naming
+    conventions — measured across the corpus:
+
+        media_<i>.jpg   16,878   carousel images
+        video.mp4        6,841   a post whose media is one video
+        media_<i>.mp4    1,646   a video INSIDE a carousel
+        image.jpg          311   a single-image post
+
+    Rather than enumerate conventions, resolve each URL against the files
+    actually present, MATCHING BY TYPE within each group:
+
+    - ``videoUrl`` (no ``images``) → the post's video file.
+    - ``images[i]`` → the i-th file of that URL's type (image or video), so an
+      ``images[]`` entry that is really a video pairs with ``media_N.mp4``.
+    - ``displayUrl`` (no ``images``) → the sole media file (poster/photo).
+
+    A video post's ``displayUrl`` is deliberately NOT mapped: it is the poster
+    frame, not a separate file the scrape downloaded.
 
     Posts without media yield an empty list (null-skip — never an error).
-
-    A video post (``videoUrl`` present, ``images`` empty) maps ONLY to its
-    ``video.mp4`` — its ``displayUrl`` is the poster frame, not a separate
-    file the scrape downloaded. Mapping it to ``media_00.jpg`` would log a
-    spurious "source missing" on every run.
     """
+    files = _post_media_files(post_dir)
+    images: list[Path] = [f for f in files if f.suffix.lower() not in _VIDEO_SUFFIXES]
+    videos: list[Path] = [f for f in files if f.suffix.lower() in _VIDEO_SUFFIXES]
+
     if post.get("videoUrl"):
-        return [(post["videoUrl"], post_dir / "video.mp4")]
-    pairs: list[tuple[str, Path]] = []
-    images = post.get("images") or []
-    if images:
-        for i, url in enumerate(images):
-            if url:
-                pairs.append((url, post_dir / f"media_{i:02d}.jpg"))
-    elif post.get("displayUrl"):
-        pairs.append((post["displayUrl"], _single_image_file(post_dir)))
-    return pairs
+        # A video post. If the dump also carries an images[] list this is a
+        # mixed carousel — but the Apify wire format puts every carousel entry
+        # (including video children) in images[], so that case is handled by the
+        # images branch below. Here the post's media is the video file.
+        if not files:
+            return []
+        return [(post["videoUrl"], videos[0] if videos else files[0])]
+
+    if post.get("images"):
+        pairs: list[tuple[str, Path]] = []
+        img_i = vid_i = 0
+        for url in post["images"]:
+            if not url:
+                continue
+            # Match the URL's type to the next file of that type: an images[]
+            # entry ending .mp4 is a video child, saved as media_N.mp4.
+            if _url_is_video(url):
+                if vid_i < len(videos):
+                    pairs.append((url, videos[vid_i]))
+                    vid_i += 1
+            elif img_i < len(images):
+                pairs.append((url, images[img_i]))
+                img_i += 1
+        return pairs
+
+    if post.get("displayUrl"):
+        if not files:
+            return []
+        canonical = post_dir / "media_00.jpg"
+        return [(post["displayUrl"], canonical if canonical.exists() else files[0])]
+
+    return []
 
 
-def _single_image_file(post_dir: Path) -> Path:
-    """The single-image file in a post dir, whatever the dump named it.
+def _url_is_video(url: str) -> bool:
+    """True when a media URL denotes a video rather than an image.
 
-    The local dumps were written by more than one producer and they disagree on
-    the filename for a `displayUrl`-only post: most write ``media_00.jpg``,
-    some write ``image.jpg``. Hardcoding one name made the other convention
-    unrecoverable — `seed_media_from_file` returned None, the post stayed
-    uncached, and (before the accounting fix) the run looked successful.
-
-    Prefer ``media_00.jpg`` so the common case is path-identical to before;
-    fall back to any image actually present. Returns the canonical path when
-    nothing matches, so the caller's "source missing" log still names a
-    plausible expectation.
+    Instagram serves video from paths containing ``.mp4`` and (less often)
+    ``video`` in the path; images never do. Used to pair by TYPE so a carousel's
+    video child does not receive an image's bytes.
     """
-    canonical = post_dir / "media_00.jpg"
-    if canonical.exists():
-        return canonical
-    for name in ("image.jpg", "media_00.jpeg", "media_00.png", "media_00.webp"):
-        candidate = post_dir / name
-        if candidate.exists():
-            return candidate
-    # Nothing matched — glob for any single image so a new convention still
-    # seeds rather than silently missing.
-    for candidate in sorted(post_dir.glob("*.jpg")) + sorted(post_dir.glob("*.jpeg")):
-        if candidate.name != "post_metadata.json":
-            return candidate
-    return canonical
+    lowered = url.lower()
+    return ".mp4" in lowered or "/video" in lowered or lowered.endswith(".mov")
+
+
+def _post_media_files(post_dir: Path) -> list[Path]:
+    """The media files in a post dir, position-ordered and convention-agnostic.
+
+    ``media_<i>`` files carry the carousel index and are returned in that order.
+    A bare ``video.mp4``/``image.jpg`` is a single-media post, returned as the
+    only entry. When a dir holds BOTH an indexed set and a bare file, the bare
+    file is appended so its URL is not dropped.
+    """
+    indexed: dict[int, Path] = {}
+    singles: list[Path] = []
+    for f in sorted(post_dir.iterdir()):
+        if f.suffix.lower() not in _MEDIA_EXTS:
+            continue
+        stem = f.stem
+        if stem.startswith("media_") and stem[6:].isdigit():
+            indexed[int(stem[6:])] = f
+        else:
+            singles.append(f)
+    return [indexed[i] for i in sorted(indexed)] + singles
+
 
 @asset(
     name="bronze_ig_posts_local",

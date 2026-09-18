@@ -49,6 +49,14 @@ MEDIA_CACHE_ATTEMPTS: int = 3
 #: Base seconds for the retry backoff; attempt N waits base * 2**(N-1).
 MEDIA_CACHE_BACKOFF_BASE: float = 1.0
 
+#: 4xx codes that are actually TRANSIENT and must take the retry path.
+#:
+#: 429 is a rate limit and 408 a request timeout — both clear on retry. Treating
+#: them as permanent would burn zero retries, mislabel a throttled burst as
+#: "expired", and erase the one signal that would tell us the CDN is limiting us
+#: (which is the open production-egress question).
+_TRANSIENT_HTTP_CODES: frozenset[int] = frozenset({408, 429})
+
 
 class _PermanentFetchError(Exception):
     """A 4xx media fetch — the URL will never succeed, so do not retry.
@@ -156,9 +164,21 @@ def _download_bytes(url: str) -> tuple[bytes, str] | None:
             content_type = resp.headers.get("Content-Type", "")
             return resp.read(), content_type
     except urllib.error.HTTPError as exc:
+        if exc.code in _TRANSIENT_HTTP_CODES:
+            # 429 (rate limited) and 408 (request timeout) are TRANSIENT despite
+            # being 4xx. Classifying them permanent would spend zero retries,
+            # log them as "expired or gone", and land a throttled burst as
+            # permanent misses — which would also make a real rate-limit signal
+            # indistinguishable from expiry in the sidecar counts. That is
+            # precisely the blindness this change exists to remove.
+            logger.warning(
+                "media download TRANSIENT failure for %s: HTTP %s (retrying)",
+                url[:80],
+                exc.code,
+            )
+            return None
         if 400 <= exc.code < 500:
-            # PERMANENT: an expired signature never revives. Surface it so the
-            # caller can stop immediately rather than retrying a dead URL.
+            # PERMANENT (403/404/410): a signature that expired never revives.
             #
             # Say WHICH 4xx, and whether the URL's own signed expiry had passed.
             # A 403 is ambiguous on its face — expired signature, revoked link,
