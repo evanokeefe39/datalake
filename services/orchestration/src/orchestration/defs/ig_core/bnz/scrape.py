@@ -341,8 +341,9 @@ def _local_post_media_pairs(post: dict, post_dir: Path) -> list[tuple[str, Path]
     unclassifiable one. For ``images[] = [no-ext, x.mp4, z.jpg]`` over
     ``[media_00.mp4, media_01.mp4, media_02.jpg]`` it yielded two pairs, skipped
     the first URL, and put ``media_02``'s bytes under the second URL's hash.
-    ``seed_media_from_file`` keys rows by ``url_hash(media_url)`` and copies
-    whatever bytes it is handed, so such a swap is a valid-looking row that
+    ``seed_media_from_file`` keys rows by the media's STABLE key
+    (``media_key``, i.e. ``mid:<id>``) and copies whatever bytes it is handed, so
+    such a swap is a valid-looking row that
     resolves and silently sends mismatched media to the model — worse than a
     miss, because nothing re-fetches it. The "8.13% mismatch" that motivated that
     attempt was the heuristic's own error rate, not the data's.
