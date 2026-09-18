@@ -1,4 +1,4 @@
-"""The ``media_cache`` row contract — URL hash, path lookup, row recording.
+"""The ``media_cache`` row contract — cache key, path lookup, row recording.
 
 The table is ops.sqlite's record of *where* cached media bytes live; the bytes
 themselves are written by whichever producer fetched them (the scrape-time byte
@@ -7,8 +7,12 @@ endpoint). This module owns the table's DDL, the hash scheme the key is derived
 from, and the single INSERT that both writers share — three copies of that
 statement is how a column addition becomes a silent partial write.
 
-Rows are keyed by ``sha256(source_url)``, not by content, because the producers
-decide *what* to fetch by URL and must agree on the key before any bytes exist.
+Rows are keyed by a STABLE identity where one exists, falling back to
+``sha256(source_url)``. The stable form is ``mid:<instagram media id>``, taken
+from the CDN filename: the id survives re-signing, whereas the signed URL around
+it does not (Instagram rotates the signature every ~4.5 days), so a URL-derived
+key silently stops matching the content it named. Two key spaces coexist —
+legacy rows hold the hash — and :func:`cache_keys_for` resolves either.
 """
 
 from __future__ import annotations

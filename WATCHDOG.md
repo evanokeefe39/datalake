@@ -79,9 +79,23 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
 
 ## Test boundaries
 
+- **Do NOT run the full suite as a safety net. Targeted tests only, and ask the
+  owner before any corpus-wide run.** The full pass is ~450-670s (measured
+  197s/407s/~200s on 2026-09-17, 669s on 2026-09-18 — it grows with the corpus),
+  and the standing instruction in this repo is that a full-suite invocation needs
+  explicit permission first. While working, run the ONE file you changed, narrowed
+  with `-k` where possible. Running two large directories "together" is a full
+  suite in disguise — `tests/unit/instagram/ tests/unit/enrichment/` is ~450
+  tests and was correctly called out as such. The full pass is a FINAL gate
+  after the work is complete, never an inner-loop habit.
 - `tests/operational/test_state_compatibility.py` runs against the **live**
   `data/ops.sqlite` + `data/state.duckdb`, not a temp DB. A failure there is
   drift, not a bug in the test.
+- **A table added to the ops catalog must also exist in the LIVE database**, or
+  `test_state_compatibility` reports drift. Create-on-first-write (inside the
+  writer) leaves the live DB without the table until the writer first fires —
+  deliberate for an append-only verdict table, but state the choice rather than
+  discovering it as a red test.
 - `tests/unit/enrichment/test_media_cache.py` mocks `google.genai.Client`; keep
   the File API upload path exercised there so the CDN-vs-cache branch stays
   covered.

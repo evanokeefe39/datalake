@@ -48,9 +48,11 @@ class TestCandidateScan:
     stores rather than trusted from a live run.
     """
 
-    def _scan(self, tmp_path, media_cache_rows, silver_rows):
+    def _scan(self, tmp_path, media_cache_rows, silver_rows, exhausted=()):
         """Run posts_missing_media against fakes; return the candidate post ids."""
         import duckdb
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
 
         db_path = tmp_path / "silver.duckdb"
         conn = duckdb.connect(str(db_path))
@@ -61,14 +63,13 @@ class TestCandidateScan:
 
         ops_path = tmp_path / "ops.sqlite"
         sqlite3.connect(ops_path).close()
-        from opsdb.schema import connect
+        from opsdb.schema import connect, sqlite_ddl
 
         ops_conn = connect(str(ops_path))
-        ops_conn.execute(
-            """CREATE TABLE media_cache (
-                   cache_key TEXT PRIMARY KEY, local_path TEXT, content_type TEXT,
-                   size_bytes INTEGER, fetched_at TEXT, source_url TEXT)"""
-        )
+        # Catalog DDL, not a hand-written column list: a copied list drifts from
+        # the schema silently, which is exactly how a column rename becomes a
+        # partial write nobody notices.
+        ops_conn.execute(sqlite_ddl("media_cache"))
         for key, src in media_cache_rows:
             ops_conn.execute(
                 "INSERT INTO media_cache VALUES (?, ?, ?, ?, ?, ?)",
@@ -76,6 +77,19 @@ class TestCandidateScan:
             )
         ops_conn.commit()
         ops_conn.close()
+
+        if exhausted:
+            from opsdb.media_recovery import (
+                UNRECOVERABLE_NO_MEDIA,
+                record_exhausted,
+            )
+
+            class _Rec:
+                def get_connection(self):
+                    return connect(str(ops_path))
+
+            for pid in exhausted:
+                record_exhausted(_Rec(), pid, UNRECOVERABLE_NO_MEDIA)
 
         class _Ops:
             def __init__(self, path):
@@ -146,6 +160,121 @@ class TestCandidateScan:
             silver_rows=[("p1", "https://instagram.com/p/CCC/", json.dumps([url]))],
         )
         assert found == {"p1"}
+
+
+class TestExhaustedPosts:
+    """An unrecoverable post must not be re-paid on every run.
+
+    The recovery mechanism is STANDING — it runs repeatedly — so a verdict that
+    is only logged is a verdict that is forgotten. The pilot measured roughly a
+    third of candidates as permanently unrecoverable (deleted/private posts
+    return no media), so without durable memory a meaningful slice of every pass
+    is spend on posts that can never succeed.
+    """
+
+    def _store(self, tmp_path, post_ids=()):
+        from opsdb.schema import connect
+
+        path = tmp_path / "ops.sqlite"
+        sqlite3.connect(path).close()
+        conn = connect(str(path))
+        conn.close()
+
+        class _Ops:
+            def get_connection(self):
+                return connect(str(path))
+
+        ops = _Ops()
+        if post_ids:
+            from opsdb.media_recovery import UNRECOVERABLE_NO_MEDIA, record_exhausted
+
+            for pid in post_ids:
+                record_exhausted(ops, pid, UNRECOVERABLE_NO_MEDIA)
+        return ops
+
+    def test_recorded_post_is_read_back(self, tmp_path):
+        """GIVEN a post recorded as unrecoverable
+        WHEN the exhausted set is read
+        THEN it contains that post.
+
+        Round-trip first: every other guarantee here depends on the write landing.
+        """
+        from opsdb.media_recovery import exhausted_post_ids
+
+        ops = self._store(tmp_path, post_ids=["p1", "p2"])
+        assert exhausted_post_ids(ops) == {"p1", "p2"}
+
+    def test_recording_is_idempotent(self, tmp_path):
+        """GIVEN a post already recorded
+        WHEN it is recorded again (a re-run)
+        THEN no error is raised and it appears once.
+        """
+        from opsdb.media_recovery import (
+            UNRECOVERABLE_NO_MEDIA,
+            exhausted_post_ids,
+            record_exhausted,
+        )
+
+        ops = self._store(tmp_path)
+        record_exhausted(ops, "p1", UNRECOVERABLE_NO_MEDIA)
+        record_exhausted(ops, "p1", UNRECOVERABLE_NO_MEDIA)
+        assert exhausted_post_ids(ops) == {"p1"}
+
+    def test_absent_table_reads_as_empty(self, tmp_path):
+        """GIVEN a database where nothing has been recorded
+        WHEN the exhausted set is read
+        THEN it is empty, not an error.
+
+        A scan on a fresh database must behave exactly as it did before this
+        table existed.
+        """
+        from opsdb.media_recovery import exhausted_post_ids
+
+        ops = self._store(tmp_path)
+        assert exhausted_post_ids(ops) == set()
+
+    def test_unknown_reason_raises(self, tmp_path):
+        """GIVEN a reason that is not a declared permanent verdict
+        WHEN it is recorded
+        THEN a ValueError is raised and nothing is stored.
+
+        This is the guard the table's one-way semantics rest on: without it,
+        `record_exhausted(ops, pid, "timeout")` would permanently condemn a post
+        the mechanism could still recover on a later run.
+        """
+        import pytest
+        from opsdb.media_recovery import exhausted_post_ids, record_exhausted
+
+        ops = self._store(tmp_path)
+        with pytest.raises(ValueError, match="unknown exhaustion reason"):
+            record_exhausted(ops, "p1", "timeout")
+        assert exhausted_post_ids(ops) == set(), "nothing may be stored"
+
+    def test_exhausted_post_is_excluded_from_the_scan(self, tmp_path):
+        """GIVEN a post with no cached media that a prior run marked exhausted
+        WHEN the backlog is scanned
+        THEN it is NOT a candidate — so it is not re-paid.
+
+        This is the guarantee: without it, every unrecoverable post is
+        re-selected on every run forever, at the full per-fetch price. The
+        counter-case (same post, no exhaustion row) is asserted in
+        TestCandidateScan.test_uncached_post_is_a_candidate.
+        """
+        url = "https://cdn.example.com/p/1_321_2_n.jpg?oe=X"
+        silver = [("p1", "https://instagram.com/p/X/", json.dumps([url]))]
+
+        scanned = TestCandidateScan()._scan(
+            tmp_path / "before", media_cache_rows=[], silver_rows=silver
+        )
+        assert scanned == {"p1"}, "sanity: without the verdict it IS a candidate"
+
+        found = TestCandidateScan()._scan(
+            tmp_path / "after",
+            media_cache_rows=[],
+            silver_rows=silver,
+            exhausted=["p1"],
+        )
+        assert found == set(), "an exhausted post must not be re-listed"
 
 
 class TestFreshMediaPairing:
@@ -349,8 +478,14 @@ def _run_recover(
     children: list[dict],
     *,
     pre_cached: dict[str, bytes] | None = None,
+    no_media: bool = False,
 ):
-    """Run recover_one end-to-end against fakes, returning (cached, error, calls).
+    """Run recover_one end-to-end against fakes.
+
+    Returns (cached, error, calls, on_disk). `on_disk` maps each cache key to the
+    BYTES written under it — that is what makes the mispair assertions real. A
+    harness returning only call names cannot distinguish item 1 receiving its own
+    bytes from receiving item 2's, which is the entire bug being guarded.
 
     The fakes model the REAL key semantics, not a URL string: `local_media_path`
     resolves via `media_key`, so a fresh URL and a stored URL for the SAME media id
@@ -358,10 +493,14 @@ def _run_recover(
     implementation wrong, so a harness that keyed on the raw URL would hide it.
 
     `pre_cached` seeds the cache before the run, to model a partially-cached
-    carousel — the case where `cache_media_bytes` returns early and hands back a
-    DIFFERENT item's file.
+    carousel — the case where a fresh URL resolves to a DIFFERENT item's file.
+
+    `no_media` makes the fetched item carry no media at all, modelling a
+    deleted/private post — the one case that is a PERMANENT verdict.
     """
     item = _fake_item(children)
+    if no_media:
+        item = {"type": "Image", "id": "x"}
     calls: list[tuple[str, str]] = []
     on_disk: dict[str, bytes] = dict(pre_cached or {})
 
@@ -393,6 +532,13 @@ def _run_recover(
         patch("orchestration.defs.ig_core.bnz.recover._atomic_write", fake_write),
         patch("orchestration.defs.ig_core.bnz.recover.seed_media_from_file", fake_seed),
         patch("orchestration.defs.ig_core.bnz.recover.local_media_path", fake_local),
+        # The exhaustion recorder writes durable ops state; a fake keeps the unit
+        # test off the live database. `calls` records it so a test can assert the
+        # verdict was recorded (and, for a curable failure, was NOT).
+        patch(
+            "orchestration.defs.ig_core.bnz.recover.record_exhausted",
+            lambda ops, pid, reason, **kw: calls.append(("exhausted", f"{pid}:{reason}")),
+        ),
     ):
         tr.return_value = type("R", (), {"run_id": "r1"})()
         pr.return_value = type("O", (), {"dataset_id": "d1"})()
@@ -404,7 +550,7 @@ def _run_recover(
             permalink="https://instagram.com/p/x/",
             stored=stored,
         )
-    return cached, error, calls
+    return cached, error, calls, on_disk
 
 
 class TestRecoveryKeying:
@@ -413,37 +559,40 @@ class TestRecoveryKeying:
     def test_partially_cached_carousel_does_not_mispair(self, tmp_path):
         """GIVEN a carousel where item 2 is already cached but 1 and 3 are not
         WHEN recovery runs
-        THEN every item ends up with ITS OWN bytes, not a neighbour's.
+        THEN each of 1 and 3 holds ITS OWN downloaded bytes.
 
-        This is the regression guard for the stable-key hazard. With `media_key`,
+        The assertion is on BYTES, not on file count: the pre-fix code satisfied
+        "3 files exist" while item 1 could hold item 2's bytes. With `media_key`,
         a fresh URL and the stored URL for the same media id resolve to the SAME
-        entry — so `cache_media_bytes(fresh)` returns early and hands back
-        whatever that key already resolves to. If the code then seeds from that
-        path, item 1's bytes get copied under a key that another item owns.
-
-        It fails against any implementation that seeds from a cache lookup on the
-        fresh URL, which is why the download is done directly.
+        entry, so `cache_media_bytes(fresh)` returns early and hands back
+        whatever that key already resolves to — seeding from that path is the
+        mispair. The download must therefore be unconditional.
         """
         stored = [
             "https://old.example.com/1_111_9_n.jpg?oe=A",
             "https://old.example.com/1_222_9_n.jpg?oe=A",
             "https://old.example.com/1_333_9_n.jpg?oe=A",
         ]
-        children = [
-            {"displayUrl": "https://new.example.com/1_111_9_n.jpg?oe=Z"},
-            {"displayUrl": "https://new.example.com/1_222_9_n.jpg?oe=Z"},
-            {"displayUrl": "https://new.example.com/1_333_9_n.jpg?oe=Z"},
+        fresh = [
+            "https://new.example.com/1_111_9_n.jpg?oe=Z",
+            "https://new.example.com/1_222_9_n.jpg?oe=Z",
+            "https://new.example.com/1_333_9_n.jpg?oe=Z",
         ]
-        # Item 2 is already cached (a prior partial run), and its bytes are
-        # DISTINCT so a mispair is detectable.
+        children = [{"displayUrl": u} for u in fresh]
         pre = {media_key(stored[1]): b"BYTES-OF-ITEM-2"}
 
-        cached, error, _ = _run_recover(tmp_path, stored, children, pre_cached=pre)
+        _, error, _, on_disk = _run_recover(
+            tmp_path, stored, children, pre_cached=pre
+        )
 
         assert error is None, error
-        assert cached == 2, "the two uncached items, not the cached one"
-        # Item 2's OWN bytes must be untouched; 1 and 3 each got their own.
-        assert pre[media_key(stored[1])] == b"BYTES-OF-ITEM-2"
+        assert on_disk[media_key(stored[1])] == b"BYTES-OF-ITEM-2", (
+            "the already-cached item must be left alone"
+        )
+        for i in (0, 2):
+            assert on_disk[media_key(stored[i])] == f"bytes-of-{fresh[i]}".encode(), (
+                f"item {i} must hold its OWN fresh bytes, not a neighbour's"
+            )
 
     def test_caches_under_the_stored_url_not_the_fresh_one(self, tmp_path):
         """GIVEN a post whose fresh URLs differ from its stored ones
@@ -458,7 +607,7 @@ class TestRecoveryKeying:
             {"displayUrl": "https://new.example.com/A.jpg"},
             {"displayUrl": "https://new.example.com/B.jpg"},
         ]
-        cached, error, calls = _run_recover(tmp_path, stored, children)
+        cached, error, calls, _ = _run_recover(tmp_path, stored, children)
 
         assert error is None, error
         assert cached == 2
@@ -476,8 +625,62 @@ class TestRecoveryKeying:
         """
         stored = ["https://old.example.com/1.jpg", "https://old.example.com/2.jpg"]
         children = [{"displayUrl": "https://new.example.com/only.jpg"}]
-        cached, error, calls = _run_recover(tmp_path, stored, children)
+        cached, error, calls, _ = _run_recover(tmp_path, stored, children)
 
         assert cached == 0
         assert error is not None and "mismatch" in error
         assert calls == [], "no bytes may be written on a pairing mismatch"
+
+    def test_count_mismatch_is_not_a_permanent_verdict(self, tmp_path):
+        """GIVEN a pairing mismatch — a CURABLE condition
+        WHEN recovery runs
+        THEN the post is NOT recorded as exhausted.
+
+        The verdict is one-way, so recording a condition that a later run might
+        pair correctly would condemn a post the mechanism could still fix. This
+        is the guard on the write site: the positive case passes even if the
+        recorder is called unconditionally.
+        """
+        stored = ["https://old.example.com/1.jpg", "https://old.example.com/2.jpg"]
+        children = [{"displayUrl": "https://new.example.com/only.jpg"}]
+        _, error, calls, _ = _run_recover(tmp_path, stored, children)
+
+        assert error is not None
+        assert not [c for c in calls if c[0] == "exhausted"], (
+            "a curable failure must stay retryable"
+        )
+
+    def test_failed_download_is_not_a_permanent_verdict(self, tmp_path):
+        """GIVEN a download that failed transiently
+        WHEN recovery runs
+        THEN the post is NOT recorded as exhausted.
+
+        A 403/timeout/429 is exactly the class the retry logic exists for; only
+        "Instagram has no media for this post" is permanent.
+        """
+        stored = ["https://old.example.com/1_FAIL.jpg"]
+        children = [{"displayUrl": "https://new.example.com/1_FAIL.jpg"}]
+        _, error, calls, _ = _run_recover(tmp_path, stored, children)
+
+        assert error is not None, "a failed fetch must report an error"
+        assert not [c for c in calls if c[0] == "exhausted"], (
+            "a transient failure must stay retryable"
+        )
+
+    def test_post_with_no_media_is_recorded_as_exhausted(self, tmp_path):
+        """GIVEN an item carrying no media (a deleted or private post)
+        WHEN recovery runs
+        THEN the post IS recorded as permanently unrecoverable.
+
+        Without the durable verdict the standing mechanism re-selects and
+        RE-PAYS for this post on every future run, forever.
+        """
+        stored = ["https://old.example.com/1.jpg"]
+        _, error, calls, _ = _run_recover(
+            tmp_path, stored, [], no_media=True
+        )
+
+        assert error is not None and "no media" in error
+        verdicts = [c for c in calls if c[0] == "exhausted"]
+        assert len(verdicts) == 1, "exactly one verdict must be recorded"
+        assert verdicts[0][1] == "p1:apify_item_carried_no_media_urls"

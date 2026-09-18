@@ -12,18 +12,27 @@ permalink: one post costs $0.0023 and returns current, downloadable media URLs.
 
 THE KEYING RULE (the whole point of this module)
 ------------------------------------------------
-A recovered post's fresh URLs are DIFFERENT URLs — different sha256 — from the ones
-silver stores. Measured on a real recovery: ``stored ∩ fresh == 0``. So caching bytes
-under the fresh URL leaves the stored URL still uncached and the post still
-un-enrichable, which is the exact failure this module exists to fix.
+The stored URL is the durable reference and the fresh URL is disposable
+transport, so bytes must land where enrichment will look: under the key derived
+from the URL silver holds.
 
-Therefore bytes are cached under the ORIGINAL, STORED URL's hash. The bytes satisfy
-the reference enrichment actually resolves (``media_files`` in silver); the fresh URL
-is only the transport that delivered them. Provenance records both.
+Since the cache key became the STABLE media id (``mid:<id>``), the stored and
+fresh URLs of one media resolve to the SAME key — they are different strings but
+the same media. That equivalence is a trap as well as the point:
 
-This is the opposite of a "regenerated URL is a cache miss" case (WATCHDOG.md) —
-that rule describes a NEW scrape minting a new URL for a post that was never cached.
-Here the stored URL is the durable identity and the fresh URL is disposable.
+  * It is the POINT, because enrichment's lookup needs the stored URL's key and
+    a fresh fetch can now be keyed directly, without reconstructing which expired
+    URL it once corresponded to.
+  * It is a TRAP, because any code that looks up the fresh URL in the cache
+    before downloading will find the STORED entry's file — and on a partially
+    cached carousel that is a DIFFERENT item's bytes. Seeding from it is a
+    mispair: silently wrong, with no miss to trigger a re-fetch.
+
+So the download here is unconditional (:func:`_cache_under`) and the write is
+verified against the stored URL before it counts as success.
+
+This is not the "regenerated URL is a cache miss" case (WATCHDOG.md) — that rule
+describes a NEW scrape minting a new URL for a post that was never cached.
 
 NOT A ONE-OFF SCRIPT
 --------------------
@@ -31,12 +40,20 @@ Recovery is a standing mechanism, not a migration: the ~4.5-day window makes med
 loss continuous, so every future scrape can lose the same way. This is a bronze
 producer that takes a set of permalinks, so it serves the current backlog and any
 future one.
+
+A STANDING MECHANISM MUST REMEMBER
+----------------------------------
+Because it runs repeatedly, a failure verdict that is only logged is a verdict
+forgotten: an unrecoverable post (deleted or private, so no media comes back) would
+be re-selected and RE-PAID on every pass. Verdicts are therefore persisted in
+``opsdb.media_recovery`` and the candidate scan excludes them.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +62,11 @@ import polars as pl
 from dagster import asset
 from dagster_duckdb import DuckDBResource
 from opsdb.media_cache import cache_keys_for
+from opsdb.media_recovery import (
+    UNRECOVERABLE_NO_MEDIA,
+    exhausted_post_ids,
+    record_exhausted,
+)
 
 from orchestration.defs.engine.media import (
     _EXT_BY_MIME,
@@ -60,7 +82,6 @@ from orchestration.defs.integration.apify_runs import (
     stream_dataset,
     trigger_run,
 )
-from orchestration.defs.platform.paths import BRONZE_LAKE
 from orchestration.defs.platform.resources import ApifyResource, SQLiteResource
 
 logger = logging.getLogger(__name__)
@@ -151,8 +172,16 @@ def posts_missing_media(duckdb: DuckDBResource, ops: SQLiteResource) -> list[dic
             r[0] for r in cache_conn.execute("SELECT cache_key FROM media_cache")
         }
 
+    # Posts a prior run proved unrecoverable. Excluding them here is what makes
+    # the mechanism's memory real: without it every deleted/private post is
+    # re-listed and RE-PAID on every run, because no future fetch will ever
+    # succeed for it.
+    exhausted = exhausted_post_ids(ops)
+
     candidates: list[tuple[str, str, list[str], list[str]]] = []
     for post_id, permalink, media_files in rows:
+        if post_id in exhausted:
+            continue
         try:
             urls = [u for u in json.loads(media_files) if u]
         except (TypeError, ValueError):
@@ -282,18 +311,26 @@ def recover_one(
         run.run_id, token=apify.token, timeout=600, settle_cost=False
     )
 
-    tmp = BRONZE_LAKE / f"_recover_{post_id}.ndjson"
+    tmp = tempfile.NamedTemporaryFile(
+        prefix=f"_recover_{post_id}_", suffix=".ndjson", delete=False
+    )
+    tmp_path = Path(tmp.name)
+    tmp.close()
     try:
-        count = stream_dataset(outcome.dataset_id, tmp, token=apify.token)
+        count = stream_dataset(outcome.dataset_id, tmp_path, token=apify.token)
         if count == 0:
             return 0, "Apify returned no item for the permalink"
-        item = _first_item(tmp)
+        item = _first_item(tmp_path)
     finally:
-        if tmp.exists():
-            tmp.unlink()
+        if tmp_path.exists():
+            tmp_path.unlink()
 
     fresh = _fresh_media_for_post(item)
     if not fresh:
+        # A permanent verdict, recorded so the scan stops re-selecting this post.
+        # Without it the standing mechanism re-pays for a deleted/private post on
+        # every future run — measured at roughly a third of pilot candidates.
+        record_exhausted(ops, post_id, UNRECOVERABLE_NO_MEDIA)
         return 0, "Apify item carried no media URLs"
 
     # Pair against the FULL stored list by index: fresh[i] mirrors stored[i]. Pairing
