@@ -1398,20 +1398,63 @@ run:
 
 | | |
 |---|---|
-| Posts uncached when the pass started | 124 |
-| Posts recovered by the pass | **121** |
-| Permanently unrecoverable, recorded by the pass | **3** |
-| Posts uncached after | **0** |
-| Total spend, all pilots and passes (estimate) | ~$0.35 |
+| Posts uncached at session start | 232 |
+| Recovered across the session | 226 |
+| Permanently unrecoverable (verified deleted) | **2** |
+| Remaining, retryable (`restricted_page`) | **4** |
+| Spend | **not recorded** — the run used `settle_cost=False`, so `usageTotalUsd` was never read. At the measured $0.0023/post the ~230 posts fetched across pilots and passes is ~$0.53; treat that as an estimate, not a measurement. |
 
-The arithmetic closes: 124 = 121 recovered + 3 unrecoverable. Three FURTHER
-exhaustion rows exist (recorded 15:43, during a cancelled partial run); those
-posts were already excluded from the 124, so they are not part of this sum — the
-table reads 6 exhausted rows in total, 3 of them predating the pass.
+232 = 226 recovered + 2 permanently unrecoverable + 4 retryable. The 226 is derived
+by subtraction rather than logged as a run total, and the start figure drifted
+during the session (the scan went 232 → 182 → 124 → 4 as runs and the concurrent
+scrape writer moved it), so treat the middle rows as an accounting, not as
+measurements.
 
-One post failed the pass on an HTTP 429 and recovered on a manual retry, which is
-the behaviour that matters: a transient failure is NOT recorded as permanent. Only
-"Apify returned an item carrying no media" (deleted or private) is.
+**The two verified end-state figures** (queried from the store, not reconstructed
+from logs): `media_recovery_exhausted` holds **2 rows**, and `posts_missing_media`
+returns **4**. The 232-start figure and the per-run split come from the run log and
+are the softer half of this table — the pass itself started from 124 only because
+earlier runs in the same session had already drained part of the backlog.
+
+The trailing 4 are all `restricted_page`: Instagram is withholding their media
+right now. They are NOT recorded as unrecoverable, so the scan keeps selecting
+them and a future run can recover them once the restriction lifts — one such post
+recovered during this very session while the docs were being written, which is the
+behaviour that argues against condemning them.
+
+**The unrecoverable set, verified against the live table.** `media_recovery_exhausted`
+holds **2 rows**, both `apify_reports_post_does_not_exist`
+(`DcIQSjUtMVQ`, `DctmjtoOl7c`). Both were re-fetched independently and both return
+`error="not_found"` / "Post does not exist", so both verdicts are correct.
+
+**Not every failure is permanent, and the distinction is measured, not assumed.**
+Apify returns an ERROR ITEM for a post it cannot serve, and the `error` value
+decides: `not_found` is permanent, `restricted_page` ("Restricted access, only
+partial data available") is NOT — verified by re-fetch on `DLsRh2FoZlE`, which
+returns `restricted_page` and correctly gets no verdict, and on `DcL1QDCCT3-`,
+whose earlier failure was a transient HTTP 429 and which recovered on retry.
+
+An earlier revision of this entry said 3 posts were permanently unrecoverable and
+that five restricted posts had been "failed retryably". Both statements were
+wrong: the code then treated ANY media-less item as permanent, which condemned
+five `restricted_page` posts through a one-way verdict. The branch now inspects
+the Apify error and only `not_found` earns a verdict; the five wrongly-condemned
+rows were cleared, and the two that remain are genuinely deleted posts.
+
+**Residual: 5 posts remain uncached but retryable** — all `restricted_page`, i.e.
+Instagram is withholding media for them right now. They are NOT in the exhausted
+table, so the scan keeps selecting them: a future run may recover them once the
+restriction lifts, at $0.0023 per post per attempt.
+
+**Scope of the key fix — stated precisely, because it is not universal.**
+`media_key` yields the stable `mid:<id>` only where the CDN filename carries a
+media id (the `..._<id>_n.jpg` form). Video and some other-host URLs use paths
+like `/o1/v/t2/f2/...` with no such segment, so `media_key` falls back to
+`url_hash` **by design** — those keys still rotate with the signature. The stable
+key therefore fixes the majority of media, not all of it, and the scan's dual-key
+matching is load-bearing indefinitely rather than transitional. Extending
+`media_id` to parse the `/o1/` video form is the follow-up that would close the
+remainder.
 
 **Batching.** The actor takes a LIST of direct URLs, so the pass runs 20 posts per
 actor run rather than one. Measured: 5 posts recovered in a single run in 24s
@@ -1426,14 +1469,26 @@ media under another's keys.
 confirmed from INSIDE the container against `/data`, because a container-written
 `media_cache.local_path` does not resolve from a host process.
 
+**The arc across the session, so the numbers reconcile end to end.** 232 posts
+were uncached when the session began. A cancelled one-at-a-time run recovered 58,
+a 5-post batch probe recovered 5, and the batched pass recovered the remaining
+121 of its 124 candidates (3 permanently unrecoverable). Backlog: **0**. The
+pass's own starting count (124, not 232) is because the earlier runs had already
+drained part of it — this is why the pass logged 124 while this entry's sizing
+block quotes 232.
+
 **Not yet run: the standing schedule.** `bronze_ig_media_recovery` is
 launch-only with no automation policy (asserted by test, required by ADR-0018),
 so this backlog is drained but the mechanism is not yet preventing the next one.
 
-**Pre-run measurement record (how the backlog was sized before the pass).**
+**Pre-run measurement record (HOW THE BACKLOG WAS SIZED BEFORE THE PASS — historical).**
 
-The table above is stale. Two things separate it from today's figure, and BOTH
-are measured rather than inferred:
+This block records the sizing method used before the pass ran. Its figures are
+SUPERSEDED by the outcome table near the top of this entry; keep it for the
+method, not the numbers.
+
+The cohort table above it is stale. Two things separate it from the pre-run
+figure, and BOTH are measured rather than inferred:
 
 | Quantity | Value | How it was measured |
 |---|---|---|

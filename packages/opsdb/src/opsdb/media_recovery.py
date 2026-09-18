@@ -5,20 +5,27 @@ download can fail permanently (the CDN URL is signed and expires in ~4.5 days),
 leaving a post un-enrichable with nothing that retries. Recovery re-fetches by
 permalink, which is paid.
 
-Some posts are unrecoverable in a way that never changes: the post was deleted or
-made private, so Instagram (via Apify) returns an item carrying no media at all.
-Re-fetching those costs the same as a successful one and returns the same
-nothing — measured at roughly a third of candidates in the pilot.
+Some posts can never be recovered: the post was DELETED, so Apify returns an error
+item with ``error="not_found"`` instead of media. Re-fetching those costs the same
+as a successful one and returns the same nothing. Measured rate: 2 of 232 posts in
+a full pass (~1%) — an earlier hand-picked pilot suggested ~33%, which was sample
+bias and must not be used to size this table.
 
-Without a durable verdict the scan is amnesiac: it re-selects and RE-PAYS for
-those posts on every single run, forever. This module is that memory. A post is
+WHAT IS *NOT* RECORDED HERE MATTERS AS MUCH AS WHAT IS. Apify also fails with
+``restricted_page`` ("Restricted access, only partial data available"), which is
+TEMPORARY — a later run can succeed, and one such post recovered mid-session after
+being restricted. Recording a temporary failure here permanently excludes a
+recoverable post, which is worse than a failed attempt because nothing ever
+revisits it. So the reason is a closed set (see ``UNRECOVERABLE_REASONS``) and the
+caller must classify the Apify error before recording.
+
+Without a durable verdict the scan is amnesiac: it re-selects and RE-PAYS for a
+deleted post on every single run, forever. This module is that memory. A post is
 recorded ONCE, keyed by ``post_id``, and the candidate scan excludes it.
 
-The verdict is deliberately one-way. A re-appearance of the media is not
-detectable from here (the post is gone), and a post that reappears would be
-re-scraped by the core-refresh path — which lands new silver rows with their own
-media URLs and a fresh opportunity to cache. Recording exhaustion never blocks
-that path, because it only suppresses the PAID re-fetch.
+The verdict is one-way by design, and that is only safe because the reason set is
+narrow. A deleted post does not come back; a restricted one does, so it stays
+retryable and stays in the scan.
 """
 
 from __future__ import annotations
@@ -30,12 +37,25 @@ from .schema import ConnectionFactory, sqlite_ddl
 
 #: Reasons a post is permanently unrecoverable through the paid path. A CLOSED
 #: set, enforced rather than merely documented: recording a transient failure
-#: (a rate limit, a network blip, a count mismatch on a post that could still
-#: pair correctly next time) as exhaustion would condemn a post the mechanism
-#: could still fix, which is unrecoverable-by-bug rather than by fact.
-UNRECOVERABLE_NO_MEDIA = "apify_item_carried_no_media_urls"
+#: (a rate limit, a network blip, a `restricted_page` error, a count mismatch on a
+#: post that could still pair correctly next time) as exhaustion would condemn a
+#: post the mechanism could still fix, which is unrecoverable-by-bug rather than
+#: by fact.
+#:
+#: Named for the CONDITION, not the symptom: Apify returns an error item with
+#: `error="not_found"` / `"Post does not exist"`, which is what makes the verdict
+#: permanent. An earlier name (`apify_item_carried_no_media_urls`) described the
+#: symptom and would have accepted an error item of ANY cause, including ones that
+#: resolve on a later run.
+UNRECOVERABLE_POST_GONE = "apify_reports_post_does_not_exist"
 
-UNRECOVERABLE_REASONS = frozenset({UNRECOVERABLE_NO_MEDIA})
+UNRECOVERABLE_REASONS = frozenset({UNRECOVERABLE_POST_GONE})
+
+#: Apify item `error` values that mean the post is permanently gone. Closed, and
+#: deliberately narrow: `restricted_page` ("Restricted access, only partial data
+#: available") is NOT here, because restriction is a temporary state and a later
+#: run can succeed — measured on real posts that returned it.
+UNRECOVERABLE_APIFY_ERRORS = frozenset({"not_found"})
 
 
 def _ensure_table(ops: ConnectionFactory, conn: sqlite3.Connection | None = None) -> None:

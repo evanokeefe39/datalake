@@ -63,7 +63,8 @@ from dagster import asset
 from dagster_duckdb import DuckDBResource
 from opsdb.media_cache import cache_keys_for
 from opsdb.media_recovery import (
-    UNRECOVERABLE_NO_MEDIA,
+    UNRECOVERABLE_APIFY_ERRORS,
+    UNRECOVERABLE_POST_GONE,
     exhausted_post_ids,
     record_exhausted,
 )
@@ -331,11 +332,22 @@ def _cache_item(
     """
     fresh = _fresh_media_for_post(item)
     if not fresh:
-        # A permanent verdict, recorded so the scan stops re-selecting this post.
-        # Without it the standing mechanism re-pays for a deleted/private post on
-        # every future run.
-        record_exhausted(ops, post_id, UNRECOVERABLE_NO_MEDIA)
-        return 0, "Apify item carried no media URLs"
+        # The item carries no media. WHY matters, because the verdict is one-way:
+        # an Apify ERROR item has this shape, and its reason decides whether the
+        # post is gone or merely restricted right now.
+        error = str(item.get("error") or "")
+        description = str(item.get("errorDescription") or "")
+        if error in UNRECOVERABLE_APIFY_ERRORS:
+            record_exhausted(ops, post_id, UNRECOVERABLE_POST_GONE)
+            return 0, f"Apify reports the post is gone ({error}): {description}"
+        # Anything else — 'restricted_page' ("Restricted access, only partial data
+        # available"), a rate limit, an unrecognized error shape — is NOT permanent.
+        # Recording it would permanently exclude a post a later run could recover,
+        # which is worse than a failed attempt: nothing ever revisits it.
+        return 0, (
+            f"Apify returned no media and no permanent verdict ({error or 'no error field'}"
+            f"): {description or 'item carried no media'}"
+        )
 
     # Pair against the FULL stored list by index: fresh[i] mirrors stored[i]. Pairing
     # against `missing` (the uncached subset) would shift every entry after the first

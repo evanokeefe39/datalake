@@ -29,11 +29,13 @@ from opsdb.media_cache import (
     media_key,
     url_hash,
 )
+from opsdb.media_recovery import UNRECOVERABLE_POST_GONE
 from orchestration.defs.ig_core.bnz.recover import (
     _all_items,
     _fresh_media_for_post,
     _item_shortcode,
     _shortcode,
+    recover_batch,
     recover_one,
 )
 
@@ -83,7 +85,7 @@ class TestCandidateScan:
 
         if exhausted:
             from opsdb.media_recovery import (
-                UNRECOVERABLE_NO_MEDIA,
+                UNRECOVERABLE_POST_GONE,
                 record_exhausted,
             )
 
@@ -92,7 +94,7 @@ class TestCandidateScan:
                     return connect(str(ops_path))
 
             for pid in exhausted:
-                record_exhausted(_Rec(), pid, UNRECOVERABLE_NO_MEDIA)
+                record_exhausted(_Rec(), pid, UNRECOVERABLE_POST_GONE)
 
         class _Ops:
             def __init__(self, path):
@@ -189,10 +191,10 @@ class TestExhaustedPosts:
 
         ops = _Ops()
         if post_ids:
-            from opsdb.media_recovery import UNRECOVERABLE_NO_MEDIA, record_exhausted
+            from opsdb.media_recovery import UNRECOVERABLE_POST_GONE, record_exhausted
 
             for pid in post_ids:
-                record_exhausted(ops, pid, UNRECOVERABLE_NO_MEDIA)
+                record_exhausted(ops, pid, UNRECOVERABLE_POST_GONE)
         return ops
 
     def test_recorded_post_is_read_back(self, tmp_path):
@@ -213,14 +215,14 @@ class TestExhaustedPosts:
         THEN no error is raised and it appears once.
         """
         from opsdb.media_recovery import (
-            UNRECOVERABLE_NO_MEDIA,
+            UNRECOVERABLE_POST_GONE,
             exhausted_post_ids,
             record_exhausted,
         )
 
         ops = self._store(tmp_path)
-        record_exhausted(ops, "p1", UNRECOVERABLE_NO_MEDIA)
-        record_exhausted(ops, "p1", UNRECOVERABLE_NO_MEDIA)
+        record_exhausted(ops, "p1", UNRECOVERABLE_POST_GONE)
+        record_exhausted(ops, "p1", UNRECOVERABLE_POST_GONE)
         assert exhausted_post_ids(ops) == {"p1"}
 
     def test_absent_table_reads_as_empty(self, tmp_path):
@@ -518,6 +520,151 @@ class TestBatchAttribution:
         codes = [_item_shortcode(i) for i in _all_items(p)]
         assert codes == ["A", "B"]
 
+    def test_each_item_is_cached_under_its_own_posts_keys(self, tmp_path):
+        """GIVEN a batch of two posts whose items come back in the dataset
+        WHEN recover_batch routes them
+        THEN each post's stored URL holds ITS OWN item's bytes, not the other's.
+
+        This is the guard for the batched path's one silent failure mode. A
+        batched run returns items in no guaranteed order, so routing by position
+        would write post A's bytes under post B's keys — a mispair that resolves
+        cleanly and sends the wrong media to the model, with nothing to re-fetch
+        it. Byte-level assertion, because a file-count assertion cannot tell the
+        two apart.
+        """
+        a_stored = ["https://old.example.com/1_111_9_n.jpg?oe=A"]
+        b_stored = ["https://old.example.com/1_222_9_n.jpg?oe=B"]
+        a_fresh = "https://new.example.com/1_111_9_n.jpg?oe=Z"
+        b_fresh = "https://new.example.com/1_222_9_n.jpg?oe=Z"
+        candidates = [
+            {"post_id": "pa", "url": "https://instagram.com/p/AAAA/", "stored": a_stored},
+            {"post_id": "pb", "url": "https://instagram.com/p/BBBB/", "stored": b_stored},
+        ]
+        # Items returned in REVERSE order, and each tagged with its own shortCode.
+        items = [
+            {"shortCode": "BBBB", "url": "https://instagram.com/p/BBBB/", "displayUrl": b_fresh},
+            {"shortCode": "AAAA", "url": "https://instagram.com/p/AAAA/", "displayUrl": a_fresh},
+        ]
+        on_disk: dict[str, bytes] = {}
+
+        def fake_download(url):
+            return f"bytes-of-{url}".encode(), "image/jpeg"
+
+        def fake_seed(ops, stored_url, src_path, *, media_dir=None, conn=None):
+            on_disk[media_key(stored_url)] = Path(src_path).read_bytes()
+            return str(src_path)
+
+        def fake_local(ops, media_url, *, conn=None):
+            return str(tmp_path / "c.bin") if media_key(media_url) in on_disk else None
+
+        with (
+            patch("orchestration.defs.ig_core.bnz.recover.trigger_run") as tr,
+            patch("orchestration.defs.ig_core.bnz.recover.poll_run") as pr,
+            patch("orchestration.defs.ig_core.bnz.recover.stream_dataset") as sd,
+            patch("orchestration.defs.ig_core.bnz.recover._download_bytes", fake_download),
+            patch("orchestration.defs.ig_core.bnz.recover._atomic_write",
+                  lambda p, d: Path(p).write_bytes(d)),
+            patch("orchestration.defs.ig_core.bnz.recover.seed_media_from_file", fake_seed),
+            patch("orchestration.defs.ig_core.bnz.recover.local_media_path", fake_local),
+        ):
+            tr.return_value = type("R", (), {"run_id": "r1"})()
+            pr.return_value = type("O", (), {"dataset_id": "d1"})()
+            sd.side_effect = lambda dataset_id, dest, *, token: _write_items(dest, items)
+            recovered, cached, failed = recover_batch(
+                object(), type("A", (), {"token": "t"})(), candidates=candidates
+            )
+
+        assert (recovered, cached, failed) == (2, 2, [])
+        assert on_disk[media_key(a_stored[0])] == f"bytes-of-{a_fresh}".encode()
+        assert on_disk[media_key(b_stored[0])] == f"bytes-of-{b_fresh}".encode()
+
+    def test_an_item_for_a_post_outside_the_chunk_is_ignored(self, tmp_path):
+        """GIVEN a returned item whose shortcode matches no candidate
+        WHEN recover_batch routes
+        THEN it is skipped, not attributed to an arbitrary post.
+
+        A wrong-chunk item (an Apify extra, a redirect) must never be written
+        under some candidate's keys.
+        """
+        candidates = [
+            {"post_id": "pa", "url": "https://instagram.com/p/AAAA/",
+             "stored": ["https://old.example.com/1_111_9_n.jpg?oe=A"]},
+        ]
+        items = [
+            {"shortCode": "ZZZZ", "url": "https://instagram.com/p/ZZZZ/",
+             "displayUrl": "https://new.example.com/other.jpg"},
+        ]
+        on_disk: dict[str, bytes] = {}
+
+        with (
+            patch("orchestration.defs.ig_core.bnz.recover.trigger_run") as tr,
+            patch("orchestration.defs.ig_core.bnz.recover.poll_run") as pr,
+            patch("orchestration.defs.ig_core.bnz.recover.stream_dataset") as sd,
+            patch("orchestration.defs.ig_core.bnz.recover._download_bytes",
+                  lambda u: (b"x", "image/jpeg")),
+            patch("orchestration.defs.ig_core.bnz.recover._atomic_write",
+                  lambda p, d: Path(p).write_bytes(d)),
+            patch("orchestration.defs.ig_core.bnz.recover.seed_media_from_file",
+                  lambda ops, u, src, **kw: on_disk.setdefault(u, b"y") and str(src)),
+            patch("orchestration.defs.ig_core.bnz.recover.local_media_path",
+                  lambda ops, u, **kw: on_disk.get(u)),
+        ):
+            tr.return_value = type("R", (), {"run_id": "r1"})()
+            pr.return_value = type("O", (), {"dataset_id": "d1"})()
+            sd.side_effect = lambda dataset_id, dest, *, token: _write_items(dest, items)
+            recovered, cached, failed = recover_batch(
+                object(), type("A", (), {"token": "t"})(), candidates=candidates
+            )
+
+        assert recovered == 0
+        assert on_disk == {}, "nothing may be written for an unmatched item"
+        assert failed == ["https://instagram.com/p/AAAA/"]
+
+    def test_a_chunk_returning_no_items_is_retryable_not_a_verdict(self, tmp_path):
+        """GIVEN a run that returns NO items for its chunk
+        WHEN recover_batch processes it
+        THEN the posts are reported failed and NO exhaustion verdict is written.
+
+        A missing item means the FETCH failed, not that the media is gone. The
+        verdict table is one-way, so recording here would permanently condemn
+        posts the mechanism could still recover — and a batch mapping bug would
+        write verdicts for every post in the chunk.
+        """
+        candidates = [
+            {"post_id": "pa", "url": "https://instagram.com/p/AAAA/",
+             "stored": ["https://old.example.com/1_111_9_n.jpg?oe=A"]},
+        ]
+        verdicts: list[str] = []
+
+        with (
+            patch("orchestration.defs.ig_core.bnz.recover.trigger_run") as tr,
+            patch("orchestration.defs.ig_core.bnz.recover.poll_run") as pr,
+            patch("orchestration.defs.ig_core.bnz.recover.stream_dataset") as sd,
+            patch("orchestration.defs.ig_core.bnz.recover.record_exhausted",
+                  lambda ops, pid, reason, **kw: verdicts.append(pid)),
+        ):
+            tr.return_value = type("R", (), {"run_id": "r1"})()
+            pr.return_value = type("O", (), {"dataset_id": "d1"})()
+            sd.side_effect = lambda dataset_id, dest, *, token: _write_items(dest, [])
+            recovered, cached, failed = recover_batch(
+                object(), type("A", (), {"token": "t"})(), candidates=candidates
+            )
+
+        assert recovered == 0
+        assert failed == ["https://instagram.com/p/AAAA/"]
+        assert verdicts == [], "a missing item must stay retryable"
+
+
+def _write_items(dest, items: list[dict]) -> int:
+    """Write SEVERAL items as NDJSON, as a batched `stream_dataset` does.
+
+    Returns the count, mirroring the real writer's contract.
+    """
+    Path(dest).write_text(
+        "".join(json.dumps(i) + "\n" for i in items), encoding="utf-8", newline=""
+    )
+    return len(items)
+
 
 def _write_item(dest, item: dict) -> None:
     """Write an item as NDJSON the way `stream_dataset` does.
@@ -535,6 +682,7 @@ def _run_recover(
     *,
     pre_cached: dict[str, bytes] | None = None,
     no_media: bool = False,
+    error_item: dict | None = None,
 ):
     """Run recover_one end-to-end against fakes.
 
@@ -551,12 +699,24 @@ def _run_recover(
     `pre_cached` seeds the cache before the run, to model a partially-cached
     carousel — the case where a fresh URL resolves to a DIFFERENT item's file.
 
-    `no_media` makes the fetched item carry no media at all, modelling a
-    deleted/private post — the one case that is a PERMANENT verdict.
+    `no_media` makes the fetched item report the post is GONE — the shape Apify
+    returns for a deleted post (an error item, not an item with empty media).
+    `error_item` builds an arbitrary error item, so a caller can model a
+    temporary error such as `restricted_page`.
     """
     item = _fake_item(children)
     if no_media:
-        item = {"type": "Image", "id": "x"}
+        item = {
+            "error": "not_found",
+            "errorDescription": "Post does not exist",
+            "url": "https://instagram.com/p/x/",
+        }
+    if error_item is not None:
+        item = {
+            "errorDescription": "Restricted access, only partial data available",
+            "url": "https://instagram.com/p/x/",
+            **error_item,
+        }
     calls: list[tuple[str, str]] = []
     on_disk: dict[str, bytes] = dict(pre_cached or {})
 
@@ -724,7 +884,7 @@ class TestRecoveryKeying:
         )
 
     def test_post_with_no_media_is_recorded_as_exhausted(self, tmp_path):
-        """GIVEN an item carrying no media (a deleted or private post)
+        """GIVEN an Apify item reporting the post does not exist
         WHEN recovery runs
         THEN the post IS recorded as permanently unrecoverable.
 
@@ -732,11 +892,47 @@ class TestRecoveryKeying:
         RE-PAYS for this post on every future run, forever.
         """
         stored = ["https://old.example.com/1.jpg"]
-        _, error, calls, _ = _run_recover(
-            tmp_path, stored, [], no_media=True
-        )
+        _, error, calls, _ = _run_recover(tmp_path, stored, [], no_media=True)
 
-        assert error is not None and "no media" in error
+        assert error is not None and "gone" in error
         verdicts = [c for c in calls if c[0] == "exhausted"]
         assert len(verdicts) == 1, "exactly one verdict must be recorded"
-        assert verdicts[0][1] == "p1:apify_item_carried_no_media_urls"
+        assert verdicts[0][1] == f"p1:{UNRECOVERABLE_POST_GONE}"
+
+    def test_restricted_post_is_not_recorded_as_exhausted(self, tmp_path):
+        """GIVEN an Apify item erroring with `restricted_page`
+        WHEN recovery runs
+        THEN NO permanent verdict is written.
+
+        Measured on real posts: `restricted_page` means "Restricted access, only
+        partial data available" — a temporary state, so a later run can succeed.
+        The verdict table is one-way, so recording it here would permanently
+        exclude posts the mechanism could still recover. This was a real defect:
+        five posts were condemned this way before the error field was inspected.
+        """
+        stored = ["https://old.example.com/1.jpg"]
+        _, error, calls, _ = _run_recover(
+            tmp_path, stored, [], error_item={"error": "restricted_page"}
+        )
+
+        assert error is not None and "no permanent verdict" in error
+        assert not [c for c in calls if c[0] == "exhausted"], (
+            "a restricted post must stay retryable"
+        )
+
+    def test_unrecognized_error_shape_is_not_recorded_as_exhausted(self, tmp_path):
+        """GIVEN an item with no media and an error we do not recognize
+        WHEN recovery runs
+        THEN NO permanent verdict is written.
+
+        The closed set is the safeguard: an unknown cause must be assumed
+        temporary, because wrongly condemning a recoverable post is permanent
+        while wrongly retrying a dead one costs $0.0023.
+        """
+        stored = ["https://old.example.com/1.jpg"]
+        _, error, calls, _ = _run_recover(
+            tmp_path, stored, [], error_item={"error": "some_new_apify_error"}
+        )
+
+        assert error is not None
+        assert not [c for c in calls if c[0] == "exhausted"]
