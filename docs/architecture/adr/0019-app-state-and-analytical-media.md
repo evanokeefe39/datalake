@@ -74,6 +74,25 @@ database should carry a byte count that can reach 55 GB.
 This is the larger correction, and it is independent of the Postgres move: moving 55 GB of
 image bytes from one database to another would preserve the mistake.
 
+**Local development uses MinIO as the S3 stand-in, with the existing media directory
+bind-mounted.** MinIO speaks the S3 API that R2 speaks, so code is written against one
+interface and the only difference between local and production is an endpoint URL and
+credentials. Critically, the existing `data/media/posts` tree is **mounted in place**, not
+copied: the 55 GB stays where it already is, and the migration becomes a metadata
+operation (record the object key) rather than a byte relocation. The copy-to-verify-and-flip
+step in the consequences below therefore applies only to the eventual R2 upload, and can be
+done lazily as objects are read.
+
+**The upload boundary already exists and this does not move it.** `bronze_ig_posts`'s own
+docstring states the shape: media bytes are cached locally at scrape time (ingestion), and
+*"the enrichment worker later uploads from those local bytes"* — i.e. the object-storage
+upload is the enrichment service's job, not this repo's, and the seam-purity scanner in
+`ig_enriched/slv/checks.py` enforces that provider calls stay out of pure modules. So what
+this ADR changes is where the **pipeline's own** media lives for analysis, not who uploads
+it. Any implementation must keep the upload on the enrichment side of the seam.
+
+*(Added 2026-09-18 after review.)*
+
 ### 3. Every media class is explicitly owned
 
 The three media paths are currently distinguishable only by convention. They become
