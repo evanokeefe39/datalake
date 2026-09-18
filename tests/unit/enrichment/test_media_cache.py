@@ -11,6 +11,7 @@ ADR-0009, dropped by the W9 retirement.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -210,6 +211,50 @@ def test_cache_media_bytes_retries_a_5xx(tmp_path):
 
     assert path is not None
     assert dl.call_count == 3
+
+
+def test_permanent_error_distinguishes_expiry_from_a_block():
+    """A bare 403 is ambiguous; the diagnosis must say which case it is.
+
+    That ambiguity is what made the antibot question take a dedicated 861-request
+    burst test to settle. The URL carries its own signed expiry in `oe`, so the
+    log line can state the cause outright: an expired signature (nothing to do
+    but mint a fresh URL) vs a 403 on a still-valid URL (a block/revocation, a
+    different problem entirely).
+    """
+    # oe=6AB2DBB6 -> 2026-09-22; a URL signed valid until then and 403ing is NOT
+    # expiry. (Tested against a real such URL: 403 with a live oe.)
+    live = _PermanentFetchError(
+        403,
+        "https://cdn.example.com/a.jpg?oe=6AB2DBB6",
+        expiry=datetime(2099, 1, 1, tzinfo=UTC),
+    )
+    assert "NOT expiry" in live.diagnosis()
+    assert "block or revocation" in live.diagnosis()
+
+    # An already-past expiry is the expected case.
+    dead = _PermanentFetchError(
+        403,
+        "https://cdn.example.com/b.jpg?oe=6AB2DBB6",
+        expiry=datetime(2020, 1, 1, tzinfo=UTC),
+    )
+    assert "EXPIRED" in dead.diagnosis()
+    assert "expected" in dead.diagnosis()
+
+    # No oe at all (some video URLs) — say so rather than guessing.
+    bare = _PermanentFetchError(403, "https://cdn.example.com/c.mp4")
+    assert "no signed expiry" in bare.diagnosis()
+
+
+def test_signed_url_expiry_decodes_oe():
+    """`oe` is a hex unix timestamp and it decodes to the expiry."""
+    from orchestration.defs.engine.media import _signed_url_expiry
+
+    assert _signed_url_expiry("https://x/a.jpg?oe=6AB2DBB6") == datetime(
+        2026, 9, 22, 19, 49, 10, tzinfo=UTC
+    )
+    assert _signed_url_expiry("https://x/a.mp4") is None  # no oe
+    assert _signed_url_expiry("https://x/a.jpg?oe=nothex") is None  # malformed
 
 
 def test_local_media_path_returns_none_when_missing(tmp_path):

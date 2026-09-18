@@ -1366,11 +1366,31 @@ half of 3):
 
 **Still open:** the dead-letter queue is deliberately DEFERRED (user,
 2026-09-18) — the landed `ok=False` row plus the anti-join check is the current
-substitute. Also open: the underlying **ingestion coverage question** — why a
-URL that was reachable at scrape time fails to download at all. The retry now
-makes a transient failure survivable and a permanent one visible, but the 0-4d
-bucket (204 posts, exact-30 whole-profile clusters) still says some runs lose
-media wholesale, and that cause is not yet identified.
+substitute.
+
+**ANTIBOT RULED OUT — tested at scrape scale, not with one download
+(2026-09-18).** A single fetch proves nothing (ordinary browsing does that), so
+the load pattern was tested directly: a fresh profile scrape yielded **123 unique
+media URLs**, all fetched → **123/123 HTTP 200**. Then the same URLs were
+re-fetched with no delay → **861 consecutive requests, 861/861 HTTP 200**, zero
+403 / 429 / timeouts, before the 900s cap ended the test. That is ~7 profiles of
+media in one continuous burst from this machine with no proxy and no rate
+limiting. (The real cache loop is fully sequential — one URL at a time, no
+thread pool — so it is gentler still.) A 403 therefore means the URL expired, not
+that we were blocked: same status either way, which is why volume had to be
+measured separately. This removes the case for residential proxies — they would
+solve a problem that does not exist, and bandwidth-metered proxy download is
+expensive. Caveat: one machine, one network, ~15 minutes; it does not rule out a
+longer-window or datacenter-IP-specific limit, and the new fetch logging (status
+code + permanent/transient classification) is what would surface that.
+
+**Still open:** the underlying **ingestion coverage question** — why a URL that
+was reachable at scrape time fails to download at all. The retry now makes a
+transient failure survivable and a permanent one visible, but the 0-4d bucket
+(204 posts, exact-30 whole-profile clusters) still says some runs lose media
+wholesale, and that cause is not yet identified. The leading hypothesis is the
+~4.5-day signed-URL window (`oe` parameter) colliding with scrape timing, not
+blocking.
 
 ### 26. Sentinel literal diverged across sibling silver producers — 8 live rows carry the REJECTED value
 

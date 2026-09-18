@@ -22,6 +22,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from opsdb.media_cache import (
@@ -55,13 +56,51 @@ class _PermanentFetchError(Exception):
     Instagram's CDN signs URLs with an ``oe`` expiry (~4.5 days, measured) and
     returns 403 once it passes. Retrying an expired signature cannot help, and
     the corpus has 556 such posts, so the short-circuit matters: 1 attempt
-    instead of 3 turns ~4.4s per dead URL into ~1.5s.
+    instead of 3 turns ~4.4s per dead URL into ~0.6s.
     """
 
-    def __init__(self, code: int, url: str) -> None:
+    def __init__(
+        self, code: int, url: str, *, expiry: datetime | None = None
+    ) -> None:
         super().__init__(f"HTTP {code} for {url[:120]}")
         self.code = code
         self.url = url
+        #: The URL's own signed expiry (`oe`), when it carries one.
+        self.expiry = expiry
+
+    def diagnosis(self) -> str:
+        """Why this failed, in terms an operator can act on.
+
+        Distinguishes the two cases a bare 403 conflates: an expired signature
+        (nothing to do but mint a fresh URL) from a 403 on a URL that is still
+        signed (a block or revocation — a different problem entirely).
+        """
+        if self.expiry is None:
+            return "no signed expiry in the URL — treat as revoked/unavailable"
+        if self.expiry <= datetime.now(UTC):
+            return f"signed URL EXPIRED at {self.expiry.isoformat()} (expected)"
+        return (
+            f"HTTP {self.code} on a URL still valid until {self.expiry.isoformat()}"
+            " — NOT expiry; investigate (possible block or revocation)"
+        )
+
+
+def _signed_url_expiry(url: str) -> datetime | None:
+    """Decode the Instagram CDN ``oe`` parameter to its UTC expiry, if present.
+
+    ``oe`` is a hex-encoded unix timestamp. Reading it turns an ambiguous 403
+    into a definite cause, which is what the antibot question needed and did
+    not have.
+    """
+    try:
+        from urllib.parse import parse_qs, urlparse
+
+        oe = parse_qs(urlparse(url).query).get("oe", [None])[0]
+        if not oe:
+            return None
+        return datetime.fromtimestamp(int(oe, 16), UTC)
+    except (ValueError, TypeError):
+        return None
 
 
 def local_media_path(ops: SQLiteResource, media_url: str) -> str | None:
@@ -120,7 +159,15 @@ def _download_bytes(url: str) -> tuple[bytes, str] | None:
         if 400 <= exc.code < 500:
             # PERMANENT: an expired signature never revives. Surface it so the
             # caller can stop immediately rather than retrying a dead URL.
-            raise _PermanentFetchError(exc.code, url) from exc
+            #
+            # Say WHICH 4xx, and whether the URL's own signed expiry had passed.
+            # A 403 is ambiguous on its face — expired signature, revoked link,
+            # and (in principle) rate limiting all return it — and that
+            # ambiguity is exactly what made the antibot question take a
+            # dedicated burst test to settle. The `oe` parameter removes it:
+            # an expired `oe` proves expiry, a live `oe` with a 403 means
+            # something else (block, revocation) and wants a different response.
+            raise _PermanentFetchError(exc.code, url, expiry=_signed_url_expiry(url)) from exc
         # 5xx is TRANSIENT — fall through to the retryable None.
         logger.warning("media download failed for %s: HTTP %s", url[:80], exc.code)
         return None
@@ -173,10 +220,10 @@ def cache_media_bytes(
             # say it is permanent, so the count is honest and no wall-clock is
             # wasted. A re-scrape minting a FRESH url is the only cure.
             logger.error(
-                "media fetch PERMANENTLY failed (HTTP %s) for %s — the signed URL"
-                " is expired or gone; a re-scrape is required to recover it",
+                "media fetch PERMANENTLY failed (HTTP %s) for %s — %s",
                 exc.code,
                 media_url[:80],
+                exc.diagnosis(),
             )
             return None
         if downloaded is not None:
