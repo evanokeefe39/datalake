@@ -581,10 +581,12 @@ class TestBatchAttribution:
     def test_an_item_for_a_post_outside_the_chunk_is_ignored(self, tmp_path):
         """GIVEN a returned item whose shortcode matches no candidate
         WHEN recover_batch routes
-        THEN it is skipped, not attributed to an arbitrary post.
+        THEN it is skipped, not attributed to an arbitrary post — and the drop is
+        LOUD.
 
-        A wrong-chunk item (an Apify extra, a redirect) must never be written
-        under some candidate's keys.
+        A silently dropped item is paid-for media that reached no post: the
+        candidate is reported failed, retried, and re-paid on every run, never
+        recorded or reported. So the log must name the unmatched shortcode.
         """
         candidates = [
             {"post_id": "pa", "url": "https://instagram.com/p/AAAA/",
@@ -600,6 +602,7 @@ class TestBatchAttribution:
             patch("orchestration.defs.ig_core.bnz.recover.trigger_run") as tr,
             patch("orchestration.defs.ig_core.bnz.recover.poll_run") as pr,
             patch("orchestration.defs.ig_core.bnz.recover.stream_dataset") as sd,
+            patch("orchestration.defs.ig_core.bnz.recover.logger") as lg,
             patch("orchestration.defs.ig_core.bnz.recover._download_bytes",
                   lambda u: (b"x", "image/jpeg")),
             patch("orchestration.defs.ig_core.bnz.recover._atomic_write",
@@ -618,7 +621,12 @@ class TestBatchAttribution:
 
         assert recovered == 0
         assert on_disk == {}, "nothing may be written for an unmatched item"
-        assert failed == ["https://instagram.com/p/AAAA/"]
+        assert failed == ["https://instagram.com/p/AAAA/"], (
+            "the post must still be reported, so the drop is visible not silent"
+        )
+        loud = [c for c in lg.error.call_args_list if "matched no candidate" in str(c)]
+        assert loud, "an unmatched item must be logged, not silently dropped"
+        assert "ZZZZ" in str(loud[0]), "the log must name the unmatched shortcode"
 
     def test_a_chunk_returning_no_items_is_retryable_not_a_verdict(self, tmp_path):
         """GIVEN a run that returns NO items for its chunk

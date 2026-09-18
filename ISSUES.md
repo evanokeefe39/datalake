@@ -1398,23 +1398,16 @@ run:
 
 | | |
 |---|---|
-| Posts uncached at session start | 232 |
-| Recovered across the session | 226 |
+| Posts uncached at session start (from the scan log) | 232 |
+| Recovered across the session (by subtraction) | 226 |
 | Permanently unrecoverable (verified deleted) | **2** |
 | Remaining, retryable (`restricted_page`) | **4** |
 | Spend | **not recorded** — the run used `settle_cost=False`, so `usageTotalUsd` was never read. At the measured $0.0023/post the ~230 posts fetched across pilots and passes is ~$0.53; treat that as an estimate, not a measurement. |
 
-232 = 226 recovered + 2 permanently unrecoverable + 4 retryable. The 226 is derived
-by subtraction rather than logged as a run total, and the start figure drifted
-during the session (the scan went 232 → 182 → 124 → 4 as runs and the concurrent
-scrape writer moved it), so treat the middle rows as an accounting, not as
-measurements.
-
-**The two verified end-state figures** (queried from the store, not reconstructed
-from logs): `media_recovery_exhausted` holds **2 rows**, and `posts_missing_media`
-returns **4**. The 232-start figure and the per-run split come from the run log and
-are the softer half of this table — the pass itself started from 124 only because
-earlier runs in the same session had already drained part of the backlog.
+230 = 226 + 4, and the 232 start differs from 230 by the 2 permanently
+unrecoverable posts — but this middle row is DERIVED, not logged. See "What is
+verified versus what is reconstructed" below for the two figures that were
+actually read from the store.
 
 The trailing 4 are all `restricted_page`: Instagram is withholding their media
 right now. They are NOT recorded as unrecoverable, so the scan keeps selecting
@@ -1469,17 +1462,23 @@ media under another's keys.
 confirmed from INSIDE the container against `/data`, because a container-written
 `media_cache.local_path` does not resolve from a host process.
 
-**The arc across the session, so the numbers reconcile end to end.** 232 posts
-were uncached when the session began. A cancelled one-at-a-time run recovered 58,
-a 5-post batch probe recovered 5, and the batched pass recovered the remaining
-121 of its 124 candidates (3 permanently unrecoverable). Backlog: **0**. The
-pass's own starting count (124, not 232) is because the earlier runs had already
-drained part of it — this is why the pass logged 124 while this entry's sizing
-block quotes 232.
+**What is verified versus what is reconstructed.** Only two figures were read from
+the store after the work finished, and they are the ones to trust:
+
+- `media_recovery_exhausted` = **2 rows**, both `apify_reports_post_does_not_exist`
+- `posts_missing_media` = **4 posts**, all `restricted_page`
+
+Everything else — the 232 start, the per-run splits, the ~$0.53 — is reconstructed
+from run logs and observations taken while the work was in flight. The backlog
+moved under the session (runs drained it, retries re-added restricted posts, and a
+concurrent scrape writer was filling the cache throughout), so those intermediate
+numbers describe a moving target rather than a settled account. A reconciliation
+of them would be false precision; the two bullet figures above are the end state.
 
 **Not yet run: the standing schedule.** `bronze_ig_media_recovery` is
-launch-only with no automation policy (asserted by test, required by ADR-0018),
-so this backlog is drained but the mechanism is not yet preventing the next one.
+launch-only with no automation policy (asserted by test, required by ADR-0018).
+So the backlog is drained to a residue of 4 restricted posts, and the mechanism
+that would prevent the NEXT backlog is not yet running on a schedule.
 
 **Pre-run measurement record (HOW THE BACKLOG WAS SIZED BEFORE THE PASS — historical).**
 

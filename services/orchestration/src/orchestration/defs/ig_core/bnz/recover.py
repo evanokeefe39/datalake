@@ -455,6 +455,17 @@ def recover_batch(
             code = _item_shortcode(item)
             cand = by_code.get(code)
             if cand is None:
+                # LOUD, because this is a paid item that reached no post. A silent
+                # drop here (an Apify URL shape `_shortcode` cannot parse — a
+                # trailing query, a /reel/ redirect) means the post is retried and
+                # RE-PAID on every run without ever being recorded or reported.
+                # The log line names both, so the shape is diagnosable.
+                logger.error(
+                    "media recovery: fetched item matched no candidate "
+                    "(shortcode %r, url %r) — its media was paid for and discarded",
+                    code,
+                    str(item.get("url") or "")[:120],
+                )
                 continue
             seen.add(code)
             n, err = _cache_item(
