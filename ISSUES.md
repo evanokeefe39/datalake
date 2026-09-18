@@ -1392,36 +1392,47 @@ of the 5-14d/45d+ URLs have no local source either.
 
 **RECONCILED AGAINST LIVE STATE — 2026-09-18 (this is the number to use).**
 
-The table above is stale, and the difference is explained rather than silent.
-Three unit changes separate it from today's figure, each measured:
+The table above is stale. Two things separate it from today's figure, and BOTH
+are measured rather than inferred:
 
-| Step | Figure | Why it moved |
+| Quantity | Value | How it was measured |
 |---|---|---|
-| Table above | 1,171 missing **URLs** | counted URLs, before seeding ran |
-| After seeding landed | 588 missing **URLs** | the four `local_*` defects were fixed and the free cohort seeded |
-| Live backlog | **232 payable POSTS** | the billable unit is a POST, not a URL |
+| Posts with ≥1 uncached URL | **232** | `posts_missing_media` on live state |
+| Uncached URLs across those posts | 564 | summed from the same scan |
+| Stored URLs across those posts | 589 | summed from the same scan |
+| Distinct corpus-wide cache keys | 30,464 | `SELECT count(*) FROM media_cache` |
 
-Two corrections in that chain, both load-bearing:
+**The billable unit is a POST, not a URL.** One permalink fetch returns the whole
+post, so a 19-item carousel whose media all failed costs one fetch, not nineteen.
+The scan groups by `post_id` for exactly this reason. At the measured
+$0.0023/post: **232 × $0.0023 = ~$0.53.**
 
-1. **URLs vs POSTS.** A permalink fetch returns the WHOLE post — a 20-item
-   carousel costs one fetch, not twenty. The backlog is therefore counted in
-   posts (`posts_missing_media` groups by `post_id`), which is why 588 missing
-   URLs is 232 payable posts rather than 588 charges.
-2. **The `local_*` cohort is recovered.** Fixing the four defects (seeding
-   unreachable in the write-once branch, filename mapping covering 2 of 4
-   conventions, a missing ingest mount, per-URL connections) is what moved
-   1,171 → 588 without any paid fetch.
+Note the census above counts MISSING URLS over a 790-post census while this
+counts POSTS today, so the two are not in conflict — they are different units on
+different denominators. The figure that drives spend is the post count.
 
-**Live figure: 232 posts, ~$0.53** at the measured $0.0023/post. Earlier
-figures quoted to the user — $1.32, and the $1.73 in the table above — were URL
-counts or pre-seeding counts. The corrected number is lower, not higher.
+> Correction, recorded rather than quietly dropped: an earlier revision of this
+> entry described the chain as "1,171 URLs → 588 URLs → 232 posts". The 588 step
+> was never measured in this session; it has been removed. What is stated above
+> is exactly what the live scan returned, and the 564-URL figure is the honest
+> measure of what remains uncached.
+
+The user approved $1.32 and $1.73 was in this file; the corrected figure is
+LOWER, not higher, and the reason is the unit change plus the free `local_*`
+recovery — stated here so the difference is explained rather than silent.
 
 **Counting rule (a bug lived here).** The scan must match BOTH key forms: legacy
 rows hold `sha256(original scrape url)` (not re-derivable from silver's `url`)
 and rows written since the stable key landed hold `mid:<media_id>`. Testing one
 form alone either relists already-recovered posts (re-paying for them every run)
 or relists the entire corpus — measured at 8,848 candidates / ~$20 when the
-legacy keys were normalized wrongly. Pinned by `TestCandidateScan`.
+legacy keys were normalized wrongly. Both directions are now pinned by
+`TestCandidateScan`.
+
+**Unrecoverable posts are excluded, not re-paid.** Verdicts persist in
+`media_recovery_exhausted` (the pilot saw ~2/6 candidates return no media — a
+deleted or private post). Only that condition is a permanent verdict; a count
+mismatch or a transient fetch failure stays retryable.
 
 **The `local_*` loss — FOUR defects, all silent (fixed 2026-09-18).**
 
