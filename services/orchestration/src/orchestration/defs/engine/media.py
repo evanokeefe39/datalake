@@ -17,7 +17,10 @@ import json
 import logging
 import os
 import shutil
+import time
 import urllib.request
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from opsdb.media_cache import (
@@ -31,6 +34,18 @@ from orchestration.defs.platform.paths import POST_MEDIA_DIR, runtime_path
 from orchestration.defs.platform.resources import SQLiteResource
 
 logger = logging.getLogger("engine.media")
+
+#: Fetch attempts per media URL before giving up.
+#:
+#: A media fetch is the LAST chance at these bytes: the CDN URL is signed and
+#: expires in days, and nothing re-fetches it later (the cache is filled only at
+#: scrape time), so a transient failure here permanently loses the media and
+#: makes the post un-enrichable. 3 attempts rides out a brief CDN wobble at a
+#: cost far below a lost post.
+MEDIA_CACHE_ATTEMPTS: int = 3
+
+#: Base seconds for the retry backoff; attempt N waits base * 2**(N-1).
+MEDIA_CACHE_BACKOFF_BASE: float = 1.0
 
 
 def local_media_path(ops: SQLiteResource, media_url: str) -> str | None:
@@ -97,34 +112,126 @@ def cache_media_bytes(
     media_url: str,
     *,
     media_dir: Path | None = None,
+    attempts: int = MEDIA_CACHE_ATTEMPTS,
+    backoff_base: float = MEDIA_CACHE_BACKOFF_BASE,
 ) -> str | None:
-    """Download media bytes and record them in ``media_cache`` (best-effort).
+    """Download media bytes and record them in ``media_cache``.
 
-    Returns the local file path, or None if the download failed or the URL was
-    already cached. Failure is non-fatal — the worker falls back to the CDN.
+    Returns the local file path, or None if every attempt failed or the URL was
+    already cached.
+
+    RETRIED, because a media fetch is the last chance at these bytes: the CDN
+    URL is signed and expires in days, so a transient 403/timeout at scrape
+    time permanently loses the media — the post then cannot be enriched, and
+    nothing re-fetches it (the cache is filled ONLY here and at scrape time).
+    A retry is cheap next to a permanently un-enrichable post.
+
+    The caller MUST account for the return value: a bare ``cache_media_bytes(...)``
+    discards the miss and makes a whole run's media loss invisible. Prefer
+    :func:`cache_media_urls`, which counts and reports.
     """
     _ensure_media_cache_table(ops)
     existing = local_media_path(ops, media_url)
     if existing:
         return existing
 
-    downloaded = _download_bytes(media_url)
-    if downloaded is None:
-        return None
-    data, content_type = downloaded
-    base_type = content_type.split(";")[0].strip().lower()
-    ext = _EXT_BY_MIME.get(base_type, ".bin")
+    for attempt in range(1, attempts + 1):
+        downloaded = _download_bytes(media_url)
+        if downloaded is not None:
+            data, content_type = downloaded
+            base_type = content_type.split(";")[0].strip().lower()
+            ext = _EXT_BY_MIME.get(base_type, ".bin")
+            if ext == ".bin":
+                # An unrecognized content-type still caches, but say so: the
+                # .bin extension hides the file from any extension-based audit.
+                logger.warning(
+                    "media %s: unrecognized content-type %r -> storing as .bin",
+                    media_url[:80],
+                    content_type,
+                )
 
-    cache_key = url_hash(media_url)
-    dest = (media_dir or POST_MEDIA_DIR) / f"{cache_key}{ext}"
-    _atomic_write(dest, data)
+            cache_key = url_hash(media_url)
+            dest = (media_dir or POST_MEDIA_DIR) / f"{cache_key}{ext}"
+            _atomic_write(dest, data)
 
-    record_media_cache_row(
-        ops, cache_key, str(dest), content_type, dest.stat().st_size, media_url
+            record_media_cache_row(
+                ops, cache_key, str(dest), content_type, dest.stat().st_size, media_url
+            )
+
+            logger.info("cached %s → %s", media_url[:80], dest.name)
+            return str(dest)
+
+        if attempt < attempts:
+            delay = backoff_base * (2 ** (attempt - 1))
+            logger.info(
+                "media fetch attempt %d/%d failed for %s — retrying in %.1fs",
+                attempt,
+                attempts,
+                media_url[:80],
+                delay,
+            )
+            time.sleep(delay)
+
+    logger.error(
+        "media fetch FAILED after %d attempts: %s — the bytes are gone once the"
+        " CDN URL expires, so this post cannot be enriched until a re-scrape",
+        attempts,
+        media_url[:80],
     )
+    return None
 
-    logger.info("cached %s → %s", media_url[:80], dest.name)
-    return str(dest)
+
+@dataclass
+class MediaCacheReport:
+    """Attempted / cached / failed counts for one run's media caching.
+
+    A whole scrape run's media loss has to be VISIBLE. The failure paths here
+    are individually logged, but with no aggregate only a census days later
+    reveals that a run cached nothing — which is exactly how 790 posts came to
+    have no media (ISSUES.md #25).
+    """
+
+    attempted: int = 0
+    cached: int = 0
+    failed: int = 0
+    failed_urls: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        """True when every attempted URL cached (or there was nothing to do)."""
+        return self.failed == 0
+
+    def summary(self) -> str:
+        return (
+            f"media cache: {self.cached}/{self.attempted} cached"
+            + (f", {self.failed} FAILED" if self.failed else "")
+        )
+
+
+def cache_media_urls(
+    ops: SQLiteResource,
+    urls: Iterable[str],
+    *,
+    media_dir: Path | None = None,
+) -> MediaCacheReport:
+    """Cache every URL once, and return the accounting.
+
+    Deduplicates, skips blanks, and never raises: a failure is counted and
+    returned, not swallowed. Callers surface the report loudly.
+    """
+    report = MediaCacheReport()
+    seen: set[str] = set()
+    for url in urls:
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        report.attempted += 1
+        if cache_media_bytes(ops, url, media_dir=media_dir):
+            report.cached += 1
+        else:
+            report.failed += 1
+            report.failed_urls.append(url)
+    return report
 
 
 

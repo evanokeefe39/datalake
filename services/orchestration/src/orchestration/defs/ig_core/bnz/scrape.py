@@ -21,7 +21,10 @@ import polars as pl
 from dagster import Config, asset
 from opsdb.roster import AD_HOC_LIMIT
 
-from orchestration.defs.engine.media import cache_media_bytes, seed_media_from_file
+from orchestration.defs.engine.media import (
+    cache_media_urls,
+    seed_media_from_file,
+)
 from orchestration.defs.ig_core.slv.posts import (
     _derive_media,
 )
@@ -171,6 +174,9 @@ def _write_meta(
     estimated_cost_usd: float = 0.0,
     only_posts_newer_than: str | None = None,
     memory_mbytes: int | None = None,
+    media_attempted: int = 0,
+    media_cached: int = 0,
+    media_failed: int = 0,
 ) -> None:
     """Write a ``.meta`` JSON sidecar alongside the Parquet file."""
     meta = {
@@ -188,6 +194,16 @@ def _write_meta(
             # explain why a run returned what it returned.
             "only_posts_newer_than": only_posts_newer_than,
             "memory_mbytes": memory_mbytes,
+        },
+        # Media cache accounting for this run. `media_failed > 0` means bytes
+        # were permanently lost (the cache is filled only at scrape time while
+        # the signed URL lives) and those posts cannot be enriched without a
+        # re-scrape. Recorded here so a lossy run is visible in the data, not
+        # only in a log line or a census days later (ISSUES.md #25).
+        "media_cache": {
+            "attempted": media_attempted,
+            "cached": media_cached,
+            "failed": media_failed,
         },
         "downloaded_at": datetime.now(UTC).isoformat(),
     }
@@ -246,14 +262,36 @@ def bronze_ig_posts(
 
     # 4. Cache media bytes at ingestion while the CDN URLs are fresh.
     #    Silver is a pure transform (no network); producers own caching.
+    #
+    #    ACCOUNTED, not best-effort. The cache is filled ONLY here and only
+    #    while the signed URLs live, so a URL that fails to cache is lost for
+    #    good — the post can never be enriched and nothing re-fetches it. A bare
+    #    `cache_media_bytes(url)` (discarding the return) is how 790 posts came
+    #    to have no media with no error anywhere (ISSUES.md #25). The report is
+    #    logged loudly and landed in the sidecar so a lossy run is visible the
+    #    day it happens, not only to a census days later.
+    media_report = None
     if len(df) > 0:
         media_df = _derive_media(df)
-        seen_urls: set[str] = set()
-        for media_files_json in media_df["media_files"].to_list():
-            for url in json.loads(media_files_json or "[]"):
-                if url not in seen_urls:
-                    seen_urls.add(url)
-                    cache_media_bytes(ops, url)
+        media_report = cache_media_urls(
+            ops,
+            (
+                url
+                for media_files_json in media_df["media_files"].to_list()
+                for url in json.loads(media_files_json or "[]")
+            ),
+        )
+        if media_report.failed:
+            logger.error(
+                "%s — %d URL(s) could NOT be cached and their bytes are now"
+                " unrecoverable once the CDN URLs expire; those posts will need a"
+                " re-scrape to be enrichable: %s",
+                media_report.summary(),
+                media_report.failed,
+                media_report.failed_urls[:10],
+            )
+        else:
+            logger.info(media_report.summary())
 
     # 5. Cleanup + metadata
     if ndjson_path.exists():
@@ -270,6 +308,9 @@ def bronze_ig_posts(
         outcome.usage_total_usd,
         config.only_posts_newer_than,
         config.memory_mbytes,
+        media_attempted=media_report.attempted if media_report else 0,
+        media_cached=media_report.cached if media_report else 0,
+        media_failed=media_report.failed if media_report else 0,
     )
 
     return df
@@ -380,10 +421,33 @@ def bronze_ig_posts_local(ops: SQLiteResource) -> pl.DataFrame:
             frames.append(df)
 
         # Media seeding pass — idempotent per URL, self-healing on re-runs.
+        # ACCOUNTED: `seed_media_from_file` returns None when the source file is
+        # missing, and discarding that return is how a run silently produces
+        # media-less posts (the local-ingest branch of ISSUES.md #25 — the
+        # local_* datasets carry most of the uncached rate).
+        seed_attempted = seed_cached = 0
+        seed_missing: list[str] = []
         for post_file in sorted(dataset_dir.glob("*/post_metadata.json")):
             row = json.loads(post_file.read_text(encoding="utf-8"))
             for url, src in _local_post_media_pairs(row, post_file.parent):
-                seed_media_from_file(ops, url, src)
+                seed_attempted += 1
+                if seed_media_from_file(ops, url, src):
+                    seed_cached += 1
+                else:
+                    seed_missing.append(url)
+        if seed_missing:
+            logger.error(
+                "local ingest: %d/%d media URL(s) NOT seeded — their source"
+                " files are missing, so those posts cannot be enriched without a"
+                " re-scrape: %s",
+                len(seed_missing),
+                seed_attempted,
+                seed_missing[:10],
+            )
+        else:
+            logger.info(
+                "local ingest: media seeded %d/%d", seed_cached, seed_attempted
+            )
 
     if not frames:
         return pl.DataFrame()

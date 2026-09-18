@@ -15,7 +15,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from orchestration.defs.engine.media import (
+    MEDIA_CACHE_ATTEMPTS,
     cache_media_bytes,
+    cache_media_urls,
     local_media_path,
     url_hash,
 )
@@ -60,6 +62,109 @@ def test_cache_media_bytes_skips_already_cached(tmp_path):
 
     # Second call must be a cache hit — no re-download.
     assert dl.call_count == 1
+
+
+def test_cache_media_bytes_retries_a_transient_failure(tmp_path):
+    """A flaky CDN must not permanently lose the media.
+
+    The cache is filled ONLY at scrape time while the signed URL is alive, so a
+    single transient failure loses those bytes forever and the post can never be
+    enriched. Retrying converts a lost post into a slightly slower scrape.
+    """
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+
+    with patch(
+        "orchestration.defs.engine.media._download_bytes",
+        side_effect=[None, None, (b"bytes", "image/jpeg")],
+    ) as dl:
+        with patch("orchestration.defs.engine.media.time.sleep"):
+            path = cache_media_bytes(
+                ops, "https://cdn.example.com/flaky.jpg", media_dir=tmp_path
+            )
+
+    assert path is not None, "third attempt succeeded — must not give up early"
+    assert dl.call_count == 3
+
+
+def test_cache_media_bytes_gives_up_after_the_attempt_budget(tmp_path):
+    """A permanently dead URL stops after MEDIA_CACHE_ATTEMPTS and says so."""
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+
+    with patch(
+        "orchestration.defs.engine.media._download_bytes", return_value=None
+    ) as dl:
+        with patch("orchestration.defs.engine.media.time.sleep"):
+            path = cache_media_bytes(
+                ops, "https://cdn.example.com/dead.jpg", media_dir=tmp_path
+            )
+
+    assert path is None
+    assert dl.call_count == MEDIA_CACHE_ATTEMPTS
+
+
+def test_cache_media_bytes_does_not_retry_a_cache_hit(tmp_path):
+    """Idempotence: an already-cached URL costs zero downloads, not one."""
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+
+    with patch(
+        "orchestration.defs.engine.media._download_bytes",
+        return_value=(b"once", "image/jpeg"),
+    ) as dl:
+        cache_media_bytes(ops, "https://cdn.example.com/a.jpg", media_dir=tmp_path)
+        cache_media_bytes(ops, "https://cdn.example.com/a.jpg", media_dir=tmp_path)
+
+    assert dl.call_count == 1
+
+
+def test_cache_media_urls_accounts_for_every_url(tmp_path):
+    """The accounting is the point: a run's media loss must be visible.
+
+    Discarding the per-URL result is what let a whole scrape run cache nothing
+    and report success (ISSUES.md #25 — 790 posts, no media, no error).
+    """
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+    good = {"https://cdn.example.com/ok1.jpg", "https://cdn.example.com/ok2.jpg"}
+
+    def fake_download(url):
+        return (b"bytes", "image/jpeg") if url in good else None
+
+    with patch("orchestration.defs.engine.media._download_bytes", side_effect=fake_download):
+        with patch("orchestration.defs.engine.media.time.sleep"):
+            report = cache_media_urls(
+                ops,
+                [
+                    "https://cdn.example.com/ok1.jpg",
+                    "https://cdn.example.com/dead.jpg",
+                    "https://cdn.example.com/ok2.jpg",
+                    # duplicate + blank must not inflate the counts
+                    "https://cdn.example.com/ok1.jpg",
+                    "",
+                ],
+                media_dir=tmp_path,
+            )
+
+    assert report.attempted == 3
+    assert report.cached == 2
+    assert report.failed == 1
+    assert report.failed_urls == ["https://cdn.example.com/dead.jpg"]
+    assert report.ok is False
+    assert "2/3 cached" in report.summary() and "1 FAILED" in report.summary()
+
+
+def test_cache_media_urls_reports_ok_when_nothing_fails(tmp_path):
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+
+    with patch(
+        "orchestration.defs.engine.media._download_bytes",
+        return_value=(b"bytes", "image/jpeg"),
+    ):
+        report = cache_media_urls(
+            ops, ["https://cdn.example.com/a.jpg"], media_dir=tmp_path
+        )
+
+    assert report.ok is True
+    assert report.failed == 0
+    assert report.summary() == "media cache: 1/1 cached"
 
 
 def test_local_media_path_returns_none_when_missing(tmp_path):
