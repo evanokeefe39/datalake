@@ -1311,6 +1311,39 @@ owner) and `analysis/output/rescrape_owners_2026-09-08.csv` (owner rollup).
 3. **Re-run the census + pick the Apify rescrape set** — posts whose missing
    bytes aren't recoverable from surviving bronze local files genuinely need a
    rescrape (Apify, by profile); recoverable ones just need a re-seed (no Apify).
+
+**Re-verified 2026-09-18 (still open, unchanged numbers).** The census holds
+exactly: 790 posts, 556 / 204 / 30 by age tier, 487 zero-cached + 303 partial,
+1,892 missing URL entries. Two additions from this pass:
+
+- **The silent-failure mechanism, named.** `engine/media.py::cache_media_bytes`
+  is documented "best-effort" and returns `None` when a download fails, logging
+  at **WARNING** (`_download_bytes`, "media download failed for …") among a
+  scrape run's thousands of lines. Its one caller, `scrape.py:256`, discards the
+  return value entirely: `cache_media_bytes(ops, url)`. So a media URL that fails
+  to download during the scrape produces **no row, no ERROR, no record** — the
+  post reads as successfully scraped, and the loss only surfaces days later as an
+  unbuildable enrichment item. This is the repo's silent-failure anti-pattern at
+  the exact boundary work item 1 targets. A failed cache write at scrape time
+  should be loud (ERROR + a count in the run's sidecar), because the bytes are
+  unrecoverable once the CDN URL expires.
+- **It is per-BATCH, not per-post.** Uncached rate by producing dataset:
+  `OENbim5qyFy5UFalA` 23% (204/901), `local_g0h9S6SZAyuf2Pye2` 19% (129/686),
+  `local_Hd5zaIqJ6HFTREg4X` 11%, down to 3% for others. A single scrape run
+  loses a fraction of its media — the signature of transient CDN failures being
+  swallowed, not of a structural derivation bug. Consistent with the whole-
+  profile wipeouts (30/30) being runs where the failure was near-total.
+- **Free re-seed recovers nothing here.** Checked every one of the 1,892 missing
+  entries against the 27,594 byte files in `POST_MEDIA_DIR` (by sha256 stem,
+  extension-agnostic): **0 have surviving bytes**. The re-seed path in work item
+  3 applies to local-ingest cases, not this set — so all 790 genuinely need a
+  rescrape, and option 2's cost is real, not overstated.
+- **Not positional, not the video-precedence rule.** Missing slides are spread
+  across indices [0..9] (declining with the far smaller population at high
+  indices), and 0 of the 504 partial-carousel posts found in bronze carry BOTH
+  `videoUrl` and `images`, so `_derive_media`'s "video wins" precedence is not
+  the cause.
+
 ### 26. Sentinel literal diverged across sibling silver producers — 8 live rows carry the REJECTED value
 
 **Found 2026-09-15** by the W10 conformance panel (DataArchitect lens), then
