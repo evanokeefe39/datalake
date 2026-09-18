@@ -18,6 +18,7 @@ from .defs.engine.harvest import enrichment_harvest_job
 from .defs.engine.sensor import enrichment_harvest_sensor, enrichment_submit_sensor
 from .defs.engine.silver_asset import silver_enrichment
 from .defs.engine.submit import enrichment_submit_job
+from .defs.ig_core.bnz.recover import bronze_ig_media_recovery
 from .defs.ig_core.bnz.roster import ig_roster_raw
 from .defs.ig_core.bnz.scrape import (
     bronze_ig_posts,
@@ -80,6 +81,9 @@ all_assets = [
     ig_roster_slv,
     # Details scrapes, reconciled from the roster by the sweep schedule
     bronze_ig_profile_details,
+    # Paid, operator-launched media recovery for posts whose scrape-time cache
+    # missed (their signed URLs expired). Not scheduled — it spends money.
+    bronze_ig_media_recovery,
     # Enrichment: submit discovers and materializes its own partitions
     # (ADR-0016) — there is no drain asset.
     silver_enrichment,
