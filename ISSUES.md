@@ -1390,7 +1390,47 @@ So 420 recover for free once seeding completes; 751 need a paid permalink
 re-fetch. The earlier framing that only the 0-4d bucket was paid was wrong: 205
 of the 5-14d/45d+ URLs have no local source either.
 
-**RECONCILED AGAINST LIVE STATE — 2026-09-18 (this is the number to use).**
+**RECOVERY EXECUTED — 2026-09-18. BACKLOG CLOSED.**
+
+Ran `bronze_ig_media_recovery` through Dagster in the container (recorded in the
+instance with provenance; 10m45s). Outcome, read from the destination after the
+run:
+
+| | |
+|---|---|
+| Posts uncached when the pass started | 124 |
+| Posts recovered by the pass | **121** |
+| Permanently unrecoverable, recorded by the pass | **3** |
+| Posts uncached after | **0** |
+| Total spend, all pilots and passes (estimate) | ~$0.35 |
+
+The arithmetic closes: 124 = 121 recovered + 3 unrecoverable. Three FURTHER
+exhaustion rows exist (recorded 15:43, during a cancelled partial run); those
+posts were already excluded from the 124, so they are not part of this sum — the
+table reads 6 exhausted rows in total, 3 of them predating the pass.
+
+One post failed the pass on an HTTP 429 and recovered on a manual retry, which is
+the behaviour that matters: a transient failure is NOT recorded as permanent. Only
+"Apify returned an item carrying no media" (deleted or private) is.
+
+**Batching.** The actor takes a LIST of direct URLs, so the pass runs 20 posts per
+actor run rather than one. Measured: 5 posts recovered in a single run in 24s
+(~5s/post including overhead) versus ~8s/post one-at-a-time, and the whole
+124-post backlog completed in 10m45s. Items are attributed back to their posts by
+`shortCode` (verified against a real batch: every item carried the field and it
+matched the requested permalink) — positional pairing would cache one post's
+media under another's keys.
+
+**Verification.** Not "the run was green": spot-checked media resolves through
+`local_media_path` to a real file on disk (2.3 MB `.mp4` for a recovered post),
+confirmed from INSIDE the container against `/data`, because a container-written
+`media_cache.local_path` does not resolve from a host process.
+
+**Not yet run: the standing schedule.** `bronze_ig_media_recovery` is
+launch-only with no automation policy (asserted by test, required by ADR-0018),
+so this backlog is drained but the mechanism is not yet preventing the next one.
+
+**Pre-run measurement record (how the backlog was sized before the pass).**
 
 The table above is stale. Two things separate it from today's figure, and BOTH
 are measured rather than inferred:
