@@ -271,6 +271,58 @@ def dbs(tmp_path):
     return ops, duckdb
 
 
+def test_submit_reads_the_instance_snapshot_once_per_run(instance, dbs, tmp_path):
+    """GIVEN many candidates in one submit pass
+    WHEN the pass runs
+    THEN the materialized partition sets are read a CONSTANT number of times,
+    not twice per candidate.
+
+    Regression: ``post_partition_state`` re-read both materialized sets on
+    every call, so a pass was O(candidates x total_partitions) — two full
+    instance reads per candidate against the instance store the daemon is
+    also writing. Measured 0.56s per call on a 4-key store, which is
+    ~76 minutes at the live candidate count and grows with the set. The
+    observed symptom was a 25-item submit hanging for 20+ minutes with no
+    event after resource init.
+
+    This drives the REAL ``submit_pending`` path rather than the helper, so
+    a future caller that reintroduces a per-candidate read fails here.
+    """
+    ops, duckdb = dbs
+    post_ids = [f"Q{i}" for i in range(12)]
+    with duckdb.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO silver_ig_posts (post_id, caption, source_dataset) VALUES "
+            + ", ".join(f"('{p}', 'caption {p}', 'test')" for p in post_ids)
+        )
+
+    reads = {"n": 0}
+    real = instance.get_materialized_partitions
+
+    def counting(asset_key):
+        reads["n"] += 1
+        return real(asset_key)
+
+    # Count reads on the instance object the submit path actually uses.
+    object.__setattr__(instance, "get_materialized_partitions", counting)
+    try:
+        result = submit.submit_pending(
+            instance,
+            ops,
+            duckdb,
+            FakeAdapter(),
+            config=SubmitConfig(post_ids=post_ids, workload=WORKLOAD),
+            root=str(tmp_path / "lake"),
+        )
+    finally:
+        object.__setattr__(instance, "get_materialized_partitions", real)
+
+    assert result["submitted"] == len(post_ids)
+    # A per-candidate read would be >= 2 * 12 = 24. A snapshot read is a
+    # small constant: one pair for the in-flight pass, one pair for the loop.
+    assert reads["n"] <= 8, f"read the instance {reads['n']}x for 12 candidates"
+
+
 def test_submit_discovers_builds_and_records_one_handle(instance, dbs, tmp_path):
     """Submit discovers its own candidates — nothing pre-enqueued it."""
     ops, duckdb = dbs

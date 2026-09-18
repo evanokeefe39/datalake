@@ -158,7 +158,10 @@ def test_guard_raises_when_retry_budget_is_exhausted():
     unreachable (the caller skips in-flight posts first), so a partition
     stuck at the ceiling was silently re-submitted forever.
     """
-    from orchestration.defs.engine.partitions import partition_key
+    from orchestration.defs.engine.partitions import (
+        partition_key,
+        read_materialized_sets,
+    )
     from orchestration.defs.engine.submit import _guard_round
 
     inst = FakeInstance()
@@ -169,7 +172,10 @@ def test_guard_raises_when_retry_budget_is_exhausted():
 
     with pytest.raises(RuntimeError, match="retry budget is exhausted"):
         _guard_round(
-            inst, WORKLOAD, "P1", partition_key(WORKLOAD, MAX_ROUNDS, ["P1"])
+            read_materialized_sets(inst),
+            WORKLOAD,
+            "P1",
+            partition_key(WORKLOAD, MAX_ROUNDS, ["P1"]),
         )
 
 
@@ -178,7 +184,10 @@ def test_guard_allows_a_post_with_budget_left():
     WHEN the guard runs
     THEN it does not raise — the budget is not yet spent.
     """
-    from orchestration.defs.engine.partitions import partition_key
+    from orchestration.defs.engine.partitions import (
+        partition_key,
+        read_materialized_sets,
+    )
     from orchestration.defs.engine.submit import _guard_round
 
     inst = FakeInstance()
@@ -187,4 +196,47 @@ def test_guard_allows_a_post_with_budget_left():
         inst.materialize(SUBMITTED_ASSET_NAME, {key})
         inst.materialize(HARVESTED_ASSET_NAME, {key})
 
-    _guard_round(inst, WORKLOAD, "P1", partition_key(WORKLOAD, MAX_ROUNDS - 1, ["P1"]))
+    _guard_round(
+        read_materialized_sets(inst),
+        WORKLOAD,
+        "P1",
+        partition_key(WORKLOAD, MAX_ROUNDS - 1, ["P1"]),
+    )
+
+
+def test_post_partition_state_reads_the_instance_once_per_snapshot():
+    """GIVEN N candidates judged against one snapshot
+    WHEN each is resolved through the snapshot
+    THEN the instance is read exactly TWICE for the whole pass, not twice
+    per candidate.
+
+    Regression: ``post_partition_state`` re-read both materialized sets on
+    every call, making a submit pass O(candidates x total_partitions) — two
+    full instance reads per candidate, contending with the daemon on the
+    instance store. Measured 0.56s per call on a 4-key store, which is
+    ~76 minutes at the live candidate count and grows with the set. The
+    read-once snapshot is also what submit.py's docstring already promised:
+    every candidate judged against the same instant.
+    """
+    from orchestration.defs.engine.partitions import (
+        post_partition_state_from_sets,
+        read_materialized_sets,
+    )
+
+    class CountingInstance(FakeInstance):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reads = 0
+
+        def get_materialized_partitions(self, asset_key) -> set[str]:
+            self.reads += 1
+            return super().get_materialized_partitions(asset_key)
+
+    inst = CountingInstance()
+    inst.materialize(SUBMITTED_ASSET_NAME, {f"{WORKLOAD}\x00r0\x00P1"})
+
+    sets = read_materialized_sets(inst)
+    assert inst.reads == 2  # submitted + harvested, once
+    for i in range(50):
+        post_partition_state_from_sets(sets, WORKLOAD, f"P{i}")
+    assert inst.reads == 2  # 50 candidates added ZERO further reads
