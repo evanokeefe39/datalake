@@ -1374,7 +1374,7 @@ half of 3):
 2026-09-18) — the landed `ok=False` row plus the anti-join check is the current
 substitute.
 
-**COHORT SPLIT — MEASURED 2026-09-18 (this supersedes the tier labels above).**
+**COHORT SPLIT — MEASURED 2026-09-18 (superseded 2026-09-18; live figures below).**
 The 790 split by PRODUCER, and splitting the missing URLs by whether the post's
 source exists in the mounted local dumps gives the number the paid-vs-free
 decision actually rests on:
@@ -1386,10 +1386,42 @@ decision actually rests on:
 | 45d+ | 19 | 5 | 14 |
 | **Total** | **1,171** | **420** | **751** |
 
-So 420 recover for free once seeding completes; **751 need a paid permalink
-re-fetch** (~$1.73 at the measured $0.0023/post). The earlier framing that only
-the 0-4d bucket was paid was wrong: 205 of the 5-14d/45d+ URLs have no local
-source either.
+So 420 recover for free once seeding completes; 751 need a paid permalink
+re-fetch. The earlier framing that only the 0-4d bucket was paid was wrong: 205
+of the 5-14d/45d+ URLs have no local source either.
+
+**RECONCILED AGAINST LIVE STATE — 2026-09-18 (this is the number to use).**
+
+The table above is stale, and the difference is explained rather than silent.
+Three unit changes separate it from today's figure, each measured:
+
+| Step | Figure | Why it moved |
+|---|---|---|
+| Table above | 1,171 missing **URLs** | counted URLs, before seeding ran |
+| After seeding landed | 588 missing **URLs** | the four `local_*` defects were fixed and the free cohort seeded |
+| Live backlog | **232 payable POSTS** | the billable unit is a POST, not a URL |
+
+Two corrections in that chain, both load-bearing:
+
+1. **URLs vs POSTS.** A permalink fetch returns the WHOLE post — a 20-item
+   carousel costs one fetch, not twenty. The backlog is therefore counted in
+   posts (`posts_missing_media` groups by `post_id`), which is why 588 missing
+   URLs is 232 payable posts rather than 588 charges.
+2. **The `local_*` cohort is recovered.** Fixing the four defects (seeding
+   unreachable in the write-once branch, filename mapping covering 2 of 4
+   conventions, a missing ingest mount, per-URL connections) is what moved
+   1,171 → 588 without any paid fetch.
+
+**Live figure: 232 posts, ~$0.53** at the measured $0.0023/post. Earlier
+figures quoted to the user — $1.32, and the $1.73 in the table above — were URL
+counts or pre-seeding counts. The corrected number is lower, not higher.
+
+**Counting rule (a bug lived here).** The scan must match BOTH key forms: legacy
+rows hold `sha256(original scrape url)` (not re-derivable from silver's `url`)
+and rows written since the stable key landed hold `mid:<media_id>`. Testing one
+form alone either relists already-recovered posts (re-paying for them every run)
+or relists the entire corpus — measured at 8,848 candidates / ~$20 when the
+legacy keys were normalized wrongly. Pinned by `TestCandidateScan`.
 
 **The `local_*` loss — FOUR defects, all silent (fixed 2026-09-18).**
 

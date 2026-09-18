@@ -238,7 +238,7 @@ real defect during the v3 materialization.
   `instance` and the whole graph failed to load
   (`DagsterInvalidDefinitionError: Input asset "["instance"]" is not produced by
   any of the provided asset ops`). The instance comes from `context.instance`.
-- Gate: `uv run dagster definitions validate -m datalake.definitions`. An asset the
+- Gate: `uv run dagster definitions validate -m orchestration.definitions`. An asset the
   worker "verified" by calling it as a plain function can still be un-loadable in
   Dagster. Watch for test-only injection globals too (`_drain_instance` in
   `defs/instagram/assets.py`) — acceptable, but it is a test seam, not production.
