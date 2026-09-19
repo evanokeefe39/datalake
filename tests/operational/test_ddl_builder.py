@@ -119,9 +119,21 @@ def test_sqlite_all_ddl_creates_no_retired_queue_index():
     assert not {"batch_jobs", "dead_letter", "facets_batch_jobs"} & tables
 
     # The retained set is exactly what the catalog declares.
+    #
+    # `media_recovery_exhausted` was added deliberately (2026-09-19) when paid
+    # permalink recovery landed. It records reasons a re-fetch can never succeed,
+    # so the standing recovery scan stops re-selecting — and re-PAYING for — a post
+    # it cannot recover. Without it the scan is amnesiac: the pilot measured ~33%
+    # of candidates in the unrecoverable class, each re-listed on every run. The
+    # verdict is durable ops state, which is why it belongs in ops.sqlite rather
+    # than a log line.
+    #
+    # This assertion is the gate that makes adding a table here a deliberate act —
+    # it is updated by hand only after that decision, never loosened.
     assert tables == {
         "media_cache",
         "creators",
         "profiles",
         "creator_merges",
+        "media_recovery_exhausted",
     }, f"unexpected retained table set: {sorted(tables)}"
