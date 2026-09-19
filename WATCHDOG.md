@@ -88,6 +88,24 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
   suite in disguise — `tests/unit/instagram/ tests/unit/enrichment/` is ~450
   tests and was correctly called out as such. The full pass is a FINAL gate
   after the work is complete, never an inner-loop habit.
+- **A CATALOG CHANGE REQUIRES THE OPERATIONAL GUARDS IN THE INNER LOOP.**
+  `tests/operational/` owns the catalog assertions, and scoped unit runs never
+  touch it. Any change to `packages/opsdb/schema.py`, the DuckDB catalog
+  (`platform/schemas.py`), or a table's column set MUST include
+  `uv run pytest tests/operational/ -q` (~75s) before the change is considered
+  tested — not deferred to the final gate. The guards that catch catalog drift are
+  exactly the ones a `tests/unit/<area>/` habit skips:
+  - `test_ddl_builder.py` — asserts the retained ops.sqlite table set EXACTLY.
+    A new table in `_SQLITE_SPECS` fails it until the assertion is updated by hand.
+  - `test_state_compatibility.py` — diffs the LIVE `data/ops.sqlite` against the
+    catalog; a table in the catalog but absent from live state reads as drift.
+  - `expected_schema.py` / `test_asset_graph_integrity.py` — graph and schema shape.
+
+  This is measured, not theoretical: on 2026-09-19 a branch adding
+  `media_recovery_exhausted` to `_SQLITE_SPECS` passed every scoped run and went
+  green on 731 tests locally, then failed CI on `test_ddl_builder`. The guard
+  worked; the verification habit did not. One command, 75 seconds, catches the
+  entire class.
 - `tests/operational/test_state_compatibility.py` runs against the **live**
   `data/ops.sqlite` + `data/state.duckdb`, not a temp DB. A failure there is
   drift, not a bug in the test.
