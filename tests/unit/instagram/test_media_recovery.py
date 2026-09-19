@@ -665,6 +665,70 @@ class TestBatchAttribution:
         assert loud, "an unmatched item must be logged, not silently dropped"
         assert "ZZZZ" in str(loud[0]), "the log must name the unmatched shortcode"
 
+    def test_an_unexpected_error_on_one_post_does_not_abandon_the_batch(self, tmp_path):
+        """GIVEN a batch where caching ONE post raises an unexpected exception
+        WHEN recover_batch processes the chunk
+        THEN the other posts are still recovered and the crashing one is reported.
+
+        The actor run is already paid for by the time items are cached. An
+        exception escaping this loop would abandon the rest of the backlog after
+        that spend, with no `failed` entry for the post that crashed — the run
+        would look like a partial success. `_cache_under` only catches
+        `_PermanentFetchError`, so this containment is the guard.
+        """
+        a_stored = ["https://old.example.com/1_111_9_n.jpg?oe=A"]
+        b_stored = ["https://old.example.com/1_222_9_n.jpg?oe=B"]
+        candidates = [
+            {"post_id": "pa", "url": "https://instagram.com/p/AAAA/", "stored": a_stored},
+            {"post_id": "pb", "url": "https://instagram.com/p/BBBB/", "stored": b_stored},
+        ]
+        items = [
+            {"shortCode": "AAAA", "url": "https://instagram.com/p/AAAA/",
+             "displayUrl": "https://new.example.com/1_111_9_n.jpg?oe=Z"},
+            {"shortCode": "BBBB", "url": "https://instagram.com/p/BBBB/",
+             "displayUrl": "https://new.example.com/1_222_9_n.jpg?oe=Z"},
+        ]
+        on_disk: dict[str, bytes] = {}
+
+        def flaky_download(url):
+            if "1_111" in url:
+                raise TimeoutError("simulated network timeout")
+            return f"bytes-of-{url}".encode(), "image/jpeg"
+
+        def fake_seed(ops, stored_url, src_path, *, media_dir=None, conn=None):
+            on_disk[media_key(stored_url)] = Path(src_path).read_bytes()
+            return str(src_path)
+
+        def fake_local(ops, media_url, *, conn=None):
+            if media_key(media_url) in on_disk:
+                return str(tmp_path / "c.bin")
+            return None
+
+        with (
+            patch("orchestration.defs.ig_core.bnz.recover.trigger_run") as tr,
+            patch("orchestration.defs.ig_core.bnz.recover.poll_run") as pr,
+            patch("orchestration.defs.ig_core.bnz.recover.stream_dataset") as sd,
+            patch("orchestration.defs.ig_core.bnz.recover._download_bytes", flaky_download),
+            patch("orchestration.defs.ig_core.bnz.recover._atomic_write",
+                  lambda p, d: Path(p).write_bytes(d)),
+            patch("orchestration.defs.ig_core.bnz.recover.seed_media_from_file", fake_seed),
+            patch("orchestration.defs.ig_core.bnz.recover.local_media_path", fake_local),
+        ):
+            tr.return_value = type("R", (), {"run_id": "r1"})()
+            pr.return_value = type("O", (), {"dataset_id": "d1"})()
+            sd.side_effect = lambda dataset_id, dest, *, token: _write_items(dest, items)
+            recovered, cached, failed = recover_batch(
+                object(), type("A", (), {"token": "t"})(), candidates=candidates
+            )
+
+        assert recovered == 1, "the healthy post must still be recovered"
+        assert on_disk[media_key(b_stored[0])] == (
+            b"bytes-of-https://new.example.com/1_222_9_n.jpg?oe=Z"
+        )
+        assert failed == ["https://instagram.com/p/AAAA/"], (
+            "the crashing post must be reported, not silently lost"
+        )
+
     def test_a_chunk_returning_no_items_is_retryable_not_a_verdict(self, tmp_path):
         """GIVEN a run that returns NO items for its chunk
         WHEN recover_batch processes it

@@ -503,13 +503,32 @@ def recover_batch(
                 )
                 continue
             seen.add(code)
-            n, err = _cache_item(
-                ops,
-                post_id=cand["post_id"],
-                stored=cand["stored"],
-                item=item,
-                media_dir=media_dir,
-            )
+            try:
+                n, err = _cache_item(
+                    ops,
+                    post_id=cand["post_id"],
+                    stored=cand["stored"],
+                    item=item,
+                    media_dir=media_dir,
+                )
+            except Exception as exc:  # noqa: BLE001 — one bad post must not end the pass
+                # The actor run is already paid for, and this loop may be 100 posts
+                # in. `_cache_under` catches _PermanentFetchError specifically, so
+                # anything else (timeout, TLS, unexpected HTTP, a schema surprise)
+                # would otherwise propagate out of the batch and ABANDON the rest
+                # of the backlog — after spending on the whole run, with no `failed`
+                # entry for this post. Contained here so the failure is per-post.
+                #
+                # The exception type is surfaced in the message: a systematic cause
+                # (every post raising the same class) must still be diagnosable.
+                failed.append(cand["url"])
+                logger.exception(
+                    "media recovery: unexpected error for %s (%s) — contained; "
+                    "the rest of the batch continues",
+                    cand["url"],
+                    type(exc).__name__,
+                )
+                continue
             if err is None:
                 recovered += 1
                 chunk_recovered += 1
