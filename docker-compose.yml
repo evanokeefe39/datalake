@@ -24,6 +24,15 @@ services:
       - .env # OPENROUTER_API_KEY — main.py exits 2 without it
     environment:
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-qwen/qwen3.7-flash}
+      # The source trees are bind-mounted, so a host-written `__pycache__` (from
+      # `uv run pytest` on the host, possibly by several interpreters — cpython-312
+      # AND cpython-314 both appear in this tree) lands INSIDE the container. CPython
+      # normally rejects stale bytecode via the embedded source path + mtime/size,
+      # but a same-second, same-size edit can serve it — which would reproduce the
+      # exact "container runs old code while the tree is new" bug the mount removed.
+      # Not writing bytecode at all removes the failure mode instead of relying on
+      # its timestamps being discriminating.
+      PYTHONDONTWRITEBYTECODE: "1"
     volumes:
       - ./data/jobs:/jobs-data # service-private job store, survives restarts
       # SOURCE IS BIND-MOUNTED so the container runs the WORKING TREE, not the
@@ -71,6 +80,11 @@ services:
       # `environment` overrides `env_file`, which matters here: .env pins
       # DAGSTER_HOME to a Windows path the container cannot use.
       DAGSTER_HOME: /data/dagster_home
+      # See the note on `jobs`: the mounted source trees carry host-written
+      # `__pycache__` from both cpython-312 and cpython-314, so bytecode generated
+      # on the host is visible in the container. Writing none removes the stale-
+      # bytecode hazard rather than trusting mtime resolution to catch it.
+      PYTHONDONTWRITEBYTECODE: "1"
       IG_DATA_DIR: /data
       IG_DB_PATH: /data/state.duckdb
       OPS_DB_PATH: /data/ops.sqlite

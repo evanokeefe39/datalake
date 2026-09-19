@@ -377,37 +377,61 @@ wrong side of a boundary**. Concretely, check:
   `platform.paths.runtime_path` and only then tests existence. Testing the stored path
   first is what made the cache read as empty in a container. A container-written row
   (`/data/media/...`) will not resolve on the host — Compose is the runtime of record.
-- **SOURCE IS BIND-MOUNTED, SO THE CONTAINER RUNS THE WORKING TREE.**
-  Compose mounts `./packages` and `./services` over `/app/{packages,services}`, so
-  editing a module takes effect on the next import with NO rebuild. This was added
-  because the image bakes the code via `COPY services/ services/` and, without the
-  mounts, a long-running container executes BUILD-TIME code: `docker compose exec`
-  then tests PRE-FIX code and reports old behaviour as current. That happened on
-  the media-recovery review — the image still carried a pre-fix `_shortcode`, so a
-  Dagster-UI launch of the asset would have run the buggy version while the host
-  tests passed.
+- **SOURCE IS BIND-MOUNTED, SO THE IMAGE CAN NO LONGER BE BEHIND THE TREE.**
+  Compose mounts `./packages` and `./services` over `/app/{packages,services}`, and
+  the venv at `/app/.venv` is NOT shadowed. Verified: a marker appended to the
+  working tree is immediately visible via `docker compose exec ... grep`, with no
+  rebuild.
 
-  What is still baked in, and therefore still needs a rebuild:
-  - **Dependencies.** `.venv` lives in the image at a path the mounts do NOT
-    shadow, so a change to `pyproject.toml` / `uv.lock` requires
-    `docker compose up -d --build <service>`. Only the SOURCE is live.
+  This was added because the image bakes the code via `COPY services/ services/`
+  and, without the mounts, a long-running container executes BUILD-TIME code:
+  `docker compose exec` then tests PRE-FIX code and reports old behaviour as
+  current. That happened twice in one session — the media-recovery review found
+  the image still carried a pre-fix `_shortcode` (so a Dagster-UI launch of the
+  asset would have run the buggy version while the host tests passed), and the
+  earlier pilots and a "no unknown writer" conclusion were drawn from a container
+  running older code.
+
+  **The mount removes BUILD staleness, not PROCESS staleness.** This distinction
+  matters: `CMD` is `dagster dev -m orchestration.definitions` with NO `--reload`,
+  and there is no `.python-version`-style watch. A NEW process (`docker compose
+  exec ... uv run --no-sync python -c ...`) resolves the current source; the
+  already-running webserver/daemon imported its definitions module at process
+  start, so a change to an asset body or its graph may need a container restart to
+  take effect in the UI or a scheduled run. Say "the image cannot be behind the
+  tree", never "always fresh" — the module may already be imported and pinned.
+
+  Still baked in, and therefore still needing `--build`:
+  - **Dependencies.** A `pyproject.toml` / `uv.lock` change needs
+    `docker compose up -d --build <service>`; the mount is code-freshness only.
+    Accept the side effect: because the source is live, the container CAN now
+    import code whose dependencies have not been synced, so a dependency edit
+    made without a rebuild fails at import rather than silently using the old
+    package — loud, which is the right direction, but not self-correcting.
   - **The Dockerfile itself** (base image, `CMD`, system packages).
-  - **The other services** — verify each one's mounts rather than assuming; the
-    rule is only true where the mount exists.
 
-  Two habits worth keeping regardless:
-  - **Verify code identity before trusting a container result** when you have just
-    changed a Dockerfile, a dependency, or a service you have not recreated:
-    `docker compose exec -T <svc> grep -n '<new-symbol>' /app/<path>` — a marker
-    from the change you just made is the proof.
-  - **`docker compose up -d` alone does NOT re-apply a changed `volumes:` block.**
-    A container already running keeps its old mount set; use `--force-recreate`
-    (or check `docker inspect <ctr> --format '{{range .Mounts}}...'`) when the
-    compose file itself changed.
-  - **Host and container can still disagree** on non-source inputs: the container's
-    Python is 3.12 while the host is newer, and `paths._repo_root()` behaves
-    differently inside a `.dockerignore`d tree. A green host suite is not a green
-    container, and the host is what CI runs.
+  Practical guard before trusting a container result when mounts are new to you:
+  `docker compose exec -T <svc> sh -c 'grep -n "<symbol-from-the-change>" /app/<path>'`
+  and confirm the matched LINE, not merely grep's exit status — a bare
+  `grep -c` prints `1` on a miss, which reads like success.
+  Verify mounts directly with `docker inspect <ctr> --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'`.
+
+  Two more traps:
+  - **`docker compose up -d` alone does NOT re-apply a changed `volumes:` block** —
+    a running container keeps its old mount set. Use `--force-recreate` when the
+    compose file itself changed, or the new mount never takes effect.
+  - **Host-written bytecode now sits inside the container.** A host `uv run pytest`
+    writes `__pycache__` into the mounted trees — and this tree has both
+    `cpython-312.pyc` and `cpython-314.pyc`, i.e. multiple interpreters writing the
+    same cache, which is the precondition for an mtime/size collision serving stale
+    bytecode ("container runs old code while the tree is new"). Both services
+    therefore set `PYTHONDONTWRITEBYTECODE=1`, removing the hazard rather than
+    trusting mtime resolution to catch it.
+  - **Host and container still disagree on non-source inputs.** Measured
+    divergences: Windows-vs-Linux path semantics in `media_cache.local_path` (the
+    container cannot resolve a host-absolute path), and `paths._repo_root()`
+    raising only inside the `.dockerignore`d tree. A green host suite is not a
+    green container, and the host is what CI runs.
 - **`IG_DATA_DIR` must be resolved BEFORE the `.git` marker walk.** `paths._repo_root()`
   raises when no ancestor carries `.git`, which is every `.dockerignore`d container. The
   env check first is what lets the package import there; removing it re-breaks every
