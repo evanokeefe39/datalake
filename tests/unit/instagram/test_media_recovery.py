@@ -520,6 +520,43 @@ class TestBatchAttribution:
         codes = [_item_shortcode(i) for i in _all_items(p)]
         assert codes == ["A", "B"]
 
+    def test_item_shortcode_agrees_with_candidate_keying_for_alt_shapes(self):
+        """GIVEN permalink shapes other than a plain `/p/<code>/`
+        WHEN both sides of attribution are reduced
+        THEN they still agree.
+
+        Measured today: all 10,038 silver urls are plain `/p/<code>/` with no query
+        strings, so this cannot bite yet. It is guarded because the coupling was
+        implicit — a `/reel/` permalink or a query-suffixed url arriving later
+        would make every item drop as unmatched, and the post would be re-paid on
+        every run without appearing in any report.
+        """
+        from orchestration.defs.ig_core.bnz.recover import _item_shortcode
+
+        for candidate_url in [
+            "https://www.instagram.com/p/CBL8httj7aK/",
+            "https://www.instagram.com/reel/CBL8httj7aK/",
+            "https://www.instagram.com/p/CBL8httj7aK/?utm_source=ig_web",
+        ]:
+            item = {"shortCode": "CBL8httj7aK", "url": candidate_url}
+            assert _shortcode(candidate_url) == _item_shortcode(item), (
+                f"candidate keying and item keying diverged for {candidate_url}"
+            )
+
+    def test_item_shortcode_tolerates_a_query_suffixed_field(self):
+        """GIVEN an item whose `shortCode` field carries a path or suffix
+        WHEN it is reduced
+        THEN it still matches how the candidate permalink reduces.
+
+        The field goes through the same normalizer as a permalink, so a variation
+        in the field cannot silently unmatch every item in the chunk.
+        """
+        from orchestration.defs.ig_core.bnz.recover import _item_shortcode
+
+        # A permalink-shaped field reduces to the bare code, same as a candidate.
+        assert _item_shortcode({"shortCode": "https://www.instagram.com/p/ABC123/"}) == "ABC123"
+        assert _item_shortcode({"shortCode": "ABC123"}) == "ABC123"
+
     def test_each_item_is_cached_under_its_own_posts_keys(self, tmp_path):
         """GIVEN a batch of two posts whose items come back in the dataset
         WHEN recover_batch routes them

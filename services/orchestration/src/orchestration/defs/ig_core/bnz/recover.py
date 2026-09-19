@@ -378,22 +378,39 @@ def _shortcode(permalink: str) -> str:
     Used to attribute a batched fetch's items back to the post that asked for
     them: a multi-URL run returns items in no guaranteed order, so matching by
     position would silently cache one post's media under another's keys.
+
+    Reduced defensively rather than by a bare ``rsplit``. A naive split returns
+    ``?utm_source=ig_web`` for a query-suffixed permalink and ``CBL8httj7aK`` for a
+    clean one, so the two keys would not match — every item in the chunk would drop
+    as unmatched, and the post would be re-paid on every run while appearing in no
+    report. Measured today: all 10,038 silver urls are plain ``/p/<code>/`` with no
+    query strings, so this is a guard against a shape change, not a live bug.
+
+    Accepts a full permalink, a path, or a bare code, in all cases returning the
+    trailing path segment with any query/fragment stripped.
     """
-    return permalink.rstrip("/").rsplit("/", 1)[-1]
+    # Strip query/fragment FIRST: a bare code has no "/", so splitting on the path
+    # separator before removing the query would return a fragment of the query.
+    code = permalink.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    return code.rsplit("/", 1)[-1]
 
 
 def _item_shortcode(item: dict) -> str:
-    """The shortcode of a fetched item, from its own field or its permalink.
+    """The shortcode of a fetched item, reduced the SAME way as a candidate's.
 
-    ``shortCode`` is the dedicated field (verified on a real 2-URL batch: both
-    items carried it and it matched the requested permalink). The URL is the
-    fallback, and the two agree — preferring the field means a permalink shape
-    change cannot silently break attribution, which would drop every item as
-    "no item returned" and read as mass failure.
+    `shortCode` is the actor's own identity for the item, but it is passed through
+    `_shortcode` rather than returned raw so that BOTH sides of attribution reduce
+    by identical rules. If an item ever arrived with a query-suffixed or
+    path-prefixed `shortCode`, a raw return would stop matching the candidate key
+    (`_shortcode(candidate["url"])`) and every item in the chunk would drop as
+    unmatched — the post would then be re-paid on every run, invisibly.
+
+    The URL is the fallback, so a schema change that drops `shortCode` cannot
+    break attribution either.
     """
     code = item.get("shortCode")
     if isinstance(code, str) and code:
-        return code
+        return _shortcode(code)
     return _shortcode(str(item.get("url") or ""))
 
 
@@ -425,7 +442,25 @@ def recover_batch(
 
     for start in range(0, len(candidates), per_run):
         chunk = candidates[start : start + per_run]
+        # BOTH sides are reduced through `_shortcode`, so candidate keying and item
+        # keying cannot drift apart. Measured today: every silver url is a plain
+        # `/p/<code>/` (10,038 of 10,038, zero query strings, zero duplicates), so
+        # the two agree. Keying the candidate side naively while the item side
+        # prefers `shortCode` would make them agree only for that one shape — a
+        # future `/reel/<code>/` permalink would drop every item as unmatched and
+        # re-pay the post forever, invisibly.
         by_code = {_shortcode(c["url"]): c for c in chunk}
+        if len(by_code) != len(chunk):
+            # A collapsed duplicate would silently remove a candidate from `seen`
+            # AND from `failed`, so it would vanish from the report entirely.
+            # Cannot happen while permalinks are distinct, but say so rather than
+            # letting it be discovered as missing spend.
+            logger.error(
+                "media recovery: %d candidate(s) collapsed to %d shortcode key(s) "
+                "in a chunk — duplicates would be invisible in this run's report",
+                len(chunk),
+                len(by_code),
+            )
 
         run = trigger_run(
             RECOVERY_ACTOR,
