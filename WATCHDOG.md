@@ -392,14 +392,32 @@ wrong side of a boundary**. Concretely, check:
   earlier pilots and a "no unknown writer" conclusion were drawn from a container
   running older code.
 
-  **The mount removes BUILD staleness, not PROCESS staleness.** This distinction
-  matters: `CMD` is `dagster dev -m orchestration.definitions` with NO `--reload`,
-  and there is no `.python-version`-style watch. A NEW process (`docker compose
-  exec ... uv run --no-sync python -c ...`) resolves the current source; the
-  already-running webserver/daemon imported its definitions module at process
-  start, so a change to an asset body or its graph may need a container restart to
-  take effect in the UI or a scheduled run. Say "the image cannot be behind the
-  tree", never "always fresh" — the module may already be imported and pinned.
+  **The mount removes BUILD staleness, not PROCESS staleness — MEASURED.**
+  `CMD` is `dagster dev -m orchestration.definitions` with no `--reload`, and there
+  is no inotify propagation from a Windows host edit into the container. Verified
+  by editing an asset `description`, then querying the SAME running instance's
+  GraphQL API without restarting: it still served the PRE-EDIT text. A restart
+  picks the change up. So a UI-triggered run after an edit can execute pre-edit
+  code while every grep-based check passes — grepping the file proves the MOUNT is
+  fresh, never that the PROCESS re-imported. Say "the image cannot be behind the
+  tree", never "always fresh". Restart the container after a code change you
+  intend to run, or `curl` the graphql endpoint to confirm what it actually serves.
+  (`ps`/`procps` is absent from this slim image, so process-start archaeology
+  returns nothing — test reload behaviourally as above instead.)
+
+  **Host bytecode cannot poison the container — verified, and the reason matters.**
+  Host `uv run pytest` writes `__pycache__` into the mounted trees, and a host
+  `.pyc` IS visible in the container (`__cached__` resolves to it). But it is
+  never IMPORTED: **host Python is 3.14, the container is 3.12** (`uv run python
+  -V` each side). Bytecode magic numbers differ (`f30d0d0a` vs `cb0d0d0a`), so
+  CPython rejects the cache outright and recompiles from source. Poisoning the
+  `.pyc` with a forged `UNCHECKED_HASH` header (which bypasses the mtime/size
+  stamp) still did not change the imported value — the magic check is upstream of
+  header validation. `PYTHONDONTWRITEBYTECODE=1` is set on both services anyway:
+  it keeps the mounted trees from accumulating container-written caches, but it is
+  NOT the guard against stale host bytecode — interpreter-version skew is, and
+  that is incidental. A container rebuilt on the host's Python version would lose
+  this protection, so keep the env var and do not rely on the skew.
 
   Still baked in, and therefore still needing `--build`:
   - **Dependencies.** A `pyproject.toml` / `uv.lock` change needs
@@ -420,13 +438,10 @@ wrong side of a boundary**. Concretely, check:
   - **`docker compose up -d` alone does NOT re-apply a changed `volumes:` block** —
     a running container keeps its old mount set. Use `--force-recreate` when the
     compose file itself changed, or the new mount never takes effect.
-  - **Host-written bytecode now sits inside the container.** A host `uv run pytest`
-    writes `__pycache__` into the mounted trees — and this tree has both
-    `cpython-312.pyc` and `cpython-314.pyc`, i.e. multiple interpreters writing the
-    same cache, which is the precondition for an mtime/size collision serving stale
-    bytecode ("container runs old code while the tree is new"). Both services
-    therefore set `PYTHONDONTWRITEBYTECODE=1`, removing the hazard rather than
-    trusting mtime resolution to catch it.
+  - **A `grep` inside the container proves the MOUNT is fresh, not that the PROCESS
+    re-imported** — see the measured no-reload finding above. For a change you
+    intend to RUN, restart the container, or verify what the instance actually
+    serves via its API.
   - **Host and container still disagree on non-source inputs.** Measured
     divergences: Windows-vs-Linux path semantics in `media_cache.local_path` (the
     container cannot resolve a host-absolute path), and `paths._repo_root()`
