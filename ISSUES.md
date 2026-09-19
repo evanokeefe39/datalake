@@ -1402,7 +1402,7 @@ run:
 | Recovered across the session (by subtraction) | 226 |
 | Permanently unrecoverable (verified deleted) | **2** |
 | Remaining, retryable (`restricted_page`) | **4** |
-| Spend | **$0.7153 measured**, from the Apify account's own run records: 160 runs started today, summed `usage_total_usd`. Includes ~$0.08 from a concurrent scrape path (4 runs at 08:00, before this session's recovery work began), so the recovery-attributable share is ~**$0.64**. |
+| Spend | **$0.7153** summed from the Apify account's own run records (160 runs today, all on the same Instagram-scraper actor, so actor cannot separate recovery from scrape — only the time window can). Breakdown: **08:00 = $0.076** (4 runs, before this session's recovery work, a concurrent scrape); **15:00 = $0.244** (101 runs — the CANCELLED one-at-a-time run: 101 runs to recover 58 posts where batching needed ~3, which is the waste the batching change removes); **16:00 = $0.276** (7 runs, the batched pass — $0.276/124 posts = **$0.00223/post**, confirming the cost model). Recovery-attributable total ≈ **$0.64**; the 12:00/13:00/14:00/17:00 blocks ($0.120 combined) are pilots, probes and retries. |
 
 230 = 226 + 4, and the 232 start differs from 230 by the 2 permanently
 unrecoverable posts — but this middle row is DERIVED, not logged. See "What is
@@ -1472,11 +1472,16 @@ enrichment can consume them:
    'cubedtech.com.au'". That text is only producible if the actual recovered bytes
    reached the model — the strongest available evidence that recovery succeeded.
 
-The video path was exercised too: a recovered `.mp4` resolves (2.3 MB,
-`ftypisom`), ffmpeg samples it into **8 valid JPEG frames**, and the request
-succeeds (`ok: true`). The model returned an empty result for that clip under an
-ad-hoc prompt, which is a model-response behaviour rather than a pipeline defect —
-the frames demonstrably reached the service.
+The video path is verified too, and it took a content-forcing prompt to prove:
+a recovered `.mp4` resolves (2.3 MB, `ftypisom`), `sample_video` extracts **8 valid
+JPEG frames** (verified by calling it directly: 8 frames, 50 KB each, `ffd8ff`
+magic), and `qwen.py` attaches them as `image/jpeg` parts. With a prompt that
+forces specific content the model returned real footage detail — "A woman is shown
+lying down with her eyes closed, followed by close-up shots of her eyelashes being
+brushed and the final result of her eyelash extensions" — which is only producible
+if the extracted frames reached it. Earlier empty results (`[]`, `{}`) were
+prompt-shape artifacts under a JSON response format, NOT a frame-delivery failure;
+three empty results were treated as unproven until this test settled it.
 
 Two failure modes were surfaced by doing this instead of trusting the suite, and
 neither is a recovery defect:
