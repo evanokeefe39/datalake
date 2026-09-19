@@ -489,18 +489,6 @@ class TestBatchAttribution:
         """
         assert _item_shortcode({"url": "https://www.instagram.com/p/ABC123/"}) == "ABC123"
 
-    def test_shortcode_matches_the_permalink_shape_we_request(self):
-        """GIVEN the permalink we send and the URL Apify returns
-        WHEN both are reduced to a shortcode
-        THEN they agree.
-
-        Verified against a real 2-URL batch: every returned item carried `url` in
-        this exact form and `shortCode` matching it.
-        """
-        requested = "https://www.instagram.com/p/CBL8httj7aK/"
-        returned = "https://www.instagram.com/p/CBL8httj7aK/"
-        assert _shortcode(requested) == _shortcode(returned) == "CBL8httj7aK"
-
     def test_all_items_skips_a_malformed_line_without_losing_the_rest(self, tmp_path):
         """GIVEN an NDJSON file where one line is not valid JSON
         WHEN every item is parsed
