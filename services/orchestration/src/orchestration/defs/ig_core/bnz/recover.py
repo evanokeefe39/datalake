@@ -442,13 +442,15 @@ def recover_batch(
 
     for start in range(0, len(candidates), per_run):
         chunk = candidates[start : start + per_run]
-        # BOTH sides are reduced through `_shortcode`, so candidate keying and item
-        # keying cannot drift apart. Measured today: every silver url is a plain
-        # `/p/<code>/` (10,038 of 10,038, zero query strings, zero duplicates), so
-        # the two agree. Keying the candidate side naively while the item side
-        # prefers `shortCode` would make them agree only for that one shape — a
-        # future `/reel/<code>/` permalink would drop every item as unmatched and
-        # re-pay the post forever, invisibly.
+        # Both sides of attribution go through `_shortcode` — the candidate's
+        # permalink directly, the item's `shortCode` field via `_item_shortcode`
+        # (which falls back to the item URL). That is what makes them agree for
+        # ANY permalink shape, not just `/p/<code>/`: a `?`/`#` suffix and a
+        # `/reel/` path both reduce to the same code on each side.
+        #
+        # Before that normalization the two agreed only because today's data is
+        # uniform — a future `/reel/<code>/` or query-suffixed permalink would
+        # drop every item as unmatched and re-pay the post forever, invisibly.
         by_code = {_shortcode(c["url"]): c for c in chunk}
         if len(by_code) != len(chunk):
             # A collapsed duplicate would silently remove a candidate from `seen`
@@ -511,19 +513,21 @@ def recover_batch(
                     item=item,
                     media_dir=media_dir,
                 )
-            except Exception as exc:  # noqa: BLE001 — one bad post must not end the pass
+            except (OSError, TimeoutError) as exc:
                 # The actor run is already paid for, and this loop may be 100 posts
                 # in. `_cache_under` catches _PermanentFetchError specifically, so
-                # anything else (timeout, TLS, unexpected HTTP, a schema surprise)
-                # would otherwise propagate out of the batch and ABANDON the rest
-                # of the backlog — after spending on the whole run, with no `failed`
-                # entry for this post. Contained here so the failure is per-post.
+                # the residual here is transport: a socket timeout, a TLS failure,
+                # an unreadable temp file. Those are per-post conditions.
                 #
-                # The exception type is surfaced in the message: a systematic cause
-                # (every post raising the same class) must still be diagnosable.
+                # DELIBERATELY NARROW. A bare `except Exception` would also swallow
+                # a TypeError/KeyError from a schema surprise, converting a code
+                # defect into a per-post "failure" that gets retried and re-paid
+                # across the whole batch instead of surfacing — and it would mask
+                # the ValueError that `record_exhausted` raises on a bad reason,
+                # which is meant to abort loudly.
                 failed.append(cand["url"])
                 logger.exception(
-                    "media recovery: unexpected error for %s (%s) — contained; "
+                    "media recovery: transport error for %s (%s) — contained; "
                     "the rest of the batch continues",
                     cand["url"],
                     type(exc).__name__,

@@ -26,6 +26,13 @@ services:
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-qwen/qwen3.7-flash}
     volumes:
       - ./data/jobs:/jobs-data # service-private job store, survives restarts
+      # SOURCE IS BIND-MOUNTED so the container runs the WORKING TREE, not the
+      # build-time copy. See the note on `orchestration` below for why: without
+      # it, `docker compose exec` tests pre-fix code and reports old behaviour as
+      # current. The venv stays from the image, so a dependency change still
+      # needs a rebuild — only the source is live.
+      - ./packages:/app/packages
+      - ./services:/app/services
       - ./data/media:/data/media:ro # read-only: paths identical to what the adapter sends
       # The dev/smoke slice keeps its OWN media root (data/smoke/media), so a
       # smoke-slice run sends /data/smoke/media/... paths. Without this mount the
@@ -78,6 +85,20 @@ services:
       IG_LOCAL_INGEST_DIR: /data/ingest
     volumes:
       - ./data:/data
+      # SOURCE IS BIND-MOUNTED, so the container always runs the WORKING TREE.
+      # The image still bakes a copy in (and `.venv`, which must NOT be shadowed),
+      # but these two mounts overlay it — so editing a module takes effect on the
+      # next import, with no rebuild. Without them a running container executes
+      # the code from BUILD TIME: `docker compose exec` then tests PRE-FIX code and
+      # reports old behaviour as current, which happened on the media-recovery
+      # review (the image still carried a pre-fix `_shortcode`).
+      #
+      # `packages/` and `services/` are the member trees of the uv workspace; the
+      # venv at /app/.venv is a SEPARATE path and stays from the image. Editing a
+      # dependency list in pyproject.toml still needs a rebuild — installed
+      # packages live in the image, only the source is live.
+      - ./packages:/app/packages
+      - ./services:/app/services
       # The local ad-hoc scrape dumps (`<LOCAL_INGEST_DIR>/<dataset>/<post>/`).
       # `IG_LOCAL_INGEST_DIR` above points at `/data/ingest`, but the dumps live
       # in a SIBLING checkout — so this mount is what makes that path real.
