@@ -1453,9 +1453,15 @@ remainder.
 actor run rather than one. Measured: 5 posts recovered in a single run in 24s
 (~5s/post including overhead) versus ~8s/post one-at-a-time, and the whole
 124-post backlog completed in 10m45s. Items are attributed back to their posts by
-`shortCode` (verified against a real batch: every item carried the field and it
-matched the requested permalink) — positional pairing would cache one post's
-media under another's keys.
+`shortCode` — positional pairing would cache one post's media under another's keys.
+
+Attribution normalises BOTH sides through `_shortcode`, and that was a fix rather
+than the original design: a bare `rsplit` returned `?utm_source=ig_web` for a
+query-suffixed permalink and `CBL8httj7aK` for a clean one, so the candidate key and
+the item key would diverge and every item in the chunk would drop as unmatched —
+the post then re-paid on every run while appearing in no report. Measured today:
+all 10,038 silver urls are plain `/p/<code>/` with zero query strings and zero
+duplicates, so this was latent, not live. Guarded by test and mutation-verified.
 
 **Verification.** Not "the run was green" and not a pytest pass — a real end-to-end
 run through the inference seam, because cached bytes are only worth anything if
