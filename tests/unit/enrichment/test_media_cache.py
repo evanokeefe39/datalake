@@ -11,11 +11,15 @@ ADR-0009, dropped by the W9 retirement.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
 from orchestration.defs.engine.media import (
+    MEDIA_CACHE_ATTEMPTS,
+    _PermanentFetchError,
     cache_media_bytes,
+    cache_media_urls,
     local_media_path,
     url_hash,
 )
@@ -60,6 +64,228 @@ def test_cache_media_bytes_skips_already_cached(tmp_path):
 
     # Second call must be a cache hit — no re-download.
     assert dl.call_count == 1
+
+
+def test_cache_media_bytes_retries_a_transient_failure(tmp_path):
+    """A flaky CDN must not permanently lose the media.
+
+    The cache is filled ONLY at scrape time while the signed URL is alive, so a
+    single transient failure loses those bytes forever and the post can never be
+    enriched. Retrying converts a lost post into a slightly slower scrape.
+    """
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+
+    with patch(
+        "orchestration.defs.engine.media._download_bytes",
+        side_effect=[None, None, (b"bytes", "image/jpeg")],
+    ) as dl:
+        with patch("orchestration.defs.engine.media.time.sleep"):
+            path = cache_media_bytes(
+                ops, "https://cdn.example.com/flaky.jpg", media_dir=tmp_path
+            )
+
+    assert path is not None, "third attempt succeeded — must not give up early"
+    assert dl.call_count == 3
+
+
+def test_cache_media_bytes_gives_up_after_the_attempt_budget(tmp_path):
+    """A permanently dead URL stops after MEDIA_CACHE_ATTEMPTS and says so."""
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+
+    with patch(
+        "orchestration.defs.engine.media._download_bytes", return_value=None
+    ) as dl:
+        with patch("orchestration.defs.engine.media.time.sleep"):
+            path = cache_media_bytes(
+                ops, "https://cdn.example.com/dead.jpg", media_dir=tmp_path
+            )
+
+    assert path is None
+    assert dl.call_count == MEDIA_CACHE_ATTEMPTS
+
+
+def test_cache_media_bytes_does_not_retry_a_cache_hit(tmp_path):
+    """Idempotence: an already-cached URL costs zero downloads, not one."""
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+
+    with patch(
+        "orchestration.defs.engine.media._download_bytes",
+        return_value=(b"once", "image/jpeg"),
+    ) as dl:
+        cache_media_bytes(ops, "https://cdn.example.com/a.jpg", media_dir=tmp_path)
+        cache_media_bytes(ops, "https://cdn.example.com/a.jpg", media_dir=tmp_path)
+
+    assert dl.call_count == 1
+
+
+def test_cache_media_urls_accounts_for_every_url(tmp_path):
+    """The accounting is the point: a run's media loss must be visible.
+
+    Discarding the per-URL result is what let a whole scrape run cache nothing
+    and report success (ISSUES.md #25 — 790 posts, no media, no error).
+    """
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+    good = {"https://cdn.example.com/ok1.jpg", "https://cdn.example.com/ok2.jpg"}
+
+    def fake_download(url):
+        return (b"bytes", "image/jpeg") if url in good else None
+
+    with patch("orchestration.defs.engine.media._download_bytes", side_effect=fake_download):
+        with patch("orchestration.defs.engine.media.time.sleep"):
+            report = cache_media_urls(
+                ops,
+                [
+                    "https://cdn.example.com/ok1.jpg",
+                    "https://cdn.example.com/dead.jpg",
+                    "https://cdn.example.com/ok2.jpg",
+                    # duplicate + blank must not inflate the counts
+                    "https://cdn.example.com/ok1.jpg",
+                    "",
+                ],
+                media_dir=tmp_path,
+            )
+
+    assert report.attempted == 3
+    assert report.cached == 2
+    assert report.failed == 1
+    assert report.failed_urls == ["https://cdn.example.com/dead.jpg"]
+    assert report.ok is False
+    assert "2/3 cached" in report.summary() and "1 FAILED" in report.summary()
+
+
+def test_cache_media_urls_reports_ok_when_nothing_fails(tmp_path):
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+
+    with patch(
+        "orchestration.defs.engine.media._download_bytes",
+        return_value=(b"bytes", "image/jpeg"),
+    ):
+        report = cache_media_urls(
+            ops, ["https://cdn.example.com/a.jpg"], media_dir=tmp_path
+        )
+
+    assert report.ok is True
+    assert report.failed == 0
+    assert report.summary() == "media cache: 1/1 cached"
+
+
+def test_cache_media_bytes_does_not_retry_a_4xx(tmp_path):
+    """An expired signed URL must not spend the retry budget.
+
+    Instagram's CDN returns 403 once the URL's `oe` expiry passes (~4.5 days)
+    and no retry revives it. The corpus has 556 such posts, so retrying them all
+    is pure wall-clock waste — measured 4.4s per dead URL at 3 attempts vs 0.6s
+    when the 4xx short-circuits.
+    """
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+
+    with patch(
+        "orchestration.defs.engine.media._download_bytes",
+        side_effect=_PermanentFetchError(403, "https://cdn.example.com/expired.jpg"),
+    ) as dl:
+        with patch("orchestration.defs.engine.media.time.sleep"):
+            path = cache_media_bytes(
+                ops, "https://cdn.example.com/expired.jpg", media_dir=tmp_path
+            )
+
+    assert path is None
+    assert dl.call_count == 1, "a 4xx must stop at attempt 1, not use all 3"
+
+
+def test_cache_media_bytes_retries_a_5xx(tmp_path):
+    """A 5xx is transient — it MUST still use the retry budget.
+
+    The permanent/transient split is the point: short-circuiting 4xx must not
+    accidentally stop retrying the failures that do clear.
+    """
+    ops = SQLiteResource(database=str(tmp_path / "ops.sqlite"))
+
+    with patch(
+        "orchestration.defs.engine.media._download_bytes",
+        side_effect=[None, None, (b"bytes", "image/jpeg")],
+    ) as dl:
+        with patch("orchestration.defs.engine.media.time.sleep"):
+            path = cache_media_bytes(
+                ops, "https://cdn.example.com/flaky.jpg", media_dir=tmp_path
+            )
+
+    assert path is not None
+    assert dl.call_count == 3
+
+
+def test_permanent_error_distinguishes_expiry_from_a_block():
+    """A bare 403 is ambiguous; the diagnosis must say which case it is.
+
+    That ambiguity is what made the antibot question take a dedicated 861-request
+    burst test to settle. The URL carries its own signed expiry in `oe`, so the
+    log line can state the cause outright: an expired signature (nothing to do
+    but mint a fresh URL) vs a 403 on a still-valid URL (a block/revocation, a
+    different problem entirely).
+    """
+    # oe=6AB2DBB6 -> 2026-09-22; a URL signed valid until then and 403ing is NOT
+    # expiry. (Tested against a real such URL: 403 with a live oe.)
+    live = _PermanentFetchError(
+        403,
+        "https://cdn.example.com/a.jpg?oe=6AB2DBB6",
+        expiry=datetime(2099, 1, 1, tzinfo=UTC),
+    )
+    assert "NOT expiry" in live.diagnosis()
+    assert "block or revocation" in live.diagnosis()
+
+    # An already-past expiry is the expected case.
+    dead = _PermanentFetchError(
+        403,
+        "https://cdn.example.com/b.jpg?oe=6AB2DBB6",
+        expiry=datetime(2020, 1, 1, tzinfo=UTC),
+    )
+    assert "EXPIRED" in dead.diagnosis()
+    assert "expected" in dead.diagnosis()
+
+    # No oe at all (some video URLs) — say so rather than guessing.
+    bare = _PermanentFetchError(403, "https://cdn.example.com/c.mp4")
+    assert "no signed expiry" in bare.diagnosis()
+
+
+def test_signed_url_expiry_decodes_oe():
+    """`oe` is a hex unix timestamp and it decodes to the expiry."""
+    from orchestration.defs.engine.media import _signed_url_expiry
+
+    assert _signed_url_expiry("https://x/a.jpg?oe=6AB2DBB6") == datetime(
+        2026, 9, 22, 19, 49, 10, tzinfo=UTC
+    )
+    assert _signed_url_expiry("https://x/a.mp4") is None  # no oe
+    assert _signed_url_expiry("https://x/a.jpg?oe=nothex") is None  # malformed
+
+
+def test_429_is_transient_and_takes_the_retry_path():
+    """429 is a rate limit, not a dead URL — it must NOT be permanent.
+
+    If 429 fell into the 4xx permanent branch it would spend zero retries, log
+    as "expired", and land as a permanent miss — erasing the one signal that
+    would tell us the CDN is throttling us. That is the open production-egress
+    question, so this distinction is load-bearing, not cosmetic.
+    """
+    import urllib.error
+
+    from orchestration.defs.engine.media import _download_bytes, _PermanentFetchError
+
+    err = urllib.error.HTTPError("https://cdn.example.com/a.jpg", 429, "Too Many", {}, None)
+    with patch("urllib.request.urlopen", side_effect=err):
+        # Must RETURN (retryable), not RAISE (permanent).
+        assert _download_bytes("https://cdn.example.com/a.jpg") is None
+
+    err408 = urllib.error.HTTPError("https://cdn.example.com/a.jpg", 408, "Timeout", {}, None)
+    with patch("urllib.request.urlopen", side_effect=err408):
+        assert _download_bytes("https://cdn.example.com/a.jpg") is None
+
+    # 403 with an expired oe stays permanent.
+    err403 = urllib.error.HTTPError("https://cdn.example.com/a.jpg", 403, "Forbidden", {}, None)
+    with patch("urllib.request.urlopen", side_effect=err403):
+        try:
+            _download_bytes("https://cdn.example.com/a.jpg?oe=40000000")
+            raise AssertionError("403 should be permanent")
+        except _PermanentFetchError as exc:
+            assert exc.code == 403
 
 
 def test_local_media_path_returns_none_when_missing(tmp_path):

@@ -44,10 +44,12 @@ from orchestration.defs.engine import harvest, landing
 from orchestration.defs.engine.partitions import (
     MAX_ROUNDS,
     SUBMITTED_ASSET_NAME,
+    MaterializedSets,
     in_flight_partitions,
     parse_partition_key,
     partition_key,
-    post_partition_state,
+    post_partition_state_from_sets,
+    read_materialized_sets,
 )
 from orchestration.defs.engine.provider import DEFAULT_JOBSPEC, Item, JobSpec
 from orchestration.defs.ig_enriched.slv import workloads as _workloads
@@ -100,24 +102,46 @@ def _in_flight_by_post(instance) -> set[str]:
     return posts
 
 
-def _guard_round(instance, workload: str, post_id: str, key: str) -> None:
+def _guard_round(sets: MaterializedSets, workload: str, post_id: str, key: str) -> None:
     """Refuse to submit a post whose retry budget is exhausted.
 
-    ``post_partition_state`` derives the next round from the materialized
-    keys, so this is the same derivation the retry driver mints from. The
-    test keys on ``next_round`` alone: a post whose next round has reached
-    the ceiling has spent its budget, whether or not anything is currently
-    in flight for it. Gating this on ``suppressed`` as well would make the
-    raise unreachable — the caller skips in-flight posts before calling here
-    — so a partition stuck at the ceiling would be re-submitted forever.
+    ``post_partition_state_from_sets`` derives the next round from the
+    materialized keys, so this is the same derivation the retry driver mints
+    from. The test keys on ``next_round`` alone: a post whose next round has
+    reached the ceiling has spent its budget, whether or not anything is
+    currently in flight for it. Gating this on ``suppressed`` as well would
+    make the raise unreachable — the caller skips in-flight posts before
+    calling here — so a partition stuck at the ceiling would be re-submitted
+    forever.
     """
-    state = post_partition_state(instance, workload, post_id)
+    state = post_partition_state_from_sets(sets, workload, post_id)
     if state.next_round >= MAX_ROUNDS:
+        # A post at the ceiling is SKIPPED and excluded loudly, not fatal.
+        # Raising here aborted the ENTIRE submit pass: one permanently
+        # unbuildable post (e.g. media never cached, so every retry fails
+        # identically) reached the ceiling and took the whole run down with
+        # it — an outage caused by the retry guard rather than by the
+        # provider. The blast radius of one bad post must be one post.
+        #
+        # The raise is retained for the direct-call contract (a caller that
+        # asks about a specific exhausted post still gets a loud error); the
+        # drain loop uses `round_budget_exhausted` and skips.
         raise RuntimeError(
             f"partition {key!r} is at round >={MAX_ROUNDS} "
             f"(MAX_ROUNDS={MAX_ROUNDS}) — the retry budget is exhausted; "
             "refusing to submit again"
         )
+
+
+def round_budget_exhausted(
+    sets: MaterializedSets, workload: str, post_id: str
+) -> bool:
+    """True when a post has spent its retry budget.
+
+    The drain loop's non-fatal form of ``_guard_round``: the caller skips
+    the post and records it, so one exhausted post cannot abort the pass.
+    """
+    return post_partition_state_from_sets(sets, workload, post_id).next_round >= MAX_ROUNDS
 
 
 def build_items(
@@ -272,10 +296,19 @@ def submit_pending(
 
     # ── ONE in-flight read; the guard and the enqueue share it ──────────
     in_flight = _in_flight_by_post(instance)
+    # The materialized sets are read ONCE here and threaded through the loop.
+    # Reading them inside post_partition_state made this loop O(candidates x
+    # total_partitions) — two full instance reads per candidate, contending
+    # with the daemon on the instance store. Measured 0.56s/call on a 4-key
+    # store; ~76 minutes at the live candidate count, growing with the set.
+    # One read also makes the snapshot guarantee real: every candidate is
+    # judged against the same instant.
+    sets = read_materialized_sets(instance)
     candidates_seen = len(discovered)
 
     accepted: list[tuple[Workload, dict, str, int]] = []
     suppressed: list[str] = []
+    exhausted: list[tuple[str, str]] = []
     for workload, candidate, _, _ in discovered:
         post_id = candidate["post_id"]
         if post_id in in_flight and not cfg.post_ids:
@@ -283,11 +316,27 @@ def submit_pending(
             # re-enrichment bypasses every guard.
             suppressed.append(post_id)
             continue
-        state = post_partition_state(instance, workload.name, post_id)
+        state = post_partition_state_from_sets(sets, workload.name, post_id)
         round_no = state.next_round
         key = partition_key(workload.name, round_no, [post_id])
-        _guard_round(instance, workload.name, post_id, key)
+        if round_budget_exhausted(sets, workload.name, post_id):
+            # SKIP, don't abort. A post at the retry ceiling is permanently
+            # unbuildable or permanently failing; letting it raise here took
+            # the whole submit pass down with it, so one bad post starved the
+            # entire corpus. Recorded in `exhausted` and reported loudly below.
+            exhausted.append((workload.name, post_id))
+            continue
         accepted.append((workload, candidate, key, round_no))
+
+    if exhausted:
+        logger.error(
+            "Submit: %d post(s) SKIPPED at the retry ceiling (round >= %d);"
+            " these are permanently failing and are excluded from this pass"
+            " — %s",
+            len(exhausted),
+            MAX_ROUNDS,
+            sorted(p for _, p in exhausted)[:20],
+        )
 
     if suppressed:
         logger.warning(

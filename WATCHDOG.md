@@ -79,9 +79,23 @@ captures project-specific traps and boundaries too noisy for AGENTS.md.
 
 ## Test boundaries
 
+- **Do NOT run the full suite as a safety net. Targeted tests only, and ask the
+  owner before any corpus-wide run.** The full pass is ~450-670s (measured
+  197s/407s/~200s on 2026-09-17, 669s on 2026-09-18 — it grows with the corpus),
+  and the standing instruction in this repo is that a full-suite invocation needs
+  explicit permission first. While working, run the ONE file you changed, narrowed
+  with `-k` where possible. Running two large directories "together" is a full
+  suite in disguise — `tests/unit/instagram/ tests/unit/enrichment/` is ~450
+  tests and was correctly called out as such. The full pass is a FINAL gate
+  after the work is complete, never an inner-loop habit.
 - `tests/operational/test_state_compatibility.py` runs against the **live**
   `data/ops.sqlite` + `data/state.duckdb`, not a temp DB. A failure there is
   drift, not a bug in the test.
+- **A table added to the ops catalog must also exist in the LIVE database**, or
+  `test_state_compatibility` reports drift. Create-on-first-write (inside the
+  writer) leaves the live DB without the table until the writer first fires —
+  deliberate for an append-only verdict table, but state the choice rather than
+  discovering it as a red test.
 - `tests/unit/enrichment/test_media_cache.py` mocks `google.genai.Client`; keep
   the File API upload path exercised there so the CDN-vs-cache branch stays
   covered.
@@ -238,7 +252,7 @@ real defect during the v3 materialization.
   `instance` and the whole graph failed to load
   (`DagsterInvalidDefinitionError: Input asset "["instance"]" is not produced by
   any of the provided asset ops`). The instance comes from `context.instance`.
-- Gate: `uv run dagster definitions validate -m datalake.definitions`. An asset the
+- Gate: `uv run dagster definitions validate -m orchestration.definitions`. An asset the
   worker "verified" by calling it as a plain function can still be un-loadable in
   Dagster. Watch for test-only injection globals too (`_drain_instance` in
   `defs/instagram/assets.py`) — acceptable, but it is a test seam, not production.
@@ -339,8 +353,19 @@ wrong side of a boundary**. Concretely, check:
   pipeline lands that response as `ig_roster_raw` → publishes `silver_ig_roster` → and
   reads the roster FROM DUCKDB. A change that "just reads ops.sqlite from the pipeline"
   reintroduces the coupling this removed, even if it goes through an `opsdb` helper.
-  `media_cache` is the one shared table, and it is pipeline-OWNED with a single shared
-  INSERT (`opsdb.media_cache.record_media_cache_row`, which ensures the table exists).
+  **`media_cache` is TWO tables wearing one name, and it is NOT simply
+  "pipeline-owned"** (corrected 2026-09-18 — the earlier line here was stale). It holds
+  two disjoint key classes: 64-hex `sha256(url)` rows written by the pipeline (~29k rows,
+  55 GB of post media for analysis) and `thumb:<shortcode>` rows written by the dashboard
+  (~1k rows, 25 MB of app thumbnails). Neither consumer ever reads the other's rows —
+  verified, zero ambiguous keys. The shared INSERT (`opsdb.media_cache.
+  record_media_cache_row`) masks the split; the module docstring names both writers while
+  this file did not. ADR-0019 (PROPOSED, not yet built — this paragraph describes TODAY's
+  shape) proposes separating them: app state → Postgres owned solely by the dashboard; post
+  media → object storage keyed, not stored. Do not describe that boundary as current until
+  the epic lands. Avatars are a THIRD path with a split ownership: `silver_ig_profiles`
+  writes them at pipeline time, and the dashboard only SERVES them via
+  `avatar_path(username)` — they never pass through `media_cache` at all.
 - **The details-sweep watermark advances in the ASSET, never in the schedule.**
   `bronze_ig_profile_details` calls `advance_watermark` after the bytes land. Advancing at
   schedule-evaluation would mark emitted-but-unexecuted runs as covered, so one Apify
@@ -352,6 +377,76 @@ wrong side of a boundary**. Concretely, check:
   `platform.paths.runtime_path` and only then tests existence. Testing the stored path
   first is what made the cache read as empty in a container. A container-written row
   (`/data/media/...`) will not resolve on the host — Compose is the runtime of record.
+- **SOURCE IS BIND-MOUNTED, SO THE IMAGE CAN NO LONGER BE BEHIND THE TREE.**
+  Compose mounts `./packages` and `./services` over `/app/{packages,services}`, and
+  the venv at `/app/.venv` is NOT shadowed. Verified: a marker appended to the
+  working tree is immediately visible via `docker compose exec ... grep`, with no
+  rebuild.
+
+  This was added because the image bakes the code via `COPY services/ services/`
+  and, without the mounts, a long-running container executes BUILD-TIME code:
+  `docker compose exec` then tests PRE-FIX code and reports old behaviour as
+  current. That happened twice in one session — the media-recovery review found
+  the image still carried a pre-fix `_shortcode` (so a Dagster-UI launch of the
+  asset would have run the buggy version while the host tests passed), and the
+  earlier pilots and a "no unknown writer" conclusion were drawn from a container
+  running older code.
+
+  **The mount removes BUILD staleness, not PROCESS staleness — MEASURED.**
+  `CMD` is `dagster dev -m orchestration.definitions` with no `--reload`, and there
+  is no inotify propagation from a Windows host edit into the container. Verified
+  by editing an asset `description`, then querying the SAME running instance's
+  GraphQL API without restarting: it still served the PRE-EDIT text. A restart
+  picks the change up. So a UI-triggered run after an edit can execute pre-edit
+  code while every grep-based check passes — grepping the file proves the MOUNT is
+  fresh, never that the PROCESS re-imported. Say "the image cannot be behind the
+  tree", never "always fresh". Restart the container after a code change you
+  intend to run, or `curl` the graphql endpoint to confirm what it actually serves.
+  (`ps`/`procps` is absent from this slim image, so process-start archaeology
+  returns nothing — test reload behaviourally as above instead.)
+
+  **Host bytecode cannot poison the container — verified, and the reason matters.**
+  Host `uv run pytest` writes `__pycache__` into the mounted trees, and a host
+  `.pyc` IS visible in the container (`__cached__` resolves to it). But it is
+  never IMPORTED: **host Python is 3.14, the container is 3.12** (`uv run python
+  -V` each side). Bytecode magic numbers differ (`f30d0d0a` vs `cb0d0d0a`), so
+  CPython rejects the cache outright and recompiles from source. Poisoning the
+  `.pyc` with a forged `UNCHECKED_HASH` header (which bypasses the mtime/size
+  stamp) still did not change the imported value — the magic check is upstream of
+  header validation. `PYTHONDONTWRITEBYTECODE=1` is set on both services anyway:
+  it keeps the mounted trees from accumulating container-written caches, but it is
+  NOT the guard against stale host bytecode — interpreter-version skew is, and
+  that is incidental. A container rebuilt on the host's Python version would lose
+  this protection, so keep the env var and do not rely on the skew.
+
+  Still baked in, and therefore still needing `--build`:
+  - **Dependencies.** A `pyproject.toml` / `uv.lock` change needs
+    `docker compose up -d --build <service>`; the mount is code-freshness only.
+    Accept the side effect: because the source is live, the container CAN now
+    import code whose dependencies have not been synced, so a dependency edit
+    made without a rebuild fails at import rather than silently using the old
+    package — loud, which is the right direction, but not self-correcting.
+  - **The Dockerfile itself** (base image, `CMD`, system packages).
+
+  Practical guard before trusting a container result when mounts are new to you:
+  `docker compose exec -T <svc> sh -c 'grep -n "<symbol-from-the-change>" /app/<path>'`
+  and confirm the matched LINE, not merely grep's exit status — a bare
+  `grep -c` prints `1` on a miss, which reads like success.
+  Verify mounts directly with `docker inspect <ctr> --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'`.
+
+  Two more traps:
+  - **`docker compose up -d` alone does NOT re-apply a changed `volumes:` block** —
+    a running container keeps its old mount set. Use `--force-recreate` when the
+    compose file itself changed, or the new mount never takes effect.
+  - **A `grep` inside the container proves the MOUNT is fresh, not that the PROCESS
+    re-imported** — see the measured no-reload finding above. For a change you
+    intend to RUN, restart the container, or verify what the instance actually
+    serves via its API.
+  - **Host and container still disagree on non-source inputs.** Measured
+    divergences: Windows-vs-Linux path semantics in `media_cache.local_path` (the
+    container cannot resolve a host-absolute path), and `paths._repo_root()`
+    raising only inside the `.dockerignore`d tree. A green host suite is not a
+    green container, and the host is what CI runs.
 - **`IG_DATA_DIR` must be resolved BEFORE the `.git` marker walk.** `paths._repo_root()`
   raises when no ancestor carries `.git`, which is every `.dockerignore`d container. The
   env check first is what lets the package import there; removing it re-breaks every

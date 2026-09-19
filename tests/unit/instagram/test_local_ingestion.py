@@ -212,6 +212,180 @@ def test_media_seeded_from_local_bytes(local_env, ops):
         conn.close()
 
 
+def test_extensionless_url_pairs_by_index_not_by_guessed_type(local_env, ops):
+    """GIVEN a carousel whose first URL carries no file extension
+    WHEN bronze_ig_posts_local runs
+    THEN it pairs BY INDEX, and every URL gets a file.
+
+    This is the discriminating case. Instagram CDN URLs frequently carry no
+    extension, so a URL-type heuristic cannot classify them; it then re-orders
+    the remaining entries and DROPS the unclassifiable one. Concretely, for
+    images[] = [no-ext, x.mp4, z.jpg] over files [media_00.mp4, media_01.mp4,
+    media_02.jpg], type-pairing yields only TWO pairs (media_02.jpg, media_00.mp4)
+    — the first URL is silently skipped and the second URL receives media_02's
+    bytes.
+
+    Position is authoritative: the scrape writes one media_<i> file per
+    images[] entry in order (measured: len(images[]) == count of media_<i> files
+    in 1,081 of 1,082 real carousels).
+    """
+    no_ext = "https://cdn.example.com/media"  # no extension — unclassifiable
+    vid1 = "https://cdn.example.com/x.mp4"
+    img2 = "https://cdn.example.com/z.jpg"
+    ds = local_env.ingest / "mix2"
+    pd = ds / "p_mix2"
+    pd.mkdir(parents=True)
+    (pd / "post_metadata.json").write_text(
+        json.dumps(
+            _post("p_mix2", "scx", images=[no_ext, vid1, img2], display=None)
+        ),
+        encoding="utf-8",
+    )
+    (pd / "media_00.mp4").write_bytes(b"bytes-00")
+    (pd / "media_01.mp4").write_bytes(b"bytes-01")
+    (pd / "media_02.jpg").write_bytes(b"bytes-02")
+
+    _run_local(ops)
+
+    conn = ops.get_connection()
+    try:
+        expected = [
+            (no_ext, b"bytes-00"),   # index 0 — must NOT be dropped
+            (vid1, b"bytes-01"),
+            (img2, b"bytes-02"),
+        ]
+        for url, content in expected:
+            row = conn.execute(
+                "SELECT local_path FROM media_cache WHERE cache_key = ?",
+                [url_hash(url)],
+            ).fetchone()
+            assert row is not None, f"{url} was dropped"
+            assert open(row["local_path"], "rb").read() == content, f"wrong bytes for {url}"
+    finally:
+        conn.close()
+
+
+def test_mixed_carousel_pairs_by_index_not_by_type(local_env, ops):
+    """GIVEN a Sidecar whose images[] mixes images and video children
+    WHEN bronze_ig_posts_local runs
+    THEN images[i] pairs with the i-th media file, BY INDEX.
+
+    The scrape writes one media_<i> file per images[] entry in order (measured:
+    len(images[]) == count of media_<i> files in 1,081 of 1,082 real carousels),
+    so index is the correspondence. Pairing by a URL-type heuristic instead
+    re-orders entries when the heuristic misreads a URL, swapping bytes between
+    slots — and a swap is worse than a miss, because seed_media_from_file keys
+    the row by url_hash(media_url) and nothing re-fetches it.
+
+    This test asserts the BYTES each URL receives, so a re-pairing swap fails
+    here rather than silently reaching the model.
+    """
+    img0 = "https://cdn.example.com/a.jpg"
+    vid1 = "https://cdn.example.com/b.mp4"
+    img2 = "https://cdn.example.com/c.jpg"
+    ds = local_env.ingest / "mix"
+    pd = ds / "p_mix"
+    pd.mkdir(parents=True)
+    (pd / "post_metadata.json").write_text(
+        json.dumps(_post("p_mix", "scm", images=[img0, vid1, img2], display=None)),
+        encoding="utf-8",
+    )
+    # On disk the video child is media_01.mp4, NOT media_01.jpg.
+    (pd / "media_00.jpg").write_bytes(b"bytes-00-image")
+    (pd / "media_01.mp4").write_bytes(b"bytes-01-video")
+    (pd / "media_02.jpg").write_bytes(b"bytes-02-image")
+
+    _run_local(ops)
+
+    conn = ops.get_connection()
+    try:
+        expected = [
+            (img0, b"bytes-00-image", "image/jpeg"),
+            (vid1, b"bytes-01-video", "video/mp4"),
+            (img2, b"bytes-02-image", "image/jpeg"),
+        ]
+        for url, content, ctype in expected:
+            row = conn.execute(
+                "SELECT local_path, content_type FROM media_cache WHERE cache_key = ?",
+                [url_hash(url)],
+            ).fetchone()
+            assert row is not None, f"{url} was not seeded"
+            assert row["content_type"] == ctype, f"{url} got {row['content_type']}"
+            assert open(row["local_path"], "rb").read() == content, f"wrong bytes for {url}"
+    finally:
+        conn.close()
+
+
+def test_single_image_seeds_when_the_dump_named_it_image_jpg(local_env, ops):
+    """GIVEN a displayUrl-only post whose file is ``image.jpg``, not ``media_00.jpg``
+    WHEN bronze_ig_posts_local runs
+    THEN it still seeds — the local dumps disagree on the filename.
+
+    Regression: the mapping hardcoded ``media_00.jpg``. Dumps written by the
+    other producer name the file ``image.jpg``, so the seed returned None and
+    the post stayed uncached forever while the run reported success. 586 of 790
+    uncached posts came from these datasets.
+    """
+    url = "https://cdn.example.com/only.jpg"
+    ds = local_env.ingest / "img"
+    pd = ds / "p_img"
+    pd.mkdir(parents=True)
+    (pd / "post_metadata.json").write_text(
+        json.dumps(_post("p_img", "sci", display=url)), encoding="utf-8"
+    )
+    (pd / "image.jpg").write_bytes(b"image-jpg-bytes")  # NOT media_00.jpg
+
+    _run_local(ops)
+
+    conn = ops.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT local_path FROM media_cache WHERE cache_key = ?", [url_hash(url)]
+        ).fetchone()
+        assert row is not None, "image.jpg convention was not seeded"
+        assert open(row["local_path"], "rb").read() == b"image-jpg-bytes"
+    finally:
+        conn.close()
+
+
+def test_seeding_runs_even_when_bronze_already_exists(local_env, ops):
+    """GIVEN a dataset whose bronze parquet already exists (write-once path)
+    WHEN bronze_ig_posts_local runs with new source bytes available
+    THEN the seeding pass still runs and caches them.
+
+    Regression: the seeding pass lived inside the write-once `else`, so it was
+    unreachable for any dataset whose parquet already existed — i.e. all of
+    them on a re-run. Pointing the source dir at the real dumps then recovered
+    NOTHING and logged no error: a green run that recovered zero bytes.
+    """
+    url = "https://cdn.example.com/late.jpg"
+    _make_dataset(local_env.ingest, "late", [_post("p_late", "scl", display=url)])
+
+    # First run as normal — this writes bronze + seeds the media.
+    _run_local(ops)
+
+    # Simulate the recovery case: bronze exists, cache row removed (as if the
+    # earlier seeding never happened because the source dir was unreadable).
+    conn = ops.get_connection()
+    try:
+        conn.execute("DELETE FROM media_cache WHERE cache_key = ?", [url_hash(url)])
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Second run takes the write-once branch — seeding must STILL execute.
+    _run_local(ops)
+
+    conn = ops.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT local_path FROM media_cache WHERE cache_key = ?", [url_hash(url)]
+        ).fetchone()
+        assert row is not None, "seeding was skipped on the write-once path"
+    finally:
+        conn.close()
+
+
 def test_video_post_display_url_not_seeded(local_env, ops):
     """GIVEN a video post (videoUrl + displayUrl, no images list)
     WHEN bronze_ig_posts_local runs

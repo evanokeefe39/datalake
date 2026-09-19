@@ -325,8 +325,56 @@ def post_partition_state(
     _require_snapshot(instance)
     submitted = instance.get_materialized_partitions(AssetKey(SUBMITTED_ASSET_NAME))
     harvested = instance.get_materialized_partitions(AssetKey(HARVESTED_ASSET_NAME))
-    own_submitted = _keys_for_post(submitted, workload, post_id)
-    own_harvested = _keys_for_post(harvested, workload, post_id)
+    return post_partition_state_from_sets(
+        MaterializedSets(submitted=submitted, harvested=harvested),
+        workload,
+        post_id,
+    )
+
+
+@dataclass(frozen=True)
+class MaterializedSets:
+    """The two materialized partition sets, read from the instance ONCE.
+
+    ``post_partition_state`` is called per candidate, so reading the sets
+    inside it made the submit pass O(candidates x total_partitions) — two
+    full instance reads for every candidate, each contending with the
+    daemon on the instance store. Measured 0.56s per call on a 4-key store,
+    which extrapolates to ~76 minutes at the live candidate count, and
+    grows as the partition set does. The sets are a pure snapshot of the
+    instance at one moment, so reading them once and passing them down is
+    both cheaper and *more* correct: every candidate is judged against the
+    same instant, which is the guarantee submit.py's docstring already
+    claims ("the guard and the discovery cannot disagree, because they are
+    the same snapshot").
+    """
+
+    submitted: set[str]
+    harvested: set[str]
+
+
+def read_materialized_sets(instance: PartitionSnapshot) -> MaterializedSets:
+    """Read both materialized partition sets in one snapshot."""
+    _require_snapshot(instance)
+    return MaterializedSets(
+        submitted=instance.get_materialized_partitions(
+            AssetKey(SUBMITTED_ASSET_NAME)
+        ),
+        harvested=instance.get_materialized_partitions(
+            AssetKey(HARVESTED_ASSET_NAME)
+        ),
+    )
+
+
+def post_partition_state_from_sets(
+    sets: MaterializedSets, workload: str, post_id: str
+) -> PostPartitionState:
+    """``post_partition_state`` against an already-read snapshot.
+
+    The per-candidate entry point: same derivation, zero instance reads.
+    """
+    own_submitted = _keys_for_post(sets.submitted, workload, post_id)
+    own_harvested = _keys_for_post(sets.harvested, workload, post_id)
     in_flight = own_submitted - own_harvested
     rounds = [parsed.attempt_round for parsed in own_harvested]
     return PostPartitionState(

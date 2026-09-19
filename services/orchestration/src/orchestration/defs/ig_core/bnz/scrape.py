@@ -21,7 +21,11 @@ import polars as pl
 from dagster import Config, asset
 from opsdb.roster import AD_HOC_LIMIT
 
-from orchestration.defs.engine.media import cache_media_bytes, seed_media_from_file
+from orchestration.defs.engine.media import (
+    VIDEO_EXTENSIONS,
+    cache_media_urls,
+    seed_media_from_file,
+)
 from orchestration.defs.ig_core.slv.posts import (
     _derive_media,
 )
@@ -171,6 +175,9 @@ def _write_meta(
     estimated_cost_usd: float = 0.0,
     only_posts_newer_than: str | None = None,
     memory_mbytes: int | None = None,
+    media_attempted: int = 0,
+    media_cached: int = 0,
+    media_failed: int = 0,
 ) -> None:
     """Write a ``.meta`` JSON sidecar alongside the Parquet file."""
     meta = {
@@ -188,6 +195,16 @@ def _write_meta(
             # explain why a run returned what it returned.
             "only_posts_newer_than": only_posts_newer_than,
             "memory_mbytes": memory_mbytes,
+        },
+        # Media cache accounting for this run. `media_failed > 0` means bytes
+        # were permanently lost (the cache is filled only at scrape time while
+        # the signed URL lives) and those posts cannot be enriched without a
+        # re-scrape. Recorded here so a lossy run is visible in the data, not
+        # only in a log line or a census days later (ISSUES.md #25).
+        "media_cache": {
+            "attempted": media_attempted,
+            "cached": media_cached,
+            "failed": media_failed,
         },
         "downloaded_at": datetime.now(UTC).isoformat(),
     }
@@ -246,14 +263,36 @@ def bronze_ig_posts(
 
     # 4. Cache media bytes at ingestion while the CDN URLs are fresh.
     #    Silver is a pure transform (no network); producers own caching.
+    #
+    #    ACCOUNTED, not best-effort. The cache is filled ONLY here and only
+    #    while the signed URLs live, so a URL that fails to cache is lost for
+    #    good — the post can never be enriched and nothing re-fetches it. A bare
+    #    `cache_media_bytes(url)` (discarding the return) is how 790 posts came
+    #    to have no media with no error anywhere (ISSUES.md #25). The report is
+    #    logged loudly and landed in the sidecar so a lossy run is visible the
+    #    day it happens, not only to a census days later.
+    media_report = None
     if len(df) > 0:
         media_df = _derive_media(df)
-        seen_urls: set[str] = set()
-        for media_files_json in media_df["media_files"].to_list():
-            for url in json.loads(media_files_json or "[]"):
-                if url not in seen_urls:
-                    seen_urls.add(url)
-                    cache_media_bytes(ops, url)
+        media_report = cache_media_urls(
+            ops,
+            (
+                url
+                for media_files_json in media_df["media_files"].to_list()
+                for url in json.loads(media_files_json or "[]")
+            ),
+        )
+        if media_report.failed:
+            logger.error(
+                "%s — %d URL(s) could NOT be cached and their bytes are now"
+                " unrecoverable once the CDN URLs expire; those posts will need a"
+                " re-scrape to be enrichable: %s",
+                media_report.summary(),
+                media_report.failed,
+                media_report.failed_urls[:10],
+            )
+        else:
+            logger.info(media_report.summary())
 
     # 5. Cleanup + metadata
     if ndjson_path.exists():
@@ -270,34 +309,109 @@ def bronze_ig_posts(
         outcome.usage_total_usd,
         config.only_posts_newer_than,
         config.memory_mbytes,
+        media_attempted=media_report.attempted if media_report else 0,
+        media_cached=media_report.cached if media_report else 0,
+        media_failed=media_report.failed if media_report else 0,
     )
 
     return df
 
+#: Media extensions the local dumps write.
+_MEDIA_EXTS: tuple[str, ...] = (".jpg", ".jpeg", ".mp4", ".mov", ".webm", ".png", ".webp")
+
+#: Video extensions — reuses the canonical set from engine.media rather than
+#: minting a second definition (this repo has been bitten by two definitions of
+#: one value drifting apart).
+_VIDEO_SUFFIXES = VIDEO_EXTENSIONS
+
+
 def _local_post_media_pairs(post: dict, post_dir: Path) -> list[tuple[str, Path]]:
     """Map a post's media URLs to the local files the scrape saved.
 
-    Position/type mapping of the scrape-ig-saved-list layout:
-    ``videoUrl`` → ``video.mp4``; ``images[i]`` → ``media_{i:02d}.jpg``;
-    ``displayUrl`` → ``media_00.jpg`` when there is no images list.
-    Posts without media yield an empty list (null-skip — never an error).
+    POSITIONAL, and that is the authoritative correspondence — not a guess.
+    Measured across the corpus: `len(post["images"])` equals the count of
+    ``media_<i>`` files on disk in **1,081 of 1,082** carousel posts. The scrape
+    writes exactly one ``media_<i>`` file per ``images[]`` entry, in index order,
+    so index i pairs with entry i.
 
-    A video post (``videoUrl`` present, ``images`` empty) maps ONLY to its
-    ``video.mp4`` — its ``displayUrl`` is the poster frame, not a separate
-    file the scrape downloaded. Mapping it to ``media_00.jpg`` would log a
-    spurious "source missing" on every run.
+    Do NOT "fix" this by classifying each URL as video/image and pairing within
+    type. That was tried (commit 388ec4d) and REVERTED. It is worse, because
+    Instagram CDN URLs frequently carry no file extension: a URL-type heuristic
+    then misclassifies them, re-orders the remaining entries, and DROPS the
+    unclassifiable one. For ``images[] = [no-ext, x.mp4, z.jpg]`` over
+    ``[media_00.mp4, media_01.mp4, media_02.jpg]`` it yielded two pairs, skipped
+    the first URL, and put ``media_02``'s bytes under the second URL's hash.
+    ``seed_media_from_file`` keys rows by the media's STABLE key
+    (``media_key``, i.e. ``mid:<id>``) and copies whatever bytes it is handed, so
+    such a swap is a valid-looking row that
+    resolves and silently sends mismatched media to the model — worse than a
+    miss, because nothing re-fetches it. The "8.13% mismatch" that motivated that
+    attempt was the heuristic's own error rate, not the data's.
+
+    The pairing is convention-agnostic by reading the dir, not by guessing names.
+    Conventions the dumps use (measured across 25,676 media files):
+
+        media_<i>.jpg   16,878   carousel images
+        video.mp4        6,841   a post whose media is one video
+        media_<i>.mp4    1,646   a video INSIDE a carousel
+        image.jpg          311   a single-image post
+
+    - ``videoUrl`` (no ``images``) → the post's video file.
+    - ``images[i]`` → the i-th media file.
+    - ``displayUrl`` (no ``images``) → the sole media file (poster/photo).
+
+    A video post's ``displayUrl`` is deliberately NOT mapped: it is the poster
+    frame, not a separate file the scrape downloaded.
+
+    Posts without media yield an empty list (null-skip — never an error).
     """
+    files = _post_media_files(post_dir)
+
     if post.get("videoUrl"):
-        return [(post["videoUrl"], post_dir / "video.mp4")]
-    pairs: list[tuple[str, Path]] = []
-    images = post.get("images") or []
-    if images:
-        for i, url in enumerate(images):
-            if url:
-                pairs.append((url, post_dir / f"media_{i:02d}.jpg"))
-    elif post.get("displayUrl"):
-        pairs.append((post["displayUrl"], post_dir / "media_00.jpg"))
-    return pairs
+        # A video post: its media is the video file. A mixed carousel carries
+        # its video children in images[] instead (the Apify wire format), so it
+        # is handled by the images branch below.
+        if not files:
+            return []
+        videos = [f for f in files if f.suffix.lower() in _VIDEO_SUFFIXES]
+        return [(post["videoUrl"], videos[0] if videos else files[0])]
+
+    if post.get("images"):
+        pairs: list[tuple[str, Path]] = []
+        for i, url in enumerate(post["images"]):
+            if url and i < len(files):
+                pairs.append((url, files[i]))
+        return pairs
+
+    if post.get("displayUrl"):
+        if not files:
+            return []
+        canonical = post_dir / "media_00.jpg"
+        return [(post["displayUrl"], canonical if canonical.exists() else files[0])]
+
+    return []
+
+
+def _post_media_files(post_dir: Path) -> list[Path]:
+    """The media files in a post dir, position-ordered and convention-agnostic.
+
+    ``media_<i>`` files carry the carousel index and are returned in that order.
+    A bare ``video.mp4``/``image.jpg`` is a single-media post, returned as the
+    only entry. When a dir holds BOTH an indexed set and a bare file, the bare
+    file is appended so its URL is not dropped.
+    """
+    indexed: dict[int, Path] = {}
+    singles: list[Path] = []
+    for f in sorted(post_dir.iterdir()):
+        if f.suffix.lower() not in _MEDIA_EXTS:
+            continue
+        stem = f.stem
+        if stem.startswith("media_") and stem[6:].isdigit():
+            indexed[int(stem[6:])] = f
+        else:
+            singles.append(f)
+    return [indexed[i] for i in sorted(indexed)] + singles
+
 
 @asset(
     name="bronze_ig_posts_local",
@@ -321,8 +435,15 @@ def bronze_ig_posts_local(ops: SQLiteResource) -> pl.DataFrame:
     Media seeding: a separate idempotent pass (sha256(url)-keyed cache rows)
     copies the already-downloaded media files into the scrape-time byte
     cache instead of re-downloading expiring CDN URLs. It runs over ALL
-    datasets every materialization so an interrupted run self-heals; posts
-    without media (or with missing local files) are skipped silently.
+    datasets on every materialization — including write-once ones, since it
+    never touches bronze — so an interrupted run self-heals.
+
+    Missing sources are NOT silent: every URL whose source file is absent is
+    counted and reported at ERROR with up to 10 sample URLs. On a first
+    (fresh-write) materialization the counts also land in the sidecar; on the
+    write-once path they go to the run log only, because the sidecar is
+    deliberately not rewritten for a file bronze never touched. Discarding that
+    signal is how a run that recovered nothing still looked green (ISSUES #25).
     """
     frames: list[pl.DataFrame] = []
     if not LOCAL_INGEST_DIR.exists():
@@ -332,9 +453,75 @@ def bronze_ig_posts_local(ops: SQLiteResource) -> pl.DataFrame:
     for dataset_dir in sorted(p for p in LOCAL_INGEST_DIR.iterdir() if p.is_dir()):
         dataset_id = f"local_{dataset_dir.name}"
         dest = bronze_path(dataset_id)
+
+        # Media seeding pass — runs for EVERY dataset, including write-once ones.
+        #
+        # This was previously inside the `else` (write-once) branch, which made
+        # it unreachable for any dataset whose bronze parquet already existed —
+        # i.e. all of them on a re-run. Pointing LOCAL_INGEST_DIR at the real
+        # source then recovered NOTHING and logged no error: the guard cleared,
+        # the asset returned a non-empty frame, and the run looked green. The
+        # seeding pass is a side-effect against the source dir and `media_cache`
+        # only — it does not touch bronze — so it must NOT be gated by whether
+        # bronze was already written.
+        #
+        # Idempotent per URL (`seed_media_from_file` is a keyed upsert) and
+        # self-healing on re-runs, so running it every time is safe and is what
+        # makes a mount fix actually recover bytes.
+        #
+        # ACCOUNTED: `seed_media_from_file` returns None when the source file is
+        # missing, and discarding that return is how a run silently produces
+        # media-less posts (the local-ingest branch of ISSUES.md #25 — the
+        # local_* datasets carry most of the uncached rate).
+        #
+        # ONE connection for the whole dataset. `seed_media_from_file` otherwise
+        # opens up to three connections per URL (~23 ms each, dominated by the
+        # WAL pragma) — measured at ~102 ms/URL, which made a 24,000-URL seed
+        # pass take ~30 minutes. Holding one connection removes that term:
+        # 53.9 ms -> 0.4 ms per URL, and the full pass runs in ~38s.
+        seed_attempted = seed_cached = 0
+        seed_missing: list[str] = []
+        seed_conn = ops.get_connection()
+        try:
+            for post_file in sorted(dataset_dir.glob("*/post_metadata.json")):
+                row_meta = json.loads(post_file.read_text(encoding="utf-8"))
+                for url, src in _local_post_media_pairs(row_meta, post_file.parent):
+                    seed_attempted += 1
+                    if seed_media_from_file(ops, url, src, conn=seed_conn):
+                        seed_cached += 1
+                    else:
+                        seed_missing.append(url)
+        finally:
+            seed_conn.close()
+
+        if seed_missing:
+            logger.error(
+                "local ingest: %d/%d media URL(s) NOT seeded — their source"
+                " files are missing, so those posts cannot be enriched without"
+                " a re-scrape: %s",
+                len(seed_missing),
+                seed_attempted,
+                seed_missing[:10],
+            )
+        else:
+            logger.info(
+                "local ingest: media seeded %d/%d", seed_cached, seed_attempted
+            )
+
         if dest.exists():
             # Write-once: never touch an existing bronze file — silver's
-            # mtime watermark would re-ingest it with stale data.
+            # mtime watermark would re-ingest it with stale data. The seeding
+            # above has already run (it is deliberately NOT gated here), so a
+            # recovered dataset still gets its bytes; the counts go to the run
+            # log rather than a sidecar rewrite, which would rewrite an
+            # immutable artifact for a bookkeeping update it does not need.
+            if seed_cached:
+                logger.info(
+                    "local ingest: recovered media for %s — %d/%d seeded this run",
+                    dataset_id,
+                    seed_cached,
+                    seed_attempted,
+                )
             frames.append(pl.read_parquet(dest))
         else:
             post_files = sorted(dataset_dir.glob("*/post_metadata.json"))
@@ -366,6 +553,9 @@ def bronze_ig_posts_local(ops: SQLiteResource) -> pl.DataFrame:
                     if row.get("ownerUsername")
                 }
             ) or [f"file://{dataset_dir.as_posix()}"]
+
+            # Media seeding (counts computed above, before the write-once
+            # branch — see the note there for why it is NOT gated on dest).
             _write_meta(
                 dest,
                 run_id="local-adhoc",
@@ -375,15 +565,12 @@ def bronze_ig_posts_local(ops: SQLiteResource) -> pl.DataFrame:
                 urls=profile_urls,
                 results_limit=AD_HOC_LIMIT,
                 results_type="posts",
+                media_attempted=seed_attempted,
+                media_cached=seed_cached,
+                media_failed=len(seed_missing),
             )
             logger.info("Ingested local dataset %s: %d posts", dataset_id, len(df))
             frames.append(df)
-
-        # Media seeding pass — idempotent per URL, self-healing on re-runs.
-        for post_file in sorted(dataset_dir.glob("*/post_metadata.json")):
-            row = json.loads(post_file.read_text(encoding="utf-8"))
-            for url, src in _local_post_media_pairs(row, post_file.parent):
-                seed_media_from_file(ops, url, src)
 
     if not frames:
         return pl.DataFrame()

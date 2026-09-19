@@ -1287,12 +1287,18 @@ CDN URLs are ~always expired by enrich time → HTTP 403 → the whole post
 dead-letters after 5 wasted retries (all-or-nothing per post by design). The
 byte cache is otherwise healthy (26,657 post-media keys, files present).
 
-**Affected posts by age (silvered):** 0-4d=204 (suspicious — recent scrape should
-have been cached → ingestion seeding gap, not expiry), 5-14d=556 (expired-CDN
-set), 45d+=30 (predates the cache ~Aug 14). Whole-profile wipeouts (30/30 zero
-cached: collective_career_lab, andrewwarner, empowered.nyu, hasewingroom,
-theking_of_africa, kimbeauty_...) indicate per-scrape-run seeding failures, not
-random expiry. `girsta` 78/94 mostly partial carousels.
+**Affected posts by age (silvered):** 0-4d=204, 5-14d=556, 45d+=30.
+Whole-profile wipeouts (30/30 zero cached: collective_career_lab, andrewwarner,
+empowered.nyu, hasewingroom, theking_of_africa, kimbeauty_...) indicate
+per-scrape-run seeding failures, not random expiry. `girsta` 78/94 mostly
+partial carousels.
+
+> **CORRECTED 2026-09-18 — the per-tier cause labels that stood here were
+> wrong.** The split is by PRODUCER, and by whether the post's source exists on
+> disk, not by age: **0-4d is entirely Apify**, while **5-14d and 45d+ are
+> entirely `local_*`** — which never touch the CDN, their misses being
+> source/pairing gaps (see the corrected block at the bottom of this entry).
+> "5-14d = expired-CDN set" was wrong. Read the block below as authoritative.
 
 **Census + candidate CSVs (committed):** `analysis/output/rescrape_candidates_2026-09-08.csv`
 (790 posts: post_id/owner/permalink/shortcode/missing/severity/age, grouped by
@@ -1311,6 +1317,304 @@ owner) and `analysis/output/rescrape_owners_2026-09-08.csv` (owner rollup).
 3. **Re-run the census + pick the Apify rescrape set** — posts whose missing
    bytes aren't recoverable from surviving bronze local files genuinely need a
    rescrape (Apify, by profile); recoverable ones just need a re-seed (no Apify).
+
+**Re-verified 2026-09-18 (still open, unchanged numbers).** The census holds
+exactly: 790 posts, 556 / 204 / 30 by age tier, 487 zero-cached + 303 partial,
+1,892 missing URL entries. Two additions from this pass:
+
+- **The silent-failure mechanism, named.** `engine/media.py::cache_media_bytes`
+  is documented "best-effort" and returns `None` when a download fails, logging
+  at **WARNING** (`_download_bytes`, "media download failed for …") among a
+  scrape run's thousands of lines. Its one caller, `scrape.py:256`, discards the
+  return value entirely: `cache_media_bytes(ops, url)`. So a media URL that fails
+  to download during the scrape produces **no row, no ERROR, no record** — the
+  post reads as successfully scraped, and the loss only surfaces days later as an
+  unbuildable enrichment item. This is the repo's silent-failure anti-pattern at
+  the exact boundary work item 1 targets. A failed cache write at scrape time
+  should be loud (ERROR + a count in the run's sidecar), because the bytes are
+  unrecoverable once the CDN URL expires.
+- **It is per-BATCH, not per-post.** Uncached rate by producing dataset:
+  `OENbim5qyFy5UFalA` 23% (204/901), `local_g0h9S6SZAyuf2Pye2` 19% (129/686),
+  `local_Hd5zaIqJ6HFTREg4X` 11%, down to 3% for others. A single scrape run
+  loses a fraction of its media — the signature of transient CDN failures being
+  swallowed, not of a structural derivation bug. Consistent with the whole-
+  profile wipeouts (30/30) being runs where the failure was near-total.
+- **Free re-seed recovers nothing here.** Checked every one of the 1,892 missing
+  entries against the 27,594 byte files in `POST_MEDIA_DIR` (by sha256 stem,
+  extension-agnostic): **0 have surviving bytes**. The re-seed path in work item
+  3 applies to local-ingest cases, not this set — so all 790 genuinely need a
+  rescrape, and option 2's cost is real, not overstated.
+- **Not positional, not the video-precedence rule.** Missing slides are spread
+  across indices [0..9] (declining with the far smaller population at high
+  indices), and 0 of the 504 partial-carousel posts found in bronze carry BOTH
+  `videoUrl` and `images`, so `_derive_media`'s "video wins" precedence is not
+  the cause.
+
+**CORRECTION to work item 1's premise (2026-09-18).** The description above says
+a cache miss "triggers a live CDN download fallback in `media_cache.py`
+(`_upload_one` / `_try_inline_payload` / `lookup_or_upload_all`); those URLs are
+~always expired → HTTP 403 → dead-letters after 5 wasted retries". **Those
+symbols no longer exist** — they were the retired Gemini File-API path, removed
+per ADR-0009. Media resolution is cache-only now. The current behaviour is
+simpler and worse: a miss simply returns None, with no fallback, no accounting,
+and (until the fix below) a retry that could never succeed. The 403 is real; it
+happens at **scrape** time, not at enrich time.
+
+**FIXED 2026-09-18** (commit `2bbecb8`, ISSUES #25 work items 1 + 2, the retry
+half of 3):
+
+|Was|Now|
+|---|---|
+|`cache_media_bytes` made ONE attempt|3 attempts, exponential backoff. Verified live against an expired URL: `HTTP 403` ×3 over 4.4s, then a loud ERROR.|
+|The scrape loop discarded every result; the function self-described as "best-effort … falls back to the CDN" (a rationale that died with the Gemini path)|`cache_media_urls` returns a `MediaCacheReport` (attempted/cached/failed + the failed URLs); the scrape logs it at ERROR when anything failed and lands it in the `.meta` sidecar under `media_cache`.|
+|`seed_media_from_file`'s None was discarded too (the local_* branch)|Same accounting added to the local-ingest seeding pass.|
+|A media miss raised `retryable=True` ("the media may arrive later")|`retryable=False`. It cannot arrive: the only writers of a cache row are the two scrape/ingest-time functions, and `core_refresh` re-fetches only posts newer than the profile watermark.|
+
+**Still open:** the dead-letter queue is deliberately DEFERRED (user,
+2026-09-18) — the landed `ok=False` row plus the anti-join check is the current
+substitute.
+
+**COHORT SPLIT — MEASURED 2026-09-18 (superseded 2026-09-18; live figures below).**
+The 790 split by PRODUCER, and splitting the missing URLs by whether the post's
+source exists in the mounted local dumps gives the number the paid-vs-free
+decision actually rests on:
+
+| Tier | Missing URLs | Source on disk (free) | No source (paid) |
+|---|---|---|---|
+| 0-4d | 546 | 0 | **546** |
+| 5-14d | 606 | 415 | 191 |
+| 45d+ | 19 | 5 | 14 |
+| **Total** | **1,171** | **420** | **751** |
+
+So 420 recover for free once seeding completes; 751 need a paid permalink
+re-fetch. The earlier framing that only the 0-4d bucket was paid was wrong: 205
+of the 5-14d/45d+ URLs have no local source either.
+
+**RECOVERY EXECUTED — 2026-09-18. BACKLOG CLOSED.**
+
+Ran `bronze_ig_media_recovery` through Dagster in the container (recorded in the
+instance with provenance; 10m45s). Outcome, read from the destination after the
+run:
+
+| | |
+|---|---|
+| Posts uncached at session start (from the scan log) | 232 |
+| Recovered across the session (by subtraction) | 226 |
+| Permanently unrecoverable (verified deleted) | **2** |
+| Remaining, retryable (`restricted_page`) | **4** |
+| Spend | **$0.7153** summed from the Apify account's own run records (160 runs today, all on the same Instagram-scraper actor, so actor cannot separate recovery from scrape — only the time window can). Breakdown: **08:00 = $0.076** (4 runs, before this session's recovery work, a concurrent scrape); **15:00 = $0.244** (101 runs — the CANCELLED one-at-a-time run: 101 runs to recover 58 posts where batching needed ~3, which is the waste the batching change removes); **16:00 = $0.276** (7 runs, the batched pass — $0.276/124 posts = **$0.00223/post**, confirming the cost model). Recovery-attributable total ≈ **$0.64**; the 12:00/13:00/14:00/17:00 blocks ($0.120 combined) are pilots, probes and retries. |
+
+230 = 226 + 4, and the 232 start differs from 230 by the 2 permanently
+unrecoverable posts — but this middle row is DERIVED, not logged. See "What is
+verified versus what is reconstructed" below for the two figures that were
+actually read from the store.
+
+The trailing 4 are all `restricted_page`: Instagram is withholding their media
+right now. They are NOT recorded as unrecoverable, so the scan keeps selecting
+them and a future run can recover them once the restriction lifts — one such post
+recovered during this very session while the docs were being written, which is the
+behaviour that argues against condemning them.
+
+**The unrecoverable set, verified against the live table.** `media_recovery_exhausted`
+holds **2 rows**, both `apify_reports_post_does_not_exist`
+(`DcIQSjUtMVQ`, `DctmjtoOl7c`). Both were re-fetched independently and both return
+`error="not_found"` / "Post does not exist", so both verdicts are correct.
+
+**Not every failure is permanent, and the distinction is measured, not assumed.**
+Apify returns an ERROR ITEM for a post it cannot serve, and the `error` value
+decides: `not_found` is permanent, `restricted_page` ("Restricted access, only
+partial data available") is NOT — verified by re-fetch on `DLsRh2FoZlE`, which
+returns `restricted_page` and correctly gets no verdict, and on `DcL1QDCCT3-`,
+whose earlier failure was a transient HTTP 429 and which recovered on retry.
+
+An earlier revision of this entry said 3 posts were permanently unrecoverable and
+that five restricted posts had been "failed retryably". Both statements were
+wrong: the code then treated ANY media-less item as permanent, which condemned
+five `restricted_page` posts through a one-way verdict. The branch now inspects
+the Apify error and only `not_found` earns a verdict; the five wrongly-condemned
+rows were cleared, and the two that remain are genuinely deleted posts.
+
+**Residual: 5 posts remain uncached but retryable** — all `restricted_page`, i.e.
+Instagram is withholding media for them right now. They are NOT in the exhausted
+table, so the scan keeps selecting them: a future run may recover them once the
+restriction lifts, at $0.0023 per post per attempt.
+
+**Scope of the key fix — stated precisely, because it is not universal.**
+`media_key` yields the stable `mid:<id>` only where the CDN filename carries a
+media id (the `..._<id>_n.jpg` form). Video and some other-host URLs use paths
+like `/o1/v/t2/f2/...` with no such segment, so `media_key` falls back to
+`url_hash` **by design** — those keys still rotate with the signature. The stable
+key therefore fixes the majority of media, not all of it, and the scan's dual-key
+matching is load-bearing indefinitely rather than transitional. Extending
+`media_id` to parse the `/o1/` video form is the follow-up that would close the
+remainder.
+
+**Batching.** The actor takes a LIST of direct URLs, so the pass runs 20 posts per
+actor run rather than one. Measured: 5 posts recovered in a single run in 24s
+(~5s/post including overhead) versus ~8s/post one-at-a-time, and the whole
+124-post backlog completed in 10m45s. Items are attributed back to their posts by
+`shortCode` — positional pairing would cache one post's media under another's keys.
+
+Attribution normalises BOTH sides through `_shortcode`, and that was a fix rather
+than the original design: a bare `rsplit` returned `?utm_source=ig_web` for a
+query-suffixed permalink and `CBL8httj7aK` for a clean one, so the candidate key and
+the item key would diverge and every item in the chunk would drop as unmatched —
+the post then re-paid on every run while appearing in no report. Measured today:
+all 10,038 silver urls are plain `/p/<code>/` with zero query strings and zero
+duplicates, so this was latent, not live. Guarded by test and mutation-verified.
+
+**Verification.** Not "the run was green" and not a pytest pass — a real end-to-end
+run through the inference seam, because cached bytes are only worth anything if
+enrichment can consume them:
+
+1. Picked a post recovered this session (`DDGtn2WvaGa`), resolved its media via
+   `local_media_path` → `/data/media/posts/mid-18467462167014075.jpg`, and confirmed
+   the file exists from INSIDE the jobs container (126 KB, valid JPEG `FFD8FFE0`).
+2. Submitted it to the live `jobs` service over HTTP (`POST /jobs`) and polled to
+   `state: completed`, `ok: true`.
+3. **The model described the image correctly**: "A promotional graphic for 'CUBED
+   TECH'... a hand holding a smartphone displaying the company's mobile
+   website... 'VISIT OUR NEW WEBSITE!' above a search bar graphic containing
+   'cubedtech.com.au'". That text is only producible if the actual recovered bytes
+   reached the model — the strongest available evidence that recovery succeeded.
+
+The video path is verified too, and it took a content-forcing prompt to prove:
+a recovered `.mp4` resolves (2.3 MB, `ftypisom`), `sample_video` extracts **8 valid
+JPEG frames** (verified by calling it directly: 8 frames, 50 KB each, `ffd8ff`
+magic), and `qwen.py` attaches them as `image/jpeg` parts. With a prompt that
+forces specific content the model returned real footage detail — "A woman is shown
+lying down with her eyes closed, followed by close-up shots of her eyelashes being
+brushed and the final result of her eyelash extensions" — which is only producible
+if the extracted frames reached it. Earlier empty results (`[]`, `{}`) were
+prompt-shape artifacts under a JSON response format, NOT a frame-delivery failure;
+three empty results were treated as unproven until this test settled it.
+
+Two failure modes were surfaced by doing this instead of trusting the suite, and
+neither is a recovery defect:
+
+- The job service always sends `response_format: json_object`, and the provider
+  (Alibaba/Qwen) requires the literal word "json" in the prompt for that format, or
+  it 400s with `'messages' must contain the word 'json'`. A test prompt without it
+  fails every call. **Verified the real pipeline is unaffected**: `IG_GOLD_PROMPT`
+  (the prompt `workloads.py` actually sends) contains "json" — see
+  `prompts.py`, "Return ONLY valid JSON with these fields".
+- An ad-hoc prompt that asks for unstructured prose under a JSON response format
+  yields `[]` / `{}`. That is the format contract working, not a broken fetch.
+
+A container-written `media_cache.local_path` does NOT resolve from a host process
+(prefix translation needs `IG_HOST_PATH_PREFIX`, which compose sets for the
+container), so ALL of the above was checked from inside the containers against
+`/data`.
+
+**What is verified versus what is reconstructed.** Only two figures were read from
+the store after the work finished, and they are the ones to trust:
+
+- `media_recovery_exhausted` = **2 rows**, both `apify_reports_post_does_not_exist`
+- `posts_missing_media` = **4 posts**, all `restricted_page`
+
+Everything else — the 232 start, the per-run splits, the ~$0.53 — is reconstructed
+from run logs and observations taken while the work was in flight. The backlog
+moved under the session (runs drained it, retries re-added restricted posts, and a
+concurrent scrape writer was filling the cache throughout), so those intermediate
+numbers describe a moving target rather than a settled account. A reconciliation
+of them would be false precision; the two bullet figures above are the end state.
+
+**Not yet run: the standing schedule.** `bronze_ig_media_recovery` is
+launch-only with no automation policy (asserted by test, required by ADR-0018).
+So the backlog is drained to a residue of 4 restricted posts, and the mechanism
+that would prevent the NEXT backlog is not yet running on a schedule.
+
+**Pre-run measurement record (HOW THE BACKLOG WAS SIZED BEFORE THE PASS — historical).**
+
+This block records the sizing method used before the pass ran. Its figures are
+SUPERSEDED by the outcome table near the top of this entry; keep it for the
+method, not the numbers.
+
+The cohort table above it is stale. Two things separate it from the pre-run
+figure, and BOTH are measured rather than inferred:
+
+| Quantity | Value | How it was measured |
+|---|---|---|
+| Posts with ≥1 uncached URL | **232** | `posts_missing_media` on live state |
+| Uncached URLs across those posts | 564 | summed from the same scan |
+| Stored URLs across those posts | 589 | summed from the same scan |
+| Distinct corpus-wide cache keys | 30,464 | `SELECT count(*) FROM media_cache` |
+
+**The billable unit is a POST, not a URL.** One permalink fetch returns the whole
+post, so a 19-item carousel whose media all failed costs one fetch, not nineteen.
+The scan groups by `post_id` for exactly this reason. At the measured
+$0.0023/post: **232 × $0.0023 = ~$0.53.**
+
+Note the census above counts MISSING URLS over a 790-post census while this
+counts POSTS today, so the two are not in conflict — they are different units on
+different denominators. The figure that drives spend is the post count.
+
+> Correction, recorded rather than quietly dropped: an earlier revision of this
+> entry described the chain as "1,171 URLs → 588 URLs → 232 posts". The 588 step
+> was never measured in this session; it has been removed. What is stated above
+> is exactly what the live scan returned, and the 564-URL figure is the honest
+> measure of what remains uncached.
+
+The user approved $1.32 and $1.73 was in this file; the corrected figure is
+LOWER, not higher, and the reason is the unit change plus the free `local_*`
+recovery — stated here so the difference is explained rather than silent.
+
+**Counting rule (a bug lived here).** The scan must match BOTH key forms: legacy
+rows hold `sha256(original scrape url)` (not re-derivable from silver's `url`)
+and rows written since the stable key landed hold `mid:<media_id>`. Testing one
+form alone either relists already-recovered posts (re-paying for them every run)
+or relists the entire corpus — measured at 8,848 candidates / ~$20 when the
+legacy keys were normalized wrongly. Both directions are now pinned by
+`TestCandidateScan`.
+
+**Unrecoverable posts are excluded, not re-paid.** Verdicts persist in
+`media_recovery_exhausted` (the pilot saw ~2/6 candidates return no media — a
+deleted or private post). Only that condition is a permanent verdict; a count
+mismatch or a transient fetch failure stays retryable.
+
+**The `local_*` loss — FOUR defects, all silent (fixed 2026-09-18).**
+
+1. The seeding pass lived INSIDE the write-once `else`, so any dataset whose
+   bronze parquet already existed skipped it — i.e. every dataset on a re-run.
+   Pointing the source dir at the real data recovered nothing and logged no
+   error: a green run that did nothing.
+2. The URL→file mapping built `media_00.jpg` for a `displayUrl`-only post, but
+   some dumps name that file `image.jpg` (311 such files measured).
+3. Compose set `IG_LOCAL_INGEST_DIR=/data/ingest` but mounted only `./data`, so
+   the path did not exist in the container at all. The dumps are a sibling
+   checkout, now mounted read-only.
+4. The seeding loop opened a fresh SQLite connection per URL (~23 ms each,
+   ~102 ms/URL end-to-end). Holding one connection for the pass: **53.9 ms →
+   0.4 ms per URL, a 124x speedup**; the full 24,000-URL pass went from
+   20+ minutes to **38 seconds**.
+
+**PAIRING IS POSITIONAL — do not "improve" it.** A type-aware re-pairing was
+attempted and REVERTED: it classified each URL as video/image and paired within
+type, on the theory that positional pairing swapped bytes between slots.
+Measurement refuted the theory and indicted the fix. Across **1,082 real carousel
+posts, `len(images[])` equals the count of `media_<i>` files on disk in 1,081** —
+the scrape writes one file per entry, in order, so index IS the correspondence.
+Instagram CDN URLs frequently carry no extension, so the type heuristic
+misclassified them and then re-ordered and DROPPED entries: for
+`images[] = [no-ext, x.mp4, z.jpg]` over `[media_00.mp4, media_01.mp4,
+media_02.jpg]` it produced two pairs, skipped the first URL, and put
+`media_02`'s bytes under the second URL's hash. The "8.13% mismatch" that
+motivated the attempt was the heuristic's own error rate. Guards:
+`test_extensionless_url_pairs_by_index_not_by_guessed_type` (fails against
+type-pairing, passes against positional) and
+`test_mixed_carousel_pairs_by_index_not_by_type`.
+
+**ANTIBOT: OPEN, and expiry-alignment is the decisive test.** Of the 1,892
+missing URLs, **1,892 carry an expired `oe` and 0 were still signed** — but that
+is consistent with BOTH histories, because these URLs expired ~4.5 days after a
+scrape that is days/weeks old: a URL blocked at scrape time also reads as
+expired now. The test that would separate them is comparing each URL's `oe`
+against its post's `timestamp`; that has NOT been run. A burst from this host
+(861 sequential requests, all 200, cut off by a 900s cap 123 short of the
+intended 984) shows no throttling from here, but it is not the production egress
+and is not evidence of absence. The 546 Apify 0-4d URLs — recently scraped, no
+local source — are where a block would show, and their cause is unidentified.
+
 ### 26. Sentinel literal diverged across sibling silver producers — 8 live rows carry the REJECTED value
 
 **Found 2026-09-15** by the W10 conformance panel (DataArchitect lens), then

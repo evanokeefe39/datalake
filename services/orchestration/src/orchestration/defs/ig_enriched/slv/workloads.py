@@ -217,7 +217,7 @@ def _resolve_media_paths(
         if not path:
             raise UnbuildablePostError(
                 f"media cache miss for {url[:120]} — not submitting partial media",
-                retryable=True,
+                retryable=False,
             )
         paths.append(path)
     return tuple(paths)
@@ -338,10 +338,18 @@ def _visual_facets_item(ops: SQLiteResource, conn, candidate: dict) -> Item:
         ops, candidate.get("media_files"), include_video=True
     )
     if not images:
-        # Deterministic but cache-dependent: the media may arrive later, so
-        # this is retryable rather than a permanent skip.
+        # NOT retryable. The media cache is written ONLY at scrape/ingest time
+        # (`cache_media_bytes`, `seed_media_from_file`) and `core_refresh` fetches
+        # only posts newer than each profile's watermark — so for a post already
+        # in silver, no enrichment retry can ever populate the cache. Retrying
+        # burned the whole round budget, then hit MAX_ROUNDS and aborted the
+        # submit pass entirely. This is the outcome ISSUES.md #25 work item 1
+        # prescribes: "accurate 'media unavailable (not byte-cached)' error,
+        # dead-letter on attempt 1 (not 5)". The landed ok=False row is the
+        # dead-letter; the anti-join check owns its visibility. Remedy is a
+        # re-scrape, which is a scrape-side action, not an enrichment retry.
         raise UnbuildablePostError(
-            "no cached media paths resolvable", retryable=True
+            "no cached media paths resolvable", retryable=False
         )
     return Item(
         custom_key="",

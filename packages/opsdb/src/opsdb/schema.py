@@ -142,6 +142,18 @@ _SQLITE_SPECS: dict[str, Table] = {
             "source_url": Column("TEXT"),
         },
     ),
+    # Reasons a paid permalink re-fetch will never succeed for a post, so the
+    # standing recovery mechanism stops re-selecting it. Without this the scan is
+    # amnesiac: an unrecoverable post is re-listed and RE-PAID on every run,
+    # forever (the pilot measured ~33% of candidates in this class). The verdict
+    # is durable ops state, not a log line — that is the whole point of the table.
+    "media_recovery_exhausted": Table(
+        columns={
+            "post_id": Column("TEXT", primary_key=True),
+            "reason": Column("TEXT", not_null=True),
+            "recorded_at": Column("TEXT", not_null=True),
+        },
+    ),
     "creators": Table(
         columns={
             "id": Column("INTEGER", primary_key=True),

@@ -152,11 +152,23 @@ def _settled_cost(client, run_id: str, finished) -> float:
 
 
 def poll_run(
-    run_id: str, *, token: str, poll_secs: int = 5, timeout: int = 600
+    run_id: str,
+    *,
+    token: str,
+    poll_secs: int = 5,
+    timeout: int = 600,
+    settle_cost: bool = True,
 ) -> RunOutcome:
     """Wait for a run to finish. Returns its dataset id and actual cost.
 
     Raises RuntimeError on failure or timeout.
+
+    ``settle_cost=False`` skips the post-finish wait for a published billable
+    cost and returns ``usage_total_usd=0.0``. Set it when the caller does not
+    record cost: ``_settled_cost`` otherwise burns up to ``_COST_SETTLE_SECS``
+    (30s) per run, which for a one-run-per-post fan-out is most of the wall clock.
+    Only skip it where the number is genuinely unused — a batch that records cost
+    must leave the default.
 
     ``poll_secs`` is retained for callers that still pass it; the SDK's
     ``wait_for_finish`` does the waiting, so it is unused here.
@@ -171,7 +183,9 @@ def poll_run(
         log.info("Run %s succeeded, dataset %s", run_id, finished.default_dataset_id)
         return RunOutcome(
             dataset_id=finished.default_dataset_id,
-            usage_total_usd=_settled_cost(client, run_id, finished),
+            usage_total_usd=(
+                _settled_cost(client, run_id, finished) if settle_cost else 0.0
+            ),
         )
     if finished.status in _FAILED_STATUSES:
         raise RuntimeError(
